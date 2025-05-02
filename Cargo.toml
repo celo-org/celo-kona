@@ -1,0 +1,203 @@
+# TODO: remove unnecessary dependencies
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+authors = []
+homepage = ""
+repository = ""
+keywords = ["ethereum", "optimism", "celo", "crypto"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+exclude = ["**/target"]
+
+[workspace]
+resolver = "2"
+members = [
+  "bin/*",
+  "crates/*",
+]
+default-members = [
+  "bin/host",
+  "bin/client",
+]
+
+[workspace.metadata.cargo-udeps.ignore]
+normal = ["rustls-platform-verifier"]
+
+[workspace.lints.rust]
+missing-debug-implementations = "warn"
+missing-docs = "warn"
+unreachable-pub = "warn"
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+unnameable-types = "warn"
+
+[workspace.lints.rustdoc]
+all = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+option-if-let-else = "warn"
+redundant-clone = "warn"
+
+[profile.dev]
+opt-level = 1
+overflow-checks = false
+
+[profile.bench]
+debug = true
+
+[profile.dev-client]
+inherits = "dev"
+panic = "abort"
+
+[profile.release-client-lto]
+inherits = "release"
+panic = "abort"
+codegen-units = 1
+lto = "fat"
+
+[workspace.dependencies]
+# Binaries
+kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Protocol
+kona-comp = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-driver = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-hardforks = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Node
+kona-p2p = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-rpc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-engine = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-node-service = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Providers
+kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Proof
+kona-mpt = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-proof = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-executor = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-std-fpvm = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-preimage = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-proof-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Utilities
+kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-serde = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+
+# Alloy
+alloy-rlp = { version = "0.3.11", default-features = false }
+alloy-trie = { version = "0.8.0", default-features = false }
+alloy-chains = { version = "0.2", default-features = false }
+alloy-eips = { version = "0.14.0", default-features = false }
+alloy-serde = { version = "0.14.0", default-features = false }
+alloy-network = { version = "0.14.0", default-features = false }
+alloy-provider = { version = "0.14.0", default-features = false }
+alloy-sol-types = { version = "1.0.0", default-features = false }
+alloy-consensus = { version = "0.14.0", default-features = false }
+alloy-transport = { version = "0.14.0", default-features = false }
+alloy-rpc-types = { version = "0.14.0", default-features = false }
+alloy-rpc-client = { version = "0.14.0", default-features = false }
+alloy-primitives = { version = "1.0.0", default-features = false }
+alloy-node-bindings = { version = "0.14.0", default-features = false }
+alloy-rpc-types-eth = { version = "0.14.0", default-features = false }
+alloy-transport-http = { version = "0.14.0", default-features = false }
+alloy-rpc-types-engine = { version = "0.14.0", default-features = false }
+alloy-rpc-types-beacon = { version = "0.14.0", default-features = false }
+alloy-network-primitives = { version = "0.14.0", default-features = false }
+alloy-hardforks = { version = "0.2.0", default-features = false }
+
+# OP Alloy
+op-alloy-network = { version = "0.14.0", default-features = false }
+op-alloy-provider = { version = "0.14.0", default-features = false }
+op-alloy-consensus = { version = "0.14.0", default-features = false }
+op-alloy-rpc-types = { version = "0.14.0", default-features = false }
+op-alloy-rpc-jsonrpsee = { version = "0.14.0", default-features = false }
+op-alloy-rpc-types-engine = { version = "0.14.0", default-features = false }
+alloy-op-hardforks = { version = "0.2.0", default-features = false }
+
+# Execution
+revm = { version = "22.0.0", default-features = false }
+op-revm = { version = "3.0.1", default-features = false }
+alloy-evm = { version = "0.5.0", default-features = false, features = ["op"] }
+alloy-op-evm = { version = "0.5.0", default-features = false }
+
+# General
+url = "2.5.4"
+lru = "0.13.0"
+dirs = "6.0.0"
+spin = "0.10.0"
+clap = "4.5.32"
+tower = "0.5.2"
+tokio = "1.44.2"
+cfg-if = "1.0.0"
+rstest = "0.25.0"
+futures = "0.3.31"
+reqwest = "0.12.15"
+tempfile = "3.19.1"
+arbitrary = "1.4.1"
+jsonrpsee = "0.24.9"
+tokio-util = "0.7.14"
+parking_lot = "0.12.3"
+async-trait = "0.1.88"
+async-channel = "2.3.1"
+http-body-util = "0.1.3"
+unsigned-varint = "0.8.0"
+linked_list_allocator = "0.10.5"
+
+rand = { version = "0.9.0", default-features = false }
+sha2 = { version = "0.10.8", default-features = false }
+c-kzg = { version = "2.0.0", default-features = false }
+tabled = { version = "0.18", default-features = false }
+anyhow = { version = "1.0.97", default-features = false }
+thiserror = { version = "2.0.12", default-features = false }
+derive_more = { version = "2.0.1", default-features = false }
+lazy_static = { version = "1.5.0", default-features = false }
+
+# Compression
+getrandom = "0.3.1"
+miniz_oxide = "0.8.5"
+alloc-no-stdlib = "2.0.4"
+brotli = { version = "7.0.0", default-features = false }
+
+# Networking
+snap = "1.1.1"
+discv5 = "0.9.1"
+libp2p = "0.55.0"
+openssl = "0.10.71"
+
+# Tracing
+tracing-loki = "0.2.6"
+tracing-subscriber = "0.3.19"
+tracing = { version = "0.1.41", default-features = false }
+metrics-exporter-prometheus = { version = "0.16.2", default-features = false }
+
+# Testing
+pprof = "0.14.0"
+arbtest = "0.3.2"
+proptest = "1.6.0"
+criterion = "0.5.1"
+
+# Serialization
+rkyv = "0.8.10"
+serde_repr = "0.1.20"
+serde = { version = "1.0.219", default-features = false }
+toml = { version = "0.8.20", default-features = false }
+serde_json = { version = "1.0.140", default-features = false }
+
+# K/V database
+rocksdb = { version = "0.23.0", default-features = false }
+
+# Cryptography
+# The same library that is used by reth.
+secp256k1 = { version = "0.30", default-features = false }
