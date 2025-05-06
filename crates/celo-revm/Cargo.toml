@@ -32,6 +32,7 @@ op-revm.workspace = true
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
+lazy_static.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
