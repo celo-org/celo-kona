@@ -13,3 +13,4 @@ pub mod tx;
 
 pub use evm::CeloEvm;
 pub use tx::CeloTxEnv;
+pub use precompiles::CeloPrecompiles;

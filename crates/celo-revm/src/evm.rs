@@ -1,4 +1,5 @@
-use op_revm::{OpEvm, precompiles::OpPrecompiles};
+use crate::CeloPrecompiles;
+use op_revm::OpEvm;
 use revm::{
     Inspector,
     context::{ContextSetters, Evm, EvmData},
@@ -11,17 +12,18 @@ use revm::{
     interpreter::{Interpreter, InterpreterAction, InterpreterTypes, interpreter::EthInterpreter},
 };
 
-// TODO: replace OpPrecompiles with CeloPrecompiles, ...
-pub struct CeloEvm<CTX, INSP, I = EthInstructions<EthInterpreter, CTX>, P = OpPrecompiles>(
+pub struct CeloEvm<CTX, INSP, I = EthInstructions<EthInterpreter, CTX>, P = CeloPrecompiles>(
     pub OpEvm<CTX, INSP, I, P>,
 );
 
-impl<CTX: ContextTr, INSP> CeloEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, OpPrecompiles> {
+impl<CTX: ContextTr, INSP>
+    CeloEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, CeloPrecompiles>
+{
     pub fn new(ctx: CTX, inspector: INSP) -> Self {
         Self(OpEvm(Evm {
             data: EvmData { ctx, inspector },
             instruction: EthInstructions::new_mainnet(),
-            precompiles: OpPrecompiles::default(),
+            precompiles: CeloPrecompiles::default(),
         }))
     }
 }
