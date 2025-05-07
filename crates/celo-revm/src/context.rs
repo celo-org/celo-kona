@@ -9,13 +9,6 @@ pub struct CeloTxEnv {
     pub fee_currency: Option<Address>,
 }
 
-impl CeloTxEnv {
-    /// Calculate the effective gas price for the transaction.
-    pub fn effective_gas_price(&self, base_fee: u128) -> u128 {
-        self.base.effective_gas_price(base_fee)
-    }
-}
-
 impl Default for CeloTxEnv {
     fn default() -> Self {
         Self {
