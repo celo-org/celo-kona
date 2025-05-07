@@ -5,6 +5,9 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+pub mod chain_info;
 pub mod evm;
+pub mod precompiles;
+pub mod transfer;
 
 pub use evm::CeloEvm;
