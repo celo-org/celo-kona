@@ -9,6 +9,10 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
 };
+use std::{
+    format,
+    string::{String, ToString},
+};
 
 /// Address of the `transfer` precompile.
 pub const TRANSFER_ADDRESS: Address = u64_to_address(0xff - 2);

@@ -12,5 +12,5 @@ pub mod transfer;
 pub mod tx;
 
 pub use evm::CeloEvm;
-pub use tx::CeloTxEnv;
 pub use precompiles::CeloPrecompiles;
+pub use tx::CeloTxEnv;
