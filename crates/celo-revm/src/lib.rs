@@ -5,11 +5,14 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+pub mod constants;
 pub mod chain_info;
 pub mod evm;
 pub mod precompiles;
 pub mod tx;
+pub mod transaction;
 
 pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
 pub use tx::CeloTxEnv;
+pub use transaction::cip64::TxCip64;

@@ -194,6 +194,7 @@ serde_repr = "0.1.20"
 serde = { version = "1.0.219", default-features = false }
 toml = { version = "0.8.20", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
+serde_with = { version = "3", default-features = false, features = ["macros"] }
 
 # K/V database
 rocksdb = { version = "0.23.0", default-features = false }
