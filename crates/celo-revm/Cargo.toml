@@ -30,26 +30,28 @@ op-revm.workspace = true
 ## static precompile sets.
 #once_cell = { workspace = true, features = ["alloc"] }
 
+# misc
+lazy_static = { workspace = true, features = ["spin_no_std"] }
+
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
-lazy_static.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
 rstest.workspace = true
-alloy-sol-types.workspace = true
-sha2.workspace = true
-serde_json = { workspace = true, features = ["alloc"] }
+#alloy-sol-types.workspace = true
+#sha2.workspace = true
+#serde_json = { workspace = true, features = ["alloc"] }
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
 std = [
     "serde?/std",
     "revm/std",
-    "alloy-sol-types/std",
+#    "alloy-sol-types/std",
 #    "once_cell/std",
-    "sha2/std",
-    "serde_json/std",
+#    "sha2/std",
+#    "serde_json/std",
 ]
 hashbrown = ["revm/hashbrown"]
 serde = ["dep:serde", "revm/serde"]

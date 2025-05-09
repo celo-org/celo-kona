@@ -1,4 +1,7 @@
-use crate::transfer::{TRANSFER_ADDRESS, transfer_run};
+pub mod transfer;
+
+pub use transfer::{TRANSFER_ADDRESS, transfer_run};
+
 use core::iter;
 use op_revm::{OpSpecId, precompiles::OpPrecompiles};
 use revm::{
@@ -81,7 +84,7 @@ mod tests {
     use super::*;
     use crate::{
         chain_info::{CELO_MAINNET_CHAIN_ID, get_addresses},
-        transfer::TRANSFER_GAS_COST,
+        precompiles::transfer::TRANSFER_GAS_COST,
     };
     use op_revm::{DefaultOp, OpContext};
     use revm::{

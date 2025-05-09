@@ -1,21 +1,12 @@
 use revm::context::TxEnv;
 use revm::context_interface::transaction::{AccessListItem, SignedAuthorization, Transaction};
-use revm::primitives::{Address, Bytes, TxKind, B256, U256};
+use revm::primitives::{Address, B256, Bytes, TxKind, U256};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CeloTxEnv {
     pub base: TxEnv,
     pub fee_currency: Option<Address>,
-}
-
-impl Default for CeloTxEnv {
-    fn default() -> Self {
-        Self {
-            base: TxEnv::default(),
-            fee_currency: None,
-        }
-    }
 }
 
 impl Transaction for CeloTxEnv {

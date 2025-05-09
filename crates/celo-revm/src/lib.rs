@@ -8,8 +8,8 @@ extern crate alloc as std;
 pub mod chain_info;
 pub mod evm;
 pub mod precompiles;
-pub mod transfer;
 pub mod tx;
 
 pub use evm::CeloEvm;
+pub use precompiles::CeloPrecompiles;
 pub use tx::CeloTxEnv;
