@@ -6,7 +6,7 @@ use alloy_primitives::{Address, Bytes, ChainId, Signature, TxKind, B256, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::mem;
 
-/// A transaction with a priority fee ([CIP-64](https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md)).
+/// A transaction with a fee currency ([CIP-64](https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md)).
 ///
 /// This transaction type is identical to EIP-1559 but with a different type identifier (0x7b)
 /// and an additional `fee_currency` field to specify the currency to pay for gas.
@@ -160,6 +160,7 @@ impl RlpEcdsaDecodableTx for TxCip64 {
     /// - `value`
     /// - `data` (`input`)
     /// - `access_list`
+    /// - `fee_currency`
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Ok(Self {
             chain_id: Decodable::decode(buf)?,
