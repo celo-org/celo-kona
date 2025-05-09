@@ -318,7 +318,7 @@ impl Decodable for TxCip64 {
 
 /// Bincode-compatible [`TxCip64`] serde implementation.
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
-pub(super) mod serde_bincode_compat {
+pub(crate) mod serde_bincode_compat {
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

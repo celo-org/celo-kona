@@ -16,3 +16,8 @@ pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
 pub use transaction::cip64::TxCip64;
 pub use tx::CeloTxEnv;
+
+#[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
+pub mod serde_bincode_compat {
+    pub use crate::transaction::cip64::serde_bincode_compat::*;
+}
