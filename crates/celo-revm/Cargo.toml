@@ -26,6 +26,10 @@ all = "warn"
 # revm
 revm = { workspace = true, features = ["secp256r1"] }
 op-revm.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-consensus = {workspace = true, features = ["k256"]}
 
 ## static precompile sets.
 #once_cell = { workspace = true, features = ["alloc"] }
@@ -35,6 +39,9 @@ lazy_static = { workspace = true, features = ["spin_no_std"] }
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
+serde_with = { workspace = true, optional = true }
+alloy-serde = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 anyhow.workspace = true
@@ -42,6 +49,8 @@ rstest.workspace = true
 #alloy-sol-types.workspace = true
 #sha2.workspace = true
 #serde_json = { workspace = true, features = ["alloc"] }
+rand = { version = "0.8", features = ["std"] }
+bincode = "1.3"
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
@@ -77,3 +86,13 @@ c-kzg = ["revm/c-kzg"]
 kzg-rs = ["revm/kzg-rs"]
 blst = ["revm/blst"]
 bn = ["revm/bn"]
+serde-bincode-compat = ["alloy-eips/serde-bincode-compat", "serde_with"]
+arbitrary = [
+	"dep:arbitrary",
+	# "alloy-core/arbitrary",
+	"alloy-consensus/arbitrary",
+	"alloy-eips/arbitrary",
+	# "alloy-rpc-types/arbitrary",
+	"alloy-serde/arbitrary"
+]
+k256 = []
