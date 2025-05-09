@@ -1,8 +1,8 @@
 use crate::constants::CeloTxType;
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
-use alloy_eips::{eip2930::AccessList, eip7702::SignedAuthorization, Typed2718};
-use alloy_primitives::{Address, Bytes, ChainId, Signature, TxKind, B256, U256};
+use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::mem;
 
@@ -415,7 +415,7 @@ pub(super) mod serde_bincode_compat {
         use serde::{Deserialize, Serialize};
         use serde_with::serde_as;
 
-        use super::super::{serde_bincode_compat, TxCip64};
+        use super::super::{TxCip64, serde_bincode_compat};
 
         #[test]
         fn test_tx_cip64_bincode_roundtrip() {
@@ -444,7 +444,7 @@ mod tests {
     use super::{SignableTransaction, TxCip64};
     use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{address, b256, hex, Address, Signature, B256, U256};
+    use alloy_primitives::{Address, B256, Signature, U256, address, b256, hex};
 
     /*  The following real tx is used as test data:
 
