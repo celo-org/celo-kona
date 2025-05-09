@@ -25,11 +25,12 @@ all = "warn"
 [dependencies]
 # revm
 revm = { workspace = true, features = ["secp256r1"] }
-op-revm.workspace = true
+op-revm = { workspace = true, features = ["serde"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus = {workspace = true, features = ["k256"]}
+auto_impl.workspace = true
 
 ## static precompile sets.
 #once_cell = { workspace = true, features = ["alloc"] }
