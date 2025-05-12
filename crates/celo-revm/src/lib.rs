@@ -18,9 +18,13 @@ pub use api::{
 };
 pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
-pub use transaction::{CeloTransaction, cip64::TxCip64};
+pub use transaction::{
+    CeloPooledTransaction, CeloTransaction, CeloTxEnvelope, CeloTypedTransaction, cip64::TxCip64,
+};
 
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
 pub mod serde_bincode_compat {
-    pub use crate::transaction::cip64::serde_bincode_compat::*;
+    pub use crate::transaction::{
+        cip64::serde_bincode_compat::TxCip64, serde_bincode_compat as transaction,
+    };
 }
