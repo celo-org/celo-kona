@@ -165,7 +165,6 @@ auto_impl = "1.2.0"
 bincode = "2.0.1"
 
 # Compression
-getrandom = "0.3.2"
 miniz_oxide = "0.8.8"
 alloc-no-stdlib = "2.0.4"
 brotli = { version = "8.0.0", default-features = false }
