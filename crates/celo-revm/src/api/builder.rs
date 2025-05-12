@@ -13,12 +13,12 @@ pub trait CeloBuilder: Sized {
     /// Type of the context.
     type Context;
 
-    /// Build the celo.
+    /// Build the CeloEvm.
     fn build_celo(
         self,
     ) -> CeloEvm<Self::Context, (), EthInstructions<EthInterpreter, Self::Context>>;
 
-    /// Build the celo with an inspector.
+    /// Build the CeloEvm with an inspector.
     fn build_celo_with_inspector<INSP>(
         self,
         inspector: INSP,
