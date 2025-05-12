@@ -1,7 +1,7 @@
 //! Defines the exact transaction variants that are allowed to be propagated over the eth p2p
 //! protocol in celo.
 
-use crate::{CeloTxEnvelope, TxCip64, constants::CeloTxType};
+use crate::{CeloTxEnvelope, CeloTxType, TxCip64};
 use alloy_consensus::{
     SignableTransaction, Signed, Transaction, TxEip7702, TxEnvelope, Typed2718,
     error::ValueError,

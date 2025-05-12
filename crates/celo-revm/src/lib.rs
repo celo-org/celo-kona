@@ -7,7 +7,6 @@ extern crate alloc as std;
 
 pub mod api;
 pub mod chain_info;
-pub mod constants;
 pub mod evm;
 pub mod precompiles;
 pub mod transaction;
@@ -19,7 +18,8 @@ pub use api::{
 pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
 pub use transaction::{
-    CeloPooledTransaction, CeloTransaction, CeloTxEnvelope, CeloTypedTransaction, cip64::TxCip64,
+    CIP64_TRANSACTION_TYPE, CeloPooledTransaction, CeloTransaction, CeloTxEnvelope, CeloTxType,
+    CeloTypedTransaction, cip64::TxCip64,
 };
 
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]

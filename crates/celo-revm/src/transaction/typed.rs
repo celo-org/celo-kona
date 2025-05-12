@@ -1,4 +1,4 @@
-use crate::{TxCip64, constants::CeloTxType, CeloTxEnvelope};
+use crate::{CeloTxEnvelope, CeloTxType, TxCip64};
 use alloy_consensus::{
     SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     transaction::RlpEcdsaEncodableTx,

@@ -1,4 +1,4 @@
-use crate::constants::CeloTxType;
+use crate::CeloTxType;
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
