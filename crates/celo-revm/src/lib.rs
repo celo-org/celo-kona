@@ -5,17 +5,20 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+pub mod api;
 pub mod chain_info;
 pub mod constants;
 pub mod evm;
 pub mod precompiles;
 pub mod transaction;
-pub mod tx;
 
+pub use api::{
+    builder::CeloBuilder,
+    default_ctx::{CeloContext, DefaultCelo},
+};
 pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
-pub use transaction::cip64::TxCip64;
-pub use tx::CeloTxEnv;
+pub use transaction::{CeloTransaction, cip64::TxCip64};
 
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
 pub mod serde_bincode_compat {

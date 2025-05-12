@@ -83,10 +83,10 @@ impl Default for CeloPrecompiles {
 mod tests {
     use super::*;
     use crate::{
+        CeloContext, DefaultCelo,
         chain_info::{CELO_MAINNET_CHAIN_ID, get_addresses},
         precompiles::transfer::TRANSFER_GAS_COST,
     };
-    use op_revm::{DefaultOp, OpContext};
     use revm::{
         Context,
         context::{JournalOutput, JournalTr},
@@ -102,11 +102,11 @@ mod tests {
         let op_precompiles = OpPrecompiles::default();
 
         let celo_count =
-            <CeloPrecompiles as PrecompileProvider<OpContext<EmptyDB>>>::warm_addresses(
+            <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
                 &celo_precompiles,
             )
             .count();
-        let op_count = <OpPrecompiles as PrecompileProvider<OpContext<EmptyDB>>>::warm_addresses(
+        let op_count = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
             &op_precompiles,
         )
         .count();
@@ -145,9 +145,9 @@ mod tests {
         );
 
         // Test calling with valid parameters
-        let mut ctx = Context::op()
+        let mut ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.caller = get_addresses(CELO_MAINNET_CHAIN_ID).celo_token;
+                tx.op_tx.base.caller = get_addresses(CELO_MAINNET_CHAIN_ID).celo_token;
             })
             .modify_cfg_chained(|cfg| cfg.chain_id = CELO_MAINNET_CHAIN_ID)
             .with_db(db);
@@ -209,7 +209,7 @@ mod tests {
 
         // Test calling from the wrong address
         ctx.modify_tx(|tx| {
-            tx.base.caller = from;
+            tx.op_tx.base.caller = from;
         });
         let res = precompiles.run(
             &mut ctx,
