@@ -11,7 +11,7 @@ impl From<CeloTxType> for u8 {
     fn from(tx_type: CeloTxType) -> Self {
         match tx_type {
             CeloTxType::NonCeloTx(op_tx_type) => op_tx_type.into(),
-            CeloTxType::Cip64 => tx_type.into(),
+            CeloTxType::Cip64 => 123,
         }
     }
 }

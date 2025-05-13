@@ -150,6 +150,14 @@ impl TryFrom<CeloTxEnvelope> for TxEnvelope {
     }
 }
 
+impl TryFrom<CeloTxEnvelope> for Signed<CeloTypedTransaction> {
+    type Error = CeloTxEnvelope;
+
+    fn try_from(value: CeloTxEnvelope) -> Result<Self, Self::Error> {
+        value.try_into_signed()
+    }
+}
+
 impl Typed2718 for CeloTxEnvelope {
     fn ty(&self) -> u8 {
         match self {
@@ -389,6 +397,19 @@ impl CeloTxEnvelope {
         transaction.into_signed(signature).into()
     }
 
+    /// Consumes the type, removes the signature and returns the transaction.
+    #[inline]
+    pub fn into_typed_transaction(self) -> CeloTypedTransaction {
+        match self {
+            Self::Legacy(tx) => CeloTypedTransaction::Legacy(tx.into_parts().0),
+            Self::Eip2930(tx) => CeloTypedTransaction::Eip2930(tx.into_parts().0),
+            Self::Eip1559(tx) => CeloTypedTransaction::Eip1559(tx.into_parts().0),
+            Self::Eip7702(tx) => CeloTypedTransaction::Eip7702(tx.into_parts().0),
+            Self::Cip64(tx) => CeloTypedTransaction::Cip64(tx.into_parts().0),
+            Self::Deposit(tx) => CeloTypedTransaction::Deposit(tx.into_parts().0),
+        }
+    }
+
     /// Returns true if the transaction is a legacy transaction.
     #[inline]
     pub const fn is_legacy(&self) -> bool {
@@ -506,6 +527,7 @@ impl CeloTxEnvelope {
             Self::Deposit(tx) => Ok(tx.inner().from),
         }
     }
+
     /// Recover the signer and return a new [`alloy_consensus::transaction::Recovered`] instance
     /// containing both the transaction and the recovered signer address.
     ///
@@ -515,6 +537,18 @@ impl CeloTxEnvelope {
     pub fn try_into_recovered(
         self,
     ) -> Result<alloy_consensus::transaction::Recovered<Self>, alloy_primitives::SignatureError>
+    {
+        let signer = self.recover_signer()?;
+        Ok(alloy_consensus::transaction::Recovered::new_unchecked(
+            self, signer,
+        ))
+    }
+
+    /// Recover the signer of the transaction and returns a `Recovered<&Self>`
+    #[cfg(feature = "k256")]
+    pub fn try_to_recovered_ref(
+        &self,
+    ) -> Result<alloy_consensus::transaction::Recovered<&Self>, alloy_primitives::SignatureError>
     {
         let signer = self.recover_signer()?;
         Ok(alloy_consensus::transaction::Recovered::new_unchecked(
@@ -595,21 +629,43 @@ impl CeloTxEnvelope {
         }
     }
 
-    /// Returns the inner transaction hash.
-    pub fn hash(&self) -> &B256 {
+    /// Attempts to consume the type into a [`Signed`].
+    ///
+    /// Returns the envelope as error if it is a variant not converted to signed txn: [`TxDeposit`]
+    pub fn try_into_signed(self) -> Result<Signed<CeloTypedTransaction>, Self> {
+        match self {
+            Self::Legacy(tx) => Ok(tx.convert()),
+            Self::Eip2930(tx) => Ok(tx.convert()),
+            Self::Eip1559(tx) => Ok(tx.convert()),
+            Self::Eip7702(tx) => Ok(tx.convert()),
+            Self::Cip64(tx) => Ok(tx.convert()),
+            tx @ Self::Deposit(_) => Err(tx),
+        }
+    }
+
+    /// Return the hash of the inner Signed.
+    #[doc(alias = "transaction_hash")]
+    pub fn tx_hash(&self) -> &B256 {
         match self {
             Self::Legacy(tx) => tx.hash(),
-            Self::Eip1559(tx) => tx.hash(),
             Self::Eip2930(tx) => tx.hash(),
+            Self::Eip1559(tx) => tx.hash(),
             Self::Eip7702(tx) => tx.hash(),
             Self::Cip64(tx) => tx.hash(),
             Self::Deposit(tx) => tx.hash_ref(),
         }
     }
 
-    /// Returns the inner transaction hash.
-    pub fn tx_hash(&self) -> B256 {
-        *self.hash()
+    /// Reference to transaction hash. Used to identify transaction.
+    pub fn hash(&self) -> &B256 {
+        match self {
+            Self::Legacy(tx) => tx.hash(),
+            Self::Eip2930(tx) => tx.hash(),
+            Self::Eip1559(tx) => tx.hash(),
+            Self::Eip7702(tx) => tx.hash(),
+            Self::Cip64(tx) => tx.hash(),
+            Self::Deposit(tx) => tx.hash_ref(),
+        }
     }
 
     /// Return the length of the inner txn, including type byte length

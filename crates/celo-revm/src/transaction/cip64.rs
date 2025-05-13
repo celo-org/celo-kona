@@ -1,7 +1,9 @@
 use crate::CeloTxType;
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
-use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
+use alloy_eips::{
+    Typed2718, eip2718::IsTyped2718, eip2930::AccessList, eip7702::SignedAuthorization,
+};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::mem;
@@ -282,6 +284,12 @@ impl Transaction for TxCip64 {
 impl Typed2718 for TxCip64 {
     fn ty(&self) -> u8 {
         CeloTxType::Cip64.into()
+    }
+}
+
+impl IsTyped2718 for TxCip64 {
+    fn is_type(type_id: u8) -> bool {
+        matches!(type_id, 0x7b)
     }
 }
 
