@@ -1,7 +1,7 @@
-use crate::{CeloPooledTransaction, CeloTxType, CeloTypedTransaction, TxCip64};
+use crate::{CeloTxType, CeloTypedTransaction, TxCip64};
 use alloy_consensus::{
     Sealable, Sealed, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
-    TxEnvelope, TxLegacy, Typed2718, error::ValueError, transaction::RlpEcdsaDecodableTx,
+    TxEnvelope, TxLegacy, Typed2718, transaction::RlpEcdsaDecodableTx,
 };
 use alloy_eips::{
     eip2718::{Decodable2718, Eip2718Error, Eip2718Result, Encodable2718, IsTyped2718},
@@ -440,47 +440,6 @@ impl CeloTxEnvelope {
         match self {
             Self::Deposit(tx) => tx.inner().is_system_transaction,
             _ => false,
-        }
-    }
-
-    /// Attempts to convert the envelope into the pooled variant.
-    ///
-    /// Returns an error if the envelope's variant is incompatible with the pooled format:
-    /// [`TxDeposit`].
-    pub fn try_into_pooled(self) -> Result<CeloPooledTransaction, ValueError<Self>> {
-        match self {
-            Self::Legacy(tx) => Ok(tx.into()),
-            Self::Eip2930(tx) => Ok(tx.into()),
-            Self::Eip1559(tx) => Ok(tx.into()),
-            Self::Eip7702(tx) => Ok(tx.into()),
-            Self::Cip64(tx) => Ok(tx.into()),
-            Self::Deposit(tx) => Err(ValueError::new(
-                tx.into(),
-                "Deposit transactions cannot be pooled",
-            )),
-        }
-    }
-
-    /// Attempts to convert the envelope into the ethereum pooled variant.
-    ///
-    /// Returns an error if the envelope's variant is incompatible with the pooled format:
-    /// [`TxDeposit`, `TxCip64`].
-    pub fn try_into_eth_pooled(
-        self,
-    ) -> Result<alloy_consensus::transaction::PooledTransaction, ValueError<Self>> {
-        match self {
-            Self::Legacy(tx) => Ok(tx.into()),
-            Self::Eip2930(tx) => Ok(tx.into()),
-            Self::Eip1559(tx) => Ok(tx.into()),
-            Self::Eip7702(tx) => Ok(tx.into()),
-            Self::Cip64(tx) => Err(ValueError::new(
-                tx.into(),
-                "CIP-64 transactions are incompatible with ethereum pooled transactions",
-            )),
-            Self::Deposit(tx) => Err(ValueError::new(
-                tx.into(),
-                "Deposit transactions cannot be pooled",
-            )),
         }
     }
 

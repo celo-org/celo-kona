@@ -1,13 +1,11 @@
 pub mod abstraction;
 pub mod cip64;
 pub mod envelope;
-pub mod pooled;
 pub mod tx_type;
 pub mod typed;
 
 pub use abstraction::{CIP64_TRANSACTION_TYPE, CeloTransaction, CeloTxTr};
 pub use envelope::CeloTxEnvelope;
-pub use pooled::CeloPooledTransaction;
 pub use tx_type::CeloTxType;
 pub use typed::CeloTypedTransaction;
 
