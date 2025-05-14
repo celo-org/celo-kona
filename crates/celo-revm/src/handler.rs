@@ -482,13 +482,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBuilder, DefaultCelo, api::default_ctx::CeloContext};
+    use crate::{
+        CeloBuilder, DefaultCelo, api::celo_block_env::CeloBlockEnv, api::default_ctx::CeloContext,
+    };
     use revm::{
         context::{Context, TransactionType},
+        context_interface::result::InvalidTransaction,
+        database::InMemoryDB,
         database_interface::EmptyDB,
         handler::EthFrame,
         interpreter::{CallOutcome, InstructionResult, InterpreterResult},
-        primitives::{Address, B256, Bytes},
+        primitives::{Address, B256, Bytes, bytes},
+        state::AccountInfo,
     };
     use rstest::rstest;
 
@@ -604,7 +609,6 @@ mod tests {
         assert_eq!(gas.refunded(), 0);
     }
 
-    /*
     #[test]
     fn test_commit_mint_value() {
         let caller = Address::ZERO;
@@ -617,15 +621,15 @@ mod tests {
             },
         );
 
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.l1_base_fee = U256::from(1_000);
+        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
+        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+
         let mut ctx = Context::celo()
             .with_db(db)
             .with_chain(CeloBlockEnv {
-                l1_block_info: L1BlockInfo {
-                    l1_base_fee: U256::from(1_000),
-                    l1_fee_overhead: Some(U256::from(1_000)),
-                    l1_base_fee_scalar: U256::from(1_000),
-                    ..Default::default()
-                },
+                l1_block_info,
                 ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
@@ -657,15 +661,16 @@ mod tests {
                 ..Default::default()
             },
         );
+
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.l1_base_fee = U256::from(1_000);
+        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
+        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+
         let ctx = Context::celo()
             .with_db(db)
             .with_chain(CeloBlockEnv {
-                l1_block_info: L1BlockInfo {
-                    l1_base_fee: U256::from(1_000),
-                    l1_fee_overhead: Some(U256::from(1_000)),
-                    l1_base_fee_scalar: U256::from(1_000),
-                    ..Default::default()
-                },
+                l1_block_info,
                 ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
@@ -699,15 +704,16 @@ mod tests {
                 ..Default::default()
             },
         );
+
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.l1_base_fee = U256::from(1_000);
+        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
+        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+
         let ctx = Context::celo()
             .with_db(db)
             .with_chain(CeloBlockEnv {
-                l1_block_info: L1BlockInfo {
-                    l1_base_fee: U256::from(1_000),
-                    l1_fee_overhead: Some(U256::from(1_000)),
-                    l1_base_fee_scalar: U256::from(1_000),
-                    ..Default::default()
-                },
+                l1_block_info,
                 ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
@@ -740,14 +746,15 @@ mod tests {
                 ..Default::default()
             },
         );
+
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.operator_fee_scalar = Some(U256::from(10_000_000));
+        l1_block_info.operator_fee_constant = Some(U256::from(50));
+
         let ctx = Context::celo()
             .with_db(db)
             .with_chain(CeloBlockEnv {
-                l1_block_info: L1BlockInfo {
-                    operator_fee_scalar: Some(U256::from(10_000_000)),
-                    operator_fee_constant: Some(U256::from(50)),
-                    ..Default::default()
-                },
+                l1_block_info,
                 ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
@@ -780,15 +787,16 @@ mod tests {
                 ..Default::default()
             },
         );
+
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.l1_base_fee = U256::from(1_000);
+        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
+        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+
         let ctx = Context::celo()
             .with_db(db)
             .with_chain(CeloBlockEnv {
-                l1_block_info: L1BlockInfo {
-                    l1_base_fee: U256::from(1_000),
-                    l1_fee_overhead: Some(U256::from(1_000)),
-                    l1_base_fee_scalar: U256::from(1_000),
-                    ..Default::default()
-                },
+                l1_block_info,
                 ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
@@ -812,7 +820,6 @@ mod tests {
             ))
         );
     }
-    */
 
     #[test]
     fn test_validate_sys_tx() {
