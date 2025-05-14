@@ -1,7 +1,9 @@
-use crate::constants::CeloTxType;
+use crate::{CIP64_TRANSACTION_TYPE, CeloTxType};
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
-use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
+use alloy_eips::{
+    Typed2718, eip2718::IsTyped2718, eip2930::AccessList, eip7702::SignedAuthorization,
+};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::mem;
@@ -285,6 +287,12 @@ impl Typed2718 for TxCip64 {
     }
 }
 
+impl IsTyped2718 for TxCip64 {
+    fn is_type(type_id: u8) -> bool {
+        type_id == CIP64_TRANSACTION_TYPE
+    }
+}
+
 impl SignableTransaction<Signature> for TxCip64 {
     fn set_chain_id(&mut self, chain_id: ChainId) {
         self.chain_id = chain_id;
@@ -427,13 +435,15 @@ pub(crate) mod serde_bincode_compat {
             }
 
             let mut bytes = [0u8; 1024];
-            rand::thread_rng().fill(bytes.as_mut_slice());
+            rand::rng().fill(bytes.as_mut_slice());
             let data = Data {
                 transaction: TxCip64::arbitrary(&mut arbitrary::Unstructured::new(&bytes)).unwrap(),
             };
 
-            let encoded = bincode::serialize(&data).unwrap();
-            let decoded: Data = bincode::deserialize(&encoded).unwrap();
+            let encoded = bincode::serde::encode_to_vec(&data, bincode::config::legacy()).unwrap();
+            let (decoded, _) =
+                bincode::serde::decode_from_slice::<Data, _>(&encoded, bincode::config::legacy())
+                    .unwrap();
             assert_eq!(decoded, data);
         }
     }
