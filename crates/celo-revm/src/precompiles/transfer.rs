@@ -79,13 +79,11 @@ where
     let result = context.journal().transfer(from, to, value);
     if let Ok(Some(transfer_err)) = result {
         return Err(PrecompileError::Other(format!(
-            "transfer error occurred: {:?}",
-            transfer_err
+            "transfer error occurred: {transfer_err:?}"
         )));
     } else if let Err(db_err) = result {
         return Err(PrecompileError::Other(format!(
-            "database error occurred: {:?}",
-            db_err
+            "database error occurred: {db_err:?}"
         )));
     }
 

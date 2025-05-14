@@ -32,7 +32,12 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           channel: nightly
-          components: rustfmt,clippy
+          components: rustfmt
+          prefix-key: ${{ matrix.target }}
+      - uses: ./.github/actions/setup
+        with:
+          channel: stable
+          components: clippy
           prefix-key: ${{ matrix.target }}
       - name: fmt + lint
         run: just lint-${{ matrix.target }}
