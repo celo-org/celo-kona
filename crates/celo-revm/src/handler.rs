@@ -1,13 +1,9 @@
 //!Handler related to Celo chain
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use crate::api::exec::CeloContextTr;
 use op_revm::{
-    OpHaltReason,
-    OpSpecId,
-    api::exec::OpContextTr,
-    // constants::{BASE_FEE_RECIPIENT, L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
+    L1BlockInfo, OpHaltReason, OpSpecId,
+    constants::{BASE_FEE_RECIPIENT, L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
     transaction::{OpTransactionError, OpTxTr, deposit::DEPOSIT_TRANSACTION_TYPE},
 };
 use revm::{
@@ -88,7 +84,6 @@ where
     }
 
     fn validate_tx_against_state(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
-        /*
         let context = evm.ctx();
         let spec = context.cfg().spec();
         let block_number = context.block().number();
@@ -96,10 +91,11 @@ where
             return Ok(());
         } else {
             // The L1-cost fee is only computed for Optimism non-deposit transactions.
-            if context.chain().l2_block != block_number {
+            if context.chain().l1_block_info.l2_block != block_number {
                 // L1 block info is stored in the context for later use.
                 // and it will be reloaded from the database if it is not for the current block.
-                *context.chain() = L1BlockInfo::try_fetch(context.db(), block_number, spec)?;
+                context.chain().l1_block_info =
+                    L1BlockInfo::try_fetch(context.db(), block_number, spec)?;
             }
         }
 
@@ -110,12 +106,16 @@ where
             .clone();
 
         // compute L1 cost
-        let mut additional_cost = context.chain().calculate_tx_l1_cost(&enveloped_tx, spec);
+        let mut additional_cost = context
+            .chain()
+            .l1_block_info
+            .calculate_tx_l1_cost(&enveloped_tx, spec);
 
         if spec.is_enabled_in(OpSpecId::ISTHMUS) {
             let gas_limit = U256::from(context.tx().gas_limit());
             let operator_fee_charge = context
                 .chain()
+                .l1_block_info
                 .operator_fee_charge(&enveloped_tx, gas_limit);
 
             additional_cost = additional_cost.saturating_add(operator_fee_charge);
@@ -128,12 +128,10 @@ where
         let account = account.data.info.clone();
 
         validate_tx_against_account(&account, context, additional_cost)?;
-        */
         Ok(())
     }
 
     fn deduct_caller(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
-        /*
         let ctx = evm.ctx();
         let spec = ctx.cfg().spec();
         let caller = ctx.tx().caller();
@@ -155,7 +153,10 @@ where
                 .enveloped_tx()
                 .expect("all not deposit tx have enveloped tx")
                 .clone();
-            tx_l1_cost = ctx.chain().calculate_tx_l1_cost(&enveloped_tx, spec);
+            tx_l1_cost = ctx
+                .chain()
+                .l1_block_info
+                .calculate_tx_l1_cost(&enveloped_tx, spec);
         }
 
         // We deduct caller max balance after minting and before deducing the
@@ -178,7 +179,10 @@ where
 
             let mut operator_fee_charge = U256::ZERO;
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
-                operator_fee_charge = ctx.chain().operator_fee_charge(&enveloped_tx, gas_limit);
+                operator_fee_charge = ctx
+                    .chain()
+                    .l1_block_info
+                    .operator_fee_charge(&enveloped_tx, gas_limit);
             }
 
             let mut caller_account = ctx.journal().load_account(caller)?;
@@ -187,7 +191,6 @@ where
                 .balance
                 .saturating_sub(tx_l1_cost.saturating_add(operator_fee_charge));
         }
-        */
         Ok(())
     }
 
@@ -262,14 +265,16 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <Self::Frame as Frame>::FrameResult,
     ) -> Result<(), Self::Error> {
-        /*
         self.mainnet.reimburse_caller(evm, exec_result)?;
 
         let context = evm.ctx();
         if context.tx().tx_type() != DEPOSIT_TRANSACTION_TYPE {
             let caller = context.tx().caller();
             let spec = context.cfg().spec();
-            let operator_fee_refund = context.chain().operator_fee_refund(exec_result.gas(), spec);
+            let operator_fee_refund = context
+                .chain()
+                .l1_block_info
+                .operator_fee_refund(exec_result.gas(), spec);
 
             let caller_account = context.journal().load_account(caller)?;
 
@@ -281,7 +286,6 @@ where
                 .balance
                 .saturating_add(operator_fee_refund);
         }
-        */
 
         Ok(())
     }
@@ -315,7 +319,6 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <Self::Frame as Frame>::FrameResult,
     ) -> Result<(), Self::Error> {
-        /*
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
@@ -328,7 +331,7 @@ where
             let ctx = evm.ctx();
             let enveloped = ctx.tx().enveloped_tx().cloned();
             let spec = ctx.cfg().spec();
-            let l1_block_info = ctx.chain();
+            let l1_block_info = &mut ctx.chain().l1_block_info;
 
             let Some(enveloped_tx) = &enveloped else {
                 return Err(ERROR::from_string(
@@ -363,7 +366,6 @@ where
             operator_fee_vault_account.mark_touch();
             operator_fee_vault_account.data.info.balance += operator_fee_cost;
         }
-        */
         Ok(())
     }
 
@@ -372,7 +374,6 @@ where
         evm: &mut Self::Evm,
         result: <Self::Frame as Frame>::FrameResult,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        /*
         let result = self.mainnet.output(evm, result)?;
         let result = result.map_haltreason(OpHaltReason::Base);
         if result.result.is_halt() {
@@ -384,11 +385,9 @@ where
                 return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
             }
         }
-        evm.ctx().chain().clear_tx_l1_cost();
+        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
         Ok(result)
-        */
-        Err(ERROR::from_string("Not Implemented".into()))
     }
 
     fn catch_error(
@@ -396,7 +395,6 @@ where
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        /*
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let output = if error.is_tx_error() && is_deposit {
             let ctx = evm.ctx();
@@ -454,13 +452,10 @@ where
             Err(error)
         };
         // do cleanup
-        evm.ctx().chain().clear_tx_l1_cost();
+        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
         evm.ctx().journal().clear();
 
         output
-        */
-
-        Err(ERROR::from_string("Not Implemented".into()))
     }
 }
 
@@ -484,31 +479,26 @@ where
     type IT = EthInterpreter;
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{api::default_ctx::OpContext, DefaultOp, OpBuilder};
+    use crate::{CeloBuilder, DefaultCelo, api::default_ctx::CeloContext};
     use revm::{
         context::{Context, TransactionType},
-        context_interface::result::InvalidTransaction,
-        database::InMemoryDB,
         database_interface::EmptyDB,
         handler::EthFrame,
         interpreter::{CallOutcome, InstructionResult, InterpreterResult},
-        primitives::{bytes, Address, Bytes, B256},
-        state::AccountInfo,
+        primitives::{Address, B256, Bytes},
     };
     use rstest::rstest;
-    use std::boxed::Box;
 
     /// Creates frame result.
     fn call_last_frame_return(
-        ctx: OpContext<EmptyDB>,
+        ctx: CeloContext<EmptyDB>,
         instruction_result: InstructionResult,
         gas: Gas,
     ) -> Gas {
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let mut exec_result = FrameResult::Call(CallOutcome::new(
             InterpreterResult {
@@ -519,7 +509,7 @@ mod tests {
             0..0,
         ));
 
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         handler
             .last_frame_result(&mut evm, &mut exec_result)
@@ -530,10 +520,10 @@ mod tests {
 
     #[test]
     fn test_revert_gas() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.gas_limit = 100;
-                tx.enveloped_tx = None;
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.enveloped_tx = None;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::BEDROCK);
 
@@ -545,11 +535,11 @@ mod tests {
 
     #[test]
     fn test_consume_gas() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.gas_limit = 100;
-                tx.deposit.source_hash = B256::ZERO;
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.deposit.source_hash = B256::ZERO;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
@@ -561,11 +551,11 @@ mod tests {
 
     #[test]
     fn test_consume_gas_with_refund() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.gas_limit = 100;
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.deposit.source_hash = B256::ZERO;
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.deposit.source_hash = B256::ZERO;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
@@ -585,11 +575,11 @@ mod tests {
 
     #[test]
     fn test_consume_gas_deposit_tx() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.base.gas_limit = 100;
-                tx.deposit.source_hash = B256::ZERO;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.deposit.source_hash = B256::ZERO;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::BEDROCK);
         let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
@@ -600,12 +590,12 @@ mod tests {
 
     #[test]
     fn test_consume_gas_sys_deposit_tx() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.base.gas_limit = 100;
-                tx.deposit.source_hash = B256::ZERO;
-                tx.deposit.is_system_transaction = true;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.deposit.source_hash = B256::ZERO;
+                tx.op_tx.deposit.is_system_transaction = true;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::BEDROCK);
         let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
@@ -614,6 +604,7 @@ mod tests {
         assert_eq!(gas.refunded(), 0);
     }
 
+    /*
     #[test]
     fn test_commit_mint_value() {
         let caller = Address::ZERO;
@@ -626,24 +617,28 @@ mod tests {
             },
         );
 
-        let mut ctx = Context::op()
+        let mut ctx = Context::celo()
             .with_db(db)
-            .with_chain(L1BlockInfo {
-                l1_base_fee: U256::from(1_000),
-                l1_fee_overhead: Some(U256::from(1_000)),
-                l1_base_fee_scalar: U256::from(1_000),
-                ..Default::default()
+            .with_chain(CeloBlockEnv {
+                l1_block_info: L1BlockInfo {
+                    l1_base_fee: U256::from(1_000),
+                    l1_fee_overhead: Some(U256::from(1_000)),
+                    l1_base_fee_scalar: U256::from(1_000),
+                    ..Default::default()
+                },
+                ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
-        ctx.modify_tx(|tx| {
+        ctx.modify_tx(|celo_tx| {
+            let tx = &mut celo_tx.op_tx;
             tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
             tx.deposit.source_hash = B256::ZERO;
             tx.deposit.mint = Some(10);
         });
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
         handler.deduct_caller(&mut evm).unwrap();
 
         // Check the account balance is updated.
@@ -662,16 +657,20 @@ mod tests {
                 ..Default::default()
             },
         );
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .with_db(db)
-            .with_chain(L1BlockInfo {
-                l1_base_fee: U256::from(1_000),
-                l1_fee_overhead: Some(U256::from(1_000)),
-                l1_base_fee_scalar: U256::from(1_000),
-                ..Default::default()
+            .with_chain(CeloBlockEnv {
+                l1_block_info: L1BlockInfo {
+                    l1_base_fee: U256::from(1_000),
+                    l1_fee_overhead: Some(U256::from(1_000)),
+                    l1_base_fee_scalar: U256::from(1_000),
+                    ..Default::default()
+                },
+                ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
-            .modify_tx_chained(|tx| {
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
                 tx.base.gas_limit = 100;
                 tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
                 tx.deposit.mint = Some(10);
@@ -679,9 +678,9 @@ mod tests {
                 tx.deposit.source_hash = B256::ZERO;
             });
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
         handler.deduct_caller(&mut evm).unwrap();
 
         // Check the account balance is updated.
@@ -700,23 +699,27 @@ mod tests {
                 ..Default::default()
             },
         );
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .with_db(db)
-            .with_chain(L1BlockInfo {
-                l1_base_fee: U256::from(1_000),
-                l1_fee_overhead: Some(U256::from(1_000)),
-                l1_base_fee_scalar: U256::from(1_000),
-                ..Default::default()
+            .with_chain(CeloBlockEnv {
+                l1_block_info: L1BlockInfo {
+                    l1_base_fee: U256::from(1_000),
+                    l1_fee_overhead: Some(U256::from(1_000)),
+                    l1_base_fee_scalar: U256::from(1_000),
+                    ..Default::default()
+                },
+                ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
-            .modify_tx_chained(|tx| {
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
                 tx.base.gas_limit = 100;
                 tx.deposit.source_hash = B256::ZERO;
                 tx.enveloped_tx = Some(bytes!("FACADE"));
             });
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         // l1block cost is 1048 fee.
         handler.deduct_caller(&mut evm).unwrap();
@@ -737,21 +740,25 @@ mod tests {
                 ..Default::default()
             },
         );
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .with_db(db)
-            .with_chain(L1BlockInfo {
-                operator_fee_scalar: Some(U256::from(10_000_000)),
-                operator_fee_constant: Some(U256::from(50)),
-                ..Default::default()
+            .with_chain(CeloBlockEnv {
+                l1_block_info: L1BlockInfo {
+                    operator_fee_scalar: Some(U256::from(10_000_000)),
+                    operator_fee_constant: Some(U256::from(50)),
+                    ..Default::default()
+                },
+                ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
-            .modify_tx_chained(|tx| {
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
                 tx.base.gas_limit = 10;
                 tx.enveloped_tx = Some(bytes!("FACADE"));
             });
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         // operator fee cost is operator_fee_scalar * gas_limit / 1e6 + operator_fee_constant
         // 10_000_000 * 10 / 1_000_000 + 50 = 150
@@ -773,22 +780,25 @@ mod tests {
                 ..Default::default()
             },
         );
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .with_db(db)
-            .with_chain(L1BlockInfo {
-                l1_base_fee: U256::from(1_000),
-                l1_fee_overhead: Some(U256::from(1_000)),
-                l1_base_fee_scalar: U256::from(1_000),
-                ..Default::default()
+            .with_chain(CeloBlockEnv {
+                l1_block_info: L1BlockInfo {
+                    l1_base_fee: U256::from(1_000),
+                    l1_fee_overhead: Some(U256::from(1_000)),
+                    l1_base_fee_scalar: U256::from(1_000),
+                    ..Default::default()
+                },
+                ..CeloBlockEnv::default()
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|tx| {
-                tx.enveloped_tx = Some(bytes!("FACADE"));
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
             });
 
         // l1block cost is 1048 fee.
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         // l1block cost is 1048 fee.
         assert_eq!(
@@ -802,19 +812,20 @@ mod tests {
             ))
         );
     }
+    */
 
     #[test]
     fn test_validate_sys_tx() {
         // mark the tx as a system transaction.
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.deposit.is_system_transaction = true;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.deposit.is_system_transaction = true;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         assert_eq!(
             handler.validate_env(&mut evm),
@@ -832,15 +843,15 @@ mod tests {
     #[test]
     fn test_validate_deposit_tx() {
         // Set source hash.
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.deposit.source_hash = B256::ZERO;
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.deposit.source_hash = B256::ZERO;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         assert!(handler.validate_env(&mut evm).is_ok());
     }
@@ -848,47 +859,19 @@ mod tests {
     #[test]
     fn test_validate_tx_against_state_deposit_tx() {
         // Set source hash.
-        let ctx = Context::op()
-            .modify_tx_chained(|tx| {
+        let ctx = Context::celo()
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
                 tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
                 tx.deposit.source_hash = B256::ZERO;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         // Nonce and balance checks should be skipped for deposit transactions.
         assert!(handler.validate_env(&mut evm).is_ok());
-    }
-
-    #[test]
-    fn test_halted_deposit_tx_post_regolith() {
-        let ctx = Context::op()
-            .modify_tx_chained(|tx| {
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-            })
-            .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
-
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
-
-        assert_eq!(
-            handler.output(
-                &mut evm,
-                FrameResult::Call(CallOutcome {
-                    result: InterpreterResult {
-                        result: InstructionResult::OutOfGas,
-                        output: Default::default(),
-                        gas: Default::default(),
-                    },
-                    memory_offset: Default::default(),
-                })
-            ),
-            Err(EVMError::Transaction(
-                OpTransactionError::HaltedDepositPostRegolith
-            ))
-        )
     }
 
     #[rstest]
@@ -899,8 +882,9 @@ mod tests {
         const GAS_PRICE: u128 = 0xFF;
         const OP_FEE_MOCK_PARAM: u128 = 0xFFFF;
 
-        let ctx = Context::op()
-            .modify_tx_chained(|tx| {
+        let ctx = Context::celo()
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
                 tx.base.tx_type = if is_deposit {
                     DEPOSIT_TRANSACTION_TYPE
                 } else {
@@ -912,12 +896,12 @@ mod tests {
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
-        let mut evm = ctx.build_op();
-        let handler = OpHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let mut evm = ctx.build_celo();
+        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
 
         // Set the operator fee scalar & constant to non-zero values in the L1 block info.
-        evm.ctx().chain.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
-        evm.ctx().chain.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.l1_block_info.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.l1_block_info.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
 
         let mut gas = Gas::new(100);
         gas.set_spent(10);
@@ -942,6 +926,7 @@ mod tests {
         let op_fee_refund = evm
             .ctx()
             .chain()
+            .l1_block_info
             .operator_fee_refund(&gas, OpSpecId::ISTHMUS);
         assert!(op_fee_refund > U256::ZERO);
 
@@ -954,4 +939,3 @@ mod tests {
         assert_eq!(account.info.balance, expected_refund);
     }
 }
-*/
