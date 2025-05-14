@@ -1,5 +1,4 @@
-use crate::api::celo_block_env::CeloBlockEnv;
-use crate::{CeloEvm, transaction::CeloTxTr};
+use crate::{CeloEvm, api::celo_block_env::CeloBlockEnv, transaction::CeloTxTr};
 use op_revm::{OpHaltReason, OpSpecId, OpTransactionError};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
