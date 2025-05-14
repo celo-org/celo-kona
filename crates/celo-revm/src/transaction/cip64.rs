@@ -1,4 +1,4 @@
-use crate::CeloTxType;
+use crate::{CIP64_TRANSACTION_TYPE, CeloTxType};
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
 use alloy_eips::{
@@ -289,7 +289,7 @@ impl Typed2718 for TxCip64 {
 
 impl IsTyped2718 for TxCip64 {
     fn is_type(type_id: u8) -> bool {
-        matches!(type_id, 0x7b)
+        type_id == CIP64_TRANSACTION_TYPE
     }
 }
 
