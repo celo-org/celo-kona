@@ -1,15 +1,15 @@
+use super::celo_block_env::CeloBlockEnv;
 use crate::CeloTransaction;
-use op_revm::{L1BlockInfo, OpSpecId};
+use op_revm::OpSpecId;
 use revm::{
     Context, Journal, MainContext,
     context::{BlockEnv, CfgEnv, TxEnv},
     database_interface::EmptyDB,
 };
 
-// TODO: add CeloBlockEnv which includes exchange rates into Context packing with L1BlockInfo
 /// Type alias for the default context type of the CeloEvm.
 pub type CeloContext<DB> =
-    Context<BlockEnv, CeloTransaction<TxEnv>, CfgEnv<OpSpecId>, DB, Journal<DB>, L1BlockInfo>;
+    Context<BlockEnv, CeloTransaction<TxEnv>, CfgEnv<OpSpecId>, DB, Journal<DB>, CeloBlockEnv>;
 
 /// Trait that allows for a default context to be created.
 pub trait DefaultCelo {
@@ -22,7 +22,7 @@ impl DefaultCelo for CeloContext<EmptyDB> {
         Context::mainnet()
             .with_tx(CeloTransaction::default())
             .with_cfg(CfgEnv::new_with_spec(OpSpecId::BEDROCK))
-            .with_chain(L1BlockInfo::default())
+            .with_chain(CeloBlockEnv::default())
     }
 }
 

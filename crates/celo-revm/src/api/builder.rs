@@ -1,5 +1,5 @@
-use crate::{CeloEvm, transaction::CeloTxTr};
-use op_revm::{L1BlockInfo, OpSpecId};
+use crate::{CeloEvm, api::celo_block_env::CeloBlockEnv, transaction::CeloTxTr};
+use op_revm::OpSpecId;
 use revm::{
     Context, Database,
     context::{Cfg, JournalOutput},
@@ -25,7 +25,7 @@ pub trait CeloBuilder: Sized {
     ) -> CeloEvm<Self::Context, INSP, EthInstructions<EthInterpreter, Self::Context>>;
 }
 
-impl<BLOCK, TX, CFG, DB, JOURNAL> CeloBuilder for Context<BLOCK, TX, CFG, DB, JOURNAL, L1BlockInfo>
+impl<BLOCK, TX, CFG, DB, JOURNAL> CeloBuilder for Context<BLOCK, TX, CFG, DB, JOURNAL, CeloBlockEnv>
 where
     BLOCK: Block,
     TX: CeloTxTr,

@@ -1,17 +1,17 @@
-use crate::{CeloEvm, transaction::CeloTxTr};
-use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, OpTransactionError, handler::OpHandler};
+use crate::{CeloEvm, api::celo_block_env::CeloBlockEnv, transaction::CeloTxTr};
+use op_revm::{OpHaltReason, OpSpecId, OpTransactionError};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context::{ContextSetters, JournalOutput},
     context_interface::{
         Cfg, ContextTr, Database, JournalTr,
-        result::{EVMError, ExecutionResult, ResultAndState},
+        result::{EVMError, ExecutionResult, InvalidHeader, ResultAndState},
     },
     handler::{
-        EthFrame, EvmTr, Handler, PrecompileProvider, SystemCallTx, instructions::EthInstructions,
+        EvmTr, PrecompileProvider, SystemCallTx, instructions::EthInstructions,
         system_call::SystemCallEvm,
     },
-    inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler, JournalExt},
+    inspector::{InspectCommitEvm, InspectEvm, Inspector, JournalExt},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
@@ -21,7 +21,7 @@ pub trait CeloContextTr:
         Journal: JournalTr<FinalOutput = JournalOutput>,
         Tx: CeloTxTr,
         Cfg: Cfg<Spec = OpSpecId>,
-        Chain = L1BlockInfo,
+        Chain = CeloBlockEnv,
     >
 {
 }
@@ -31,7 +31,7 @@ impl<T> CeloContextTr for T where
             Journal: JournalTr<FinalOutput = JournalOutput>,
             Tx: CeloTxTr,
             Cfg: Cfg<Spec = OpSpecId>,
-            Chain = L1BlockInfo,
+            Chain = CeloBlockEnv,
         >
 {
 }
@@ -62,8 +62,9 @@ where
 
     fn replay(&mut self) -> Self::Output {
         // TODO: replace with CeloHandler
-        let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        h.run(self)
+        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
+        // h.run(self)
+        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
     }
 }
 
@@ -98,8 +99,9 @@ where
 
     fn inspect_replay(&mut self) -> Self::Output {
         // TODO: replace with CeloHandler
-        let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        h.inspect_run(self)
+        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
+        // h.inspect_run(self)
+        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
     }
 }
 
@@ -131,7 +133,8 @@ where
     ) -> Self::Output {
         self.set_tx(CTX::Tx::new_system_tx(data, system_contract_address));
         // TODO: replace with CeloHandler
-        let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        h.run_system_call(self)
+        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
+        // h.run_system_call(self)
+        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
     }
 }
