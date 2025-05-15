@@ -1,17 +1,19 @@
-use crate::{CeloEvm, api::celo_block_env::CeloBlockEnv, transaction::CeloTxTr};
+use crate::{
+    CeloEvm, api::celo_block_env::CeloBlockEnv, handler::CeloHandler, transaction::CeloTxTr,
+};
 use op_revm::{OpHaltReason, OpSpecId, OpTransactionError};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context::{ContextSetters, JournalOutput},
     context_interface::{
         Cfg, ContextTr, Database, JournalTr,
-        result::{EVMError, ExecutionResult, InvalidHeader, ResultAndState},
+        result::{EVMError, ExecutionResult, ResultAndState},
     },
     handler::{
-        EvmTr, PrecompileProvider, SystemCallTx, instructions::EthInstructions,
+        EthFrame, EvmTr, Handler, PrecompileProvider, SystemCallTx, instructions::EthInstructions,
         system_call::SystemCallEvm,
     },
-    inspector::{InspectCommitEvm, InspectEvm, Inspector, JournalExt},
+    inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler, JournalExt},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
@@ -61,10 +63,8 @@ where
     }
 
     fn replay(&mut self) -> Self::Output {
-        // TODO: replace with CeloHandler
-        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        // h.run(self)
-        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
+        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        h.run(self)
     }
 }
 
@@ -98,10 +98,8 @@ where
     }
 
     fn inspect_replay(&mut self) -> Self::Output {
-        // TODO: replace with CeloHandler
-        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        // h.inspect_run(self)
-        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
+        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        h.inspect_run(self)
     }
 }
 
@@ -132,9 +130,7 @@ where
         system_contract_address: revm::primitives::Address,
     ) -> Self::Output {
         self.set_tx(CTX::Tx::new_system_tx(data, system_contract_address));
-        // TODO: replace with CeloHandler
-        // let mut h = OpHandler::<_, _, EthFrame<_, _, _>>::new();
-        // h.run_system_call(self)
-        Err(InvalidHeader::PrevrandaoNotSet.into()) // temp return
+        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        h.run_system_call(self)
     }
 }
