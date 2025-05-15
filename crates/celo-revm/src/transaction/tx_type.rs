@@ -2,6 +2,7 @@ use alloy_eips::eip2718::{Eip2718Error, IsTyped2718};
 use op_alloy_consensus::OpTxType;
 
 #[repr(u8)]
+#[derive(Debug, PartialEq)]
 pub enum CeloTxType {
     NonCeloTx(OpTxType),
     Cip64 = 123,
