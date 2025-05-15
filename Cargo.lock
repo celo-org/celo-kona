@@ -986,6 +986,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 0.15.11",
+ "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-serde 0.15.11",

@@ -30,6 +30,7 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-evm.workspace = true
 op-alloy-consensus.workspace = true
 auto_impl.workspace = true
 
