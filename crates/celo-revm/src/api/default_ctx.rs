@@ -1,5 +1,4 @@
-use super::celo_block_env::CeloBlockEnv;
-use crate::CeloTransaction;
+use crate::{CeloBlockEnv, CeloTransaction};
 use op_revm::OpSpecId;
 use revm::{
     Context, Journal, MainContext,

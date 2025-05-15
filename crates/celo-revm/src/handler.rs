@@ -482,9 +482,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        CeloBuilder, DefaultCelo, api::celo_block_env::CeloBlockEnv, api::default_ctx::CeloContext,
-    };
+    use crate::{CeloBlockEnv, CeloBuilder, CeloContext, DefaultCelo};
     use revm::{
         context::{Context, TransactionType},
         context_interface::result::InvalidTransaction,

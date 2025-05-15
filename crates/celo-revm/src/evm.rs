@@ -99,12 +99,11 @@ where
     }
 }
 
-// TODO: modify tests
 #[cfg(test)]
 mod tests {
+    use crate::{CeloBlockEnv, CeloBuilder, CeloTransaction, DefaultCelo};
     use op_revm::{
-        DefaultOp, L1BlockInfo, OpBuilder, OpHaltReason, OpSpecId, OpTransaction,
-        precompiles::bn128_pair::GRANITE_MAX_INPUT_SIZE,
+        OpHaltReason, OpSpecId, precompiles::bn128_pair::GRANITE_MAX_INPUT_SIZE,
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
     };
     use revm::{
@@ -126,17 +125,19 @@ mod tests {
     };
     use std::vec::Vec;
 
+    // TODO: add cip64 tx test
+
     #[test]
     fn test_deposit_tx() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.enveloped_tx = None;
-                tx.deposit.mint = Some(100);
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.enveloped_tx = None;
+                tx.op_tx.deposit.mint = Some(100);
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::HOLOCENE);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let output = evm.replay().unwrap();
 
@@ -152,13 +153,13 @@ mod tests {
 
     #[test]
     fn test_halted_deposit_tx() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.enveloped_tx = None;
-                tx.deposit.mint = Some(100);
-                tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
-                tx.base.caller = BENCH_CALLER;
-                tx.base.kind = TxKind::Call(BENCH_TARGET);
+                tx.op_tx.enveloped_tx = None;
+                tx.op_tx.deposit.mint = Some(100);
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.caller = BENCH_CALLER;
+                tx.op_tx.base.kind = TxKind::Call(BENCH_TARGET);
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::HOLOCENE)
             .with_db(BenchmarkDB::new_bytecode(Bytecode::new_legacy(
@@ -166,7 +167,7 @@ mod tests {
             )));
 
         // POP would return a halt.
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let output = evm.replay().unwrap();
 
@@ -186,21 +187,21 @@ mod tests {
 
     fn p256verify_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::FJORD;
 
         let InitialAndFloorGas { initial_gas, .. } =
             calculate_initial_tx_gas(SPEC_ID.into(), &[], false, 0, 0, 0);
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(u64_to_address(secp256r1::P256VERIFY_ADDRESS));
-                tx.base.gas_limit = initial_gas + secp256r1::P256VERIFY_BASE_GAS_FEE;
+                tx.op_tx.base.kind = TxKind::Call(u64_to_address(secp256r1::P256VERIFY_ADDRESS));
+                tx.op_tx.base.gas_limit = initial_gas + secp256r1::P256VERIFY_BASE_GAS_FEE;
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
@@ -209,7 +210,7 @@ mod tests {
     fn test_tx_call_p256verify() {
         let ctx = p256verify_test_tx();
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert successful call to P256VERIFY
@@ -218,9 +219,9 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_p256verify() {
-        let ctx = p256verify_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = p256verify_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas for P256VERIFY
@@ -237,21 +238,21 @@ mod tests {
         spec: OpSpecId,
     ) -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         let input = Bytes::from([1; GRANITE_MAX_INPUT_SIZE + 2]);
         let InitialAndFloorGas { initial_gas, .. } =
             calculate_initial_tx_gas(spec.into(), &input[..], false, 0, 0, 0);
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bn128::pair::ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas;
+                tx.op_tx.base.kind = TxKind::Call(bn128::pair::ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas;
             })
             .modify_cfg_chained(|cfg| cfg.spec = spec)
     }
@@ -260,7 +261,7 @@ mod tests {
     fn test_halted_tx_call_bn128_pair_fjord() {
         let ctx = bn128_pair_test_tx(OpSpecId::FJORD);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -277,7 +278,7 @@ mod tests {
     fn test_halted_tx_call_bn128_pair_granite() {
         let ctx = bn128_pair_test_tx(OpSpecId::GRANITE);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert bails early because input size too big
@@ -292,18 +293,18 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g1_add_out_of_gas() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G1_ADD_ADDRESS);
-                tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE - 1;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G1_ADD_ADDRESS);
+                tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE - 1;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let output = evm.replay().unwrap();
 
@@ -319,18 +320,18 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g1_add_input_wrong_size() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G1_ADD_ADDRESS);
-                tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G1_ADD_ADDRESS);
+                tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong size
@@ -345,11 +346,11 @@ mod tests {
 
     fn g1_msm_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -362,24 +363,25 @@ mod tests {
             bls12_381_const::G1_MSM_BASE_GAS_FEE,
         );
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G1_MSM_ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas + gs1_msm_gas;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G1_MSM_ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas + gs1_msm_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
 
     #[test]
     fn test_halted_tx_call_bls12_381_g1_msm_input_wrong_size() {
-        let ctx = g1_msm_test_tx().modify_tx_chained(|tx| tx.base.data = tx.base.data.slice(1..));
+        let ctx = g1_msm_test_tx()
+            .modify_tx_chained(|tx| tx.op_tx.base.data = tx.op_tx.base.data.slice(1..));
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails pre gas check, because input is wrong size
@@ -394,9 +396,9 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g1_msm_out_of_gas() {
-        let ctx = g1_msm_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = g1_msm_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -413,7 +415,7 @@ mod tests {
     fn test_halted_tx_call_bls12_381_g1_msm_wrong_input_layout() {
         let ctx = g1_msm_test_tx();
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong layout
@@ -428,18 +430,18 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g2_add_out_of_gas() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G2_ADD_ADDRESS);
-                tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE - 1;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G2_ADD_ADDRESS);
+                tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE - 1;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let output = evm.replay().unwrap();
 
@@ -455,18 +457,18 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g2_add_input_wrong_size() {
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G2_ADD_ADDRESS);
-                tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G2_ADD_ADDRESS);
+                tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
 
         let output = evm.replay().unwrap();
 
@@ -482,11 +484,11 @@ mod tests {
 
     fn g2_msm_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -499,24 +501,25 @@ mod tests {
             bls12_381_const::G2_MSM_BASE_GAS_FEE,
         );
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::G2_MSM_ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas + gs2_msm_gas;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::G2_MSM_ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas + gs2_msm_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
 
     #[test]
     fn test_halted_tx_call_bls12_381_g2_msm_input_wrong_size() {
-        let ctx = g2_msm_test_tx().modify_tx_chained(|tx| tx.base.data = tx.base.data.slice(1..));
+        let ctx = g2_msm_test_tx()
+            .modify_tx_chained(|tx| tx.op_tx.base.data = tx.op_tx.base.data.slice(1..));
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails pre gas check, because input is wrong size
@@ -531,9 +534,9 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_g2_msm_out_of_gas() {
-        let ctx = g2_msm_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = g2_msm_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -550,7 +553,7 @@ mod tests {
     fn test_halted_tx_call_bls12_381_g2_msm_wrong_input_layout() {
         let ctx = g2_msm_test_tx();
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong layout
@@ -565,11 +568,11 @@ mod tests {
 
     fn bl12_381_pairing_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -580,15 +583,15 @@ mod tests {
         let pairing_gas: u64 =
             bls12_381_const::PAIRING_MULTIPLIER_BASE + bls12_381_const::PAIRING_OFFSET_BASE;
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::PAIRING_ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas + pairing_gas;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::PAIRING_ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas + pairing_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
     }
@@ -596,9 +599,9 @@ mod tests {
     #[test]
     fn test_halted_tx_call_bls12_381_pairing_input_wrong_size() {
         let ctx = bl12_381_pairing_test_tx()
-            .modify_tx_chained(|tx| tx.base.data = tx.base.data.slice(1..));
+            .modify_tx_chained(|tx| tx.op_tx.base.data = tx.op_tx.base.data.slice(1..));
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails pre gas check, because input is wrong size
@@ -613,9 +616,9 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_pairing_out_of_gas() {
-        let ctx = bl12_381_pairing_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = bl12_381_pairing_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -632,7 +635,7 @@ mod tests {
     fn test_tx_call_bls12_381_pairing_wrong_input_layout() {
         let ctx = bl12_381_pairing_test_tx();
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong layout
@@ -647,11 +650,11 @@ mod tests {
 
     fn fp_to_g1_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -659,24 +662,24 @@ mod tests {
         let InitialAndFloorGas { initial_gas, .. } =
             calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0);
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::MAP_FP_TO_G1_ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP_TO_G1_BASE_GAS_FEE;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::MAP_FP_TO_G1_ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP_TO_G1_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
 
     #[test]
     fn test_halted_tx_call_bls12_381_map_fp_to_g1_out_of_gas() {
-        let ctx = fp_to_g1_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = fp_to_g1_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -691,9 +694,10 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_map_fp_to_g1_input_wrong_size() {
-        let ctx = fp_to_g1_test_tx().modify_tx_chained(|tx| tx.base.data = tx.base.data.slice(1..));
+        let ctx = fp_to_g1_test_tx()
+            .modify_tx_chained(|tx| tx.op_tx.base.data = tx.op_tx.base.data.slice(1..));
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong size
@@ -708,11 +712,11 @@ mod tests {
 
     fn fp2_to_g2_test_tx() -> Context<
         BlockEnv,
-        OpTransaction<TxEnv>,
+        CeloTransaction<TxEnv>,
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        L1BlockInfo,
+        CeloBlockEnv,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -720,24 +724,24 @@ mod tests {
         let InitialAndFloorGas { initial_gas, .. } =
             calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0);
 
-        Context::op()
+        Context::celo()
             .modify_tx_chained(|tx| {
-                tx.base.kind = TxKind::Call(bls12_381_const::MAP_FP2_TO_G2_ADDRESS);
-                tx.base.data = input;
-                tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP2_TO_G2_BASE_GAS_FEE;
+                tx.op_tx.base.kind = TxKind::Call(bls12_381_const::MAP_FP2_TO_G2_ADDRESS);
+                tx.op_tx.base.data = input;
+                tx.op_tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP2_TO_G2_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.operator_fee_constant = Some(U256::ZERO);
-                l1_block.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
+                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
 
     #[test]
     fn test_halted_tx_call_bls12_381_map_fp2_to_g2_out_of_gas() {
-        let ctx = fp2_to_g2_test_tx().modify_tx_chained(|tx| tx.base.gas_limit -= 1);
+        let ctx = fp2_to_g2_test_tx().modify_tx_chained(|tx| tx.op_tx.base.gas_limit -= 1);
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert out of gas
@@ -752,10 +756,10 @@ mod tests {
 
     #[test]
     fn test_halted_tx_call_bls12_381_map_fp2_to_g2_input_wrong_size() {
-        let ctx =
-            fp2_to_g2_test_tx().modify_tx_chained(|tx| tx.base.data = tx.base.data.slice(1..));
+        let ctx = fp2_to_g2_test_tx()
+            .modify_tx_chained(|tx| tx.op_tx.base.data = tx.op_tx.base.data.slice(1..));
 
-        let mut evm = ctx.build_op();
+        let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
 
         // assert fails post gas check, because input is wrong size
@@ -798,19 +802,19 @@ mod tests {
         ]);
         let bytecode = Bytecode::new_raw(contract_data);
 
-        let ctx = Context::op()
+        let ctx = Context::celo()
             .with_db(BenchmarkDB::new_bytecode(bytecode.clone()))
             .modify_tx_chained(|tx| {
-                tx.base.caller = BENCH_CALLER;
-                tx.base.kind = TxKind::Call(BENCH_TARGET);
+                tx.op_tx.base.caller = BENCH_CALLER;
+                tx.op_tx.base.kind = TxKind::Call(BENCH_TARGET);
             });
 
-        let mut evm = ctx.build_op_with_inspector(LogInspector::default());
+        let mut evm = ctx.build_celo_with_inspector(LogInspector::default());
 
         // Run evm.
         let _ = evm.inspect_replay().unwrap();
 
-        let inspector = &evm.0.data.inspector;
+        let inspector = &evm.0.0.data.inspector;
         assert!(!inspector.logs.is_empty());
     }
 }
