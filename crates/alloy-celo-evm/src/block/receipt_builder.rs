@@ -6,7 +6,7 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use celo_revm::{CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
 use core::fmt::Debug;
-use op_alloy_consensus::{OpDepositReceipt, OpTxType};
+use op_alloy_consensus::OpDepositReceipt;
 
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Default, Clone, Copy)]
@@ -22,7 +22,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
         ctx: ReceiptBuilderCtx<'a, CeloTxEnvelope, E>,
     ) -> Result<Self::Receipt, ReceiptBuilderCtx<'a, CeloTxEnvelope, E>> {
         match ctx.tx.tx_type() {
-            CeloTxType::NonCeloTx(OpTxType::Deposit) => Err(ctx),
+            CeloTxType::Deposit => Err(ctx),
             ty => {
                 let receipt = alloy_consensus::Receipt {
                     status: Eip658Value::Eip658(ctx.result.is_success()),
@@ -32,18 +32,12 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 .with_bloom();
 
                 Ok(match ty {
-                    CeloTxType::NonCeloTx(OpTxType::Legacy) => CeloReceiptEnvelope::Legacy(receipt),
-                    CeloTxType::NonCeloTx(OpTxType::Eip2930) => {
-                        CeloReceiptEnvelope::Eip2930(receipt)
-                    }
-                    CeloTxType::NonCeloTx(OpTxType::Eip1559) => {
-                        CeloReceiptEnvelope::Eip1559(receipt)
-                    }
-                    CeloTxType::NonCeloTx(OpTxType::Eip7702) => {
-                        CeloReceiptEnvelope::Eip7702(receipt)
-                    }
+                    CeloTxType::Legacy => CeloReceiptEnvelope::Legacy(receipt),
+                    CeloTxType::Eip2930 => CeloReceiptEnvelope::Eip2930(receipt),
+                    CeloTxType::Eip1559 => CeloReceiptEnvelope::Eip1559(receipt),
+                    CeloTxType::Eip7702 => CeloReceiptEnvelope::Eip7702(receipt),
                     CeloTxType::Cip64 => CeloReceiptEnvelope::Cip64(receipt),
-                    CeloTxType::NonCeloTx(OpTxType::Deposit) => unreachable!(),
+                    CeloTxType::Deposit => unreachable!(),
                 })
             }
         }

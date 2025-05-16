@@ -994,6 +994,7 @@ dependencies = [
  "arbitrary",
  "auto_impl",
  "bincode 2.0.1",
+ "derive_more",
  "lazy_static",
  "op-alloy-consensus",
  "op-revm",

@@ -144,9 +144,7 @@ impl RlpEcdsaEncodableTx for TxCip64 {
 }
 
 impl RlpEcdsaDecodableTx for TxCip64 {
-    // TODO: Preferable get the value from `tx_type`.
-    // const DEFAULT_TX_TYPE: u8 = { Self::tx_type() as u8 };
-    const DEFAULT_TX_TYPE: u8 = 123;
+    const DEFAULT_TX_TYPE: u8 = { Self::tx_type() as u8 };
 
     /// Decodes the inner [TxCip64] fields from RLP bytes.
     ///
@@ -180,12 +178,6 @@ impl RlpEcdsaDecodableTx for TxCip64 {
 }
 
 impl Transaction for TxCip64 {
-    // /// Get the fee currency for this transaction
-    // #[inline]
-    // fn fee_currency(&self) -> Option<&Address> {
-    //     self.fee_currency.as_ref()
-    // }
-
     #[inline]
     fn chain_id(&self) -> Option<ChainId> {
         Some(self.chain_id)
@@ -283,7 +275,7 @@ impl Transaction for TxCip64 {
 
 impl Typed2718 for TxCip64 {
     fn ty(&self) -> u8 {
-        CeloTxType::Cip64.into()
+        CeloTxType::Cip64 as u8
     }
 }
 

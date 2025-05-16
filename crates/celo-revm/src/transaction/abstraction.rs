@@ -1,3 +1,4 @@
+use crate::CIP64_TRANSACTION_TYPE;
 use auto_impl::auto_impl;
 use op_revm::{OpTransaction, transaction::OpTxTr};
 use revm::{
@@ -6,8 +7,6 @@ use revm::{
     handler::SystemCallTx,
     primitives::{Address, B256, Bytes, TxKind, U256},
 };
-
-pub const CIP64_TRANSACTION_TYPE: u8 = 0x7b;
 
 #[auto_impl(&, &mut, Box, Arc)]
 pub trait CeloTxTr: OpTxTr {

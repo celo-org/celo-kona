@@ -579,12 +579,12 @@ impl CeloTxEnvelope {
     /// Return the [`CeloTxType`] of the inner txn.
     pub const fn tx_type(&self) -> CeloTxType {
         match self {
-            Self::Legacy(_) => CeloTxType::NonCeloTx(OpTxType::Legacy),
-            Self::Eip2930(_) => CeloTxType::NonCeloTx(OpTxType::Eip2930),
-            Self::Eip1559(_) => CeloTxType::NonCeloTx(OpTxType::Eip1559),
-            Self::Eip7702(_) => CeloTxType::NonCeloTx(OpTxType::Eip7702),
+            Self::Legacy(_) => CeloTxType::Legacy,
+            Self::Eip2930(_) => CeloTxType::Eip2930,
+            Self::Eip1559(_) => CeloTxType::Eip1559,
+            Self::Eip7702(_) => CeloTxType::Eip7702,
             Self::Cip64(_) => CeloTxType::Cip64,
-            Self::Deposit(_) => CeloTxType::NonCeloTx(OpTxType::Deposit),
+            Self::Deposit(_) => CeloTxType::Deposit,
         }
     }
 
@@ -662,20 +662,12 @@ impl Decodable2718 for CeloTxEnvelope {
             .try_into()
             .map_err(|_| Eip2718Error::UnexpectedType(ty))?
         {
-            CeloTxType::NonCeloTx(OpTxType::Eip2930) => {
-                Ok(Self::Eip2930(TxEip2930::rlp_decode_signed(buf)?))
-            }
-            CeloTxType::NonCeloTx(OpTxType::Eip1559) => {
-                Ok(Self::Eip1559(TxEip1559::rlp_decode_signed(buf)?))
-            }
-            CeloTxType::NonCeloTx(OpTxType::Eip7702) => {
-                Ok(Self::Eip7702(TxEip7702::rlp_decode_signed(buf)?))
-            }
+            CeloTxType::Eip2930 => Ok(Self::Eip2930(TxEip2930::rlp_decode_signed(buf)?)),
+            CeloTxType::Eip1559 => Ok(Self::Eip1559(TxEip1559::rlp_decode_signed(buf)?)),
+            CeloTxType::Eip7702 => Ok(Self::Eip7702(TxEip7702::rlp_decode_signed(buf)?)),
             CeloTxType::Cip64 => Ok(Self::Cip64(TxCip64::rlp_decode_signed(buf)?)),
-            CeloTxType::NonCeloTx(OpTxType::Deposit) => {
-                Ok(Self::Deposit(TxDeposit::decode(buf)?.seal_slow()))
-            }
-            CeloTxType::NonCeloTx(OpTxType::Legacy) => Err(alloy_rlp::Error::Custom(
+            CeloTxType::Deposit => Ok(Self::Deposit(TxDeposit::decode(buf)?.seal_slow())),
+            CeloTxType::Legacy => Err(alloy_rlp::Error::Custom(
                 "type-0 eip2718 transactions are not supported",
             )
             .into()),

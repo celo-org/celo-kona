@@ -95,12 +95,12 @@ impl CeloTypedTransaction {
     /// Return the [`CeloTxType`] of the inner txn.
     pub const fn tx_type(&self) -> CeloTxType {
         match self {
-            Self::Legacy(_) => CeloTxType::NonCeloTx(OpTxType::Legacy),
-            Self::Eip2930(_) => CeloTxType::NonCeloTx(OpTxType::Eip2930),
-            Self::Eip1559(_) => CeloTxType::NonCeloTx(OpTxType::Eip1559),
-            Self::Eip7702(_) => CeloTxType::NonCeloTx(OpTxType::Eip7702),
+            Self::Legacy(_) => CeloTxType::Legacy,
+            Self::Eip2930(_) => CeloTxType::Eip2930,
+            Self::Eip1559(_) => CeloTxType::Eip1559,
+            Self::Eip7702(_) => CeloTxType::Eip7702,
             Self::Cip64(_) => CeloTxType::Cip64,
-            Self::Deposit(_) => CeloTxType::NonCeloTx(OpTxType::Deposit),
+            Self::Deposit(_) => CeloTxType::Deposit,
         }
     }
 
@@ -185,7 +185,7 @@ impl Typed2718 for CeloTypedTransaction {
             Self::Eip2930(_) => OpTxType::Eip2930 as u8,
             Self::Eip1559(_) => OpTxType::Eip1559 as u8,
             Self::Eip7702(_) => OpTxType::Eip7702 as u8,
-            Self::Cip64(_) => CeloTxType::Cip64.into(),
+            Self::Cip64(_) => CeloTxType::Cip64 as u8,
             Self::Deposit(_) => OpTxType::Deposit as u8,
         }
     }

@@ -4,9 +4,9 @@ pub mod envelope;
 pub mod tx_type;
 pub mod typed;
 
-pub use abstraction::{CIP64_TRANSACTION_TYPE, CeloTransaction, CeloTxTr};
+pub use abstraction::{CeloTransaction, CeloTxTr};
 pub use envelope::CeloTxEnvelope;
-pub use tx_type::CeloTxType;
+pub use tx_type::{CIP64_TRANSACTION_TYPE, CeloTxType};
 pub use typed::CeloTypedTransaction;
 
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]

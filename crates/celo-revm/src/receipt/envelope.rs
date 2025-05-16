@@ -8,7 +8,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Bloom, Log, logs_bloom};
 use alloy_rlp::{BufMut, Decodable, Encodable, length_of_length};
-use op_alloy_consensus::{OpDepositReceipt, OpDepositReceiptWithBloom, OpTxType};
+use op_alloy_consensus::{OpDepositReceipt, OpDepositReceiptWithBloom};
 use std::vec::Vec;
 
 /// Receipt envelope, as defined in [EIP-2718], modified for Celo.
@@ -73,19 +73,19 @@ impl CeloReceiptEnvelope<Log> {
             logs,
         };
         match tx_type {
-            CeloTxType::NonCeloTx(OpTxType::Legacy) => Self::Legacy(ReceiptWithBloom {
+            CeloTxType::Legacy => Self::Legacy(ReceiptWithBloom {
                 receipt: inner_receipt,
                 logs_bloom,
             }),
-            CeloTxType::NonCeloTx(OpTxType::Eip2930) => Self::Eip2930(ReceiptWithBloom {
+            CeloTxType::Eip2930 => Self::Eip2930(ReceiptWithBloom {
                 receipt: inner_receipt,
                 logs_bloom,
             }),
-            CeloTxType::NonCeloTx(OpTxType::Eip1559) => Self::Eip1559(ReceiptWithBloom {
+            CeloTxType::Eip1559 => Self::Eip1559(ReceiptWithBloom {
                 receipt: inner_receipt,
                 logs_bloom,
             }),
-            CeloTxType::NonCeloTx(OpTxType::Eip7702) => Self::Eip7702(ReceiptWithBloom {
+            CeloTxType::Eip7702 => Self::Eip7702(ReceiptWithBloom {
                 receipt: inner_receipt,
                 logs_bloom,
             }),
@@ -93,7 +93,7 @@ impl CeloReceiptEnvelope<Log> {
                 receipt: inner_receipt,
                 logs_bloom,
             }),
-            CeloTxType::NonCeloTx(OpTxType::Deposit) => {
+            CeloTxType::Deposit => {
                 let inner = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
                         inner: inner_receipt,
@@ -112,12 +112,12 @@ impl<T> CeloReceiptEnvelope<T> {
     /// Return the [`CeloTxType`] of the inner receipt.
     pub const fn tx_type(&self) -> CeloTxType {
         match self {
-            Self::Legacy(_) => CeloTxType::NonCeloTx(OpTxType::Legacy),
-            Self::Eip2930(_) => CeloTxType::NonCeloTx(OpTxType::Eip2930),
-            Self::Eip1559(_) => CeloTxType::NonCeloTx(OpTxType::Eip1559),
-            Self::Eip7702(_) => CeloTxType::NonCeloTx(OpTxType::Eip7702),
+            Self::Legacy(_) => CeloTxType::Legacy,
+            Self::Eip2930(_) => CeloTxType::Eip2930,
+            Self::Eip1559(_) => CeloTxType::Eip1559,
+            Self::Eip7702(_) => CeloTxType::Eip7702,
             Self::Cip64(_) => CeloTxType::Cip64,
-            Self::Deposit(_) => CeloTxType::NonCeloTx(OpTxType::Deposit),
+            Self::Deposit(_) => CeloTxType::Deposit,
         }
     }
 
@@ -275,12 +275,12 @@ impl Decodable for CeloReceiptEnvelope {
 impl Typed2718 for CeloReceiptEnvelope {
     fn ty(&self) -> u8 {
         let ty = match self {
-            Self::Legacy(_) => CeloTxType::NonCeloTx(OpTxType::Legacy),
-            Self::Eip2930(_) => CeloTxType::NonCeloTx(OpTxType::Eip2930),
-            Self::Eip1559(_) => CeloTxType::NonCeloTx(OpTxType::Eip1559),
-            Self::Eip7702(_) => CeloTxType::NonCeloTx(OpTxType::Eip7702),
+            Self::Legacy(_) => CeloTxType::Legacy,
+            Self::Eip2930(_) => CeloTxType::Eip2930,
+            Self::Eip1559(_) => CeloTxType::Eip1559,
+            Self::Eip7702(_) => CeloTxType::Eip7702,
             Self::Cip64(_) => CeloTxType::Cip64,
-            Self::Deposit(_) => CeloTxType::NonCeloTx(OpTxType::Deposit),
+            Self::Deposit(_) => CeloTxType::Deposit,
         };
         ty.into()
     }
@@ -319,15 +319,15 @@ impl Decodable2718 for CeloReceiptEnvelope {
             .try_into()
             .map_err(|_| Eip2718Error::UnexpectedType(ty))?
         {
-            CeloTxType::NonCeloTx(OpTxType::Legacy) => Err(alloy_rlp::Error::Custom(
+            CeloTxType::Legacy => Err(alloy_rlp::Error::Custom(
                 "type-0 eip2718 transactions are not supported",
             )
             .into()),
-            CeloTxType::NonCeloTx(OpTxType::Eip1559) => Ok(Self::Eip1559(Decodable::decode(buf)?)),
-            CeloTxType::NonCeloTx(OpTxType::Eip7702) => Ok(Self::Eip7702(Decodable::decode(buf)?)),
-            CeloTxType::NonCeloTx(OpTxType::Eip2930) => Ok(Self::Eip2930(Decodable::decode(buf)?)),
+            CeloTxType::Eip1559 => Ok(Self::Eip1559(Decodable::decode(buf)?)),
+            CeloTxType::Eip7702 => Ok(Self::Eip7702(Decodable::decode(buf)?)),
+            CeloTxType::Eip2930 => Ok(Self::Eip2930(Decodable::decode(buf)?)),
             CeloTxType::Cip64 => Ok(Self::Cip64(Decodable::decode(buf)?)),
-            CeloTxType::NonCeloTx(OpTxType::Deposit) => Ok(Self::Deposit(Decodable::decode(buf)?)),
+            CeloTxType::Deposit => Ok(Self::Deposit(Decodable::decode(buf)?)),
         }
     }
 
@@ -402,18 +402,12 @@ mod tests {
 
     #[test]
     fn legacy_receipt_from_parts() {
-        let receipt = CeloReceiptEnvelope::from_parts(
-            true,
-            100,
-            vec![],
-            CeloTxType::NonCeloTx(OpTxType::Legacy),
-            None,
-            None,
-        );
+        let receipt =
+            CeloReceiptEnvelope::from_parts(true, 100, vec![], CeloTxType::Legacy, None, None);
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);
-        assert_eq!(receipt.tx_type(), CeloTxType::NonCeloTx(OpTxType::Legacy));
+        assert_eq!(receipt.tx_type(), CeloTxType::Legacy);
     }
 
     #[test]
@@ -432,14 +426,14 @@ mod tests {
             true,
             100,
             vec![],
-            CeloTxType::NonCeloTx(OpTxType::Deposit),
+            CeloTxType::Deposit,
             Some(1),
             Some(2),
         );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);
-        assert_eq!(receipt.tx_type(), CeloTxType::NonCeloTx(OpTxType::Deposit));
+        assert_eq!(receipt.tx_type(), CeloTxType::Deposit);
         assert_eq!(receipt.deposit_nonce(), Some(1));
         assert_eq!(receipt.deposit_receipt_version(), Some(2));
     }
