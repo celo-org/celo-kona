@@ -11,6 +11,7 @@ pub mod evm;
 pub mod handler;
 pub mod precompiles;
 pub mod transaction;
+pub mod tx;
 
 pub use api::{
     builder::CeloBuilder,
