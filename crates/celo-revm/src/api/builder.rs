@@ -1,4 +1,4 @@
-use crate::{CeloEvm, api::celo_block_env::CeloBlockEnv, transaction::CeloTxTr};
+use crate::{CeloBlockEnv, CeloEvm, transaction::CeloTxTr};
 use op_revm::OpSpecId;
 use revm::{
     Context, Database,
