@@ -4,13 +4,14 @@ use crate::api::exec::CeloContextTr;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{BASE_FEE_RECIPIENT, L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
+    handler::IsTxError,
     transaction::{OpTransactionError, OpTxTr, deposit::DEPOSIT_TRANSACTION_TYPE},
 };
 use revm::{
     Database,
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{EVMError, ExecutionResult, FromStringError, ResultAndState},
+        result::{ExecutionResult, FromStringError, ResultAndState},
     },
     handler::{
         EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
@@ -40,16 +41,6 @@ impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub trait IsTxError {
-    fn is_tx_error(&self) -> bool;
-}
-
-impl<DB, TX> IsTxError for EVMError<DB, TX> {
-    fn is_tx_error(&self) -> bool {
-        matches!(self, EVMError::Transaction(_))
     }
 }
 
@@ -485,7 +476,7 @@ mod tests {
     use crate::{CeloBlockEnv, CeloBuilder, CeloContext, DefaultCelo};
     use revm::{
         context::{Context, TransactionType},
-        context_interface::result::InvalidTransaction,
+        context_interface::result::{EVMError, InvalidTransaction},
         database::InMemoryDB,
         database_interface::EmptyDB,
         handler::EthFrame,
