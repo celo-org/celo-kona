@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 alloy-evm = { workspace = true, features = ["op"] }
-alloy-op-evm.workspace = true
+alloy-op-evm = { workspace = true, default-features = false }
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
@@ -25,7 +25,7 @@ op-alloy-consensus.workspace = true
 
 revm.workspace = true
 op-revm.workspace = true
-celo-revm = { version = "0.1.0", path = "../celo-revm" }
+celo-revm = { version = "0.1.0", path = "../celo-revm", default-features = false }
 
 [dev-dependencies]
 alloy-eips.workspace = true
