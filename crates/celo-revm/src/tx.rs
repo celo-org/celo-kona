@@ -1,4 +1,6 @@
 //! Abstraction of an executable transaction.
+//! Originally from alloy-evm crate, but had to add here as we cannot implement an external trait 
+//! for an external type.
 
 use crate::CeloTransaction;
 use alloy_eips::{Encodable2718, Typed2718};
