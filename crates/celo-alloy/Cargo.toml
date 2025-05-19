@@ -1,0 +1,74 @@
+# TODO: remove unnecessary dependencies
+[package]
+name = "celo-alloy"
+description = "Connect applications to Celo"
+version = "0.1.0"
+
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Alloy
+alloy-rlp.workspace = true
+alloy-eips.workspace = true
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+op-alloy-consensus.workspace = true
+
+# misc
+derive_more = { workspace = true, features = ["display"] }
+
+# arbitrary
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+
+# serde
+serde_with = { workspace = true, optional = true }
+alloy-serde = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+rand.workspace = true
+bincode = { workspace = true, features = ["serde"] }
+serde_json.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
+
+[features]
+default = ["std"]
+std = ["alloy-eips/std", "alloy-consensus/std", "derive_more/std"]
+k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
+kzg = ["alloy-eips/kzg", "alloy-consensus/kzg", "std"]
+arbitrary = [
+    "std",
+    "dep:arbitrary",
+    "alloy-consensus/arbitrary",
+    "alloy-eips/arbitrary",
+    "alloy-primitives/rand",
+    "alloy-primitives/arbitrary",
+    "op-alloy-consensus/arbitrary",
+]
+serde = [
+    "dep:serde",
+    "dep:alloy-serde",
+    "alloy-primitives/serde",
+    "alloy-consensus/serde",
+    "alloy-eips/serde",
+    "op-alloy-consensus/serde",
+]
+serde-bincode-compat = [
+    "serde_with",
+    "alloy-consensus/serde-bincode-compat",
+    "op-alloy-consensus/serde-bincode-compat",
+]
+

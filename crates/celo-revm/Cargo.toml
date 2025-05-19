@@ -23,29 +23,27 @@ rust_2018_idioms = "deny"
 all = "warn"
 
 [dependencies]
+celo-alloy = { version = "0.1.0", path = "../celo-alloy", default-features = false }
+
 # revm
 revm = { workspace = true, features = ["secp256r1"] }
 op-revm = { workspace = true, features = ["serde"] }
+
+# Alloy
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
-alloy-rlp.workspace = true
-alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-evm.workspace = true
 op-alloy-consensus.workspace = true
-auto_impl.workspace = true
 
 ## static precompile sets.
 #once_cell = { workspace = true, features = ["alloc"] }
 
 # misc
+auto_impl.workspace = true
 lazy_static = { workspace = true, features = ["spin_no_std"] }
-derive_more = { workspace = true, features = ["display"], default-features = false }
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
-serde_with = { workspace = true, optional = true }
-alloy-serde = { workspace = true, optional = true }
-arbitrary = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 anyhow.workspace = true
@@ -55,15 +53,13 @@ rstest.workspace = true
 serde_json = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 bincode = { workspace = true, features = ["serde"] }
-arbitrary = { workspace = true, features = ["derive"] }
-alloy-eips = { workspace = true, features = ["arbitrary"] }
+alloy-eips.workspace = true 
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
 std = [
     "serde?/std",
     "revm/std",
-    "derive_more/std",
 #    "alloy-sol-types/std",
 #    "once_cell/std",
 #    "sha2/std",
@@ -72,7 +68,6 @@ std = [
 hashbrown = ["revm/hashbrown"]
 serde = [
     "dep:serde",
-    "dep:alloy-serde",
     "revm/serde",
     "op-alloy-consensus/serde",
 ]
@@ -99,17 +94,7 @@ kzg-rs = ["revm/kzg-rs"]
 blst = ["revm/blst"]
 bn = ["revm/bn"]
 serde-bincode-compat = [
-    "serde_with",
     "alloy-eips/serde-bincode-compat",
     "op-alloy-consensus/serde-bincode-compat",
-]
-arbitrary = [
-	"dep:arbitrary",
-	# "alloy-core/arbitrary",
-	"alloy-consensus/arbitrary",
-	"op-alloy-consensus/arbitrary",
-	"alloy-eips/arbitrary",
-	# "alloy-rpc-types/arbitrary",
-	"alloy-serde/arbitrary"
 ]
 k256 = []

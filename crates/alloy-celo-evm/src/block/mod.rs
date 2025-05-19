@@ -14,7 +14,7 @@ mod tests {
     use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
     use alloy_op_hardforks::OpChainHardforks;
     use alloy_primitives::{Address, Signature};
-    use celo_revm::CeloTxEnvelope;
+    use celo_alloy::CeloTxEnvelope;
     use revm::database::{CacheDB, EmptyDB, State};
 
     #[test]

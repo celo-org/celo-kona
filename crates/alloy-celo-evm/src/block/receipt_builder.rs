@@ -4,7 +4,7 @@
 use alloy_consensus::Eip658Value;
 use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
-use celo_revm::{CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
+use celo_alloy::{CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 

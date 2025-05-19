@@ -1,9 +1,10 @@
 //! Abstraction of an executable transaction.
 
-use crate::{CeloTransaction, CeloTxEnvelope, TxCip64};
+use crate::CeloTransaction;
 use alloy_eips::{Encodable2718, Typed2718};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
 use alloy_primitives::{Address, Bytes};
+use celo_alloy::{CeloTxEnvelope, TxCip64};
 use op_alloy_consensus::TxDeposit;
 use op_revm::{OpTransaction, transaction::deposit::DepositTransactionParts};
 use revm::context::{Transaction, TxEnv};

@@ -1,5 +1,5 @@
-use crate::CeloTxType;
 use auto_impl::auto_impl;
+use celo_alloy::CeloTxType;
 use op_revm::{OpTransaction, transaction::OpTxTr};
 use revm::{
     context::TxEnv,

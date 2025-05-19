@@ -8,9 +8,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
-use celo_revm::{
-    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, CeloTxType, DefaultCelo,
-};
+use celo_alloy::CeloTxType;
+use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},

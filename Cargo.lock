@@ -50,6 +50,7 @@ dependencies = [
  "alloy-op-evm",
  "alloy-op-hardforks",
  "alloy-primitives",
+ "celo-alloy",
  "celo-revm",
  "op-alloy-consensus",
  "op-revm",
@@ -973,6 +974,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "celo-alloy"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-serde 0.15.11",
+ "arbitrary",
+ "bincode 2.0.1",
+ "derive_more",
+ "op-alloy-consensus",
+ "rand 0.9.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+]
+
+[[package]]
 name = "celo-client"
 version = "0.1.0"
 
@@ -984,17 +1004,13 @@ version = "0.1.0"
 name = "celo-revm"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "alloy-eips 0.15.11",
  "alloy-evm",
  "alloy-primitives",
- "alloy-rlp",
- "alloy-serde 0.15.11",
  "anyhow",
- "arbitrary",
  "auto_impl",
  "bincode 2.0.1",
- "derive_more",
+ "celo-alloy",
  "lazy_static",
  "op-alloy-consensus",
  "op-revm",
@@ -1003,7 +1019,6 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
- "serde_with",
 ]
 
 [[package]]

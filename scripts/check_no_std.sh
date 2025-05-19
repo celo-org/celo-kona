@@ -4,6 +4,7 @@ set -eo pipefail
 no_std_packages=(
   celo-revm
   alloy-celo-evm
+  celo-alloy
 )
 
 for package in "${no_std_packages[@]}"; do
