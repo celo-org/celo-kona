@@ -1,3 +1,5 @@
+//! The TypedTransaction enum represents all Ethereum transaction request types, modified for Celo.
+
 use crate::{CeloTxEnvelope, CeloTxType, TxCip64};
 use alloy_consensus::{
     SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
@@ -500,7 +502,7 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
     }
 
     fn tx_hash(&self, signature: &Signature) -> TxHash {
-        CeloTypedTransaction::tx_hash(self, signature)
+        Self::tx_hash(self, signature)
     }
 }
 

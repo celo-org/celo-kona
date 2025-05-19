@@ -1,3 +1,5 @@
+//! The Ethereum [EIP-2718] Transaction Envelope, modified for Celo.
+
 use crate::{CeloTxType, CeloTypedTransaction, TxCip64};
 use alloy_consensus::{
     Sealable, Sealed, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
