@@ -1175,6 +1175,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-trie",
  "celo-alloy-consensus",
+ "celo-alloy-rpc-types-engine",
  "celo-executor",
  "kona-executor",
  "kona-genesis",

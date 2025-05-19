@@ -10,6 +10,7 @@ use alloy_evm::{
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
 use alloy_primitives::SignatureError;
 use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope};
+use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
@@ -63,16 +64,18 @@ where
         }
     }
 
-    /// Builds a new block on top of the parent state, using the given [`OpPayloadAttributes`].
+    /// Builds a new block on top of the parent state, using the given [`CeloPayloadAttributes`].
     pub fn build_block(
         &mut self,
-        attrs: OpPayloadAttributes,
+        attrs: CeloPayloadAttributes,
     ) -> ExecutorResult<BlockBuildingOutcome> {
+        let op_attrs = attrs.op_payload_attributes.clone();
+
         // Step 1. Set up the execution environment.
         let base_fee_params =
             Self::active_base_fee_params(self.config, self.trie_db.parent_block_header(), &attrs)?;
         let evm_env = self.evm_env(
-            self.config.spec_id(attrs.payload_attributes.timestamp),
+            self.config.spec_id(op_attrs.payload_attributes.timestamp),
             self.trie_db.parent_block_header(),
             &attrs,
             &base_fee_params,
@@ -86,7 +89,7 @@ where
         // without it and fall back on on-demand preimage fetching for execution.
         self.trie_db
             .hinter
-            .hint_execution_witness(parent_hash, &attrs)
+            .hint_execution_witness(parent_hash, &op_attrs)
             .map_err(|e| TrieDBError::Provider(e.to_string()))?;
 
         info!(
@@ -94,7 +97,7 @@ where
             block_number = block_env.number,
             block_timestamp = block_env.timestamp,
             block_gas_limit = block_env.gas_limit,
-            transactions = attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
+            transactions = op_attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
             "Beginning block building."
         );
 
@@ -107,7 +110,7 @@ where
         let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
         let ctx = OpBlockExecutionCtx {
             parent_hash,
-            parent_beacon_block_root: attrs.payload_attributes.parent_beacon_block_root,
+            parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };

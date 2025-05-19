@@ -1,14 +1,13 @@
 //! Contains utilities for the L2 executor.
-//! Identical to kona-executor, but had to duplicate it because the original is private.
 
 use crate::constants::HOLOCENE_EXTRA_DATA_VERSION;
 use alloc::vec::Vec;
 use alloy_consensus::Header;
 use alloy_eips::eip1559::BaseFeeParams;
 use alloy_primitives::{B64, Bytes};
+use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult};
 use kona_genesis::RollupConfig;
-use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// Parse Holocene [Header] extra data.
 ///
@@ -57,16 +56,17 @@ pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult
 ///
 /// ## Takes
 /// - `config`: The [RollupConfig] for the chain.
-/// - `attributes`: The [OpPayloadAttributes] for the block.
+/// - `attributes`: The [CeloPayloadAttributes] for the block.
 ///
 /// ## Returns
 /// - `Ok(data)`: The encoded extra data.
 /// - `Err(ExecutorError::MissingEIP1559Params)`: If the EIP-1559 parameters are missing.
 pub(crate) fn encode_holocene_eip_1559_params(
     config: &RollupConfig,
-    attributes: &OpPayloadAttributes,
+    attributes: &CeloPayloadAttributes,
 ) -> ExecutorResult<Bytes> {
     let payload_params = attributes
+        .op_payload_attributes
         .eip_1559_params
         .ok_or(ExecutorError::MissingEIP1559Params)?;
     let params = if payload_params == B64::ZERO {
@@ -100,22 +100,25 @@ mod test {
     use alloy_consensus::Header;
     use alloy_primitives::{B64, b64, hex};
     use alloy_rpc_types_engine::PayloadAttributes;
+    use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
     use kona_genesis::{BaseFeeConfig, RollupConfig};
     use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
-    fn mock_payload(eip_1559_params: Option<B64>) -> OpPayloadAttributes {
-        OpPayloadAttributes {
-            payload_attributes: PayloadAttributes {
-                timestamp: 0,
-                prev_randao: Default::default(),
-                suggested_fee_recipient: Default::default(),
-                withdrawals: Default::default(),
-                parent_beacon_block_root: Default::default(),
+    fn mock_payload(eip_1559_params: Option<B64>) -> CeloPayloadAttributes {
+        CeloPayloadAttributes {
+            op_payload_attributes: OpPayloadAttributes {
+                payload_attributes: PayloadAttributes {
+                    timestamp: 0,
+                    prev_randao: Default::default(),
+                    suggested_fee_recipient: Default::default(),
+                    withdrawals: Default::default(),
+                    parent_beacon_block_root: Default::default(),
+                },
+                transactions: None,
+                no_tx_pool: None,
+                gas_limit: None,
+                eip_1559_params,
             },
-            transactions: None,
-            no_tx_pool: None,
-            gas_limit: None,
-            eip_1559_params,
         }
     }
 

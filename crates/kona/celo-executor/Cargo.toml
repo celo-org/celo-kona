@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
+celo-alloy-rpc-types-engine = { workspace = true, features = ["k256"] }
 
 # Kona
 kona-executor.workspace = true
