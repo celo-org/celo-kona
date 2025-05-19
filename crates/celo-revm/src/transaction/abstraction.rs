@@ -1,3 +1,4 @@
+use crate::CeloTxType;
 use auto_impl::auto_impl;
 use op_revm::{OpTransaction, transaction::OpTxTr};
 use revm::{
@@ -7,15 +8,13 @@ use revm::{
     primitives::{Address, B256, Bytes, TxKind, U256},
 };
 
-pub const CIP64_TRANSACTION_TYPE: u8 = 0x7b;
-
 #[auto_impl(&, &mut, Box, Arc)]
 pub trait CeloTxTr: OpTxTr {
     fn fee_currency(&self) -> Option<Address>;
 
-    /// Returns `true` if transaction is of type [`CIP64_TRANSACTION_TYPE`].
+    /// Returns `true` if transaction is of type CIP-64.
     fn is_cip64(&self) -> bool {
-        self.tx_type() == CIP64_TRANSACTION_TYPE
+        self.tx_type() == CeloTxType::Cip64 as u8
     }
 }
 
@@ -161,7 +160,7 @@ mod tests {
         let cip64_tx = CeloTransaction {
             op_tx: OpTransaction {
                 base: TxEnv {
-                    tx_type: CIP64_TRANSACTION_TYPE,
+                    tx_type: CeloTxType::Cip64 as u8,
                     gas_limit: 10,
                     gas_price: 100,
                     gas_priority_fee: Some(5),
@@ -173,7 +172,7 @@ mod tests {
             fee_currency: Some(Address::with_last_byte(1)),
         };
         // Verify transaction type
-        assert_eq!(cip64_tx.tx_type(), CIP64_TRANSACTION_TYPE);
+        assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);
         // Verify common fields access
         assert_eq!(cip64_tx.gas_limit(), 10);
         assert_eq!(

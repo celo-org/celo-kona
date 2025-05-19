@@ -39,6 +39,7 @@ auto_impl.workspace = true
 
 # misc
 lazy_static = { workspace = true, features = ["spin_no_std"] }
+derive_more = { workspace = true, features = ["display"], default-features = false }
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
@@ -62,6 +63,7 @@ default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
 std = [
     "serde?/std",
     "revm/std",
+    "derive_more/std",
 #    "alloy-sol-types/std",
 #    "once_cell/std",
 #    "sha2/std",

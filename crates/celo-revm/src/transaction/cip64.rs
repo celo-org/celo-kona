@@ -1,4 +1,4 @@
-use crate::{CIP64_TRANSACTION_TYPE, CeloTxType};
+use crate::CeloTxType;
 use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
 use alloy_consensus::{SignableTransaction, Transaction};
 use alloy_eips::{
@@ -144,9 +144,7 @@ impl RlpEcdsaEncodableTx for TxCip64 {
 }
 
 impl RlpEcdsaDecodableTx for TxCip64 {
-    // TODO: Preferable get the value from `tx_type`.
-    // const DEFAULT_TX_TYPE: u8 = { Self::tx_type() as u8 };
-    const DEFAULT_TX_TYPE: u8 = 123;
+    const DEFAULT_TX_TYPE: u8 = { Self::tx_type() as u8 };
 
     /// Decodes the inner [TxCip64] fields from RLP bytes.
     ///
@@ -180,12 +178,6 @@ impl RlpEcdsaDecodableTx for TxCip64 {
 }
 
 impl Transaction for TxCip64 {
-    // /// Get the fee currency for this transaction
-    // #[inline]
-    // fn fee_currency(&self) -> Option<&Address> {
-    //     self.fee_currency.as_ref()
-    // }
-
     #[inline]
     fn chain_id(&self) -> Option<ChainId> {
         Some(self.chain_id)
@@ -283,13 +275,13 @@ impl Transaction for TxCip64 {
 
 impl Typed2718 for TxCip64 {
     fn ty(&self) -> u8 {
-        CeloTxType::Cip64.into()
+        CeloTxType::Cip64 as u8
     }
 }
 
 impl IsTyped2718 for TxCip64 {
     fn is_type(type_id: u8) -> bool {
-        type_id == CIP64_TRANSACTION_TYPE
+        type_id == CeloTxType::Cip64 as u8
     }
 }
 
