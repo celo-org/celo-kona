@@ -71,7 +71,7 @@ dependencies = [
  "alloy-op-evm",
  "alloy-op-hardforks",
  "alloy-primitives",
- "celo-alloy",
+ "celo-alloy-consensus",
  "celo-revm",
  "op-alloy-consensus",
  "op-revm",
@@ -1104,7 +1104,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "celo-alloy"
+name = "celo-alloy-consensus"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
@@ -1140,7 +1140,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-trie",
- "celo-alloy",
+ "celo-alloy-consensus",
  "celo-executor",
  "kona-executor",
  "kona-genesis",
@@ -1174,7 +1174,7 @@ dependencies = [
  "anyhow",
  "auto_impl",
  "bincode 2.0.1",
- "celo-alloy",
+ "celo-alloy-consensus",
  "lazy_static",
  "op-alloy-consensus",
  "op-revm",

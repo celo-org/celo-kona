@@ -1,7 +1,8 @@
 # TODO: remove unnecessary dependencies
 [package]
-name = "celo-alloy"
-description = "Connect applications to Celo"
+name = "celo-alloy-consensus"
+description = "Celo alloy consensus types"
+
 version = "0.1.0"
 
 edition.workspace = true
@@ -11,10 +12,6 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

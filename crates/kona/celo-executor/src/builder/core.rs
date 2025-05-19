@@ -9,7 +9,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
 use alloy_primitives::SignatureError;
-use celo_alloy::{CeloReceiptEnvelope, CeloTxEnvelope};
+use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope};
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
@@ -174,7 +174,7 @@ impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)> for Block
 //     use crate::test_utils::run_test_fixture;
 //     use rstest::rstest;
 //     use std::path::PathBuf;
-// 
+//
 //     #[rstest]
 //     #[tokio::test]
 //     async fn test_statelessly_execute_block(

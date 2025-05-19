@@ -23,7 +23,7 @@ rust_2018_idioms = "deny"
 all = "warn"
 
 [dependencies]
-celo-alloy.workspace = true
+celo-alloy-consensus.workspace = true
 
 # revm
 revm = { workspace = true, features = ["secp256r1"] }

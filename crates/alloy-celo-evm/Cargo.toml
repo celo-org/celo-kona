@@ -15,7 +15,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-celo-alloy.workspace = true
+celo-alloy-consensus.workspace = true
 
 alloy-evm = { workspace = true, features = ["op"] }
 alloy-op-evm = { workspace = true, default-features = false }

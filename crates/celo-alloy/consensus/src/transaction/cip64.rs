@@ -331,7 +331,7 @@ pub(crate) mod serde_bincode_compat {
     ///
     /// Intended to use with the [`serde_with::serde_as`] macro in the following way:
     /// ```rust
-    /// use celo_alloy::{serde_bincode_compat, TxCip64};
+    /// use celo_alloy_consensus::{serde_bincode_compat, TxCip64};
     /// use serde::{Deserialize, Serialize};
     /// use serde_with::serde_as;
     ///

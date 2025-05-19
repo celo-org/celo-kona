@@ -15,7 +15,7 @@ resolver = "2"
 members = [
   "bin/*",
   "crates/alloy-celo-evm",
-  "crates/celo-alloy",
+  "crates/celo-alloy/*",
   "crates/celo-revm",
   "crates/kona/*",
 ]
@@ -64,7 +64,7 @@ lto = "fat"
 
 [workspace.dependencies]
 # Celo Libraries
-celo-alloy = { version = "0.1.0", path = "crates/celo-alloy", default-features = false }
+celo-alloy-consensus = { version = "0.1.0", path = "crates/celo-alloy/consensus", default-features = false }
 alloy-celo-evm = { version = "0.1.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "0.1.0", path = "crates/kona/celo-executor", default-features = false }
 
