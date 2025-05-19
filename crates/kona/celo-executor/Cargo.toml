@@ -1,0 +1,87 @@
+# TODO: remove unnecessary dependencies
+[package]
+name = "celo-executor"
+description = "A no_std stateless block builder for Celo"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-celo-evm.workspace = true
+celo-alloy.workspace = true
+
+# Kona
+kona-executor.workspace = true
+kona-mpt.workspace = true
+kona-genesis = { workspace = true, features = ["revm"] }
+kona-protocol.workspace = true
+
+# Alloy
+alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-eips.workspace = true
+alloy-rlp.workspace = true
+alloy-trie.workspace = true
+
+# Op Alloy
+op-alloy-consensus.workspace = true
+op-alloy-rpc-types-engine = { workspace = true, features = ["serde", "k256"] }
+alloy-op-hardforks.workspace = true
+
+# revm
+op-revm.workspace = true
+revm.workspace = true
+
+# alloy-evm
+alloy-evm.workspace = true
+alloy-op-evm.workspace = true
+
+# General
+thiserror.workspace = true
+tracing.workspace = true
+
+# `test-utils` feature
+rand = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+tokio = { workspace = true, features = ["full"], optional = true }
+rstest = { workspace = true, optional = true }
+#kona-registry = { workspace = true, optional = true }
+#rocksdb = { workspace = true, features = ["snappy"], optional = true }
+tempfile = { workspace = true, optional = true }
+alloy-rpc-types-engine = { workspace = true, optional = true }
+#alloy-provider = { workspace = true, features = ["reqwest"], optional = true }
+#alloy-rpc-client = { workspace = true, optional = true }
+#alloy-transport = { workspace = true, optional = true }
+#alloy-transport-http = { workspace = true, optional = true }
+
+[dev-dependencies]
+celo-executor = { workspace = true, features = ["test-utils"] }
+
+[features]
+test-utils = [
+    "dep:rand",
+    "dep:serde_json",
+    "dep:serde",
+    "dep:tokio",
+    "dep:rstest",
+#    "dep:kona-registry",
+#    "dep:rocksdb",
+    "dep:tempfile",
+    "dep:alloy-rpc-types-engine",
+#    "dep:alloy-provider",
+#    "dep:alloy-rpc-client",
+#    "dep:alloy-transport",
+#    "dep:alloy-transport-http",
+]
+
+[package.metadata.cargo-udeps.ignore]
+# `celo-executor` is self-referenced in dev-dependencies to always enable the `test-utils` feature in `cfg(test)`.
+# this is a false-positive.
+development = ["celo-executor"]
