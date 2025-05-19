@@ -6,9 +6,6 @@ use alloy_primitives::{U8, U64};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use derive_more::Display;
 
-/// Identifier for an Celo CIP-64 transaction
-pub const CIP64_TRANSACTION_TYPE: u8 = 0x7b;
-
 /// Celo TransactionType flags as specified in EIPs 2718, 1559, 2930, and CIP 64 as well as the deposit transaction spec
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, Eq, Default, PartialEq, PartialOrd, Ord, Hash, Display)]

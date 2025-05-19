@@ -23,8 +23,7 @@ pub use evm::CeloEvm;
 pub use precompiles::CeloPrecompiles;
 pub use receipt::CeloReceiptEnvelope;
 pub use transaction::{
-    CIP64_TRANSACTION_TYPE, CeloTransaction, CeloTxEnvelope, CeloTxType, CeloTypedTransaction,
-    cip64::TxCip64,
+    CeloTransaction, CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
 };
 
 /// Bincode-compatible serde implementations for consensus types.
