@@ -1,5 +1,5 @@
 //! Abstraction of an executable transaction.
-//! Originally from alloy-evm crate, but had to add here as we cannot implement an external trait 
+//! Originally from alloy-evm crate, but had to add here as we cannot implement an external trait
 //! for an external type.
 
 use crate::CeloTransaction;

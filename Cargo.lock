@@ -1144,16 +1144,12 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
- "alloy-serde 0.15.11",
- "arbitrary",
  "arbtest",
  "celo-alloy-consensus",
- "derive_more",
  "op-alloy-consensus",
  "op-alloy-rpc-types-engine",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]

@@ -5,6 +5,8 @@ no_std_packages=(
   celo-revm
   alloy-celo-evm
   celo-alloy-consensus
+  celo-alloy-rpc-types-engine
+  celo-executor
 )
 
 for package in "${no_std_packages[@]}"; do

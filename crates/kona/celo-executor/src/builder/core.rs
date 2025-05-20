@@ -14,7 +14,6 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
-use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use op_revm::OpSpecId;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
@@ -31,6 +30,7 @@ where
     pub(crate) config: &'a RollupConfig,
     /// The inner trie database.
     pub(crate) trie_db: TrieDB<P, H>,
+    #[allow(rustdoc::broken_intra_doc_links)]
     /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block building
     /// routines.
     pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, RollupConfig, Evm>,
@@ -172,6 +172,7 @@ impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)> for Block
     }
 }
 
+// TODO: enable it with test data
 // #[cfg(test)]
 // mod test {
 //     use crate::test_utils::run_test_fixture;

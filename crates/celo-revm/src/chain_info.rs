@@ -12,7 +12,7 @@ pub struct CeloAddresses {
 // Static map of chain IDs to their addresses
 lazy_static! {
     pub static ref CELO_ADDRESSES: HashMap<u64, CeloAddresses> = {
-        let mut m = HashMap::new();
+        let mut m = HashMap::default();
 
         m.insert(
             CELO_MAINNET_CHAIN_ID,
