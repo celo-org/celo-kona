@@ -14,5 +14,5 @@ pub(crate) mod util;
 
 pub(crate) mod constants;
 
-// #[cfg(feature = "test-utils")]
-// pub mod test_utils;
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
