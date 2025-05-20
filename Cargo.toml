@@ -14,7 +14,10 @@ exclude = ["**/target"]
 resolver = "2"
 members = [
   "bin/*",
-  "crates/*",
+  "crates/alloy-celo-evm",
+  "crates/celo-alloy/*",
+  "crates/celo-revm",
+  "crates/kona/*",
 ]
 default-members = [
   "bin/host",
@@ -60,6 +63,12 @@ codegen-units = 1
 lto = "fat"
 
 [workspace.dependencies]
+# Celo Libraries
+celo-alloy-consensus = { version = "0.1.0", path = "crates/celo-alloy/consensus", default-features = false }
+celo-alloy-rpc-types-engine = { version = "0.1.0", path = "crates/celo-alloy/rpc-types-engine", default-features = false }
+alloy-celo-evm = { version = "0.1.0", path = "crates/alloy-celo-evm", default-features = false }
+celo-executor = { version = "0.1.0", path = "crates/kona/executor", default-features = false }
+
 # Binaries
 kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
 

@@ -23,7 +23,7 @@ rust_2018_idioms = "deny"
 all = "warn"
 
 [dependencies]
-celo-alloy = { version = "0.1.0", path = "../celo-alloy", default-features = false }
+celo-alloy-consensus.workspace = true
 
 # revm
 revm = { workspace = true, features = ["secp256r1"] }
