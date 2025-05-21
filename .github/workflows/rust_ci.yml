@@ -16,6 +16,8 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
+      - name: Install clang
+        run: sudo apt install clang libclang-dev
       - uses: taiki-e/install-action@nextest
       - name: cargo test
         run: just test
@@ -39,6 +41,8 @@ jobs:
           channel: stable
           components: clippy
           prefix-key: ${{ matrix.target }}
+      - name: Install clang
+        run: sudo apt install clang libclang-dev
       - name: fmt + lint
         run: just lint-${{ matrix.target }}
   cargo-build:
@@ -56,6 +60,8 @@ jobs:
         with:
           channel: nightly
           prefix-key: ${{ matrix.target }}
+      - name: Install clang
+        run: sudo apt install clang libclang-dev
       - name: build
         run: just build-${{ matrix.target }}
 # TODO: enable this when dependencies are clean
@@ -80,6 +86,8 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - name: Install clang
+        run: sudo apt install clang libclang-dev
       - name: doclint
         run: just lint-docs
   cargo-hack:
@@ -89,6 +97,8 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - name: Install clang
+        run: sudo apt install clang libclang-dev
       - uses: taiki-e/install-action@cargo-hack
       - name: cargo hack
         run: just hack
