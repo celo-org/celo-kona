@@ -5,6 +5,7 @@ on:
   pull_request:
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /home/runner/cargo-target
 jobs:
   cargo-tests:
     runs-on: ubuntu-latest
@@ -13,6 +14,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
@@ -31,6 +35,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           channel: nightly
@@ -56,6 +63,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           channel: nightly
@@ -72,6 +82,9 @@ jobs:
 #    steps:
 #      - name: Checkout sources
 #        uses: actions/checkout@v4
+#      - uses: Swatinem/rust-cache@v2
+#        with:
+#          cache-on-failure: true
 #      - uses: ./.github/actions/setup
 #        with:
 #          channel: nightly
@@ -85,6 +98,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ./.github/actions/setup
       - name: Install clang
         run: sudo apt install clang libclang-dev
@@ -96,6 +112,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ./.github/actions/setup
       - name: Install clang
         run: sudo apt install clang libclang-dev
