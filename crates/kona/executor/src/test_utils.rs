@@ -7,6 +7,7 @@ use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_registry::ROLLUP_CONFIGS;
 use kona_executor::{
     TrieDBProvider,
     test_utils::{
@@ -15,7 +16,6 @@ use kona_executor::{
     },
 };
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
-use kona_registry::ROLLUP_CONFIGS;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
