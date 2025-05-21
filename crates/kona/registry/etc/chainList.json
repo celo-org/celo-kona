@@ -1,0 +1,24 @@
+[
+  {
+    "name": "Celo Baklava",
+    "identifier": "holesky/celo",
+    "chainId": 62320,
+    "rpc": [
+      "https://baklava-forno.celo-testnet.org"
+    ],
+    "explorers": [
+      "https://celo-baklava.blockscout.com"
+    ],
+    "superchainLevel": 0,
+    "governedByOptimism": false,
+    "dataAvailabilityType": "alt-da",
+    "parent": {
+      "type": "L2",
+      "chain": "holesky"
+    },
+    "gasPayingToken": "0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8",
+    "faultProofs": {
+      "status": "permissioned"
+    }
+  }
+]

@@ -1,0 +1,106 @@
+{
+  "superchains": [
+    {
+      "name": "holesky",
+      "config": {
+        "name": "Holesky",
+        "l1": {
+          "chain_id": 17000,
+          "public_rpc": "https://ethereum-holesky.publicnode.com",
+          "explorer": "https://holesky.etherscan.io"
+        },
+        "hardforks": {},
+        "protocol_versions_addr": "0x3d438C63e0431DA844d3F60E6c712d10FC75c529",
+        "superchain_config_addr": "0xf07502A4a950d870c43b12660fB1Dd18c170D344",
+        "op_contracts_manager_proxy_addr": null
+      },
+      "chains": [
+        {
+          "Name": "Celo Baklava",
+          "PublicRPC": "https://baklava-forno.celo-testnet.org",
+          "SequencerRPC": "https://sequencer-proxyd.baklava.celo-testnet.org",
+          "Explorer": "https://celo-baklava.blockscout.com",
+          "SuperchainLevel": 0,
+          "GovernedByOptimism": false,
+          "SuperchainTime": null,
+          "DataAvailabilityType": "alt-da",
+          "l2_chain_id": 62320,
+          "batch_inbox_address": "0xff00000000000000000000000000000000062320",
+          "block_time": 1,
+          "seq_window_size": 7200,
+          "max_sequencer_drift": 600,
+          "GasPayingToken": "0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8",
+          "hardfork_configuration": {
+            "canyon_time": 0,
+            "delta_time": 0,
+            "ecotone_time": 0,
+            "fjord_time": 0,
+            "granite_time": 0
+          },
+          "optimism": {
+            "eip1559Elasticity": "0x5",
+            "eip1559Denominator": "0x190",
+            "eip1559DenominatorCanyon": "0x190"
+          },
+          "alt_da": {
+            "da_challenge_window": 1,
+            "da_resolve_window": 1,
+            "da_commitment_type": "GenericCommitment"
+          },
+          "genesis": {
+            "l1": {
+              "number": 3393060,
+              "hash": "0x173963bace188a0cbcff9b9d0d8a4761100e6531881ecd9da609a57b23237a1b"
+            },
+            "l2": {
+              "number": 28308600,
+              "hash": "0xd513ac2b3c3edad3be12ea9275fcfe9c78a2b329a3374c59d226e72e4b4e1def"
+            },
+            "l2_time": 1740081096,
+            "system_config": {
+              "batcherAddress": "0x242c6e6ea8e910a1835efa4caf8641769c27b595",
+              "overhead": "0x0",
+              "scalar": "0x0100000000000000000000000000000000000000000000000000000000000000",
+              "gasLimit": 30000000,
+              "baseFeeScalar": null,
+              "blobBaseFeeScalar": null,
+              "eip1559Denominator": null,
+              "eip1559Elasticity": null,
+              "operatorFeeScalar": null,
+              "operatorFeeConstant": null
+            }
+          },
+          "Roles": {
+            "SystemConfigOwner": "0x22EaF69162ae49605441229EdbEF7D9FC5f4f094",
+            "ProxyAdminOwner": "0x22EaF69162ae49605441229EdbEF7D9FC5f4f094",
+            "Guardian": "0x22EaF69162ae49605441229EdbEF7D9FC5f4f094",
+            "Challenger": "0xDc94436A193a827786270dD4F6cD4b35c3f0C8f8",
+            "Proposer": "0x85c7AC265419359806B147Fba6Ea654229928333",
+            "UnsafeBlockSigner": "0x3Cd8072cbC235246c684ab9BD76Bb6f3813Df2CD",
+            "BatchSubmitter": "0x242C6e6eA8e910A1835eFA4CaF8641769C27B595"
+          },
+          "Addresses": {
+            "AddressManager": "0x156aa732322e878E01e3fB9d6C7a3b30b267bBA4",
+            "L1CrossDomainMessengerProxy": "0x418F16753b868adDc5f0C2860b05D8b921fCee75",
+            "L1Erc721BridgeProxy": "0xe65F0FE051FCe8a8De3A5c8DcFa474025F6F2D73",
+            "L1StandardBridgeProxy": "0x6fd3fF186975aD8B66Ab40b705EC016b36da0486",
+            "L2OutputOracleProxy": null,
+            "OptimismMintableErc20FactoryProxy": "0x0e8e9173e163C593AcF823BA0880f25bCF40fEa1",
+            "OptimismPortalProxy": "0x87e9cB54f185a32266689138fbA56F0C994CF50c",
+            "SystemConfigProxy": "0x3ee24bF404e4a5D27A437d910F56E1eD999B1De8",
+            "ProxyAdmin": "0xBF101Bd81fb69aB00ab261465454dF1a171726Bf",
+            "SuperchainConfig": "0xf07502A4a950d870c43b12660fB1Dd18c170D344",
+            "AnchorStateRegistryProxy": "0x9C4B83AED7e5103dC6F38DfA265933Fe418Ed090",
+            "DelayedWethProxy": "0x9B014033014c8C9026Dbc5151049ffFA8581942E",
+            "DisputeGameFactoryProxy": "0x788ef5850c3a51d41f59Dc4327017EF8D754eD80",
+            "FaultDisputeGame": "0x514088c8bD8dB7436858f21caCB628dbeF20a8F4",
+            "Mips": "0x8F5a62ceb69c0D0674937DA29023b49BA279F164",
+            "PermissionedDisputeGame": "0x514088c8bD8dB7436858f21caCB628dbeF20a8F4",
+            "PreimageOracle": "0x3052f7e497870bE9aD7cd2C1fFC415c5Fb8ecFC3",
+            "DataAvailabilityChallenge": null
+          }
+        }
+      ]
+    }
+  ]
+}
