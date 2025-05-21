@@ -64,9 +64,11 @@ where
             })
             .or_else(|| spec_id.is_enabled_in(OpSpecId::ECOTONE).then_some(0))
             .map(|e| BlobExcessGasAndPrice::new(e, spec_id.is_enabled_in(OpSpecId::ISTHMUS)));
-        let next_block_base_fee = parent_header
+        let mut next_block_base_fee = parent_header
             .next_block_base_fee(*base_fee_params)
             .unwrap_or_default();
+        // TODO: add CeloRollupConfig which includes eip1559_base_fee_floor and using it instead of hardcoding
+        next_block_base_fee = core::cmp::max(next_block_base_fee, 25_000_000_000);
 
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
         Ok(BlockEnv {
