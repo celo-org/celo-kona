@@ -45,7 +45,7 @@ alloy-evm.workspace = true
 alloy-op-evm.workspace = true
 
 # General
-#thiserror.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 # `test-utils` feature
