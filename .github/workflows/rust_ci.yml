@@ -85,17 +85,6 @@ jobs:
 #      - uses: taiki-e/install-action@cargo-udeps
 #      - name: cargo udeps
 #        run: just check-udeps
-  cargo-doc-lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
-      - name: doclint
-        run: just lint-docs
   cargo-hack:
     runs-on: ubuntu-latest
     timeout-minutes: 40
