@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use crate::{
         CeloContext, DefaultCelo,
-        chain_info::{CELO_MAINNET_CHAIN_ID, get_addresses},
+        constants::{CELO_MAINNET_CHAIN_ID, get_addresses},
         precompiles::transfer::TRANSFER_GAS_COST,
     };
     use revm::{

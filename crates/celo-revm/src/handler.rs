@@ -1,6 +1,6 @@
 //!Handler related to Celo chain
 
-use crate::{api::exec::CeloContextTr, chain_info::get_addresses};
+use crate::{api::exec::CeloContextTr, constants::get_addresses};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},

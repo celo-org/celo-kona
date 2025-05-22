@@ -1,7 +1,7 @@
 //! [`transfer` precompile](https://specs.celo.org/token_duality.html#the-transfer-precompile)
 //! For more details check [`transfer_run`] function.
 
-use crate::chain_info;
+use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
     context::{Cfg, ContextTr, JournalTr, Transaction},
@@ -62,7 +62,7 @@ where
         return Err(PrecompileError::OutOfGas);
     }
 
-    if context.tx().caller() != chain_info::get_addresses(context.cfg().chain_id()).celo_token {
+    if context.tx().caller() != constants::get_addresses(context.cfg().chain_id()).celo_token {
         return Err(PrecompileError::Other(
             "invalid caller for transfer precompile".to_string(),
         ));
