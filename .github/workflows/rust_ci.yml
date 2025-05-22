@@ -45,6 +45,9 @@ jobs:
         run: sudo apt install clang libclang-dev
       - name: fmt + lint
         run: just lint-${{ matrix.target }}
+      - name: chown target
+        run: |
+          sudo chown -R $(id -u):$(id -g) ./target
   cargo-build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -64,6 +67,9 @@ jobs:
         run: sudo apt install clang libclang-dev
       - name: build
         run: just build-${{ matrix.target }}
+      - name: chown target
+        run: |
+          sudo chown -R $(id -u):$(id -g) ./target
 # TODO: enable this when dependencies are clean
 #  cargo-udeps:
 #    runs-on: ubuntu-latest
