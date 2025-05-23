@@ -1,9 +1,9 @@
 //!Handler related to Celo chain
 
-use crate::api::exec::CeloContextTr;
+use crate::{api::exec::CeloContextTr, constants::get_addresses};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
-    constants::{BASE_FEE_RECIPIENT, L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
+    constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
     handler::IsTxError,
     transaction::{OpTransactionError, OpTxTr, deposit::DEPOSIT_TRANSACTION_TYPE},
 };
@@ -343,9 +343,9 @@ where
             l1_fee_vault_account.mark_touch();
             l1_fee_vault_account.info.balance += l1_cost;
 
-            // Send the base fee of the transaction to the Base Fee Vault.
-            let mut base_fee_vault_account =
-                evm.ctx().journal().load_account(BASE_FEE_RECIPIENT)?;
+            // Send the base fee of the transaction to the FeeHandler.
+            let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
+            let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
             base_fee_vault_account.mark_touch();
             base_fee_vault_account.info.balance += U256::from(basefee.saturating_mul(
                 (exec_result.gas().spent() - exec_result.gas().refunded() as u64) as u128,
