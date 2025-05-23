@@ -5,7 +5,6 @@ on:
   pull_request:
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TARGET_DIR: /home/runner/cargo-target
 jobs:
   cargo-tests:
     runs-on: ubuntu-latest
@@ -14,14 +13,9 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
       - uses: taiki-e/install-action@nextest
       - name: cargo test
         run: just test
@@ -35,9 +29,6 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           channel: nightly
@@ -48,10 +39,11 @@ jobs:
           channel: stable
           components: clippy
           prefix-key: ${{ matrix.target }}
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
       - name: fmt + lint
         run: just lint-${{ matrix.target }}
+      - name: chown target
+        run: |
+          sudo chown -R $(id -u):$(id -g) ./target
   cargo-build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -63,17 +55,15 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
       - uses: ./.github/actions/setup
         with:
           channel: nightly
           prefix-key: ${{ matrix.target }}
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
       - name: build
         run: just build-${{ matrix.target }}
+      - name: chown target
+        run: |
+          sudo chown -R $(id -u):$(id -g) ./target
 # TODO: enable this when dependencies are clean
 #  cargo-udeps:
 #    runs-on: ubuntu-latest
@@ -82,9 +72,6 @@ jobs:
 #    steps:
 #      - name: Checkout sources
 #        uses: actions/checkout@v4
-#      - uses: Swatinem/rust-cache@v2
-#        with:
-#          cache-on-failure: true
 #      - uses: ./.github/actions/setup
 #        with:
 #          channel: nightly
@@ -92,32 +79,13 @@ jobs:
 #      - uses: taiki-e/install-action@cargo-udeps
 #      - name: cargo udeps
 #        run: just check-udeps
-  cargo-doc-lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - uses: ./.github/actions/setup
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
-      - name: doclint
-        run: just lint-docs
   cargo-hack:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
       - uses: ./.github/actions/setup
-      - name: Install clang
-        run: sudo apt install clang libclang-dev
       - uses: taiki-e/install-action@cargo-hack
       - name: cargo hack
         run: just hack

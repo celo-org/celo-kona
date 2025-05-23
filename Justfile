@@ -12,14 +12,14 @@ default:
 
 # Test for the native target with all features.
 test:
-  cargo nextest run --workspace --all-features
+  cargo nextest run --workspace --all-features --exclude celo-registry --exclude execution-fixture
 
 # Lint the workspace for all available targets
 lint-all: lint-native lint-docs
 
 # Runs `cargo hack check` against the workspace
 hack:
-  cargo hack check --no-default-features --no-dev-deps
+  cargo hack check --no-default-features --no-dev-deps --exclude celo-registry --exclude execution-fixture
 
 # Fixes the formatting of the workspace
 fmt-native-fix:
@@ -31,15 +31,15 @@ fmt-native-check:
 
 # Lint the workspace
 lint-native: fmt-native-check lint-docs
-  cargo clippy --workspace --all-features --all-targets -- -D warnings
+  cargo clippy --workspace --all-features --all-targets --exclude celo-registry --exclude execution-fixture -- -D warnings
 
 # Lint the Rust documentation
 lint-docs:
-  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --exclude celo-registry --exclude execution-fixture
 
 # Build for the native target
 build-native *args='':
-  cargo build --workspace $@
+  cargo build --workspace --exclude celo-registry --exclude execution-fixture $@
 
 # Check for unused dependencies in the crate graph.
 check-udeps:

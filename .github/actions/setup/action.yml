@@ -56,3 +56,7 @@ runs:
         prefix-key: $PREFIX_KEY
       env:
         PREFIX_KEY: ${{ inputs.prefix-key }}
+
+    - name: Installs clang
+      run: sudo apt install -y clang libclang-dev
+      shell: bash
