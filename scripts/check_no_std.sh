@@ -7,6 +7,8 @@ no_std_packages=(
   celo-alloy-consensus
   celo-alloy-rpc-types-engine
   celo-executor
+  celo-proof
+  celo-driver
 )
 
 for package in "${no_std_packages[@]}"; do
