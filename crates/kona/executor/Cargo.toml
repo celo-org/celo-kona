@@ -13,6 +13,7 @@ homepage.workspace = true
 workspace = true
 
 [dependencies]
+# Workspace
 celo-registry = { version = "0.1.0", path = "../registry" }
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
