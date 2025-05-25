@@ -141,6 +141,9 @@ revm = { version = "22.0.1", default-features = false }
 op-revm = { version = "3.0.1", default-features = false }
 alloy-evm = { version = "0.6.0", default-features = false, features = ["op"] }
 alloy-op-evm = { version = "0.6.0", default-features = false }
+revm-context-interface = { version = "3.0.0", default-features = false }
+revm-handler = { version = "3.0.1", default-features = false }
+revm-context = { version = "3.0.0", default-features = false }
 
 # General
 url = "2.5.4"

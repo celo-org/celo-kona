@@ -1510,6 +1510,7 @@ dependencies = [
  "alloy-eips 0.15.11",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-sol-types",
  "anyhow",
  "auto_impl",
  "bincode 2.0.1",
@@ -1519,9 +1520,13 @@ dependencies = [
  "op-revm",
  "rand 0.9.1",
  "revm",
+ "revm-context",
+ "revm-context-interface",
+ "revm-handler",
  "rstest",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
