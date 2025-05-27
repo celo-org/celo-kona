@@ -12,6 +12,9 @@ pub use receipt::CeloReceiptEnvelope;
 pub mod transaction;
 pub use transaction::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64};
 
+mod block;
+pub use block::CeloBlock;
+
 /// Bincode-compatible serde implementations for consensus types.
 ///
 /// `bincode` crate doesn't work well with optionally serializable serde fields, but some of the
