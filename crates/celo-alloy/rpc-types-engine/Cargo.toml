@@ -15,10 +15,8 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
-celo-alloy-consensus = { workspace = true, features = ["k256"] }
-
 # Workspace
-op-alloy-consensus.workspace = true
+celo-alloy-consensus = { workspace = true, features = ["k256"] }
 
 # Alloy
 alloy-primitives.workspace = true
@@ -26,6 +24,9 @@ alloy-eips.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus = { workspace = true, optional = true }
+
+# OP Alloy
+op-alloy-consensus.workspace = true
 op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 
 # Encoding

@@ -23,6 +23,7 @@ rust_2018_idioms = "deny"
 all = "warn"
 
 [dependencies]
+# Workspace
 celo-alloy-consensus.workspace = true
 
 # revm
@@ -36,6 +37,8 @@ revm-context.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-evm.workspace = true
+
+# OP Alloy
 op-alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
 

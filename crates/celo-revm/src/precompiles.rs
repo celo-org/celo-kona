@@ -11,8 +11,7 @@ use revm::{
     interpreter::{InputsImpl, InterpreterResult},
     primitives::Address,
 };
-use std::boxed::Box;
-use std::string::String;
+use std::{boxed::Box, string::String};
 
 // Celo precompile provider
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-//! The [StatelessL2Builder] is a block builder that pulls state from a [TrieDB] during execution.
+//! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during execution.
 
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::block::CeloAlloyReceiptBuilder;
@@ -17,10 +17,10 @@ use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
-/// The [`StatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
+/// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
 #[derive(Debug)]
-pub struct StatelessL2Builder<'a, P, H, Evm>
+pub struct CeloStatelessL2Builder<'a, P, H, Evm>
 where
     P: TrieDBProvider,
     H: TrieHinter,
@@ -36,14 +36,14 @@ where
     pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, RollupConfig, Evm>,
 }
 
-impl<'a, P, H, Evm> StatelessL2Builder<'a, P, H, Evm>
+impl<'a, P, H, Evm> CeloStatelessL2Builder<'a, P, H, Evm>
 where
     P: TrieDBProvider,
     H: TrieHinter,
     Evm: EvmFactory<Spec = OpSpecId> + 'static,
     <Evm as EvmFactory>::Tx: FromTxWithEncoded<CeloTxEnvelope> + FromRecoveredTx<CeloTxEnvelope>,
 {
-    /// Creates a new [StatelessL2Builder] instance.
+    /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
         config: &'a RollupConfig,
         evm_factory: Evm,
@@ -68,7 +68,7 @@ where
     pub fn build_block(
         &mut self,
         attrs: CeloPayloadAttributes,
-    ) -> ExecutorResult<BlockBuildingOutcome> {
+    ) -> ExecutorResult<CeloBlockBuildingOutcome> {
         let op_attrs = attrs.op_payload_attributes.clone();
 
         // Step 1. Set up the execution environment.
@@ -154,14 +154,16 @@ where
 /// The outcome of a block building operation, returning the sealed block [`Header`] and the
 /// [`BlockExecutionResult`].
 #[derive(Debug, Clone)]
-pub struct BlockBuildingOutcome {
+pub struct CeloBlockBuildingOutcome {
     /// The block header.
     pub header: Sealed<Header>,
     /// The block execution result.
     pub execution_result: BlockExecutionResult<CeloReceiptEnvelope>,
 }
 
-impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)> for BlockBuildingOutcome {
+impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)>
+    for CeloBlockBuildingOutcome
+{
     fn from(
         (header, execution_result): (Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>),
     ) -> Self {

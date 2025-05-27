@@ -1,6 +1,6 @@
 //! Test utilities for the executor.
 
-use crate::StatelessL2Builder;
+use crate::CeloStatelessL2Builder;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, Sealable};
@@ -50,7 +50,7 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
     )
     .expect("Failed to deserialize fixture");
 
-    let mut executor = StatelessL2Builder::new(
+    let mut executor = CeloStatelessL2Builder::new(
         &fixture.op_executor_test_fixture.rollup_config,
         CeloEvmFactory::default(),
         provider,
@@ -67,7 +67,7 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
     );
 }
 
-/// The test fixture format for the [`StatelessL2Builder`].
+/// The test fixture format for the [`CeloStatelessL2Builder`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecutorTestFixture {
     /// [`kona_executor::test_utils::ExecutorTestFixture`]
@@ -76,7 +76,7 @@ pub struct ExecutorTestFixture {
     pub executing_payload: CeloPayloadAttributes,
 }
 
-/// A test fixture creator for the [`StatelessL2Builder`].
+/// A test fixture creator for the [`CeloStatelessL2Builder`].
 #[derive(Debug)]
 pub struct ExecutorTestFixtureCreator {
     /// [`kona_executor::test_utils::ExecutorTestFixtureCreator`]
@@ -181,7 +181,7 @@ impl ExecutorTestFixtureCreator {
             executing_payload: payload_attrs.clone(),
         };
 
-        let mut executor = StatelessL2Builder::new(
+        let mut executor = CeloStatelessL2Builder::new(
             rollup_config,
             CeloEvmFactory::default(),
             self,

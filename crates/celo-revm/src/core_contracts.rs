@@ -1,17 +1,15 @@
-use crate::CeloTransaction;
-use crate::api::exec::CeloContextTr;
-use crate::constants::get_addresses;
-use crate::evm::CeloEvm;
-use alloy_primitives::{Address, Bytes, TxKind, U256, map::DefaultHashBuilder, map::HashMap};
+use crate::{CeloTransaction, api::exec::CeloContextTr, constants::get_addresses, evm::CeloEvm};
+use alloy_primitives::{
+    Address, Bytes, TxKind, U256,
+    map::{DefaultHashBuilder, HashMap},
+};
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
 use revm::context::TxEnv;
 use revm_context::{Cfg, ContextSetters, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
-use std::format;
-use std::string::String;
-use std::vec::Vec;
+use std::{format, string::String, vec::Vec};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
