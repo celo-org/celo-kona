@@ -2,7 +2,7 @@ use crate::CeloTransaction;
 use crate::api::exec::CeloContextTr;
 use crate::constants::get_addresses;
 use crate::evm::CeloEvm;
-use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashMap};
+use alloy_primitives::{Address, Bytes, TxKind, U256, map::DefaultHashBuilder, map::HashMap};
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
 use revm::context::TxEnv;
@@ -137,10 +137,8 @@ where
     CTX: ContextSetters,
 {
     let currencies = get_currencies(evm)?;
-    let mut exchange_rates = HashMap::with_capacity_and_hasher(
-        currencies.len(),
-        alloy_primitives::map::DefaultHashBuilder::default(),
-    );
+    let mut exchange_rates =
+        HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
         let output_bytes = call(
@@ -280,7 +278,7 @@ mod tests {
         let mut evm = ctx.build_celo();
         let exchange_rates = get_exchange_rates(&mut evm).unwrap();
 
-        let mut expected = HashMap::new();
+        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
             address!("0x1111111111111111111111111111111111111111"),
             (U256::from(20), U256::from(10)),
