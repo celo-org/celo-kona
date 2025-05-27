@@ -10,7 +10,10 @@ mod tests {
     use crate::CeloEvmFactory;
     use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_eips::{Encodable2718, eip2718::WithEncoded};
-    use alloy_evm::{EvmEnv, EvmFactory, block::BlockExecutor, block::BlockExecutorFactory};
+    use alloy_evm::{
+        EvmEnv, EvmFactory,
+        block::{BlockExecutor, BlockExecutorFactory},
+    };
     use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
     use alloy_op_hardforks::OpChainHardforks;
     use alloy_primitives::{Address, Signature};
