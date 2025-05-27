@@ -2,13 +2,21 @@
 set -eo pipefail
 
 no_std_packages=(
+  # revm
   celo-revm
+
+  # alloy-evm
   alloy-celo-evm
+
+  # op-alloy
   celo-alloy-consensus
   celo-alloy-rpc-types-engine
+
+  # kona
   celo-executor
   celo-proof
   celo-driver
+  celo-rpc
 )
 
 for package in "${no_std_packages[@]}"; do
