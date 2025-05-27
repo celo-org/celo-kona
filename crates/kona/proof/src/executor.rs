@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use celo_alloy_consensus::CeloTxEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
-use celo_executor::{BlockBuildingOutcome, StatelessL2Builder};
+use celo_executor::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
 use kona_executor::TrieDBProvider;
 use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
@@ -31,7 +31,7 @@ where
     /// The evm factory for the executor.
     evm_factory: Evm,
     /// The executor.
-    inner: Option<StatelessL2Builder<'a, P, H, Evm>>,
+    inner: Option<CeloStatelessL2Builder<'a, P, H, Evm>>,
 }
 
 impl<'a, P, H, Evm> CeloExecutor<'a, P, H, Evm>
@@ -46,7 +46,7 @@ where
         trie_provider: P,
         trie_hinter: H,
         evm_factory: Evm,
-        inner: Option<StatelessL2Builder<'a, P, H, Evm>>,
+        inner: Option<CeloStatelessL2Builder<'a, P, H, Evm>>,
     ) -> Self {
         Self {
             rollup_config,
@@ -79,7 +79,7 @@ where
     /// Since the L2 block executor is stateless, on an update to the safe head,
     /// a new executor is created with the updated header.
     fn update_safe_head(&mut self, header: Sealed<Header>) {
-        self.inner = Some(StatelessL2Builder::new(
+        self.inner = Some(CeloStatelessL2Builder::new(
             self.rollup_config,
             self.evm_factory.clone(),
             self.trie_provider.clone(),
@@ -92,7 +92,7 @@ where
     async fn execute_payload(
         &mut self,
         attributes: CeloPayloadAttributes,
-    ) -> Result<BlockBuildingOutcome, Self::Error> {
+    ) -> Result<CeloBlockBuildingOutcome, Self::Error> {
         self.inner.as_mut().map_or_else(
             || Err(kona_executor::ExecutorError::MissingExecutor),
             |e| e.build_block(attributes),

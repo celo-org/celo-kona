@@ -5,7 +5,7 @@ use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
-use celo_executor::BlockBuildingOutcome;
+use celo_executor::CeloBlockBuildingOutcome;
 use core::{
     error::Error,
     fmt::{Debug, Display},
@@ -29,7 +29,7 @@ pub trait CeloExecutorTr {
     async fn execute_payload(
         &mut self,
         attributes: CeloPayloadAttributes,
-    ) -> Result<BlockBuildingOutcome, Self::Error>;
+    ) -> Result<CeloBlockBuildingOutcome, Self::Error>;
 
     /// Computes the output root.
     /// Expected to be called after the payload has been executed.

@@ -1,6 +1,6 @@
 # `celo-executor` test fixtures
 
-The `StatelessL2Builder` type uses static test data fixtures to run stateless execution of certain blocks offline. The
+The `CeloStatelessL2Builder` type uses static test data fixtures to run stateless execution of certain blocks offline. The
 test data fixtures include:
 
 * The `RollupConfig` of the chain that the block belongs to.

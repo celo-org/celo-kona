@@ -1,6 +1,6 @@
-//! Environment utility functions for [StatelessL2Builder].
+//! Environment utility functions for [CeloStatelessL2Builder].
 
-use super::StatelessL2Builder;
+use super::CeloStatelessL2Builder;
 use crate::util::decode_holocene_eip_1559_params;
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
@@ -15,7 +15,7 @@ use revm::{
     context_interface::block::BlobExcessGasAndPrice,
 };
 
-impl<P, H, Evm> StatelessL2Builder<'_, P, H, Evm>
+impl<P, H, Evm> CeloStatelessL2Builder<'_, P, H, Evm>
 where
     P: TrieDBProvider,
     H: TrieHinter,

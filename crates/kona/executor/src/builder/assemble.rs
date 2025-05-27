@@ -1,6 +1,6 @@
-//! [Header] assembly logic for the [StatelessL2Builder].
+//! [Header] assembly logic for the [CeloStatelessL2Builder].
 
-use super::StatelessL2Builder;
+use super::CeloStatelessL2Builder;
 use crate::{constants::SHA256_EMPTY, util::encode_holocene_eip_1559_params};
 use alloc::vec::Vec;
 use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, Sealed};
@@ -16,7 +16,7 @@ use kona_mpt::{TrieHinter, ordered_trie_with_encoder};
 use kona_protocol::{OutputRoot, Predeploys};
 use revm::{context::BlockEnv, database::BundleState};
 
-impl<P, H, Evm> StatelessL2Builder<'_, P, H, Evm>
+impl<P, H, Evm> CeloStatelessL2Builder<'_, P, H, Evm>
 where
     P: TrieDBProvider,
     H: TrieHinter,
