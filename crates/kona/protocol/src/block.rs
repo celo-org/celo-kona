@@ -14,6 +14,7 @@ use kona_protocol::{BlockInfo, FromBlockError, L1BlockInfoTx, L2BlockInfo};
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[display("CeloL2BlockInfo {{ op_l2_block_info: {op_l2_block_info} }}")]
 pub struct CeloL2BlockInfo {
+    /// OP L2 block header info
     pub op_l2_block_info: L2BlockInfo,
 }
 
@@ -44,8 +45,7 @@ impl CeloL2BlockInfo {
     /// Constructs an [`CeloL2BlockInfo`] from a given [`alloy_rpc_types_eth::Block`] and
     /// [`ChainGenesis`].
     pub fn from_rpc_block_and_genesis(
-        // TODO: replace with celo_alloy_rpc_types
-        block: alloy_rpc_types_eth::Block<op_alloy_rpc_types::Transaction>,
+        block: alloy_rpc_types_eth::Block<celo_alloy_rpc_types::CeloTransaction>,
         genesis: &ChainGenesis,
     ) -> Result<Self, FromBlockError> {
         let block_info = BlockInfo::new(
@@ -111,7 +111,7 @@ impl CeloL2BlockInfo {
 mod tests {
     use super::*;
     use alloy_consensus::Header;
-    use alloy_primitives::b256;
+    use alloy_primitives::{B256, b256};
     use celo_alloy_consensus::CeloBlock;
 
     #[test]
@@ -264,15 +264,17 @@ mod tests {
         };
 
         let json = r#"{
-            "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
-            "number": 1,
-            "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
-            "timestamp": 1,
-            "l1origin": {
-                "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
-                "number": 2
-            },
-            "sequenceNumber": 3
+            "opL2BlockInfo": {
+                "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
+                "number": "0x1",
+                "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
+                "timestamp": "0x1",
+                "l1origin": {
+                    "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
+                    "number": 2
+                },
+                "sequenceNumber": "0x3"
+            }
         }"#;
 
         let deserialized: CeloL2BlockInfo = serde_json::from_str(json).unwrap();
@@ -299,15 +301,17 @@ mod tests {
         };
 
         let json = r#"{
-            "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
-            "number": "0x1",
-            "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
-            "timestamp": "0x1",
-            "l1origin": {
-                "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
-                "number": 2
-            },
-            "sequenceNumber": "0x3"
+            "opL2BlockInfo": {
+                "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
+                "number": "0x1",
+                "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
+                "timestamp": "0x1",
+                "l1origin": {
+                    "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
+                    "number": 2
+                },
+                "sequenceNumber": "0x3"
+            }
         }"#;
 
         let deserialized: CeloL2BlockInfo = serde_json::from_str(json).unwrap();

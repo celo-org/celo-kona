@@ -136,6 +136,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-serde 0.15.11",
+ "arbitrary",
  "serde",
 ]
 
@@ -511,6 +512,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde 0.15.11",
  "alloy-sol-types",
+ "arbitrary",
  "itertools 0.13.0",
  "serde",
  "serde_json",
@@ -1454,6 +1456,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "celo-alloy-rpc-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-network-primitives",
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-serde 0.15.11",
+ "arbitrary",
+ "celo-alloy-consensus",
+ "derive_more",
+ "op-alloy-consensus",
+ "rand 0.9.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "celo-alloy-rpc-types-engine"
 version = "0.1.0"
 dependencies = [
@@ -1641,6 +1662,7 @@ dependencies = [
  "async-trait",
  "brotli",
  "celo-alloy-consensus",
+ "celo-alloy-rpc-types",
  "derive_more",
  "kona-genesis",
  "kona-protocol",

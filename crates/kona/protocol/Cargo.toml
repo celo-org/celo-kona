@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 # Workspace
 celo-alloy-consensus.workspace = true
+celo-alloy-rpc-types.workspace = true
 
 # Kona
 kona-genesis.workspace = true
