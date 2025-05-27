@@ -8,6 +8,7 @@ use alloy_rlp::Decodable;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, CeloTxType};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
+use celo_protocol::CeloL2BlockInfo;
 use core::fmt::Debug;
 use kona_derive::errors::{PipelineError, PipelineErrorKind};
 use kona_derive::{
@@ -190,11 +191,11 @@ where
                 .pipeline
                 .origin()
                 .ok_or(PipelineError::MissingOrigin.crit())?;
-            // TODO: resolve compile error
-            let l2_info = L2BlockInfo::from_block_and_genesis(
+            let celo_l2_info = CeloL2BlockInfo::from_block_and_genesis(
                 &block,
                 &self.pipeline.rollup_config().genesis,
             )?;
+            let l2_info = celo_l2_info.op_l2_block_info;
             let tip_cursor = TipCursor::new(
                 l2_info,
                 outcome.header.clone(),

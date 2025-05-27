@@ -1525,6 +1525,7 @@ dependencies = [
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
+ "celo-protocol",
  "kona-derive",
  "kona-driver",
  "kona-executor",
