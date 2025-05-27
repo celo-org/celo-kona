@@ -19,7 +19,7 @@ use std::vec::Vec;
 pub enum CoreContractError {
     #[error(transparent)]
     AlloySolTypes(#[from] alloy_sol_types::Error),
-    #[error("core contract exection failed: {0}")]
+    #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
 
     // TODO: Make this error more detailed. Simply adding a "from"-derivation does not work due to
