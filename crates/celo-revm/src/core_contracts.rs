@@ -1,17 +1,15 @@
 use crate::CeloTransaction;
 use crate::api::exec::CeloContextTr;
+use crate::constants::get_addresses;
 use crate::evm::CeloEvm;
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashMap};
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use lazy_static::lazy_static;
 use op_revm::OpTransaction;
 use revm::context::TxEnv;
-use revm_context::ContextSetters;
-use revm_context::JournalTr;
+use revm_context::{Cfg, ContextSetters, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
 use std::format;
-use std::str::FromStr;
 use std::string::String;
 use std::vec::Vec;
 
@@ -31,11 +29,6 @@ pub enum CoreContractError {
 sol! {
     function getCurrencies() external view returns (address[] memory currencies);
     function getExchangeRate(address token) view returns(uint256 numerator, uint256 denominator);
-}
-
-lazy_static! {
-    pub static ref FEE_CURRENCY_DIRECTORY_ADDRESS: Address =
-        Address::from_str("0x15F344b9E6c3Cb6F0376A36A64928b13F62C6276").unwrap();
 }
 
 /// The 4-byte selector for the standard Solidity error `Error(string)`.
@@ -126,7 +119,7 @@ where
 {
     let output_bytes = call(
         evm,
-        *FEE_CURRENCY_DIRECTORY_ADDRESS,
+        get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
@@ -153,7 +146,7 @@ where
     for token in currencies {
         let output_bytes = call(
             evm,
-            *FEE_CURRENCY_DIRECTORY_ADDRESS,
+            get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token }.abi_encode().into(),
         )?;
 
@@ -171,6 +164,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::CeloBuilder;
     use crate::DefaultCelo;
     use alloy_primitives::{hex, keccak256, map::HashMap};
@@ -183,8 +177,6 @@ mod tests {
     use std::str::FromStr;
 
     fn make_celo_test_db() -> InMemoryDB {
-        use crate::core_contracts::FEE_CURRENCY_DIRECTORY_ADDRESS;
-
         let oracle_address =
             Address::from_str("0x1111111111111111111111111111111111111112").unwrap();
         let fee_currency_address =
@@ -234,13 +226,13 @@ mod tests {
                 code_hash: bytecode.hash_slow(),
                 code: Some(bytecode),
             };
-            db.insert_account_info(*FEE_CURRENCY_DIRECTORY_ADDRESS, account_info);
+            db.insert_account_info(get_addresses(0).fee_currency_directory, account_info);
         }
 
         // Add currencies: Address[] at slot 2
         let currencies_slot_number = U256::from(2);
         db.insert_account_storage(
-            *FEE_CURRENCY_DIRECTORY_ADDRESS,
+            get_addresses(0).fee_currency_directory,
             currencies_slot_number, // slot
             U256::from(1),          // value: lenght of array
         )
@@ -252,7 +244,7 @@ mod tests {
         let currencies_data_start = U256::from_be_bytes(currencies_data_start_b256.0);
 
         db.insert_account_storage(
-            *FEE_CURRENCY_DIRECTORY_ADDRESS,
+            get_addresses(0).fee_currency_directory,
             currencies_data_start,
             fee_currency_address.into_word().into(),
         )
@@ -266,7 +258,7 @@ mod tests {
         // Add oracle address in FeeCurrencyDirectory
         let struct_start_slot = calc_map_addr(1, fee_currency_address);
         db.insert_account_storage(
-            *FEE_CURRENCY_DIRECTORY_ADDRESS,
+            get_addresses(0).fee_currency_directory,
             struct_start_slot,
             oracle_address.into_word().into(),
         )
