@@ -164,22 +164,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CeloBuilder;
-    use crate::DefaultCelo;
-    use alloy_primitives::{hex, keccak256, map::HashMap};
+    use crate::{CeloBuilder, DefaultCelo};
+    use alloy_primitives::{address, hex, keccak256};
     use revm::{
         Context,
         database::InMemoryDB,
         primitives::{Address, Bytes, U256},
         state::{AccountInfo, Bytecode},
     };
-    use std::str::FromStr;
 
     fn make_celo_test_db() -> InMemoryDB {
-        let oracle_address =
-            Address::from_str("0x1111111111111111111111111111111111111112").unwrap();
-        let fee_currency_address =
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap();
+        let oracle_address = address!("0x1111111111111111111111111111111111111112");
+        let fee_currency_address = address!("0x1111111111111111111111111111111111111111");
         let mut db = InMemoryDB::default();
 
         // MockOracle contract code
@@ -268,31 +264,25 @@ mod tests {
 
     #[test]
     fn test_get_currencies() {
-        let db = make_celo_test_db();
-        let ctx = Context::celo().with_db(db);
+        let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-
-        use crate::core_contracts::get_currencies;
         let currencies = get_currencies(&mut evm).unwrap();
 
         assert_eq!(
             currencies,
-            vec![Address::from_str("0x1111111111111111111111111111111111111111").unwrap()]
+            vec![address!("0x1111111111111111111111111111111111111111")]
         );
     }
 
     #[test]
     fn test_get_exchange_rates() {
-        let db = make_celo_test_db();
-        let ctx = Context::celo().with_db(db);
+        let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-
-        use crate::core_contracts::get_exchange_rates;
         let exchange_rates = get_exchange_rates(&mut evm).unwrap();
 
         let mut expected = HashMap::new();
         _ = expected.insert(
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap(),
+            address!("0x1111111111111111111111111111111111111111"),
             (U256::from(20), U256::from(10)),
         );
         assert_eq!(exchange_rates, expected);
