@@ -17,6 +17,7 @@ no_std_packages=(
   celo-proof
   celo-driver
   celo-rpc
+  celo-protocol
 )
 
 for package in "${no_std_packages[@]}"; do

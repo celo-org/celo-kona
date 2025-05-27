@@ -1624,6 +1624,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "celo-protocol"
+version = "0.1.0"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
+ "alloy-rpc-types-eth",
+ "alloy-serde 0.15.11",
+ "alloy-sol-types",
+ "arbitrary",
+ "async-trait",
+ "brotli",
+ "celo-alloy-consensus",
+ "derive_more",
+ "kona-genesis",
+ "kona-protocol",
+ "miniz_oxide",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types",
+ "proptest",
+ "rand 0.9.1",
+ "rstest",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.19",
+ "unsigned-varint",
+]
+
+[[package]]
 name = "celo-registry"
 version = "0.1.0"
 dependencies = [
@@ -3542,6 +3578,7 @@ dependencies = [
  "alloy-op-hardforks",
  "alloy-primitives",
  "alloy-sol-types",
+ "arbitrary",
  "derive_more",
  "kona-serde",
  "op-revm",
@@ -3684,6 +3721,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde 0.15.11",
+ "arbitrary",
  "async-trait",
  "brotli",
  "derive_more",
@@ -3693,6 +3731,7 @@ dependencies = [
  "op-alloy-rpc-types",
  "rand 0.9.1",
  "serde",
+ "spin 0.10.0",
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber 0.3.19",
