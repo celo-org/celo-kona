@@ -53,7 +53,7 @@ pub fn get_revert_message(output: Bytes) -> String {
         }
     } else {
         format! {
-                "no revert message: {:?}",output
+                "no revert message: {:?}", output
         }
     }
 }
