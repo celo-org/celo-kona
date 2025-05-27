@@ -11,6 +11,7 @@ no_std_packages=(
   # op-alloy
   celo-alloy-consensus
   celo-alloy-rpc-types-engine
+  celo-alloy-rpc-types
 
   # kona
   celo-executor
