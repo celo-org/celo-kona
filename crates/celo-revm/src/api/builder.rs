@@ -1,11 +1,6 @@
-use crate::{CeloBlockEnv, CeloEvm, transaction::CeloTxTr};
-use op_revm::OpSpecId;
+use crate::{CeloContext, CeloEvm};
 use revm::{
-    Context, Database,
-    context::{Cfg, JournalOutput},
-    context_interface::{Block, JournalTr},
-    handler::instructions::EthInstructions,
-    interpreter::interpreter::EthInterpreter,
+    Database, handler::instructions::EthInstructions, interpreter::interpreter::EthInterpreter,
 };
 
 /// Trait that allows for celo CeloEvm to be built.
@@ -25,13 +20,9 @@ pub trait CeloBuilder: Sized {
     ) -> CeloEvm<Self::Context, INSP, EthInstructions<EthInterpreter, Self::Context>>;
 }
 
-impl<BLOCK, TX, CFG, DB, JOURNAL> CeloBuilder for Context<BLOCK, TX, CFG, DB, JOURNAL, CeloBlockEnv>
+impl<DB> CeloBuilder for CeloContext<DB>
 where
-    BLOCK: Block,
-    TX: CeloTxTr,
-    CFG: Cfg<Spec = OpSpecId>,
     DB: Database,
-    JOURNAL: JournalTr<Database = DB, FinalOutput = JournalOutput>,
 {
     type Context = Self;
 
