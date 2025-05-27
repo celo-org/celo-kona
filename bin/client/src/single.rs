@@ -5,10 +5,10 @@ use alloy_consensus::Sealed;
 use alloy_evm::{EvmFactory, FromRecoveredTx, FromTxWithEncoded};
 use alloy_primitives::B256;
 use celo_alloy_consensus::CeloTxEnvelope;
+use celo_driver::CeloDriver;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
 use kona_client::single::FaultProofProgramError;
-use kona_driver::Driver;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -114,8 +114,7 @@ where
         evm_factory,
         None,
     );
-    // TODO: resolve compile error
-    let mut driver = Driver::new(cursor, executor, pipeline);
+    let mut driver = CeloDriver::new(cursor, executor, pipeline);
 
     // Run the derivation pipeline until we are able to produce the output root of the claimed
     // L2 block.
