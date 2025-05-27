@@ -4,5 +4,11 @@
 
 extern crate alloc;
 
+#[macro_use]
+extern crate tracing;
+
 mod executor;
 pub use executor::CeloExecutorTr;
+
+mod core;
+pub use core::CeloDriver;
