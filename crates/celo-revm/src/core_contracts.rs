@@ -7,6 +7,7 @@ use lazy_static::lazy_static;
 use op_revm::OpTransaction;
 use revm::context::TxEnv;
 use revm_context::ContextSetters;
+use revm_context::JournalTr;
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
 use std::format;
@@ -73,6 +74,9 @@ where
     CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>>,
     CTX: ContextSetters,
 {
+    // Create checkpoint to revert changes after the call
+    let checkpoint = evm.0.0.data.ctx.journal().checkpoint();
+
     // Do contract call
     let tx = CeloTransaction {
         op_tx: OpTransaction {
@@ -89,6 +93,9 @@ where
         Err(_) => return Err(CoreContractError::Evm),
         Ok(o) => o.result,
     };
+
+    // Revert changes made during the call
+    evm.0.0.data.ctx.journal().checkpoint_revert(checkpoint);
 
     // Check success
     match result {
