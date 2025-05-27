@@ -64,8 +64,7 @@ pub fn call<CTX, INSP>(
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
-    CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>>,
-    CTX: ContextSetters,
+    CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>> + ContextSetters,
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.0.0.data.ctx.journal().checkpoint();
