@@ -70,6 +70,7 @@ celo-alloy-rpc-types-engine = { version = "0.1.0", path = "crates/celo-alloy/rpc
 alloy-celo-evm = { version = "0.1.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "0.1.0", path = "crates/kona/executor", default-features = false }
 celo-driver = { version = "0.1.0", path = "crates/kona/driver", default-features = false }
+celo-proof = { version = "0.1.0", path = "crates/kona/proof", default-features = false }
 
 # Binaries
 kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }

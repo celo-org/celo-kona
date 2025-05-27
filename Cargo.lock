@@ -1079,6 +1079,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-channel"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89b47800b0be77592da0afd425cc03468052844aff33b84e33cc696f64e77b6a"
+dependencies = [
+ "concurrent-queue",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1344,6 +1356,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "buddy_system_allocator"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1a0108968a3a2dab95b089c0fc3f1afa7759aa5ebe6f1d86d206d6f7ba726eb"
+dependencies = [
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1452,6 +1473,45 @@ dependencies = [
 [[package]]
 name = "celo-client"
 version = "0.1.0"
+dependencies = [
+ "alloy-celo-evm",
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-evm",
+ "alloy-op-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
+ "async-trait",
+ "celo-alloy-consensus",
+ "celo-proof",
+ "cfg-if",
+ "kona-client",
+ "kona-derive",
+ "kona-driver",
+ "kona-executor",
+ "kona-genesis",
+ "kona-interop",
+ "kona-mpt",
+ "kona-preimage",
+ "kona-proof",
+ "kona-proof-interop",
+ "kona-protocol",
+ "kona-registry",
+ "kona-std-fpvm",
+ "kona-std-fpvm-proc",
+ "lru 0.14.0",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types-engine",
+ "op-revm",
+ "revm",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "celo-driver"
@@ -1731,6 +1791,15 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -2179,6 +2248,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.101",
+]
+
+[[package]]
+name = "event-listener"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3492acde4c3fc54c845eaab3eed8bd00c7a7d881f78bfc801e43a93dec1331ae"
+dependencies = [
+ "concurrent-queue",
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
+dependencies = [
+ "event-listener",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -3322,6 +3412,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "kona-client"
+version = "1.0.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-evm",
+ "alloy-op-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
+ "async-trait",
+ "cfg-if",
+ "kona-derive",
+ "kona-driver",
+ "kona-executor",
+ "kona-genesis",
+ "kona-interop",
+ "kona-mpt",
+ "kona-preimage",
+ "kona-proof",
+ "kona-proof-interop",
+ "kona-protocol",
+ "kona-registry",
+ "kona-std-fpvm",
+ "kona-std-fpvm-proc",
+ "lru 0.14.0",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types-engine",
+ "op-revm",
+ "revm",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
 name = "kona-derive"
 version = "0.3.0"
 source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
@@ -3469,7 +3598,73 @@ version = "0.3.0"
 source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
 dependencies = [
  "alloy-primitives",
+ "async-channel",
  "async-trait",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "kona-proof"
+version = "0.3.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-evm",
+ "alloy-op-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "ark-bls12-381",
+ "ark-ff 0.5.0",
+ "async-trait",
+ "kona-derive",
+ "kona-driver",
+ "kona-executor",
+ "kona-genesis",
+ "kona-mpt",
+ "kona-preimage",
+ "kona-protocol",
+ "kona-registry",
+ "kona-rpc",
+ "lazy_static",
+ "lru 0.14.0",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types-engine",
+ "op-revm",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "kona-proof-interop"
+version = "0.2.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-op-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
+ "async-trait",
+ "kona-executor",
+ "kona-genesis",
+ "kona-interop",
+ "kona-mpt",
+ "kona-preimage",
+ "kona-proof",
+ "kona-protocol",
+ "kona-registry",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types-engine",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
  "thiserror 2.0.12",
  "tracing",
 ]
@@ -3538,6 +3733,31 @@ dependencies = [
  "alloy-primitives",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "kona-std-fpvm"
+version = "0.2.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "async-trait",
+ "buddy_system_allocator",
+ "cfg-if",
+ "kona-preimage",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "kona-std-fpvm-proc"
+version = "0.2.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "cfg-if",
+ "kona-std-fpvm",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
 ]
 
 [[package]]
@@ -4244,6 +4464,12 @@ dependencies = [
  "quote",
  "syn 2.0.101",
 ]
+
+[[package]]
+name = "parking"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
@@ -5695,6 +5921,9 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spin"
