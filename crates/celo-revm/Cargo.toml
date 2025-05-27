@@ -28,12 +28,16 @@ celo-alloy-consensus.workspace = true
 # revm
 revm = { workspace = true, features = ["secp256r1"] }
 op-revm = { workspace = true, features = ["serde"] }
+revm-context-interface.workspace = true
+revm-handler.workspace = true
+revm-context.workspace = true
 
 # Alloy
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-evm.workspace = true
 op-alloy-consensus.workspace = true
+alloy-sol-types.workspace = true
 
 ## static precompile sets.
 #once_cell = { workspace = true, features = ["alloc"] }
@@ -41,6 +45,7 @@ op-alloy-consensus.workspace = true
 # misc
 auto_impl.workspace = true
 lazy_static = { workspace = true, features = ["spin_no_std"] }
+thiserror.workspace = true
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
@@ -48,12 +53,11 @@ serde = { workspace = true, features = ["derive", "rc"], optional = true }
 [dev-dependencies]
 anyhow.workspace = true
 rstest.workspace = true
-#alloy-sol-types.workspace = true
 #sha2.workspace = true
 serde_json = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 bincode = { workspace = true, features = ["serde"] }
-alloy-eips.workspace = true 
+alloy-eips.workspace = true
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
