@@ -190,21 +190,8 @@ where
     Ok(intrinsic_gas)
 }
 
-/// Set the exchange rates and intrinsic gas in the [CeloBlockEnv](crate::CeloBlockEnv).
-pub fn update_block_env<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
-) -> Result<(), CoreContractError>
-where
-    DB: Database,
-{
-    let currencies = &get_currencies(evm)?;
-    evm.ctx().chain.exchange_rates = get_exchange_rates(evm, currencies)?;
-    evm.ctx().chain.intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{CeloBuilder, DefaultCelo};
     use alloy_primitives::{address, hex, keccak256};
@@ -215,7 +202,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
 
-    fn make_celo_test_db() -> InMemoryDB {
+    pub(crate) fn make_celo_test_db() -> InMemoryDB {
         let oracle_address = address!("0x1111111111111111111111111111111111111112");
         let fee_currency_address = address!("0x1111111111111111111111111111111111111111");
         let mut db = InMemoryDB::default();
@@ -358,26 +345,5 @@ mod tests {
             U256::from(50000),
         );
         assert_eq!(intrinsic_gas, expected);
-    }
-
-    #[test]
-    fn test_update_block_env() {
-        let ctx = Context::celo().with_db(make_celo_test_db());
-        let mut evm = ctx.build_celo();
-        update_block_env(&mut evm).unwrap();
-
-        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected.insert(
-            address!("0x1111111111111111111111111111111111111111"),
-            (U256::from(20), U256::from(10)),
-        );
-        assert_eq!(evm.ctx().chain.exchange_rates, expected);
-
-        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected.insert(
-            address!("0x1111111111111111111111111111111111111111"),
-            U256::from(50000),
-        );
-        assert_eq!(evm.ctx().chain.intrinsic_gas, expected);
     }
 }
