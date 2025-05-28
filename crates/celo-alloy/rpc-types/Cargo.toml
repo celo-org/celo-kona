@@ -20,7 +20,6 @@ workspace = true
 celo-alloy-consensus = { workspace = true, features = ["serde"] }
 
 # OP Alloy
-op-alloy-consensus = { workspace = true, features = ["serde"] }
 #op-alloy-rpc-types.workspace = true
 
 # Alloy
@@ -55,7 +54,6 @@ std = [
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-rpc-types-eth/std",
-    "op-alloy-consensus/std",
     "celo-alloy-consensus/std",
 ]
 arbitrary = [
@@ -63,8 +61,7 @@ arbitrary = [
     "dep:arbitrary",
     "alloy-primitives/arbitrary",
     "alloy-rpc-types-eth/arbitrary",
-    "op-alloy-consensus/arbitrary",
     "celo-alloy-consensus/arbitrary",
 ]
-k256 = ["alloy-rpc-types-eth/k256", "op-alloy-consensus/k256", "celo-alloy-consensus/k256"]
-serde = ["op-alloy-consensus/serde", "celo-alloy-consensus/serde"]
+k256 = ["alloy-rpc-types-eth/k256", "celo-alloy-consensus/k256"]
+serde = ["celo-alloy-consensus/serde"]

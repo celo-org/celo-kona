@@ -147,7 +147,7 @@ mod tx_serde {
     //!
     //! This is needed because we might need to deserialize the `from` field into both
     //! [`alloy_consensus::transaction::Recovered::signer`] which resides in
-    //! [`alloy_rpc_types_eth::Transaction::inner`] and [`op_alloy_consensus::TxDeposit::from`].
+    //! [`alloy_rpc_types_eth::Transaction::inner`] and `op_alloy_consensus::TxDeposit::from`.
     //!
     //! Additionaly, we need similar logic for the `gasPrice` field
     use super::*;
@@ -326,7 +326,7 @@ mod tests {
 
         let tx = serde_json::from_str::<CeloTransaction>(rpc_tx).unwrap();
 
-        let CeloTxEnvelope::Cip64(inner) = tx.as_ref() else {
+        let CeloTxEnvelope::Cip64(_inner) = tx.as_ref() else {
             panic!("Expected CIP-64 transaction");
         };
         assert_eq!(

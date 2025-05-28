@@ -10,8 +10,8 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
 use celo_protocol::CeloL2BlockInfo;
 use core::fmt::Debug;
-use kona_derive::errors::{PipelineError, PipelineErrorKind};
 use kona_derive::{
+    errors::{PipelineError, PipelineErrorKind},
     traits::{Pipeline, SignalReceiver},
     types::Signal,
 };
