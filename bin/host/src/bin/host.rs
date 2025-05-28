@@ -17,7 +17,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const ABOUT: &str = "
-kona-host is a CLI application that runs the Kona pre-image server and client program. The host
+celo-host is a CLI application that runs the Celo-Kona pre-image server and client program. The host
 can run in two modes: server mode and native mode. In server mode, the host runs the pre-image
 server and waits for the client program in the parent process to request pre-images. In native
 mode, the host runs the client program in a separate thread with the pre-image server in the
@@ -44,10 +44,7 @@ pub struct HostCli {
 pub enum HostMode {
     /// Run the host in single-chain mode.
     #[cfg(feature = "single")]
-    Single(kona_host::single::SingleChainHost),
-    /// Run the host in super-chain (interop) mode.
-    #[cfg(feature = "interop")]
-    Super(kona_host::interop::InteropHost),
+    Single(celo_host::single::CeloSingleChainHost),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -58,10 +55,6 @@ async fn main() -> Result<()> {
     match cfg.mode {
         #[cfg(feature = "single")]
         HostMode::Single(cfg) => {
-            cfg.start().await?;
-        }
-        #[cfg(feature = "interop")]
-        HostMode::Super(cfg) => {
             cfg.start().await?;
         }
     }

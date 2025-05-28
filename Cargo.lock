@@ -1743,6 +1743,7 @@ dependencies = [
 name = "celo-host"
 version = "0.1.0"
 dependencies = [
+ "alloy-celo-evm",
  "alloy-consensus",
  "alloy-eips 0.15.11",
  "alloy-op-evm",
@@ -1756,7 +1757,10 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-http",
  "anyhow",
+ "ark-ff 0.5.0",
  "async-trait",
+ "celo-alloy-rpc-types-engine",
+ "celo-client",
  "clap",
  "kona-cli",
  "kona-client",
@@ -1764,6 +1768,7 @@ dependencies = [
  "kona-driver",
  "kona-executor",
  "kona-genesis",
+ "kona-host",
  "kona-mpt",
  "kona-preimage",
  "kona-proof",
@@ -3475,6 +3480,55 @@ dependencies = [
  "alloy-primitives",
  "kona-protocol",
  "op-alloy-consensus",
+]
+
+[[package]]
+name = "kona-host"
+version = "1.0.0"
+source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.0#a1172e46a743c63c9f0a0f13a444144e38d29355"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-op-evm",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rlp",
+ "alloy-rpc-client",
+ "alloy-rpc-types",
+ "alloy-rpc-types-beacon",
+ "alloy-serde 0.15.11",
+ "alloy-transport",
+ "alloy-transport-http",
+ "anyhow",
+ "ark-ff 0.5.0",
+ "async-trait",
+ "clap",
+ "kona-cli",
+ "kona-client",
+ "kona-derive",
+ "kona-driver",
+ "kona-executor",
+ "kona-genesis",
+ "kona-mpt",
+ "kona-preimage",
+ "kona-proof",
+ "kona-proof-interop",
+ "kona-protocol",
+ "kona-providers-alloy",
+ "kona-registry",
+ "kona-rpc",
+ "kona-std-fpvm",
+ "op-alloy-network",
+ "op-alloy-rpc-types-engine",
+ "reqwest",
+ "revm",
+ "rocksdb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.19",
 ]
 
 [[package]]

@@ -1,142 +1,41 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use super::{SingleChainHintHandler, SingleChainLocalInputs};
-use crate::{
-    DiskKeyValueStore, MemoryKeyValueStore, OfflineHostBackend, OnlineHostBackend,
-    OnlineHostBackendCfg, PreimageServer, SharedKeyValueStore, SplitKeyValueStore,
-    eth::http_provider, server::PreimageServerError,
-};
-use alloy_primitives::B256;
+use crate::single::CeloSingleChainHintHandler;
+use alloy_celo_evm::CeloEvmFactory;
 use alloy_provider::RootProvider;
 use clap::Parser;
 use kona_cli::cli_styles;
-use kona_client::fpvm_evm::FpvmOpEvmFactory;
 use kona_genesis::RollupConfig;
+use kona_host::{
+    OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
+    SharedKeyValueStore,
+    eth::http_provider,
+    single::{SingleChainHost, SingleChainHostError},
+};
 use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
 };
 use kona_proof::HintType;
 use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
-use kona_std_fpvm::{FileChannel, FileDescriptor};
 use op_alloy_network::Optimism;
+use kona_std_fpvm::{FileChannel, FileDescriptor};
 use serde::Serialize;
-use std::{path::PathBuf, sync::Arc};
-use tokio::{
-    sync::RwLock,
-    task::{self, JoinHandle},
-};
+use std::sync::Arc;
+use tokio::task::{self, JoinHandle};
 
 /// The host binary CLI application arguments.
 #[derive(Default, Parser, Serialize, Clone, Debug)]
 #[command(styles = cli_styles())]
-pub struct SingleChainHost {
-    /// Hash of the L1 head block. Derivation stops after this block is processed.
-    #[arg(long, env)]
-    pub l1_head: B256,
-    /// Hash of the agreed upon safe L2 block committed to by `--agreed-l2-output-root`.
-    #[arg(long, visible_alias = "l2-head", env)]
-    pub agreed_l2_head_hash: B256,
-    /// Agreed safe L2 Output Root to start derivation from.
-    #[arg(long, visible_alias = "l2-output-root", env)]
-    pub agreed_l2_output_root: B256,
-    /// Claimed L2 output root at block # `--claimed-l2-block-number` to validate.
-    #[arg(long, visible_alias = "l2-claim", env)]
-    pub claimed_l2_output_root: B256,
-    /// Number of the L2 block that the claimed output root commits to.
-    #[arg(long, visible_alias = "l2-block-number", env)]
-    pub claimed_l2_block_number: u64,
-    /// Address of L2 JSON-RPC endpoint to use (eth and debug namespace required).
-    #[arg(
-        long,
-        visible_alias = "l2",
-        requires = "l1_node_address",
-        requires = "l1_beacon_address",
-        env
-    )]
-    pub l2_node_address: Option<String>,
-    /// Address of L1 JSON-RPC endpoint to use (eth and debug namespace required)
-    #[arg(
-        long,
-        visible_alias = "l1",
-        requires = "l2_node_address",
-        requires = "l1_beacon_address",
-        env
-    )]
-    pub l1_node_address: Option<String>,
-    /// Address of the L1 Beacon API endpoint to use.
-    #[arg(
-        long,
-        visible_alias = "beacon",
-        requires = "l1_node_address",
-        requires = "l2_node_address",
-        env
-    )]
-    pub l1_beacon_address: Option<String>,
-    /// The Data Directory for preimage data storage. Optional if running in online mode,
-    /// required if running in offline mode.
-    #[arg(
-        long,
-        visible_alias = "db",
-        required_unless_present_all = ["l2_node_address", "l1_node_address", "l1_beacon_address"],
-        env
-    )]
-    pub data_dir: Option<PathBuf>,
-    /// Run the client program natively.
-    #[arg(long, conflicts_with = "server", required_unless_present = "server")]
-    pub native: bool,
-    /// Run in pre-image server mode without executing any client program. If not provided, the
-    /// host will run the client program in the host process.
-    #[arg(long, conflicts_with = "native", required_unless_present = "native")]
-    pub server: bool,
-    /// The L2 chain ID of a supported chain. If provided, the host will look for the corresponding
-    /// rollup config in the superchain registry.
-    #[arg(
-        long,
-        conflicts_with = "rollup_config_path",
-        required_unless_present = "rollup_config_path",
-        env
-    )]
-    pub l2_chain_id: Option<u64>,
-    /// Path to rollup config. If provided, the host will use this config instead of attempting to
-    /// look up the config in the superchain registry.
-    #[arg(
-        long,
-        alias = "rollup-cfg",
-        conflicts_with = "l2_chain_id",
-        required_unless_present = "l2_chain_id",
-        env
-    )]
-    pub rollup_config_path: Option<PathBuf>,
-    /// Optionally enables the use of `debug_executePayload` to collect the execution witness from
-    /// the execution layer.
-    #[arg(long, env)]
-    pub enable_experimental_witness_endpoint: bool,
+pub struct CeloSingleChainHost {
+    /// Inherited kona_host::SingleChainHost CLI arguments.
+    #[clap(flatten)]
+    pub kona_cfg: SingleChainHost,
 }
 
-/// An error that can occur when handling single chain hosts
-#[derive(Debug, thiserror::Error)]
-pub enum SingleChainHostError {
-    /// An error when handling preimage requests.
-    #[error("Error handling preimage request: {0}")]
-    PreimageServerError(#[from] PreimageServerError),
-    /// An IO error.
-    #[error("IO error: {0}")]
-    IOError(#[from] std::io::Error),
-    /// A JSON parse error.
-    #[error("Failed deserializing RollupConfig: {0}")]
-    ParseError(#[from] serde_json::Error),
-    /// Task failed to execute to completion.
-    #[error("Join error: {0}")]
-    ExecutionError(#[from] tokio::task::JoinError),
-    /// Any other error.
-    #[error("Error: {0}")]
-    Other(&'static str),
-}
-
-impl SingleChainHost {
-    /// Starts the [SingleChainHost] application.
+impl CeloSingleChainHost {
+    /// Starts the [CeloSingleChainHost] application.
     pub async fn start(self) -> Result<(), SingleChainHostError> {
-        if self.server {
+        if self.kona_cfg.server {
             let hint = FileChannel::new(FileDescriptor::HintRead, FileDescriptor::HintWrite);
             let preimage =
                 FileChannel::new(FileDescriptor::PreimageRead, FileDescriptor::PreimageWrite);
@@ -175,7 +74,7 @@ impl SingleChainHost {
                 self.clone(),
                 kv_store.clone(),
                 providers,
-                SingleChainHintHandler,
+                CeloSingleChainHintHandler,
             )
             .with_proactive_hint(HintType::L2PayloadWitness);
 
@@ -201,13 +100,10 @@ impl SingleChainHost {
         let preimage = BidirectionalChannel::new()?;
 
         let server_task = self.start_server(hint.host, preimage.host).await?;
-        let client_task = task::spawn(kona_client::single::run(
-            OracleReader::new(preimage.client.clone()),
-            HintWriter::new(hint.client.clone()),
-            FpvmOpEvmFactory::new(
-                HintWriter::new(hint.client),
-                OracleReader::new(preimage.client),
-            ),
+        let client_task = task::spawn(celo_client::single::run(
+            OracleReader::new(preimage.client),
+            HintWriter::new(hint.client),
+            CeloEvmFactory::default(),
         ));
 
         let (_, client_result) = tokio::try_join!(server_task, client_task)?;
@@ -218,64 +114,42 @@ impl SingleChainHost {
 
     /// Returns `true` if the host is running in offline mode.
     pub const fn is_offline(&self) -> bool {
-        self.l1_node_address.is_none()
-            && self.l2_node_address.is_none()
-            && self.l1_beacon_address.is_none()
-            && self.data_dir.is_some()
+        self.kona_cfg.is_offline()
     }
 
     /// Reads the [RollupConfig] from the file system and returns it as a string.
     pub fn read_rollup_config(&self) -> Result<RollupConfig, SingleChainHostError> {
-        let path = self.rollup_config_path.as_ref().ok_or_else(|| {
-            SingleChainHostError::Other(
-                "No rollup config path provided. Please provide a path to the rollup config.",
-            )
-        })?;
-
-        // Read the serialized config from the file system.
-        let ser_config = std::fs::read_to_string(path)?;
-
-        // Deserialize the config and return it.
-        serde_json::from_str(&ser_config).map_err(SingleChainHostError::ParseError)
+        self.kona_cfg.read_rollup_config()
     }
 
     /// Creates the key-value store for the host backend.
     pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
-        let local_kv_store = SingleChainLocalInputs::new(self.clone());
-
-        let kv_store: SharedKeyValueStore = if let Some(ref data_dir) = self.data_dir {
-            let disk_kv_store = DiskKeyValueStore::new(data_dir.clone());
-            let split_kv_store = SplitKeyValueStore::new(local_kv_store, disk_kv_store);
-            Arc::new(RwLock::new(split_kv_store))
-        } else {
-            let mem_kv_store = MemoryKeyValueStore::new();
-            let split_kv_store = SplitKeyValueStore::new(local_kv_store, mem_kv_store);
-            Arc::new(RwLock::new(split_kv_store))
-        };
-
-        Ok(kv_store)
+        self.kona_cfg.create_key_value_store()
     }
 
     /// Creates the providers required for the host backend.
-    pub async fn create_providers(&self) -> Result<SingleChainProviders, SingleChainHostError> {
+    pub async fn create_providers(&self) -> Result<CeloSingleChainProviders, SingleChainHostError> {
         let l1_provider = http_provider(
-            self.l1_node_address
+            self.kona_cfg
+                .l1_node_address
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("Provider must be set"))?,
         );
         let blob_provider = OnlineBlobProvider::init(OnlineBeaconClient::new_http(
-            self.l1_beacon_address
+            self.kona_cfg
+                .l1_beacon_address
                 .clone()
                 .ok_or(SingleChainHostError::Other("Beacon API URL must be set"))?,
         ))
         .await;
         let l2_provider = http_provider::<Optimism>(
-            self.l2_node_address
+            self.kona_cfg
+                .l2_node_address
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
         );
 
-        Ok(SingleChainProviders {
+        Ok(CeloSingleChainProviders {
             l1: l1_provider,
             blobs: blob_provider,
             l2: l2_provider,
@@ -283,25 +157,25 @@ impl SingleChainHost {
     }
 }
 
-impl OnlineHostBackendCfg for SingleChainHost {
+impl OnlineHostBackendCfg for CeloSingleChainHost {
     type HintType = HintType;
-    type Providers = SingleChainProviders;
+    type Providers = CeloSingleChainProviders;
 }
 
 /// The providers required for the single chain host.
 #[derive(Debug, Clone)]
-pub struct SingleChainProviders {
+pub struct CeloSingleChainProviders {
     /// The L1 EL provider.
     pub l1: RootProvider,
     /// The L1 beacon node provider.
     pub blobs: OnlineBlobProvider<OnlineBeaconClient>,
     /// The L2 EL provider.
-    pub l2: RootProvider<Optimism>,
+    pub l2: RootProvider<Optimism>, // TODO: replace Optimism with Celo
 }
 
 #[cfg(test)]
 mod test {
-    use crate::single::SingleChainHost;
+    use crate::single::CeloSingleChainHost;
     use alloy_primitives::B256;
     use clap::Parser;
 
@@ -444,7 +318,7 @@ mod test {
                 .cloned()
                 .collect::<Vec<_>>();
 
-            let parsed = SingleChainHost::try_parse_from(args);
+            let parsed = CeloSingleChainHost::try_parse_from(args);
             assert_eq!(parsed.is_ok(), valid);
         }
     }

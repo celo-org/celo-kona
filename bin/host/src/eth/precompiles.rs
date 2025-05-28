@@ -1,4 +1,5 @@
 //! Accelerated precompile runner for the host program.
+//! Identical to kona-host, but had to duplicate it because the original is private.
 
 use alloy_primitives::{Address, Bytes};
 use anyhow::{Result, anyhow};

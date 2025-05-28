@@ -1,10 +1,11 @@
 //! Utilities for the preimage server backend.
+//! Identical to kona-host, but had to duplicate it because the original is private.
 
-use crate::KeyValueStore;
 use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_primitives::keccak256;
 use alloy_rlp::EMPTY_STRING_CODE;
 use anyhow::Result;
+use kona_host::KeyValueStore;
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use tokio::sync::RwLock;
 

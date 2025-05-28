@@ -1,9 +1,6 @@
-//! [HintHandler] for the [SingleChainHost].
+//! [HintHandler] for the [CeloSingleChainHost].
 
-use crate::{
-    HintHandler, OnlineHostBackendCfg, backend::util::store_ordered_trie, kv::SharedKeyValueStore,
-    single::cfg::SingleChainHost,
-};
+use crate::{backend::util::store_ordered_trie, single::CeloSingleChainHost};
 use alloy_consensus::Header;
 use alloy_eips::{
     eip2718::Encodable2718,
@@ -16,19 +13,20 @@ use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
+use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
 use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
-use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use tracing::warn;
 
-/// The [HintHandler] for the [SingleChainHost].
+/// The [HintHandler] for the [CeloSingleChainHost].
 #[derive(Debug, Clone, Copy)]
-pub struct SingleChainHintHandler;
+pub struct CeloSingleChainHintHandler;
 
 #[async_trait]
-impl HintHandler for SingleChainHintHandler {
-    type Cfg = SingleChainHost;
+impl HintHandler for CeloSingleChainHintHandler {
+    type Cfg = CeloSingleChainHost;
 
     async fn fetch_hint(
         hint: Hint<<Self::Cfg as OnlineHostBackendCfg>::HintType>,
@@ -222,7 +220,7 @@ impl HintHandler for SingleChainHintHandler {
                 let raw_header: Bytes = providers
                     .l2
                     .client()
-                    .request("debug_getRawHeader", &[cfg.agreed_l2_head_hash])
+                    .request("debug_getRawHeader", &[cfg.kona_cfg.agreed_l2_head_hash])
                     .await?;
                 let header = Header::decode(&mut raw_header.as_ref())?;
 
@@ -230,18 +228,18 @@ impl HintHandler for SingleChainHintHandler {
                 let l2_to_l1_message_passer = providers
                     .l2
                     .get_proof(Predeploys::L2_TO_L1_MESSAGE_PASSER, Default::default())
-                    .block_id(cfg.agreed_l2_head_hash.into())
+                    .block_id(cfg.kona_cfg.agreed_l2_head_hash.into())
                     .await?;
 
                 let output_root = OutputRoot::from_parts(
                     header.state_root,
                     l2_to_l1_message_passer.storage_hash,
-                    cfg.agreed_l2_head_hash,
+                    cfg.kona_cfg.agreed_l2_head_hash,
                 );
                 let output_root_hash = output_root.hash();
 
                 ensure!(
-                    output_root_hash == cfg.agreed_l2_output_root,
+                    output_root_hash == cfg.kona_cfg.agreed_l2_output_root,
                     "Output root does not match L2 head."
                 );
 
@@ -363,7 +361,7 @@ impl HintHandler for SingleChainHintHandler {
                 })?;
             }
             HintType::L2PayloadWitness => {
-                if !cfg.enable_experimental_witness_endpoint {
+                if !cfg.kona_cfg.enable_experimental_witness_endpoint {
                     warn!(
                         target: "single_hint_handler",
                         "L2PayloadWitness hint was sent, but payload witness is disabled. Skipping hint."
@@ -374,13 +372,13 @@ impl HintHandler for SingleChainHintHandler {
                 ensure!(hint.data.len() >= 32, "Invalid hint data length");
 
                 let parent_block_hash = B256::from_slice(&hint.data.as_ref()[..32]);
-                let payload_attributes: OpPayloadAttributes =
+                let payload_attributes: CeloPayloadAttributes =
                     serde_json::from_slice(&hint.data[32..])?;
 
                 let Ok(execute_payload_response) = providers
                     .l2
                     .client()
-                    .request::<(B256, OpPayloadAttributes), ExecutionWitness>(
+                    .request::<(B256, CeloPayloadAttributes), ExecutionWitness>(
                         "debug_executePayload",
                         (parent_block_hash, payload_attributes),
                     )

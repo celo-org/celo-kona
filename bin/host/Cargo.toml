@@ -1,6 +1,6 @@
 [package]
-name = "kona-host"
-version = "1.0.0"
+name = "celo-host"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -12,6 +12,14 @@ publish = false
 workspace = true
 
 [dependencies]
+# Workspace
+celo-client.workspace = true
+alloy-celo-evm.workspace = true
+celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
+
+# Kona Binaries
+kona-host = { workspace = true, features = ["single"] }
+
 # Proof
 kona-mpt.workspace = true
 kona-client.workspace = true
@@ -74,10 +82,9 @@ ark-ff.workspace = true
 proptest.workspace = true
 
 [features]
-default = ["single", "interop"]
+default = ["single"]
 single = []
-interop = ["single"]
 
 [[bin]]
-name = "kona-host"
+name = "celo-host"
 path = "src/bin/host.rs"
