@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
-use revm::{context::TxEnv, handler::EvmTr};
+use revm::{Database, context::TxEnv, handler::EvmTr};
 use revm_context::{Cfg, ContextTr, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
@@ -68,7 +68,7 @@ pub fn call<DB, INSP>(
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
@@ -117,7 +117,7 @@ pub fn get_currencies<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     let output_bytes = call(
         evm,
@@ -137,7 +137,7 @@ pub fn get_exchange_rates<DB, INSP>(
     currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -166,7 +166,7 @@ pub fn get_intrinsic_gas<DB, INSP>(
     currencies: &[Address],
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     let mut intrinsic_gas =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -195,7 +195,7 @@ pub fn update_block_env<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
 ) -> Result<(), CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     let currencies = &get_currencies(evm)?;
     evm.ctx().chain.exchange_rates = get_exchange_rates(evm, currencies)?;
