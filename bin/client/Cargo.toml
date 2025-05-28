@@ -73,5 +73,5 @@ default = ["client-tracing"]
 client-tracing = ["kona-std-fpvm/tracing"]
 
 [[bin]]
-name = "kona"
-path = "src/kona.rs"
+name = "celo-client"
+path = "src/client.rs"
