@@ -67,9 +67,12 @@ lto = "fat"
 # Workspace
 celo-alloy-consensus = { version = "0.1.0", path = "crates/celo-alloy/consensus", default-features = false }
 celo-alloy-rpc-types-engine = { version = "0.1.0", path = "crates/celo-alloy/rpc-types-engine", default-features = false }
+celo-alloy-rpc-types = { version = "0.1.0", path = "crates/celo-alloy/rpc-types", default-features = false }
 alloy-celo-evm = { version = "0.1.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "0.1.0", path = "crates/kona/executor", default-features = false }
 celo-driver = { version = "0.1.0", path = "crates/kona/driver", default-features = false }
+celo-proof = { version = "0.1.0", path = "crates/kona/proof", default-features = false }
+celo-protocol = { version = "0.1.0", path = "crates/kona/protocol", default-features = false }
 
 # Binaries
 kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
@@ -177,6 +180,7 @@ derive_more = { version = "2.0.1", default-features = false }
 lazy_static = { version = "1.5.0", default-features = false }
 auto_impl = "1.2.0"
 bincode = "2.0.1"
+similar-asserts = "1.7"
 
 # Compression
 miniz_oxide = "0.8.8"
