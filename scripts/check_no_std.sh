@@ -17,7 +17,6 @@ no_std_packages=(
   celo-executor
   celo-proof
   celo-driver
-  celo-rpc
   celo-protocol
 )
 
