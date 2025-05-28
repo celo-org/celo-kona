@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
-use revm::context::TxEnv;
+use revm::{context::TxEnv, handler::EvmTr};
 use revm_context::{Cfg, ContextTr, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
@@ -71,7 +71,7 @@ where
     DB: revm::Database,
 {
     // Create checkpoint to revert changes after the call
-    let checkpoint = evm.0.0.data.ctx.journal().checkpoint();
+    let checkpoint = evm.ctx().journal().checkpoint();
 
     // Do contract call
     let tx = CeloTransaction {
@@ -91,7 +91,7 @@ where
     };
 
     // Revert changes made during the call
-    evm.0.0.data.ctx.journal().checkpoint_revert(checkpoint);
+    evm.ctx().journal().checkpoint_revert(checkpoint);
 
     // Check success
     match result {
@@ -121,7 +121,7 @@ where
 {
     let output_bytes = call(
         evm,
-        get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
+        get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
@@ -145,7 +145,7 @@ where
     for token in currencies {
         let output_bytes = call(
             evm,
-            get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
         )?;
 
@@ -174,7 +174,7 @@ where
     for token in currencies {
         let output_bytes = call(
             evm,
-            get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
         )?;
 
@@ -198,8 +198,8 @@ where
     DB: revm::Database,
 {
     let currencies = &get_currencies(evm)?;
-    evm.0.0.data.ctx.chain.exchange_rates = get_exchange_rates(evm, currencies)?;
-    evm.0.0.data.ctx.chain.intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
+    evm.ctx().chain.exchange_rates = get_exchange_rates(evm, currencies)?;
+    evm.ctx().chain.intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
     Ok(())
 }
 
@@ -371,13 +371,13 @@ mod tests {
             address!("0x1111111111111111111111111111111111111111"),
             (U256::from(20), U256::from(10)),
         );
-        assert_eq!(evm.0.0.data.ctx.chain.exchange_rates, expected);
+        assert_eq!(evm.ctx().chain.exchange_rates, expected);
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
             address!("0x1111111111111111111111111111111111111111"),
             U256::from(50000),
         );
-        assert_eq!(evm.0.0.data.ctx.chain.intrinsic_gas, expected);
+        assert_eq!(evm.ctx().chain.intrinsic_gas, expected);
     }
 }
