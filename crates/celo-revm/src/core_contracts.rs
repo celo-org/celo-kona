@@ -25,8 +25,14 @@ pub enum CoreContractError {
 }
 
 sol! {
+    struct CurrencyConfig {
+        address oracle;
+        uint256 intrinsicGas;
+    }
+
     function getCurrencies() external view returns (address[] memory currencies);
     function getExchangeRate(address token) view returns(uint256 numerator, uint256 denominator);
+    function getCurrencyConfig(address token) public view returns (CurrencyConfig memory);
 }
 
 /// The 4-byte selector for the standard Solidity error `Error(string)`.
@@ -155,6 +161,35 @@ where
     Ok(exchange_rates)
 }
 
+pub fn get_intrinsic_gas<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+) -> Result<HashMap<Address, U256>, CoreContractError>
+where
+    DB: revm::Database,
+{
+    let currencies = get_currencies(evm)?;
+    let mut intrinsic_gas =
+        HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
+
+    for token in currencies {
+        let output_bytes = call(
+            evm,
+            get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
+            getCurrencyConfigCall { token }.abi_encode().into(),
+        )?;
+
+        // Decode the output
+        let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
+            Ok(decoded_return) => decoded_return,
+            Err(e) => return Err(CoreContractError::from(e)),
+        };
+
+        _ = intrinsic_gas.insert(token, curr_conf.intrinsicGas);
+    }
+
+    Ok(intrinsic_gas)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +288,14 @@ mod tests {
         )
         .unwrap();
 
+        // Set intrinsic gas in FeeCurrencyDirectory
+        db.insert_account_storage(
+            get_addresses(0).fee_currency_directory,
+            struct_start_slot + U256::from(1),
+            U256::from(50000),
+        )
+        .unwrap();
+
         db
     }
 
@@ -280,5 +323,19 @@ mod tests {
             (U256::from(20), U256::from(10)),
         );
         assert_eq!(exchange_rates, expected);
+    }
+
+    #[test]
+    fn test_get_intrinsic_gas() {
+        let ctx = Context::celo().with_db(make_celo_test_db());
+        let mut evm = ctx.build_celo();
+        let intrinsic_gas = get_intrinsic_gas(&mut evm).unwrap();
+
+        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
+        _ = expected.insert(
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::from(50000),
+        );
+        assert_eq!(intrinsic_gas, expected);
     }
 }
