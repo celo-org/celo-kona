@@ -1,4 +1,4 @@
-use crate::{CeloTransaction, api::exec::CeloContextTr, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, CeloTransaction, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, TxKind, U256,
     map::{DefaultHashBuilder, HashMap},
@@ -6,7 +6,7 @@ use alloy_primitives::{
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
 use revm::context::TxEnv;
-use revm_context::{Cfg, ContextSetters, JournalTr};
+use revm_context::{Cfg, ContextTr, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
 use std::{format, string::String, vec::Vec};
@@ -56,13 +56,13 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-pub fn call<CTX, INSP>(
-    evm: &mut CeloEvm<CTX, INSP>,
+pub fn call<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
     address: Address,
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
-    CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>> + ContextSetters,
+    DB: revm::Database,
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.0.0.data.ctx.journal().checkpoint();
@@ -107,12 +107,11 @@ where
     }
 }
 
-pub fn get_currencies<CTX, INSP>(
-    evm: &mut CeloEvm<CTX, INSP>,
+pub fn get_currencies<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
-    CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>>,
-    CTX: ContextSetters,
+    DB: revm::Database,
 {
     let output_bytes = call(
         evm,
@@ -127,12 +126,11 @@ where
     }
 }
 
-pub fn get_exchange_rates<CTX, INSP>(
-    evm: &mut CeloEvm<CTX, INSP>,
+pub fn get_exchange_rates<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
-    CTX: CeloContextTr<Tx = CeloTransaction<TxEnv>>,
-    CTX: ContextSetters,
+    DB: revm::Database,
 {
     let currencies = get_currencies(evm)?;
     let mut exchange_rates =
