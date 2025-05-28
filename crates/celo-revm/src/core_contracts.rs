@@ -134,11 +134,11 @@ where
 
 pub fn get_exchange_rates<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
     DB: revm::Database,
 {
-    let currencies = get_currencies(evm)?;
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
@@ -146,7 +146,7 @@ where
         let output_bytes = call(
             evm,
             get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
-            getExchangeRateCall { token }.abi_encode().into(),
+            getExchangeRateCall { token: *token }.abi_encode().into(),
         )?;
 
         // Decode the output
@@ -155,7 +155,7 @@ where
             Err(e) => return Err(CoreContractError::from(e)),
         };
 
-        _ = exchange_rates.insert(token, (rate.numerator, rate.denominator))
+        _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
 
     Ok(exchange_rates)
@@ -163,11 +163,11 @@ where
 
 pub fn get_intrinsic_gas<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    currencies: &[Address],
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where
     DB: revm::Database,
 {
-    let currencies = get_currencies(evm)?;
     let mut intrinsic_gas =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
@@ -175,7 +175,7 @@ where
         let output_bytes = call(
             evm,
             get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
-            getCurrencyConfigCall { token }.abi_encode().into(),
+            getCurrencyConfigCall { token: *token }.abi_encode().into(),
         )?;
 
         // Decode the output
@@ -184,7 +184,7 @@ where
             Err(e) => return Err(CoreContractError::from(e)),
         };
 
-        _ = intrinsic_gas.insert(token, curr_conf.intrinsicGas);
+        _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
     }
 
     Ok(intrinsic_gas)
@@ -197,8 +197,9 @@ pub fn update_block_env<DB, INSP>(
 where
     DB: revm::Database,
 {
-    evm.0.0.data.ctx.chain.exchange_rates = get_exchange_rates(evm)?;
-    evm.0.0.data.ctx.chain.intrinsic_gas = get_intrinsic_gas(evm)?;
+    let currencies = &get_currencies(evm)?;
+    evm.0.0.data.ctx.chain.exchange_rates = get_exchange_rates(evm, currencies)?;
+    evm.0.0.data.ctx.chain.intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
     Ok(())
 }
 
@@ -327,7 +328,11 @@ mod tests {
     fn test_get_exchange_rates() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let exchange_rates = get_exchange_rates(&mut evm).unwrap();
+        let exchange_rates = get_exchange_rates(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
@@ -341,7 +346,11 @@ mod tests {
     fn test_get_intrinsic_gas() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let intrinsic_gas = get_intrinsic_gas(&mut evm).unwrap();
+        let intrinsic_gas = get_intrinsic_gas(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
