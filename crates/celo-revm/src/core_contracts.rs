@@ -190,6 +190,18 @@ where
     Ok(intrinsic_gas)
 }
 
+/// Set the exchange rates and intrinsic gas in the [CeloBlockEnv](crate::CeloBlockEnv).
+pub fn update_block_env<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+) -> Result<(), CoreContractError>
+where
+    DB: revm::Database,
+{
+    evm.0.0.data.ctx.chain.exchange_rates = get_exchange_rates(evm)?;
+    evm.0.0.data.ctx.chain.intrinsic_gas = get_intrinsic_gas(evm)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +349,26 @@ mod tests {
             U256::from(50000),
         );
         assert_eq!(intrinsic_gas, expected);
+    }
+
+    #[test]
+    fn test_update_block_env() {
+        let ctx = Context::celo().with_db(make_celo_test_db());
+        let mut evm = ctx.build_celo();
+        update_block_env(&mut evm).unwrap();
+
+        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
+        _ = expected.insert(
+            address!("0x1111111111111111111111111111111111111111"),
+            (U256::from(20), U256::from(10)),
+        );
+        assert_eq!(evm.0.0.data.ctx.chain.exchange_rates, expected);
+
+        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
+        _ = expected.insert(
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::from(50000),
+        );
+        assert_eq!(evm.0.0.data.ctx.chain.intrinsic_gas, expected);
     }
 }
