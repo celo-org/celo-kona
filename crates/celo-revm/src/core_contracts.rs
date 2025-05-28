@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
-use revm::context::TxEnv;
+use revm::{Database, context::TxEnv, handler::EvmTr};
 use revm_context::{Cfg, ContextTr, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
@@ -25,8 +25,14 @@ pub enum CoreContractError {
 }
 
 sol! {
+    struct CurrencyConfig {
+        address oracle;
+        uint256 intrinsicGas;
+    }
+
     function getCurrencies() external view returns (address[] memory currencies);
     function getExchangeRate(address token) view returns(uint256 numerator, uint256 denominator);
+    function getCurrencyConfig(address token) public view returns (CurrencyConfig memory);
 }
 
 /// The 4-byte selector for the standard Solidity error `Error(string)`.
@@ -62,10 +68,10 @@ pub fn call<DB, INSP>(
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     // Create checkpoint to revert changes after the call
-    let checkpoint = evm.0.0.data.ctx.journal().checkpoint();
+    let checkpoint = evm.ctx().journal().checkpoint();
 
     // Do contract call
     let tx = CeloTransaction {
@@ -85,7 +91,7 @@ where
     };
 
     // Revert changes made during the call
-    evm.0.0.data.ctx.journal().checkpoint_revert(checkpoint);
+    evm.ctx().journal().checkpoint_revert(checkpoint);
 
     // Check success
     match result {
@@ -111,11 +117,11 @@ pub fn get_currencies<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     let output_bytes = call(
         evm,
-        get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
+        get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
@@ -128,19 +134,19 @@ where
 
 pub fn get_exchange_rates<DB, INSP>(
     evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
-    DB: revm::Database,
+    DB: Database,
 {
-    let currencies = get_currencies(evm)?;
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
         let output_bytes = call(
             evm,
-            get_addresses(evm.0.0.cfg().chain_id()).fee_currency_directory,
-            getExchangeRateCall { token }.abi_encode().into(),
+            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            getExchangeRateCall { token: *token }.abi_encode().into(),
         )?;
 
         // Decode the output
@@ -149,14 +155,43 @@ where
             Err(e) => return Err(CoreContractError::from(e)),
         };
 
-        _ = exchange_rates.insert(token, (rate.numerator, rate.denominator))
+        _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
 
     Ok(exchange_rates)
 }
 
+pub fn get_intrinsic_gas<DB, INSP>(
+    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    currencies: &[Address],
+) -> Result<HashMap<Address, U256>, CoreContractError>
+where
+    DB: Database,
+{
+    let mut intrinsic_gas =
+        HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
+
+    for token in currencies {
+        let output_bytes = call(
+            evm,
+            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            getCurrencyConfigCall { token: *token }.abi_encode().into(),
+        )?;
+
+        // Decode the output
+        let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
+            Ok(decoded_return) => decoded_return,
+            Err(e) => return Err(CoreContractError::from(e)),
+        };
+
+        _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
+    }
+
+    Ok(intrinsic_gas)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{CeloBuilder, DefaultCelo};
     use alloy_primitives::{address, hex, keccak256};
@@ -167,7 +202,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
 
-    fn make_celo_test_db() -> InMemoryDB {
+    pub(crate) fn make_celo_test_db() -> InMemoryDB {
         let oracle_address = address!("0x1111111111111111111111111111111111111112");
         let fee_currency_address = address!("0x1111111111111111111111111111111111111111");
         let mut db = InMemoryDB::default();
@@ -253,6 +288,14 @@ mod tests {
         )
         .unwrap();
 
+        // Set intrinsic gas in FeeCurrencyDirectory
+        db.insert_account_storage(
+            get_addresses(0).fee_currency_directory,
+            struct_start_slot + U256::from(1),
+            U256::from(50000),
+        )
+        .unwrap();
+
         db
     }
 
@@ -272,7 +315,11 @@ mod tests {
     fn test_get_exchange_rates() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let exchange_rates = get_exchange_rates(&mut evm).unwrap();
+        let exchange_rates = get_exchange_rates(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
@@ -280,5 +327,23 @@ mod tests {
             (U256::from(20), U256::from(10)),
         );
         assert_eq!(exchange_rates, expected);
+    }
+
+    #[test]
+    fn test_get_intrinsic_gas() {
+        let ctx = Context::celo().with_db(make_celo_test_db());
+        let mut evm = ctx.build_celo();
+        let intrinsic_gas = get_intrinsic_gas(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
+
+        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
+        _ = expected.insert(
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::from(50000),
+        );
+        assert_eq!(intrinsic_gas, expected);
     }
 }
