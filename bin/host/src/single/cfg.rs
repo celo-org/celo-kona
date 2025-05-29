@@ -3,6 +3,7 @@
 use crate::single::CeloSingleChainHintHandler;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_provider::RootProvider;
+use celo_alloy_network::Celo;
 use clap::Parser;
 use kona_cli::cli_styles;
 use kona_genesis::RollupConfig;
@@ -17,7 +18,6 @@ use kona_preimage::{
 };
 use kona_proof::HintType;
 use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
-use op_alloy_network::Optimism;
 use kona_std_fpvm::{FileChannel, FileDescriptor};
 use serde::Serialize;
 use std::sync::Arc;
@@ -142,7 +142,7 @@ impl CeloSingleChainHost {
                 .ok_or(SingleChainHostError::Other("Beacon API URL must be set"))?,
         ))
         .await;
-        let l2_provider = http_provider::<Optimism>(
+        let l2_provider = http_provider::<Celo>(
             self.kona_cfg
                 .l2_node_address
                 .as_ref()
@@ -170,7 +170,7 @@ pub struct CeloSingleChainProviders {
     /// The L1 beacon node provider.
     pub blobs: OnlineBlobProvider<OnlineBeaconClient>,
     /// The L2 EL provider.
-    pub l2: RootProvider<Optimism>, // TODO: replace Optimism with Celo
+    pub l2: RootProvider<Celo>,
 }
 
 #[cfg(test)]

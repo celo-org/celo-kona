@@ -1774,6 +1774,7 @@ dependencies = [
  "anyhow",
  "ark-ff 0.5.0",
  "async-trait",
+ "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
  "clap",
