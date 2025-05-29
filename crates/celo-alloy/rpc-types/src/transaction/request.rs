@@ -6,10 +6,11 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_network_primitives::TransactionBuilder7702;
 use alloy_primitives::{Address, Signature, TxKind, U256};
 use alloy_rpc_types_eth::{AccessList, TransactionInput, TransactionRequest};
-use op_alloy_consensus::{OpTxEnvelope, OpTypedTransaction, TxDeposit};
+use celo_alloy_consensus::{CeloTxEnvelope, CeloTypedTransaction};
+use op_alloy_consensus::TxDeposit;
 use serde::{Deserialize, Serialize};
 
-/// Builder for [`OpTypedTransaction`].
+/// Builder for [`CeloTypedTransaction`].
 #[derive(
     Clone,
     Debug,
@@ -24,9 +25,9 @@ use serde::{Deserialize, Serialize};
     Deserialize,
 )]
 #[serde(transparent)]
-pub struct OpTransactionRequest(TransactionRequest);
+pub struct CeloTransactionRequest(TransactionRequest);
 
-impl OpTransactionRequest {
+impl CeloTransactionRequest {
     /// Sets the `from` field in the call to the provided address
     #[inline]
     pub const fn from(mut self, from: Address) -> Self {
@@ -90,20 +91,20 @@ impl OpTransactionRequest {
         self
     }
 
-    /// Builds [`OpTypedTransaction`] from this builder. See [`TransactionRequest::build_typed_tx`]
+    /// Builds [`CeloTypedTransaction`] from this builder. See [`TransactionRequest::build_typed_tx`]
     /// for more info.
     ///
-    /// Note that EIP-4844 transactions are not supported by Optimism and will be converted into
+    /// Note that EIP-4844 transactions are not supported by Celo and will be converted into
     /// EIP-1559 transactions.
-    pub fn build_typed_tx(self) -> Result<OpTypedTransaction, Self> {
+    pub fn build_typed_tx(self) -> Result<CeloTypedTransaction, Self> {
         let tx = self.0.build_typed_tx().map_err(Self)?;
         match tx {
-            TypedTransaction::Legacy(tx) => Ok(OpTypedTransaction::Legacy(tx)),
-            TypedTransaction::Eip1559(tx) => Ok(OpTypedTransaction::Eip1559(tx)),
-            TypedTransaction::Eip2930(tx) => Ok(OpTypedTransaction::Eip2930(tx)),
+            TypedTransaction::Legacy(tx) => Ok(CeloTypedTransaction::Legacy(tx)),
+            TypedTransaction::Eip1559(tx) => Ok(CeloTypedTransaction::Eip1559(tx)),
+            TypedTransaction::Eip2930(tx) => Ok(CeloTypedTransaction::Eip2930(tx)),
             TypedTransaction::Eip4844(tx) => {
                 let tx: TxEip4844 = tx.into();
-                Ok(OpTypedTransaction::Eip1559(TxEip1559 {
+                Ok(CeloTypedTransaction::Eip1559(TxEip1559 {
                     chain_id: tx.chain_id,
                     nonce: tx.nonce,
                     gas_limit: tx.gas_limit,
@@ -115,12 +116,12 @@ impl OpTransactionRequest {
                     input: tx.input,
                 }))
             }
-            TypedTransaction::Eip7702(tx) => Ok(OpTypedTransaction::Eip7702(tx)),
+            TypedTransaction::Eip7702(tx) => Ok(CeloTypedTransaction::Eip7702(tx)),
         }
     }
 }
 
-impl From<TxDeposit> for OpTransactionRequest {
+impl From<TxDeposit> for CeloTransactionRequest {
     fn from(tx: TxDeposit) -> Self {
         let TxDeposit {
             source_hash: _,
@@ -144,13 +145,13 @@ impl From<TxDeposit> for OpTransactionRequest {
     }
 }
 
-impl From<Sealed<TxDeposit>> for OpTransactionRequest {
+impl From<Sealed<TxDeposit>> for CeloTransactionRequest {
     fn from(value: Sealed<TxDeposit>) -> Self {
         value.into_inner().into()
     }
 }
 
-impl<T> From<Signed<T, Signature>> for OpTransactionRequest
+impl<T> From<Signed<T, Signature>> for CeloTransactionRequest
 where
     T: SignableTransaction<Signature> + Into<TransactionRequest>,
 {
@@ -167,31 +168,33 @@ where
     }
 }
 
-impl From<OpTypedTransaction> for OpTransactionRequest {
-    fn from(tx: OpTypedTransaction) -> Self {
+impl From<CeloTypedTransaction> for CeloTransactionRequest {
+    fn from(tx: CeloTypedTransaction) -> Self {
         match tx {
-            OpTypedTransaction::Legacy(tx) => Self(tx.into()),
-            OpTypedTransaction::Eip2930(tx) => Self(tx.into()),
-            OpTypedTransaction::Eip1559(tx) => Self(tx.into()),
-            OpTypedTransaction::Eip7702(tx) => Self(tx.into()),
-            OpTypedTransaction::Deposit(tx) => tx.into(),
+            CeloTypedTransaction::Legacy(tx) => Self(tx.into()),
+            CeloTypedTransaction::Eip2930(tx) => Self(tx.into()),
+            CeloTypedTransaction::Eip1559(tx) => Self(tx.into()),
+            CeloTypedTransaction::Eip7702(tx) => Self(tx.into()),
+            CeloTypedTransaction::Cip64(tx) => Self(tx.into()),
+            CeloTypedTransaction::Deposit(tx) => tx.into(),
         }
     }
 }
 
-impl From<OpTxEnvelope> for OpTransactionRequest {
-    fn from(value: OpTxEnvelope) -> Self {
+impl From<CeloTxEnvelope> for CeloTransactionRequest {
+    fn from(value: CeloTxEnvelope) -> Self {
         match value {
-            OpTxEnvelope::Eip2930(tx) => tx.into(),
-            OpTxEnvelope::Eip1559(tx) => tx.into(),
-            OpTxEnvelope::Eip7702(tx) => tx.into(),
-            OpTxEnvelope::Deposit(tx) => tx.into(),
+            CeloTxEnvelope::Eip2930(tx) => tx.into(),
+            CeloTxEnvelope::Eip1559(tx) => tx.into(),
+            CeloTxEnvelope::Eip7702(tx) => tx.into(),
+            CeloTxEnvelope::Cip64(tx) => tx.into(),
+            CeloTxEnvelope::Deposit(tx) => tx.into(),
             _ => Default::default(),
         }
     }
 }
 
-impl TransactionBuilder7702 for OpTransactionRequest {
+impl TransactionBuilder7702 for CeloTransactionRequest {
     fn authorization_list(&self) -> Option<&Vec<SignedAuthorization>> {
         self.as_ref().authorization_list()
     }

@@ -10,6 +10,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
+use alloy_rpc_types_eth::TransactionRequest;
 use core::mem;
 
 /// A transaction with a fee currency ([CIP-64](https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md)).
@@ -317,6 +318,41 @@ impl Encodable for TxCip64 {
 impl Decodable for TxCip64 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Self::rlp_decode(buf)
+    }
+}
+
+impl From<TxCip64> for TransactionRequest {
+    fn from(tx: TxCip64) -> Self {
+        let ty = tx.ty();
+        let TxCip64 {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            to,
+            value,
+            access_list,
+            input,
+            fee_currency: _,
+        } = tx;
+        Self {
+            to: if let TxKind::Call(to) = to {
+                Some(to.into())
+            } else {
+                None
+            },
+            max_fee_per_gas: Some(max_fee_per_gas),
+            max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
+            gas: Some(gas_limit),
+            value: Some(value),
+            input: input.into(),
+            nonce: Some(nonce),
+            chain_id: Some(chain_id),
+            access_list: Some(access_list),
+            transaction_type: Some(ty),
+            ..Default::default()
+        }
     }
 }
 

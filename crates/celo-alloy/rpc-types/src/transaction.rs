@@ -7,7 +7,7 @@ use celo_alloy_consensus::CeloTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 mod request;
-pub use request::OpTransactionRequest;
+pub use request::CeloTransactionRequest;
 
 /// Celo Transaction type
 #[derive(

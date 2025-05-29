@@ -9,4 +9,4 @@ mod receipt;
 pub use receipt::{L1BlockInfo, OpTransactionReceipt, OpTransactionReceiptFields};
 
 mod transaction;
-pub use transaction::{OpTransactionFields, OpTransactionRequest, CeloTransaction};
+pub use transaction::{CeloTransaction, CeloTransactionRequest};
