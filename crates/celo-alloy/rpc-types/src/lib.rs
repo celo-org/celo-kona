@@ -3,5 +3,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
+mod receipt;
+pub use receipt::{L1BlockInfo, OpTransactionReceipt, OpTransactionReceiptFields};
+
 mod transaction;
-pub use transaction::CeloTransaction;
+pub use transaction::{OpTransactionFields, OpTransactionRequest, CeloTransaction};
