@@ -1,8 +1,9 @@
+# TODO: remove unnecessary dependencies
 [package]
-name = "op-alloy-network"
-description = "Optimism blockchain RPC behavior abstraction"
+name = "celo-alloy-network"
+description = "Celo blockchain RPC behavior abstraction"
 
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -16,6 +17,10 @@ workspace = true
 
 [dependencies]
 # Workspace
+celo-alloy-consensus.workspace = true
+celo-alloy-rpc-types.workspace = true
+
+# OP Alloy
 op-alloy-consensus.workspace = true
 op-alloy-rpc-types.workspace = true
 
@@ -29,9 +34,13 @@ alloy-signer.workspace = true
 [features]
 std = [
     "op-alloy-consensus/std",
-    "op-alloy-rpc-types/std"
+    "op-alloy-rpc-types/std",
+    "celo-alloy-consensus/std",
+    "celo-alloy-rpc-types/std"
 ]
 serde = [
     "op-alloy-consensus/serde",
-    "op-alloy-rpc-types/serde"
+    "op-alloy-rpc-types/serde",
+    "celo-alloy-consensus/serde",
+    "celo-alloy-rpc-types/serde"
 ]

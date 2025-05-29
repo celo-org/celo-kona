@@ -1,8 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/alloy.jpg",
-    html_favicon_url = "https://raw.githubusercontent.com/alloy-rs/core/main/assets/favicon.ico"
-)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
@@ -11,31 +7,31 @@ pub use alloy_network::*;
 use alloy_consensus::{TxEnvelope, TxType, TypedTransaction};
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_rpc_types_eth::AccessList;
-use op_alloy_consensus::{OpTxEnvelope, OpTxType, OpTypedTransaction};
+use celo_alloy_consensus::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction};
 use op_alloy_rpc_types::OpTransactionRequest;
 
-/// Types for an Op-stack network.
+/// Types for Celo network.
 #[derive(Clone, Copy, Debug)]
-pub struct Optimism {
+pub struct Celo {
     _private: (),
 }
 
-impl Network for Optimism {
-    type TxType = OpTxType;
+impl Network for Celo {
+    type TxType = CeloTxType;
 
-    type TxEnvelope = op_alloy_consensus::OpTxEnvelope;
+    type TxEnvelope = celo_alloy_consensus::CeloTxEnvelope;
 
-    type UnsignedTx = op_alloy_consensus::OpTypedTransaction;
+    type UnsignedTx = celo_alloy_consensus::CeloTypedTransaction;
 
-    type ReceiptEnvelope = op_alloy_consensus::OpReceiptEnvelope;
+    type ReceiptEnvelope = celo_alloy_consensus::CeloReceiptEnvelope;
 
     type Header = alloy_consensus::Header;
 
-    type TransactionRequest = op_alloy_rpc_types::OpTransactionRequest;
+    type TransactionRequest = op_alloy_rpc_types::OpTransactionRequest; // TODO: replace with CeloTransactionRequest
 
-    type TransactionResponse = op_alloy_rpc_types::Transaction;
+    type TransactionResponse = celo_alloy_rpc_types::CeloTransaction;
 
-    type ReceiptResponse = op_alloy_rpc_types::OpTransactionReceipt;
+    type ReceiptResponse = op_alloy_rpc_types::OpTransactionReceipt; // TODO: replace with CeloTransactionReceipt
 
     type HeaderResponse = alloy_rpc_types_eth::Header;
 
@@ -43,7 +39,7 @@ impl Network for Optimism {
         alloy_rpc_types_eth::Block<Self::TransactionResponse, Self::HeaderResponse>;
 }
 
-impl TransactionBuilder<Optimism> for OpTransactionRequest {
+impl TransactionBuilder<Celo> for OpTransactionRequest {
     fn chain_id(&self) -> Option<ChainId> {
         self.as_ref().chain_id()
     }
@@ -137,9 +133,10 @@ impl TransactionBuilder<Optimism> for OpTransactionRequest {
         self.as_mut().set_access_list(access_list);
     }
 
-    fn complete_type(&self, ty: OpTxType) -> Result<(), Vec<&'static str>> {
+    fn complete_type(&self, ty: CeloTxType) -> Result<(), Vec<&'static str>> {
         match ty {
-            OpTxType::Deposit => Err(vec!["not implemented for deposit tx"]),
+            CeloTxType::Deposit => Err(vec!["not implemented for deposit tx"]),
+            CeloTxType::Cip64 => Err(vec!["not implemented for CIP-64 tx"]),
             _ => {
                 let ty = TxType::try_from(ty as u8).unwrap();
                 self.as_ref().complete_type(ty)
@@ -156,22 +153,22 @@ impl TransactionBuilder<Optimism> for OpTransactionRequest {
     }
 
     #[doc(alias = "output_transaction_type")]
-    fn output_tx_type(&self) -> OpTxType {
+    fn output_tx_type(&self) -> CeloTxType {
         match self.as_ref().preferred_type() {
-            TxType::Eip1559 | TxType::Eip4844 => OpTxType::Eip1559,
-            TxType::Eip2930 => OpTxType::Eip2930,
-            TxType::Eip7702 => OpTxType::Eip7702,
-            TxType::Legacy => OpTxType::Legacy,
+            TxType::Eip1559 | TxType::Eip4844 => CeloTxType::Eip1559,
+            TxType::Eip2930 => CeloTxType::Eip2930,
+            TxType::Eip7702 => CeloTxType::Eip7702,
+            TxType::Legacy => CeloTxType::Legacy,
         }
     }
 
     #[doc(alias = "output_transaction_type_checked")]
-    fn output_tx_type_checked(&self) -> Option<OpTxType> {
+    fn output_tx_type_checked(&self) -> Option<CeloTxType> {
         self.as_ref().buildable_type().map(|tx_ty| match tx_ty {
-            TxType::Eip1559 | TxType::Eip4844 => OpTxType::Eip1559,
-            TxType::Eip2930 => OpTxType::Eip2930,
-            TxType::Eip7702 => OpTxType::Eip7702,
-            TxType::Legacy => OpTxType::Legacy,
+            TxType::Eip1559 | TxType::Eip4844 => CeloTxType::Eip1559,
+            TxType::Eip2930 => CeloTxType::Eip2930,
+            TxType::Eip7702 => CeloTxType::Eip7702,
+            TxType::Legacy => CeloTxType::Legacy,
         })
     }
 
@@ -179,9 +176,9 @@ impl TransactionBuilder<Optimism> for OpTransactionRequest {
         self.as_mut().prep_for_submission();
     }
 
-    fn build_unsigned(self) -> BuildResult<OpTypedTransaction, Optimism> {
+    fn build_unsigned(self) -> BuildResult<CeloTypedTransaction, Celo> {
         if let Err((tx_type, missing)) = self.as_ref().missing_keys() {
-            let tx_type = OpTxType::try_from(tx_type as u8).unwrap();
+            let tx_type = CeloTxType::try_from(tx_type as u8).unwrap();
             return Err(
                 TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
                     .into_unbuilt(self),
@@ -190,15 +187,15 @@ impl TransactionBuilder<Optimism> for OpTransactionRequest {
         Ok(self.build_typed_tx().expect("checked by missing_keys"))
     }
 
-    async fn build<W: NetworkWallet<Optimism>>(
+    async fn build<W: NetworkWallet<Celo>>(
         self,
         wallet: &W,
-    ) -> Result<<Optimism as Network>::TxEnvelope, TransactionBuilderError<Optimism>> {
+    ) -> Result<<Celo as Network>::TxEnvelope, TransactionBuilderError<Celo>> {
         Ok(wallet.sign_request(self).await?)
     }
 }
 
-impl NetworkWallet<Optimism> for EthereumWallet {
+impl NetworkWallet<Celo> for EthereumWallet {
     fn default_signer_address(&self) -> Address {
         NetworkWallet::<Ethereum>::default_signer_address(self)
     }
@@ -214,24 +211,27 @@ impl NetworkWallet<Optimism> for EthereumWallet {
     async fn sign_transaction_from(
         &self,
         sender: Address,
-        tx: OpTypedTransaction,
-    ) -> alloy_signer::Result<OpTxEnvelope> {
+        tx: CeloTypedTransaction,
+    ) -> alloy_signer::Result<CeloTxEnvelope> {
         let tx = match tx {
-            OpTypedTransaction::Legacy(tx) => TypedTransaction::Legacy(tx),
-            OpTypedTransaction::Eip2930(tx) => TypedTransaction::Eip2930(tx),
-            OpTypedTransaction::Eip1559(tx) => TypedTransaction::Eip1559(tx),
-            OpTypedTransaction::Eip7702(tx) => TypedTransaction::Eip7702(tx),
-            OpTypedTransaction::Deposit(_) => {
+            CeloTypedTransaction::Legacy(tx) => TypedTransaction::Legacy(tx),
+            CeloTypedTransaction::Eip2930(tx) => TypedTransaction::Eip2930(tx),
+            CeloTypedTransaction::Eip1559(tx) => TypedTransaction::Eip1559(tx),
+            CeloTypedTransaction::Eip7702(tx) => TypedTransaction::Eip7702(tx),
+            CeloTypedTransaction::Cip64(_) => {
+                return Err(alloy_signer::Error::other("not implemented for CIP-64 tx"));
+            }
+            CeloTypedTransaction::Deposit(_) => {
                 return Err(alloy_signer::Error::other("not implemented for deposit tx"));
             }
         };
         let tx = NetworkWallet::<Ethereum>::sign_transaction_from(self, sender, tx).await?;
 
         Ok(match tx {
-            TxEnvelope::Eip1559(tx) => OpTxEnvelope::Eip1559(tx),
-            TxEnvelope::Eip2930(tx) => OpTxEnvelope::Eip2930(tx),
-            TxEnvelope::Eip7702(tx) => OpTxEnvelope::Eip7702(tx),
-            TxEnvelope::Legacy(tx) => OpTxEnvelope::Legacy(tx),
+            TxEnvelope::Eip1559(tx) => CeloTxEnvelope::Eip1559(tx),
+            TxEnvelope::Eip2930(tx) => CeloTxEnvelope::Eip2930(tx),
+            TxEnvelope::Eip7702(tx) => CeloTxEnvelope::Eip7702(tx),
+            TxEnvelope::Legacy(tx) => CeloTxEnvelope::Legacy(tx),
             _ => unreachable!(),
         })
     }

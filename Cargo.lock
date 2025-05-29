@@ -1593,6 +1593,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "celo-alloy-network"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-signer",
+ "celo-alloy-consensus",
+ "celo-alloy-rpc-types",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types",
+]
+
+[[package]]
 name = "celo-alloy-rpc-types"
 version = "0.1.0"
 dependencies = [
@@ -4058,10 +4073,6 @@ dependencies = [
  "security-framework-sys",
  "tempfile",
 ]
-
-[[package]]
-name = "network"
-version = "0.1.0"
 
 [[package]]
 name = "nom"
