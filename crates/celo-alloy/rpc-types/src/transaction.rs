@@ -6,6 +6,9 @@ use alloy_primitives::{Address, B256, BlockHash, Bytes, ChainId, TxKind, U256};
 use celo_alloy_consensus::CeloTxEnvelope;
 use serde::{Deserialize, Serialize};
 
+mod request;
+pub use request::CeloTransactionRequest;
+
 /// Celo Transaction type
 #[derive(
     Clone, Debug, PartialEq, Eq, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut,

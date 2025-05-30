@@ -65,9 +65,11 @@ lto = "fat"
 
 [workspace.dependencies]
 # Workspace
+celo-client = { version = "0.1.0", path = "bin/client", default-features = false }
 celo-alloy-consensus = { version = "0.1.0", path = "crates/celo-alloy/consensus", default-features = false }
 celo-alloy-rpc-types-engine = { version = "0.1.0", path = "crates/celo-alloy/rpc-types-engine", default-features = false }
 celo-alloy-rpc-types = { version = "0.1.0", path = "crates/celo-alloy/rpc-types", default-features = false }
+celo-alloy-network = { version = "0.1.0", path = "crates/celo-alloy/network", default-features = false }
 alloy-celo-evm = { version = "0.1.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "0.1.0", path = "crates/kona/executor", default-features = false }
 celo-driver = { version = "0.1.0", path = "crates/kona/driver", default-features = false }
@@ -76,6 +78,7 @@ celo-protocol = { version = "0.1.0", path = "crates/kona/protocol", default-feat
 
 # Binaries
 kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
 
 # Protocol
 kona-comp = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
@@ -130,6 +133,7 @@ alloy-rpc-types-engine = { version = "0.15.6", default-features = false }
 alloy-rpc-types-beacon = { version = "0.15.6", default-features = false }
 alloy-network-primitives = { version = "0.15.6", default-features = false }
 alloy-hardforks = { version = "0.2.0", default-features = false }
+alloy-signer = { version = "0.15.6", default-features = false }
 
 # OP Alloy
 op-alloy-network = { version = "0.15.1", default-features = false }
@@ -218,3 +222,4 @@ rocksdb = { version = "0.23.0", default-features = false }
 
 # Cryptography
 secp256k1 = { version = "0.30.0", default-features = false }
+ark-ff = { version = "0.5.0", default-features = false }

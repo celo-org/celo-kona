@@ -1,0 +1,38 @@
+# TODO: remove unnecessary dependencies
+[package]
+name = "celo-alloy-network"
+description = "Celo blockchain RPC behavior abstraction"
+
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Workspace
+celo-alloy-consensus.workspace = true
+celo-alloy-rpc-types.workspace = true
+
+# Alloy
+alloy-consensus.workspace = true
+alloy-network.workspace = true
+alloy-primitives.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-signer.workspace = true
+
+[features]
+std = [
+    "celo-alloy-consensus/std",
+    "celo-alloy-rpc-types/std"
+]
+serde = [
+    "celo-alloy-consensus/serde",
+    "celo-alloy-rpc-types/serde"
+]
