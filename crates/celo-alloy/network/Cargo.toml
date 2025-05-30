@@ -20,10 +20,6 @@ workspace = true
 celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types.workspace = true
 
-# OP Alloy
-op-alloy-consensus.workspace = true
-op-alloy-rpc-types.workspace = true
-
 # Alloy
 alloy-consensus.workspace = true
 alloy-network.workspace = true
@@ -33,14 +29,10 @@ alloy-signer.workspace = true
 
 [features]
 std = [
-    "op-alloy-consensus/std",
-    "op-alloy-rpc-types/std",
     "celo-alloy-consensus/std",
     "celo-alloy-rpc-types/std"
 ]
 serde = [
-    "op-alloy-consensus/serde",
-    "op-alloy-rpc-types/serde",
     "celo-alloy-consensus/serde",
     "celo-alloy-rpc-types/serde"
 ]

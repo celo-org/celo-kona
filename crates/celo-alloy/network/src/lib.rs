@@ -8,7 +8,7 @@ use alloy_consensus::{TxEnvelope, TxType, TypedTransaction};
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_rpc_types_eth::AccessList;
 use celo_alloy_consensus::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction};
-use op_alloy_rpc_types::OpTransactionRequest;
+use celo_alloy_rpc_types::CeloTransactionRequest;
 
 /// Types for Celo network.
 #[derive(Clone, Copy, Debug)]
@@ -27,11 +27,11 @@ impl Network for Celo {
 
     type Header = alloy_consensus::Header;
 
-    type TransactionRequest = op_alloy_rpc_types::OpTransactionRequest; // TODO: replace with CeloTransactionRequest
+    type TransactionRequest = celo_alloy_rpc_types::CeloTransactionRequest;
 
     type TransactionResponse = celo_alloy_rpc_types::CeloTransaction;
 
-    type ReceiptResponse = op_alloy_rpc_types::OpTransactionReceipt; // TODO: replace with CeloTransactionReceipt
+    type ReceiptResponse = celo_alloy_rpc_types::CeloTransactionReceipt;
 
     type HeaderResponse = alloy_rpc_types_eth::Header;
 
@@ -39,7 +39,7 @@ impl Network for Celo {
         alloy_rpc_types_eth::Block<Self::TransactionResponse, Self::HeaderResponse>;
 }
 
-impl TransactionBuilder<Celo> for OpTransactionRequest {
+impl TransactionBuilder<Celo> for CeloTransactionRequest {
     fn chain_id(&self) -> Option<ChainId> {
         self.as_ref().chain_id()
     }
