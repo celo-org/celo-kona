@@ -6,7 +6,7 @@
 extern crate alloc;
 
 mod receipt;
-pub use receipt::{L1BlockInfo, OpTransactionReceipt, OpTransactionReceiptFields};
+pub use receipt::CeloTransactionReceipt;
 
 mod transaction;
 pub use transaction::{CeloTransaction, CeloTransactionRequest};

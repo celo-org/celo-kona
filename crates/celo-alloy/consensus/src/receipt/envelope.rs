@@ -47,7 +47,7 @@ pub enum CeloReceiptEnvelope<T = Log> {
     ///
     /// [CIP-64]: https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md
     #[cfg_attr(feature = "serde", serde(rename = "0x7b", alias = "0x7B"))]
-    Cip64(ReceiptWithBloom<Receipt<T>>),
+    Cip64(ReceiptWithBloom<Receipt<T>>), // TODO: replace with CeloCip64Receipt which includes baseFee
     /// Receipt envelope with type flag 126, containing a [deposit] receipt.
     ///
     /// [deposit]: https://specs.optimism.io/protocol/deposits.html

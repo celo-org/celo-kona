@@ -21,7 +21,7 @@ celo-alloy-consensus = { workspace = true, features = ["serde"] }
 
 # OP Alloy
 op-alloy-consensus = { workspace = true, features = ["serde"] }
-#op-alloy-rpc-types.workspace = true
+op-alloy-rpc-types.workspace = true
 
 # Alloy
 alloy-serde.workspace = true
