@@ -128,7 +128,7 @@ mod tests {
 
         let inputs = InputsImpl {
             target_address: TRANSFER_ADDRESS,
-            caller_address: from,
+            caller_address: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
             input,
             call_value: U256::from(value),
         };
@@ -146,7 +146,7 @@ mod tests {
         // Test calling with valid parameters
         let mut ctx = Context::celo()
             .modify_tx_chained(|tx| {
-                tx.op_tx.base.caller = get_addresses(CELO_MAINNET_CHAIN_ID).celo_token;
+                tx.op_tx.base.caller = from;
             })
             .modify_cfg_chained(|cfg| cfg.chain_id = CELO_MAINNET_CHAIN_ID)
             .with_db(db);
@@ -207,13 +207,14 @@ mod tests {
         ));
 
         // Test calling from the wrong address
-        ctx.modify_tx(|tx| {
-            tx.op_tx.base.caller = from;
-        });
+        let wrong_inputs = InputsImpl {
+            caller_address: Address::with_last_byte(3),
+            ..inputs.clone()
+        };
         let res = precompiles.run(
             &mut ctx,
             &TRANSFER_ADDRESS,
-            &inputs,
+            &wrong_inputs,
             false,
             TRANSFER_GAS_COST,
         );
