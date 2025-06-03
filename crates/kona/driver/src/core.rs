@@ -17,8 +17,7 @@ use kona_derive::{
 };
 use kona_driver::{DriverError, DriverPipeline, DriverResult, PipelineCursor, TipCursor};
 use kona_genesis::RollupConfig;
-use kona_protocol::L2BlockInfo;
-use kona_rpc::OpAttributesWithParent;
+use kona_protocol::{L2BlockInfo, OpAttributesWithParent};
 use spin::RwLock;
 
 /// The Rollup Driver entrypoint.

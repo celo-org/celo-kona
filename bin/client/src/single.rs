@@ -1,14 +1,14 @@
 //! Single-chain fault proof program entrypoint.
 
 use alloc::sync::Arc;
+use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
-use alloy_evm::{EvmFactory, FromRecoveredTx, FromTxWithEncoded};
 use alloy_primitives::B256;
-use celo_alloy_consensus::CeloTxEnvelope;
 use celo_driver::CeloDriver;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
 use kona_client::single::FaultProofProgramError;
+use kona_derive::prelude::EthereumDataSource;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -16,23 +16,16 @@ use kona_proof::{
     errors::OracleProviderError,
     l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
     l2::OracleL2ChainProvider,
-    sync::new_pipeline_cursor,
+    sync::new_oracle_pipeline_cursor,
 };
-use op_revm::OpSpecId;
 use tracing::{error, info};
 
 /// Executes the fault proof program with the given [PreimageOracleClient] and [HintWriterClient].
 #[inline]
-pub async fn run<P, H, Evm>(
-    oracle_client: P,
-    hint_client: H,
-    evm_factory: Evm,
-) -> Result<(), FaultProofProgramError>
+pub async fn run<P, H>(oracle_client: P, hint_client: H) -> Result<(), FaultProofProgramError>
 where
-    P: PreimageOracleClient + Send + Sync + Debug + Clone,
-    H: HintWriterClient + Send + Sync + Debug + Clone,
-    Evm: EvmFactory<Spec = OpSpecId> + Send + Sync + Debug + Clone + 'static,
-    <Evm as EvmFactory>::Tx: FromTxWithEncoded<CeloTxEnvelope> + FromRecoveredTx<CeloTxEnvelope>,
+    P: PreimageOracleClient + Send + Sync + Debug + Clone + 'static,
+    H: HintWriterClient + Send + Sync + Debug + Clone + 'static,
 {
     const ORACLE_LRU_SIZE: usize = 1024;
 
@@ -42,8 +35,8 @@ where
 
     let oracle = Arc::new(CachingOracle::new(
         ORACLE_LRU_SIZE,
-        oracle_client,
-        hint_client,
+        oracle_client.clone(),
+        hint_client.clone(),
     ));
     let boot = BootInfo::load(oracle.as_ref()).await?;
     let rollup_config = Arc::new(boot.rollup_config);
@@ -89,7 +82,7 @@ where
     ////////////////////////////////////////////////////////////////
 
     // Create a new derivation driver with the given boot information and oracle.
-    let cursor = new_pipeline_cursor(
+    let cursor = new_oracle_pipeline_cursor(
         rollup_config.as_ref(),
         safe_head,
         &mut l1_provider,
@@ -98,11 +91,14 @@ where
     .await?;
     l2_provider.set_cursor(cursor.clone());
 
+    let evm_factory = CeloEvmFactory::default();
+    let da_provider =
+        EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
         cursor.clone(),
         oracle.clone(),
-        beacon,
+        da_provider,
         l1_provider.clone(),
         l2_provider.clone(),
     )

@@ -8,7 +8,7 @@ extern crate alloc;
 extern crate tracing;
 
 mod builder;
-pub use builder::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
+pub use builder::{CeloBlockBuildingOutcome, CeloStatelessL2Builder, compute_receipts_root};
 
 pub(crate) mod util;
 

@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use revm::precompile::{self, PrecompileWithAddress};
 
 /// List of precompiles that are accelerated by the host program.
+#[allow(dead_code)]
 pub(crate) const ACCELERATED_PRECOMPILES: &[PrecompileWithAddress] = &[
     precompile::secp256k1::ECRECOVER,          // ecRecover
     precompile::bn128::pair::ISTANBUL,         // ecPairing
@@ -21,6 +22,7 @@ pub(crate) const ACCELERATED_PRECOMPILES: &[PrecompileWithAddress] = &[
 ];
 
 /// Executes an accelerated precompile on [revm].
+#[allow(dead_code)]
 pub(crate) fn execute<T: Into<Bytes>>(address: Address, input: T, gas: u64) -> Result<Vec<u8>> {
     if let Some(precompile) = ACCELERATED_PRECOMPILES
         .iter()
