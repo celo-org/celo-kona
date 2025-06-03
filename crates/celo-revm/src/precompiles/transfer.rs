@@ -4,7 +4,7 @@
 use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
-    context::{Cfg, ContextTr, JournalTr, Transaction},
+    context::{Cfg, ContextTr, JournalTr},
     interpreter::{Gas, InputsImpl, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
@@ -35,7 +35,7 @@ where
         output: Bytes::new(),
     };
 
-    match run(context, &inputs.input, gas_limit) {
+    match run(context, &inputs.input, inputs.caller_address, gas_limit) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
             assert!(underflow, "Gas underflow is not possible");
@@ -54,7 +54,12 @@ where
     Ok(Some(result))
 }
 
-fn run<CTX>(context: &mut CTX, input: &Bytes, gas_limit: u64) -> PrecompileResult
+fn run<CTX>(
+    context: &mut CTX,
+    input: &Bytes,
+    caller_address: Address,
+    gas_limit: u64,
+) -> PrecompileResult
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
@@ -62,7 +67,7 @@ where
         return Err(PrecompileError::OutOfGas);
     }
 
-    if context.tx().caller() != constants::get_addresses(context.cfg().chain_id()).celo_token {
+    if caller_address != constants::get_addresses(context.cfg().chain_id()).celo_token {
         return Err(PrecompileError::Other(
             "invalid caller for transfer precompile".to_string(),
         ));
