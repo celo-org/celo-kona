@@ -9,7 +9,11 @@ use revm::{Database, context::TxEnv, handler::EvmTr};
 use revm_context::{Cfg, ContextTr, JournalTr};
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
-use std::{format, string::String, vec::Vec};
+use std::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -17,11 +21,8 @@ pub enum CoreContractError {
     AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
-
-    // TODO: Make this error more detailed. Simply adding a "from"-derivation does not work due to
-    // the very generic error return from evm.transact.
-    #[error("Evm error")]
-    Evm,
+    #[error("Evm error: {0}")]
+    Evm(String),
 }
 
 sol! {
@@ -86,7 +87,7 @@ where
         ..CeloTransaction::default()
     };
     let result = match evm.transact(tx) {
-        Err(_) => return Err(CoreContractError::Evm),
+        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o.result,
     };
 
