@@ -48,6 +48,7 @@ pub enum HostMode {
 }
 
 #[tokio::main(flavor = "multi_thread")]
+#[allow(unreachable_code, unused_variables)]
 async fn main() -> Result<()> {
     let cfg = HostCli::parse();
     init_tracing_subscriber(cfg.v, None::<EnvFilter>)?;

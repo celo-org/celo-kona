@@ -1,7 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
 use crate::single::CeloSingleChainHintHandler;
-use alloy_celo_evm::CeloEvmFactory;
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use clap::Parser;
@@ -103,7 +102,6 @@ impl CeloSingleChainHost {
         let client_task = task::spawn(celo_client::single::run(
             OracleReader::new(preimage.client),
             HintWriter::new(hint.client),
-            CeloEvmFactory::default(),
         ));
 
         let (_, client_result) = tokio::try_join!(server_task, client_task)?;

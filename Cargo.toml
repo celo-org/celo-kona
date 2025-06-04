@@ -77,71 +77,71 @@ celo-proof = { version = "0.1.0", path = "crates/kona/proof", default-features =
 celo-protocol = { version = "0.1.0", path = "crates/kona/protocol", default-features = false }
 
 # Binaries
-kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Protocol
-kona-comp = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-driver = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-hardforks = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-comp = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-driver = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-hardforks = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Node
-kona-p2p = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-rpc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-engine = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-node-service = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-p2p = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-rpc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-engine = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-node-service = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Providers
-kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Proof
-kona-mpt = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-proof = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-executor = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-std-fpvm = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-preimage = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-proof-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-mpt = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-proof = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-executor = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-std-fpvm = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-preimage = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-proof-interop = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Utilities
-kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
-kona-serde = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.0", default-features = false }
+kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
+kona-serde = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }
 
 # Alloy
 alloy-rlp = { version = "0.3.11", default-features = false }
 alloy-trie = { version = "0.8.0", default-features = false }
 alloy-chains = { version = "0.2", default-features = false }
-alloy-eips = { version = "0.15.6", default-features = false }
-alloy-serde = { version = "0.15.6", default-features = false }
-alloy-network = { version = "0.15.6", default-features = false }
-alloy-provider = { version = "0.15.6", default-features = false }
-alloy-sol-types = { version = "1.0.0", default-features = false }
-alloy-consensus = { version = "0.15.6", default-features = false }
-alloy-transport = { version = "0.15.6", default-features = false }
-alloy-rpc-types = { version = "0.15.6", default-features = false }
-alloy-rpc-client = { version = "0.15.6", default-features = false }
-alloy-primitives = { version = "1.0.0", default-features = false }
-alloy-node-bindings = { version = "0.15.6", default-features = false }
-alloy-rpc-types-eth = { version = "0.15.6", default-features = false }
-alloy-transport-http = { version = "0.15.6", default-features = false }
-alloy-rpc-types-engine = { version = "0.15.6", default-features = false }
-alloy-rpc-types-beacon = { version = "0.15.6", default-features = false }
-alloy-network-primitives = { version = "0.15.6", default-features = false }
+alloy-eips = { version = "0.15.8", default-features = false }
+alloy-serde = { version = "0.15.8", default-features = false }
+alloy-network = { version = "0.15.8", default-features = false }
+alloy-provider = { version = "0.15.8", default-features = false }
+alloy-sol-types = { version = "1.1.0", default-features = false }
+alloy-consensus = { version = "0.15.8", default-features = false }
+alloy-transport = { version = "0.15.8", default-features = false }
+alloy-rpc-types = { version = "0.15.8", default-features = false }
+alloy-rpc-client = { version = "0.15.8", default-features = false }
+alloy-primitives = { version = "1.1.0", default-features = false }
+alloy-node-bindings = { version = "0.15.8", default-features = false }
+alloy-rpc-types-eth = { version = "0.15.8", default-features = false }
+alloy-transport-http = { version = "0.15.8", default-features = false }
+alloy-rpc-types-engine = { version = "0.15.8", default-features = false }
+alloy-rpc-types-beacon = { version = "0.15.8", default-features = false }
+alloy-network-primitives = { version = "0.15.8", default-features = false }
 alloy-hardforks = { version = "0.2.0", default-features = false }
 alloy-signer = { version = "0.15.6", default-features = false }
 
 # OP Alloy
-op-alloy-network = { version = "0.15.1", default-features = false }
-op-alloy-provider = { version = "0.15.1", default-features = false }
-op-alloy-consensus = { version = "0.15.1", default-features = false }
-op-alloy-rpc-types = { version = "0.15.1", default-features = false }
-op-alloy-rpc-jsonrpsee = { version = "0.15.1", default-features = false }
-op-alloy-rpc-types-engine = { version = "0.15.1", default-features = false }
+op-alloy-network = { version = "0.15.2", default-features = false }
+op-alloy-provider = { version = "0.15.2", default-features = false }
+op-alloy-consensus = { version = "0.15.2", default-features = false }
+op-alloy-rpc-types = { version = "0.15.2", default-features = false }
+op-alloy-rpc-jsonrpsee = { version = "0.15.2", default-features = false }
+op-alloy-rpc-types-engine = { version = "0.15.2", default-features = false }
 alloy-op-hardforks = { version = "0.2.0", default-features = false }
 
 # Execution
@@ -201,6 +201,8 @@ openssl = "0.10.72"
 tracing-loki = "0.2.6"
 tracing-subscriber = "0.3.19"
 tracing = { version = "0.1.41", default-features = false }
+
+# Metrics
 metrics-exporter-prometheus = { version = "0.17.0", default-features = false }
 
 # Testing
@@ -221,5 +223,5 @@ serde_with = { version = "3", default-features = false, features = ["macros"] }
 rocksdb = { version = "0.23.0", default-features = false }
 
 # Cryptography
-secp256k1 = { version = "0.30.0", default-features = false }
 ark-ff = { version = "0.5.0", default-features = false }
+secp256k1 = { version = "0.31.0", default-features = false }

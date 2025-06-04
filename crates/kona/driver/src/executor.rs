@@ -1,15 +1,12 @@
 //! An abstraction for the driver's block executor.
 
-use alloc::{boxed::Box, string::ToString};
+use alloc::boxed::Box;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
-use core::{
-    error::Error,
-    fmt::{Debug, Display},
-};
+use core::error::Error;
 
 /// CeloExecutorTr
 ///
@@ -17,7 +14,7 @@ use core::{
 #[async_trait]
 pub trait CeloExecutorTr {
     /// The error type for the CeloExecutorTr.
-    type Error: Error + Debug + Display + ToString;
+    type Error: Error;
 
     /// Waits for the executor to be ready.
     async fn wait_until_ready(&mut self);
