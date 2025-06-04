@@ -297,7 +297,7 @@ mod tests {
         let tx = CeloTransaction {
             op_tx: OpTransaction {
                 base: TxEnv {
-                    caller: caller,
+                    caller,
                     kind: TxKind::Call(celo_address),
                     data: transferCall {
                         to: address!("0x3333333333333333333333333333333333333333"),
