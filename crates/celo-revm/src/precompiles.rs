@@ -134,6 +134,7 @@ mod tests {
 
         let inputs = InputsImpl {
             target_address: TRANSFER_ADDRESS,
+            // Mainnet address for the CELO token
             caller_address: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
             input,
             call_value: U256::from(value),
@@ -255,8 +256,7 @@ mod tests {
         ));
     }
 
-    fn make_celo_test_db() -> InMemoryDB {
-        let celo_address = get_addresses(1).celo_token;
+    fn make_celo_test_db(celo_address: Address, caller: Address) -> InMemoryDB {
         let mut db = InMemoryDB::default();
 
         // FeeCurrency contract code
@@ -277,10 +277,7 @@ mod tests {
             balance: U256::from(100),
             ..AccountInfo::default()
         };
-        db.insert_account_info(
-            address!("0x2222222222222222222222222222222222222222"),
-            account_info,
-        );
+        db.insert_account_info(caller, account_info);
 
         db
     }
@@ -288,7 +285,8 @@ mod tests {
     #[test]
     fn test_token_duality() {
         let celo_address = get_addresses(1).celo_token;
-        let ctx = Context::celo().with_db(make_celo_test_db());
+        let caller = address!("0x2222222222222222222222222222222222222222");
+        let ctx = Context::celo().with_db(make_celo_test_db(celo_address, caller));
         let mut evm = ctx.build_celo();
 
         sol! {
@@ -299,7 +297,7 @@ mod tests {
         let tx = CeloTransaction {
             op_tx: OpTransaction {
                 base: TxEnv {
-                    caller: address!("0x2222222222222222222222222222222222222222"),
+                    caller: caller,
                     kind: TxKind::Call(celo_address),
                     data: transferCall {
                         to: address!("0x3333333333333333333333333333333333333333"),
