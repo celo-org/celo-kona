@@ -8,9 +8,11 @@ extern crate alloc as std;
 
 mod receipt;
 pub use receipt::CeloReceiptEnvelope;
+pub use receipt::CeloReceiptEnvelopeAlt;
 
 pub mod transaction;
 pub use transaction::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64};
+pub use transaction::{CeloTxTypeAlt};
 
 mod block;
 pub use block::CeloBlock;

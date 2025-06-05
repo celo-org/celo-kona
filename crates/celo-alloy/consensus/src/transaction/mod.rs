@@ -9,6 +9,9 @@ pub use envelope::CeloTxEnvelope;
 pub use tx_type::CeloTxType;
 pub use typed::CeloTypedTransaction;
 
+pub mod tx_type_alt;
+pub use tx_type_alt::CeloTxTypeAlt;
+
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
 pub use envelope::serde_bincode_compat as envelope_serde_bincode_compat;
 
