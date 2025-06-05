@@ -1,6 +1,7 @@
 //! Contains the transaction type identifier for Celo.
 
-use alloy_consensus::Typed2718;
+use alloy_consensus::{Typed2718};
+use op_alloy_consensus::transaction::OpTxType;
 use alloy_eips::eip2718::{Eip2718Error, IsTyped2718};
 use alloy_primitives::{U8, U64};
 use alloy_rlp::{BufMut, Decodable, Encodable};
@@ -11,82 +12,70 @@ use derive_more::Display;
 #[derive(Debug, Copy, Clone, Eq, Default, PartialEq, PartialOrd, Ord, Hash, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "U8", try_from = "U64"))]
-pub enum CeloTxType {
-    /// Legacy transaction type.
-    #[default]
-    #[display("legacy")]
-    Legacy = 0,
-    /// EIP-2930 transaction type.
-    #[display("eip2930")]
-    Eip2930 = 1,
-    /// EIP-1559 transaction type.
-    #[display("eip1559")]
-    Eip1559 = 2,
-    /// EIP-7702 transaction type.
-    #[display("eip7702")]
-    Eip7702 = 4,
+pub enum CeloTxTypeAlt {
+    /// Original OP types
+    OP(OpTxType),
     /// CIP-64 transaction type.
+    #[default]
     #[display("cip64")]
     Cip64 = 123,
-    /// Optimism Deposit transaction type.
-    #[display("deposit")]
-    Deposit = 126,
 }
 
-impl CeloTxType {
+
+impl CeloTxTypeAlt {
     /// List of all variants.
-    pub const ALL: [Self; 6] = [
-        Self::Legacy,
-        Self::Eip2930,
-        Self::Eip1559,
-        Self::Eip7702,
+    pub const ALL: [Self; 7] = [
+        Self::OP(OpTxType::Legacy),
+        Self::OP(OpTxType::Eip2930),
+        Self::OP(OpTxType::Eip1559),
+        Self::OP(OpTxType::Eip2930),
+        Self::OP(OpTxType::Eip7702),
+        Self::OP(OpTxType::Deposit),
         Self::Cip64,
-        Self::Deposit,
     ];
 
-    /// Returns `true` if the type is [`CeloTxType::Deposit`].
+    /// Returns `true` if the type is [`CeloTxTypeAlt::Deposit`].
     pub const fn is_deposit(&self) -> bool {
-        matches!(self, Self::Deposit)
+        matches!(self, Self::OP(OpTxType::Deposit))
     }
 }
 
 #[cfg(feature = "arbitrary")]
-impl arbitrary::Arbitrary<'_> for CeloTxType {
+impl arbitrary::Arbitrary<'_> for CeloTxTypeAlt {
     fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
         let i = u.choose_index(Self::ALL.len())?;
         Ok(Self::ALL[i])
     }
 }
 
-impl From<CeloTxType> for U8 {
-    fn from(tx_type: CeloTxType) -> Self {
+impl From<CeloTxTypeAlt> for U8 {
+    fn from(tx_type: CeloTxTypeAlt) -> Self {
         Self::from(u8::from(tx_type))
     }
 }
 
-impl From<CeloTxType> for u8 {
-    fn from(v: CeloTxType) -> Self {
-        v as Self
+impl From<CeloTxTypeAlt> for u8 {
+    fn from(v: CeloTxTypeAlt) -> Self {
+        match v {
+            CeloTxTypeAlt::Cip64 => 123,
+            CeloTxTypeAlt::OP(tx_type) => tx_type as Self,
+        }
     }
 }
 
-impl TryFrom<u8> for CeloTxType {
+impl TryFrom<u8> for CeloTxTypeAlt {
     type Error = Eip2718Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         Ok(match value {
-            0 => Self::Legacy,
-            1 => Self::Eip2930,
-            2 => Self::Eip1559,
-            4 => Self::Eip7702,
             123 => Self::Cip64,
-            126 => Self::Deposit,
-            _ => return Err(Eip2718Error::UnexpectedType(value)),
+            a => Self::OP(OpTxType::try_from(a)?),
         })
     }
 }
 
-impl TryFrom<u64> for CeloTxType {
+
+impl TryFrom<u64> for CeloTxTypeAlt {
     type Error = &'static str;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
@@ -96,7 +85,7 @@ impl TryFrom<u64> for CeloTxType {
     }
 }
 
-impl TryFrom<U64> for CeloTxType {
+impl TryFrom<U64> for CeloTxTypeAlt {
     type Error = &'static str;
 
     fn try_from(value: U64) -> Result<Self, Self::Error> {
@@ -104,21 +93,32 @@ impl TryFrom<U64> for CeloTxType {
     }
 }
 
-impl PartialEq<u8> for CeloTxType {
+
+impl PartialEq<u8> for CeloTxTypeAlt {
     fn eq(&self, other: &u8) -> bool {
-        (*self as u8) == *other
+        match self {
+            CeloTxTypeAlt::Cip64 => *other == 123,
+            CeloTxTypeAlt::OP(tx_type) => (*tx_type as u8) == *other,
+        }
     }
 }
 
-impl PartialEq<CeloTxType> for u8 {
-    fn eq(&self, other: &CeloTxType) -> bool {
-        *self == *other as Self
+impl PartialEq<CeloTxTypeAlt> for u8 {
+    fn eq(&self, other: &CeloTxTypeAlt) -> bool {
+        match other {
+            CeloTxTypeAlt::Cip64 => *self as u8 == 123,
+            CeloTxTypeAlt::OP(tx_type) => (*tx_type as Self) == *self,
+        }
     }
 }
 
-impl Encodable for CeloTxType {
+impl Encodable for CeloTxTypeAlt {
     fn encode(&self, out: &mut dyn BufMut) {
-        (*self as u8).encode(out);
+        match self {
+            CeloTxTypeAlt::OP(s) => (*s as u8).encode(out),
+            CeloTxTypeAlt::Cip64 => (123 as u8).encode(out),
+        }
+        
     }
 
     fn length(&self) -> usize {
@@ -126,7 +126,7 @@ impl Encodable for CeloTxType {
     }
 }
 
-impl Decodable for CeloTxType {
+impl Decodable for CeloTxTypeAlt {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let ty = u8::decode(buf)?;
 
@@ -134,18 +134,19 @@ impl Decodable for CeloTxType {
     }
 }
 
-impl Typed2718 for CeloTxType {
+impl Typed2718 for CeloTxTypeAlt {
     fn ty(&self) -> u8 {
         (*self).into()
     }
 }
 
-impl IsTyped2718 for CeloTxType {
+impl IsTyped2718 for CeloTxTypeAlt {
     fn is_type(type_id: u8) -> bool {
         // legacy | eip2930 | eip1559 | eip7702 | cip64 | deposit
         matches!(type_id, 0 | 1 | 2 | 4 | 123 | 126)
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -154,24 +155,25 @@ mod tests {
 
     #[test]
     fn test_all_tx_types() {
-        assert_eq!(CeloTxType::ALL.len(), 6);
+        assert_eq!(CeloTxTypeAlt::ALL.len(), 7);
         let all = vec![
-            CeloTxType::Legacy,
-            CeloTxType::Eip2930,
-            CeloTxType::Eip1559,
-            CeloTxType::Eip7702,
-            CeloTxType::Cip64,
-            CeloTxType::Deposit,
+            CeloTxTypeAlt::OP(OpTxType::Legacy),
+            CeloTxTypeAlt::OP(OpTxType::Eip2930),
+            CeloTxTypeAlt::OP(OpTxType::Eip1559),
+            CeloTxTypeAlt::OP(OpTxType::Eip2930),
+            CeloTxTypeAlt::OP(OpTxType::Eip7702),
+            CeloTxTypeAlt::OP(OpTxType::Deposit),
+            CeloTxTypeAlt::Cip64,
         ];
-        assert_eq!(CeloTxType::ALL.to_vec(), all);
+        assert_eq!(CeloTxTypeAlt::ALL.to_vec(), all);
     }
 
     #[test]
     fn tx_type_roundtrip() {
-        for &tx_type in &CeloTxType::ALL {
+        for &tx_type in &CeloTxTypeAlt::ALL {
             let mut buf = Vec::new();
             tx_type.encode(&mut buf);
-            let decoded = CeloTxType::decode(&mut &buf[..]).unwrap();
+            let decoded = CeloTxTypeAlt::decode(&mut &buf[..]).unwrap();
             assert_eq!(tx_type, decoded);
         }
     }
