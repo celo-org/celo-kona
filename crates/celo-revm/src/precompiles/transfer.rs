@@ -35,7 +35,8 @@ where
         output: Bytes::new(),
     };
 
-    match run(context, &inputs.input, inputs.caller_address, gas_limit) {
+    let input_bytes = inputs.input.bytes(context);
+    match run(context, &input_bytes, inputs.caller_address, gas_limit) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
             assert!(underflow, "Gas underflow is not possible");

@@ -2,13 +2,12 @@
 
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::block::CeloAlloyReceiptBuilder;
-use alloy_consensus::{Header, Sealed};
+use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
     EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
-use alloy_primitives::SignatureError;
 use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
@@ -119,8 +118,8 @@ where
         // Step 3. Execute the block containing the transactions within the payload attributes.
         let transactions = attrs
             .recovered_transactions_with_encoded()
-            .collect::<Result<Vec<_>, SignatureError>>()
-            .map_err(ExecutorError::SignatureError)?;
+            .collect::<Result<Vec<_>, RecoveryError>>()
+            .map_err(ExecutorError::Recovery)?;
         let ex_result = executor.execute_block(transactions.iter())?;
 
         info!(

@@ -53,8 +53,14 @@ impl<TX: Transaction + SystemCallTx> SystemCallTx for CeloTransaction<TX> {
 }
 
 impl<T: Transaction> Transaction for CeloTransaction<T> {
-    type AccessListItem = T::AccessListItem;
-    type Authorization = T::Authorization;
+    type AccessListItem<'a>
+        = T::AccessListItem<'a>
+    where
+        T: 'a;
+    type Authorization<'a>
+        = T::Authorization<'a>
+    where
+        T: 'a;
 
     fn tx_type(&self) -> u8 {
         self.op_tx.tx_type()
@@ -88,7 +94,7 @@ impl<T: Transaction> Transaction for CeloTransaction<T> {
         self.op_tx.chain_id()
     }
 
-    fn access_list(&self) -> Option<impl Iterator<Item = &Self::AccessListItem>> {
+    fn access_list(&self) -> Option<impl Iterator<Item = Self::AccessListItem<'_>>> {
         self.op_tx.access_list()
     }
 
@@ -120,7 +126,7 @@ impl<T: Transaction> Transaction for CeloTransaction<T> {
         self.op_tx.authorization_list_len()
     }
 
-    fn authorization_list(&self) -> impl Iterator<Item = &Self::Authorization> {
+    fn authorization_list(&self) -> impl Iterator<Item = Self::Authorization<'_>> {
         self.op_tx.authorization_list()
     }
 }

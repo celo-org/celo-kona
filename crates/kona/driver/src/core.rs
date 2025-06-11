@@ -88,11 +88,10 @@ where
                 }
             }
 
-            let OpAttributesWithParent { mut attributes, .. } = match self
-                .pipeline
-                .produce_payload(tip_cursor.l2_safe_head)
-                .await
-            {
+            let OpAttributesWithParent {
+                inner: mut attributes,
+                ..
+            } = match self.pipeline.produce_payload(tip_cursor.l2_safe_head).await {
                 Ok(attrs) => attrs,
                 Err(PipelineErrorKind::Critical(PipelineError::EndOfSource)) => {
                     warn!(target: "client", "Exhausted data source; Halting derivation and using current safe head.");

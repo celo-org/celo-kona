@@ -46,7 +46,14 @@ impl CeloPayloadAttributes {
             .transactions
             .iter()
             .flatten()
-            .map(|tx_bytes| CeloTxEnvelope::decode_2718(&mut tx_bytes.as_ref()))
+            .map(|tx_bytes| {
+                let mut buf = tx_bytes.as_ref();
+                let tx = CeloTxEnvelope::decode_2718(&mut buf).map_err(alloy_rlp::Error::from)?;
+                if !buf.is_empty() {
+                    return Err(alloy_rlp::Error::UnexpectedLength.into());
+                }
+                Ok(tx)
+            })
     }
 
     /// Returns iterator over decoded transactions with their original encoded bytes.
@@ -73,16 +80,12 @@ impl CeloPayloadAttributes {
     ) -> impl Iterator<
         Item = Result<
             alloy_consensus::transaction::Recovered<CeloTxEnvelope>,
-            alloy_primitives::SignatureError,
+            alloy_consensus::crypto::RecoveryError,
         >,
     > + '_ {
         self.decoded_transactions().map(|res| {
-            res.map_err(|_| {
-                alloy_primitives::SignatureError::FromBytes(
-                    "Failed to decode 2718 transaction envelope",
-                )
-            })
-            .and_then(|tx| tx.try_into_recovered())
+            res.map_err(alloy_consensus::crypto::RecoveryError::from_source)
+                .and_then(|tx| tx.try_into_recovered())
         })
     }
 
@@ -96,7 +99,7 @@ impl CeloPayloadAttributes {
     ) -> impl Iterator<
         Item = Result<
             WithEncoded<alloy_consensus::transaction::Recovered<CeloTxEnvelope>>,
-            alloy_primitives::SignatureError,
+            alloy_consensus::crypto::RecoveryError,
         >,
     > + '_ {
         self.op_payload_attributes

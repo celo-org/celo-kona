@@ -1,4 +1,5 @@
 use crate::{CeloBlockEnv, CeloEvm, handler::CeloHandler, transaction::CeloTxTr};
+use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpSpecId, OpTransactionError};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
@@ -92,7 +93,7 @@ where
     type Inspector = INSP;
 
     fn set_inspector(&mut self, inspector: Self::Inspector) {
-        self.0.0.data.inspector = inspector;
+        self.0.0.inspector = inspector;
     }
 
     fn inspect_replay(&mut self) -> Self::Output {
@@ -124,8 +125,8 @@ where
 {
     fn transact_system_call(
         &mut self,
-        data: revm::primitives::Bytes,
-        system_contract_address: revm::primitives::Address,
+        system_contract_address: Address,
+        data: Bytes,
     ) -> Self::Output {
         self.set_tx(CTX::Tx::new_system_tx(data, system_contract_address));
         let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();

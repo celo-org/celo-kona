@@ -497,7 +497,7 @@ impl CeloTxEnvelope {
     #[cfg(feature = "k256")]
     pub fn try_into_recovered(
         self,
-    ) -> Result<alloy_consensus::transaction::Recovered<Self>, alloy_primitives::SignatureError>
+    ) -> Result<alloy_consensus::transaction::Recovered<Self>, alloy_consensus::crypto::RecoveryError>
     {
         let signer = self.recover_signer()?;
         Ok(alloy_consensus::transaction::Recovered::new_unchecked(

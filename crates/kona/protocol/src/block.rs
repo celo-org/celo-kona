@@ -2,7 +2,6 @@
 
 use alloy_consensus::{Block, Transaction, Typed2718};
 use alloy_eips::BlockNumHash;
-use alloy_rpc_types_engine::ExecutionPayload;
 use celo_alloy_consensus::CeloTxEnvelope;
 use derive_more::Display;
 use kona_genesis::ChainGenesis;
@@ -95,15 +94,6 @@ impl CeloL2BlockInfo {
         Ok(Self {
             op_l2_block_info: L2BlockInfo::new(block_info, l1_origin, sequence_number),
         })
-    }
-
-    /// Constructs a [CeloL2BlockInfo] From a given [ExecutionPayload] and [ChainGenesis].
-    pub fn from_payload_and_genesis(
-        payload: &ExecutionPayload,
-        genesis: &ChainGenesis,
-    ) -> Result<Self, FromBlockError> {
-        let op_l2_block_info = L2BlockInfo::from_payload_and_genesis(payload, genesis)?;
-        Ok(Self { op_l2_block_info })
     }
 }
 

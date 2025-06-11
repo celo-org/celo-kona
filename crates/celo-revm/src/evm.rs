@@ -2,7 +2,7 @@ use crate::CeloPrecompiles;
 use op_revm::OpEvm;
 use revm::{
     Inspector,
-    context::{ContextSetters, Evm, EvmData},
+    context::{ContextSetters, Evm},
     context_interface::ContextTr,
     handler::{
         EvmTr, PrecompileProvider,
@@ -21,10 +21,26 @@ impl<CTX: ContextTr, INSP>
 {
     pub fn new(ctx: CTX, inspector: INSP) -> Self {
         Self(OpEvm(Evm {
-            data: EvmData { ctx, inspector },
+            ctx,
+            inspector,
             instruction: EthInstructions::new_mainnet(),
             precompiles: CeloPrecompiles::default(),
         }))
+    }
+
+    /// Consumed self and returns a new Evm type with given Inspector.
+    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<CTX, INSP> {
+        Self(OpEvm(self.0.0.with_inspector(inspector)))
+    }
+
+    /// Consumes self and returns a new Evm type with given Precompiles.
+    pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<CTX, INSP> {
+        Self(OpEvm(self.0.0.with_precompiles(precompiles)))
+    }
+
+    /// Consumes self and returns the inner Inspector.
+    pub fn into_inspector(self) -> INSP {
+        self.0.into_inspector()
     }
 }
 
@@ -814,7 +830,7 @@ mod tests {
         // Run evm.
         let _ = evm.inspect_replay().unwrap();
 
-        let inspector = &evm.0.0.data.inspector;
+        let inspector = &evm.0.0.inspector;
         assert!(!inspector.logs.is_empty());
     }
 }
