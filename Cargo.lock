@@ -1837,6 +1837,7 @@ dependencies = [
  "miniz_oxide",
  "op-alloy-consensus",
  "op-alloy-rpc-types",
+ "op-alloy-rpc-types-engine",
  "proptest",
  "rand 0.9.1",
  "rstest",
