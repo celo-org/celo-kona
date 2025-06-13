@@ -43,11 +43,10 @@ op-alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
 
 ## static precompile sets.
-#once_cell = { workspace = true, features = ["alloc"] }
+once_cell = { workspace = true, features = ["alloc"] }
 
 # misc
 auto_impl.workspace = true
-lazy_static = { workspace = true, features = ["spin_no_std"] }
 thiserror.workspace = true
 
 # Optional
