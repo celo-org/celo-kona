@@ -68,7 +68,7 @@ where
             .next_block_base_fee(*base_fee_params)
             .unwrap_or_default();
         // TODO: add CeloRollupConfig which includes eip1559_base_fee_floor and using it instead of hardcoding
-        next_block_base_fee = core::cmp::max(next_block_base_fee, 25_000_000_000);
+        // next_block_base_fee = core::cmp::max(next_block_base_fee, 25_000_000_000);
 
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
         Ok(BlockEnv {
