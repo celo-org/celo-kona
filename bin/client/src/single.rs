@@ -7,9 +7,9 @@ use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
-use kona_client::single::FaultProofProgramError;
-use kona_derive::prelude::EthereumDataSource;
-use kona_executor::TrieDBProvider;
+use kona_derive::{errors::PipelineErrorKind, prelude::EthereumDataSource};
+use kona_driver::DriverError;
+use kona_executor::{ExecutorError, TrieDBProvider};
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
     BootInfo, CachingOracle, HintType,
@@ -18,7 +18,25 @@ use kona_proof::{
     l2::OracleL2ChainProvider,
     sync::new_oracle_pipeline_cursor,
 };
+use thiserror::Error;
 use tracing::{error, info};
+
+/// An error that can occur when running the fault proof program.
+#[derive(Error, Debug)]
+pub enum FaultProofProgramError {
+    /// The claim is invalid.
+    #[error("Invalid claim. Expected {0}, actual {1}")]
+    InvalidClaim(B256, B256),
+    /// An error occurred in the Oracle provider.
+    #[error(transparent)]
+    OracleProviderError(#[from] OracleProviderError),
+    /// An error occurred in the derivation pipeline.
+    #[error(transparent)]
+    PipelineError(#[from] PipelineErrorKind),
+    /// An error occurred in the driver.
+    #[error(transparent)]
+    Driver(#[from] DriverError<ExecutorError>),
+}
 
 /// Executes the fault proof program with the given [PreimageOracleClient] and [HintWriterClient].
 #[inline]
