@@ -19,9 +19,9 @@ use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, ResultAndState},
-    handler::{PrecompileProvider, instructions::EthInstructions},
+    handler::instructions::EthInstructions,
     inspector::NoOpInspector,
-    interpreter::{InterpreterResult, interpreter::EthInterpreter},
+    interpreter::interpreter::EthInterpreter,
 };
 
 pub mod block;
@@ -32,30 +32,34 @@ pub mod block;
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// [`CeloEvm`](celo_revm::CeloEvm) type.
 #[allow(missing_debug_implementations)] // missing celo_revm::CeloContext Debug impl
-pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
-    inner:
-        celo_revm::CeloEvm<CeloContext<DB>, I, EthInstructions<EthInterpreter, CeloContext<DB>>, P>,
+pub struct CeloEvm<DB: Database, I> {
+    inner: celo_revm::CeloEvm<
+        CeloContext<DB>,
+        I,
+        EthInstructions<EthInterpreter, CeloContext<DB>>,
+        CeloPrecompiles,
+    >,
     inspect: bool,
 }
 
-impl<DB: Database, I, P> CeloEvm<DB, I, P> {
+impl<DB: Database, I> CeloEvm<DB, I> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &CeloContext<DB> {
-        &self.inner.0.0.data.ctx
+        &self.inner.0.0.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
-    pub fn ctx_mut(&mut self) -> &mut CeloContext<DB> {
-        &mut self.inner.0.0.data.ctx
+    pub const fn ctx_mut(&mut self) -> &mut CeloContext<DB> {
+        &mut self.inner.0.0.ctx
     }
 
     /// Provides a mutable reference to the EVM inspector.
-    pub fn inspector_mut(&mut self) -> &mut I {
-        &mut self.inner.0.0.data.inspector
+    pub const fn inspector_mut(&mut self) -> &mut I {
+        &mut self.inner.0.0.inspector
     }
 }
 
-impl<DB: Database, I, P> CeloEvm<DB, I, P> {
+impl<DB: Database, I> CeloEvm<DB, I> {
     /// Creates a new Celo EVM instance.
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
@@ -65,7 +69,6 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             CeloContext<DB>,
             I,
             EthInstructions<EthInterpreter, CeloContext<DB>>,
-            P,
         >,
         inspect: bool,
     ) -> Self {
@@ -76,7 +79,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     }
 }
 
-impl<DB: Database, I, P> Deref for CeloEvm<DB, I, P> {
+impl<DB: Database, I> Deref for CeloEvm<DB, I> {
     type Target = CeloContext<DB>;
 
     #[inline]
@@ -85,24 +88,25 @@ impl<DB: Database, I, P> Deref for CeloEvm<DB, I, P> {
     }
 }
 
-impl<DB: Database, I, P> DerefMut for CeloEvm<DB, I, P> {
+impl<DB: Database, I> DerefMut for CeloEvm<DB, I> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
     }
 }
 
-impl<DB, I, P> Evm for CeloEvm<DB, I, P>
+impl<DB, I> Evm for CeloEvm<DB, I>
 where
     DB: Database,
     I: Inspector<CeloContext<DB>>,
-    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type DB = DB;
     type Tx = CeloTransaction<TxEnv>;
     type Error = EVMError<DB::Error, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
+    type Precompiles = CeloPrecompiles;
+    type Inspector = I;
 
     fn block(&self) -> &BlockEnv {
         &self.block
@@ -207,13 +211,29 @@ where
             cfg: cfg_env,
             journaled_state,
             ..
-        } = self.inner.0.0.data.ctx;
+        } = self.inner.0.0.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
         self.inspect = enabled;
+    }
+
+    fn precompiles(&self) -> &Self::Precompiles {
+        &self.inner.0.0.precompiles
+    }
+
+    fn precompiles_mut(&mut self) -> &mut Self::Precompiles {
+        &mut self.inner.0.0.precompiles
+    }
+
+    fn inspector(&self) -> &Self::Inspector {
+        &self.inner.0.0.inspector
+    }
+
+    fn inspector_mut(&mut self) -> &mut Self::Inspector {
+        &mut self.inner.0.0.inspector
     }
 }
 
@@ -230,18 +250,21 @@ impl EvmFactory for CeloEvmFactory {
         EVMError<DBError, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
+    type Precompiles = CeloPrecompiles;
 
     fn create_evm<DB: Database>(
         &self,
         db: DB,
         input: EvmEnv<OpSpecId>,
     ) -> Self::Evm<DB, NoOpInspector> {
+        let spec_id = input.cfg_env.spec;
         CeloEvm {
             inner: Context::celo()
                 .with_db(db)
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
-                .build_celo_with_inspector(NoOpInspector {}),
+                .build_celo_with_inspector(NoOpInspector {})
+                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: false,
         }
     }
@@ -252,12 +275,14 @@ impl EvmFactory for CeloEvmFactory {
         input: EvmEnv<OpSpecId>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
+        let spec_id = input.cfg_env.spec;
         CeloEvm {
             inner: Context::celo()
                 .with_db(db)
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
-                .build_celo_with_inspector(inspector),
+                .build_celo_with_inspector(inspector)
+                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: true,
         }
     }

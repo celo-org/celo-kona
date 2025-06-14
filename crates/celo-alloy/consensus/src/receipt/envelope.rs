@@ -137,6 +137,7 @@ impl<T> CeloReceiptEnvelope<T> {
     }
 
     /// Return the receipt logs.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn logs(&self) -> &[T] {
         &self.as_receipt().unwrap().logs
     }

@@ -78,7 +78,7 @@ impl FromTxWithEncoded<CeloTxEnvelope> for CeloTransaction<TxEnv> {
         let deposit = if let CeloTxEnvelope::Deposit(tx) = tx {
             DepositTransactionParts {
                 source_hash: tx.source_hash,
-                mint: tx.mint,
+                mint: Some(tx.mint),
                 is_system_transaction: tx.is_system_transaction,
             }
         } else {

@@ -1,12 +1,15 @@
 //! Block Types for Celo.
 
+use alloc::vec::Vec;
 use alloy_consensus::{Block, Transaction, Typed2718};
-use alloy_eips::BlockNumHash;
-use alloy_rpc_types_engine::ExecutionPayload;
+use alloy_eips::{BlockNumHash, eip7685::EMPTY_REQUESTS_HASH};
+use alloy_primitives::B256;
+use alloy_rpc_types_engine::{CancunPayloadFields, PraguePayloadFields};
 use celo_alloy_consensus::CeloTxEnvelope;
 use derive_more::Display;
 use kona_genesis::ChainGenesis;
 use kona_protocol::{BlockInfo, FromBlockError, L1BlockInfoTx, L2BlockInfo};
+use op_alloy_rpc_types_engine::{OpExecutionPayload, OpExecutionPayloadSidecar};
 
 /// L2 Block Header Info
 #[derive(Debug, Display, Clone, Copy, Hash, Eq, PartialEq, Default)]
@@ -97,13 +100,33 @@ impl CeloL2BlockInfo {
         })
     }
 
-    /// Constructs a [CeloL2BlockInfo] From a given [ExecutionPayload] and [ChainGenesis].
+    /// Constructs an [`L2BlockInfo`] From a given [`OpExecutionPayload`] and [`ChainGenesis`].
     pub fn from_payload_and_genesis(
-        payload: &ExecutionPayload,
+        payload: OpExecutionPayload,
+        parent_beacon_block_root: Option<B256>,
         genesis: &ChainGenesis,
     ) -> Result<Self, FromBlockError> {
-        let op_l2_block_info = L2BlockInfo::from_payload_and_genesis(payload, genesis)?;
-        Ok(Self { op_l2_block_info })
+        let block: Block<CeloTxEnvelope> = match payload {
+            OpExecutionPayload::V4(_) => {
+                let sidecar = OpExecutionPayloadSidecar::v4(
+                    CancunPayloadFields::new(
+                        parent_beacon_block_root.unwrap_or_default(),
+                        Vec::new(),
+                    ),
+                    PraguePayloadFields::new(EMPTY_REQUESTS_HASH),
+                );
+                payload.try_into_block_with_sidecar(&sidecar)?
+            }
+            OpExecutionPayload::V3(_) => {
+                let sidecar = OpExecutionPayloadSidecar::v3(CancunPayloadFields::new(
+                    parent_beacon_block_root.unwrap_or_default(),
+                    Vec::new(),
+                ));
+                payload.try_into_block_with_sidecar(&sidecar)?
+            }
+            _ => payload.try_into_block()?,
+        };
+        Self::from_block_and_genesis(&block, genesis)
     }
 }
 
@@ -266,14 +289,14 @@ mod tests {
         let json = r#"{
             "opL2BlockInfo": {
                 "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
-                "number": "0x1",
+                "number": 1,
                 "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
-                "timestamp": "0x1",
+                "timestamp": 1,
                 "l1origin": {
                     "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
                     "number": 2
                 },
-                "sequenceNumber": "0x3"
+                "sequenceNumber": 3
             }
         }"#;
 
@@ -303,14 +326,14 @@ mod tests {
         let json = r#"{
             "opL2BlockInfo": {
                 "hash": "0x0101010101010101010101010101010101010101010101010101010101010101",
-                "number": "0x1",
+                "number": 1,
                 "parentHash": "0x0202020202020202020202020202020202020202020202020202020202020202",
-                "timestamp": "0x1",
+                "timestamp": 1,
                 "l1origin": {
                     "hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
                     "number": 2
                 },
-                "sequenceNumber": "0x3"
+                "sequenceNumber": 3
             }
         }"#;
 

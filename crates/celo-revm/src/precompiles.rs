@@ -94,7 +94,7 @@ mod tests {
         Context,
         context::{JournalOutput, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::InMemoryDB},
-        interpreter::InstructionResult,
+        interpreter::{CallInput, InstructionResult},
         primitives::Bytes,
         state::{AccountInfo, Bytecode},
     };
@@ -134,9 +134,10 @@ mod tests {
 
         let inputs = InputsImpl {
             target_address: TRANSFER_ADDRESS,
+            bytecode_address: None,
             // Mainnet address for the CELO token
             caller_address: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
-            input,
+            input: CallInput::Bytes(input),
             call_value: U256::from(value),
         };
 
@@ -193,7 +194,7 @@ mod tests {
         ));
 
         // Test calling with too short input
-        let short_input = Bytes::from(vec![0; 63]);
+        let short_input = CallInput::Bytes(Bytes::from(vec![0; 63]));
         let bad_input = InputsImpl {
             input: short_input,
             ..inputs
@@ -238,7 +239,7 @@ mod tests {
         input_vec[31] = 1;
         input_vec[63] = 2;
         input_vec[95] = initial_balance + 10;
-        let input = Bytes::from(input_vec);
+        let input = CallInput::Bytes(Bytes::from(input_vec));
         let big_value_input = InputsImpl { input, ..inputs };
         let res = precompiles.run(
             &mut ctx,

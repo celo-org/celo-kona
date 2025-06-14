@@ -5,8 +5,8 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use op_revm::OpTransaction;
-use revm::{Database, context::TxEnv, handler::EvmTr};
-use revm_context::{Cfg, ContextTr, JournalTr};
+use revm::{Database, context::TxEnv, context_interface::ContextTr, handler::EvmTr};
+use revm_context::Cfg;
 use revm_context_interface::result::{ExecutionResult, Output};
 use revm_handler::ExecuteEvm;
 use std::{

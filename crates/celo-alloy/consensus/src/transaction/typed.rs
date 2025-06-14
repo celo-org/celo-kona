@@ -7,7 +7,7 @@ use alloy_consensus::{
 };
 use alloy_eips::{Encodable2718, eip2718::IsTyped2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxHash, TxKind, bytes::BufMut};
-use alloy_rlp::{EMPTY_STRING_CODE, Encodable};
+use alloy_rlp::Encodable;
 use op_alloy_consensus::{OpTxType, TxDeposit};
 
 /// The TypedTransaction enum represents all Ethereum transaction request types, modified for Celo.
@@ -412,7 +412,7 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
                 tx.source_hash.length()
                     + tx.from.length()
                     + tx.to.length()
-                    + tx.mint.map_or(1, |mint| mint.length())
+                    + tx.mint.length()
                     + tx.value.length()
                     + tx.gas_limit.length()
                     + tx.is_system_transaction.length()
@@ -433,11 +433,7 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
                 tx.source_hash.encode(out);
                 tx.from.encode(out);
                 tx.to.encode(out);
-                if let Some(mint) = tx.mint {
-                    mint.encode(out);
-                } else {
-                    out.put_u8(EMPTY_STRING_CODE);
-                }
+                tx.mint.encode(out);
                 tx.value.encode(out);
                 tx.gas_limit.encode(out);
                 tx.is_system_transaction.encode(out);
