@@ -1650,6 +1650,8 @@ dependencies = [
  "celo-driver",
  "celo-proof",
  "cfg-if",
+ "hokulea-eigenda",
+ "hokulea-proof",
  "kona-client",
  "kona-derive",
  "kona-driver",
@@ -1770,6 +1772,7 @@ dependencies = [
  "clap",
  "eigenda-cert",
  "hokulea-eigenda",
+ "hokulea-proof",
  "kona-cli",
  "kona-client",
  "kona-derive",
@@ -2017,7 +2020,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2475,7 +2478,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2924,6 +2927,30 @@ dependencies = [
  "kona-derive",
  "kona-protocol",
  "rust-kzg-bn254-primitives",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "hokulea-proof"
+version = "0.1.0"
+source = "git+https://github.com/Layr-Labs/hokulea#8536bc9a4e15476500053abc1c1416f78ec95bd2"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "ark-bn254",
+ "ark-ff 0.5.0",
+ "async-trait",
+ "canoe-bindings",
+ "cfg-if",
+ "eigenda-cert",
+ "hokulea-eigenda",
+ "kona-preimage",
+ "kona-proof",
+ "rust-kzg-bn254-primitives",
+ "rust-kzg-bn254-verifier",
+ "serde",
+ "serde_json",
  "thiserror",
  "tracing",
 ]
@@ -4976,7 +5003,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5522,6 +5549,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-kzg-bn254-verifier"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13b1a1996f1d61c05d732aac54b1ecfc11abbf73a47b3e4ca72f92ecdd75214f"
+dependencies = [
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-serialize 0.5.0",
+ "rust-kzg-bn254-primitives",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5576,7 +5616,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6266,7 +6306,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
