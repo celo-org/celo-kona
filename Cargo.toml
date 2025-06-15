@@ -156,6 +156,10 @@ revm-handler = { version = "5.0.1", default-features = false }
 revm-context = { version = "5.0.1", default-features = false }
 alloy-signer = { version = "1.0.9", default-features = false }
 
+# Hokulea
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", package = "hokulea-eigenda", default-features = false}
+eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", package = "eigenda-cert", default-features = false}
+
 # General
 url = "2.5.4"
 lru = "0.14.0"

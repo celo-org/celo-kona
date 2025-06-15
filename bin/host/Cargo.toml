@@ -64,6 +64,11 @@ alloy-op-evm = { workspace = true, features = ["std"] }
 # Revm
 revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst"] }
 
+# Hokulea
+hokulea-eigenda.workspace = true
+hokulea-proof.workspace = true
+eigenda-cert.workspace = true
+
 # General
 anyhow.workspace = true
 tracing.workspace = true
