@@ -1797,6 +1797,7 @@ dependencies = [
  "kona-genesis",
  "kona-mpt",
  "kona-preimage",
+ "kona-proof",
  "kona-protocol",
  "kona-registry",
  "lazy_static",
