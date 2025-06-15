@@ -54,6 +54,10 @@ op-revm.workspace = true
 alloy-evm.workspace = true
 alloy-op-evm.workspace = true
 
+# Hokulea
+hokulea-eigenda.workspace = true
+hokulea-proof.workspace = true
+
 # General
 lru.workspace = true
 spin.workspace = true

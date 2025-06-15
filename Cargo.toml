@@ -154,6 +154,11 @@ revm-context-interface = { version = "3.0.0", default-features = false }
 revm-handler = { version = "3.0.1", default-features = false }
 revm-context = { version = "3.0.0", default-features = false }
 
+# Hokulea
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", package = "hokulea-eigenda", default-features = false}
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", package = "hokulea-proof", default-features = false}
+eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", package = "eigenda-cert", default-features = false}
+
 # General
 url = "2.5.4"
 lru = "0.14.0"
@@ -211,6 +216,7 @@ pprof = "0.14.0"
 arbtest = "0.3.2"
 proptest = "1.6.0"
 criterion = "0.5.1"
+mockito = "1.7.0"
 
 # Serialization
 rkyv = "0.8.10"
