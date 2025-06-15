@@ -14,6 +14,7 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_proof::hint::CeloHintType;
 use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
@@ -28,10 +29,39 @@ pub struct CeloSingleChainHintHandler;
 impl HintHandler for CeloSingleChainHintHandler {
     type Cfg = CeloSingleChainHost;
 
+    /// Fetches and processes a hint based on its type.
     async fn fetch_hint(
         hint: Hint<<Self::Cfg as OnlineHostBackendCfg>::HintType>,
         cfg: &Self::Cfg,
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
+        kv: SharedKeyValueStore,
+    ) -> Result<()> {
+        match hint.ty {
+            CeloHintType::Original(ty) => {
+                Self::fetch_original_hint(
+                    Hint {
+                        ty,
+                        data: hint.data,
+                    },
+                    cfg,
+                    providers,
+                    kv,
+                )
+                .await
+            }
+            CeloHintType::EigenDACert => {
+                Self::fetch_eigenda_cert_hint(hint.data, cfg, providers, kv).await
+            }
+        }
+    }
+}
+
+/// Implements the fetchers for each hint type
+impl CeloSingleChainHintHandler {
+    async fn fetch_original_hint(
+        hint: Hint<HintType>,
+        cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
+        providers: &<<CeloSingleChainHintHandler as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
         match hint.ty {
@@ -406,5 +436,15 @@ impl HintHandler for CeloSingleChainHintHandler {
         }
 
         Ok(())
+    }
+
+    /// Fetches and processes an EigenDA certificate hint.
+    async fn fetch_eigenda_cert_hint(
+        _data: Bytes,
+        _cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
+        _providers: &<<CeloSingleChainHintHandler as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
+        _kv: SharedKeyValueStore,
+    ) -> Result<()> {
+        todo!()
     }
 }

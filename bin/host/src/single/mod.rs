@@ -3,5 +3,8 @@
 mod cfg;
 pub use cfg::{CeloSingleChainHost, CeloSingleChainProviders};
 
+mod eigenda_blobs;
+pub use eigenda_blobs::OnlineEigenDABlobProvider;
+
 mod handler;
 pub use handler::CeloSingleChainHintHandler;
