@@ -6,9 +6,9 @@ use reqwest;
 /// Fetches blobs from EigenDA via an eigenda-proxy instance.
 #[derive(Debug, Clone)]
 pub struct OnlineEigenDABlobProvider {
-    /// The base url.
+    /// The base url of the Eigen DA Proxy
     base: String,
-    /// The inner reqwest client. Used to talk to proxy
+    /// The inner reqwest client
     client: reqwest::Client,
 }
 

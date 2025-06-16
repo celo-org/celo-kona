@@ -1,4 +1,4 @@
-//! A Hint definition for Celo.
+//! A Hint definition for Celo
 
 use alloc::{str::FromStr, string::String, vec::Vec};
 use alloy_primitives::hex;
@@ -6,21 +6,21 @@ use core::fmt::Display;
 use kona_proof::HintType;
 use kona_proof::errors::HintParsingError;
 
-/// The [CeloHintType] extends kona's [HintType] enum with additional variants
+/// The [CeloHintType] extends kona's [HintType] enum with additional variants.
 /// for EigenDA integration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CeloHintType {
-    /// Original hint type from kona
+    /// Original hint type from kona's [HintType] enum.
     Original(HintType),
-    /// EigenDA certificate hint type
+    /// EigenDA certificate hint type.
     EigenDACert,
 }
 
 impl CeloHintType {
-    /// The string identifier for EigenDA certificate hint type
+    /// The string identifier for EigenDA certificate hint type.
     pub const EIGENDA_CERT: &'static str = "eigenda-certificate";
 
-    /// Encodes the hint type with the provided data into a hex-encoded string
+    /// Encodes the hint type with the provided data into a hex-encoded string.
     pub fn encode_with(&self, data: &[&[u8]]) -> String {
         let concatenated = hex::encode(data.iter().copied().flatten().copied().collect::<Vec<_>>());
         alloc::format!("{} {}", self, concatenated)

@@ -35,7 +35,7 @@ pub struct CeloSingleChainHintHandler;
 impl HintHandler for CeloSingleChainHintHandler {
     type Cfg = CeloSingleChainHost;
 
-    /// Fetches and processes a hint based on its type.
+    /// fetch_hint fetches and processes a hint based on its type.
     async fn fetch_hint(
         hint: Hint<<Self::Cfg as OnlineHostBackendCfg>::HintType>,
         cfg: &Self::Cfg,
@@ -62,8 +62,9 @@ impl HintHandler for CeloSingleChainHintHandler {
     }
 }
 
-/// Implements the fetchers for each hint type
+/// Implements the fetchers for each hint type.
 impl CeloSingleChainHintHandler {
+    /// fetch_original_hint fetches and processes an original hint.
     async fn fetch_original_hint(
         hint: Hint<HintType>,
         cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
@@ -446,7 +447,7 @@ impl CeloSingleChainHintHandler {
 
     const RECENCY_BUFFER: u64 = 100_000_000;
 
-    /// Fetches and processes an EigenDA certificate hint.
+    /// fetch_eigenda_cert_hint fetches and processes an EigenDA certificate hint.
     async fn fetch_eigenda_cert_hint(
         altda_commitment_bytes: Bytes,
         cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
@@ -473,7 +474,9 @@ impl CeloSingleChainHintHandler {
         let altda_commitment: AltDACommitment = match altda_commitment_bytes.as_ref().try_into() {
             Ok(a) => a,
             Err(e) => {
-                panic!("the error message above should have handled the issue {e}");
+                return Err(anyhow!(
+                    "Failed to convert hint data to AltDACommitment: {e}"
+                ));
             }
         };
 
@@ -482,7 +485,7 @@ impl CeloSingleChainHintHandler {
         let rollup_config = cfg
             .kona_cfg
             .read_rollup_config()
-            .expect("should have been able to read rollup config");
+            .map_err(|e| anyhow!("Failed to read rollup config: {}", e))?;
 
         let recency = rollup_config.seq_window_size + Self::RECENCY_BUFFER;
         let recency_be_bytes = recency.to_be_bytes();
@@ -534,6 +537,7 @@ impl CeloSingleChainHintHandler {
                 )?;
             }
         }
+
         Ok(())
     }
 }

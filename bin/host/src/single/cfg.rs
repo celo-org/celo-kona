@@ -32,7 +32,7 @@ pub struct CeloSingleChainHost {
     #[clap(flatten)]
     pub kona_cfg: SingleChainHost,
 
-    /// URL of the EigenDA RPC endpoint.
+    /// URL of the EigenDA Proxy endpoint.
     #[clap(
         long,
         visible_alias = "eigenda",
