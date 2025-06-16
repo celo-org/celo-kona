@@ -67,8 +67,8 @@ impl CeloSingleChainHintHandler {
     /// fetch_original_hint fetches and processes an original hint.
     async fn fetch_original_hint(
         hint: Hint<HintType>,
-        cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
-        providers: &<<CeloSingleChainHintHandler as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
+        cfg: &<Self as HintHandler>::Cfg,
+        providers: &<<Self as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
         match hint.ty {
@@ -450,8 +450,8 @@ impl CeloSingleChainHintHandler {
     /// fetch_eigenda_cert_hint fetches and processes an EigenDA certificate hint.
     async fn fetch_eigenda_cert_hint(
         altda_commitment_bytes: Bytes,
-        cfg: &<CeloSingleChainHintHandler as HintHandler>::Cfg,
-        providers: &<<CeloSingleChainHintHandler as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
+        cfg: &<Self as HintHandler>::Cfg,
+        providers: &<<Self as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
         // Fetch the blob sidecar from the blob provider.

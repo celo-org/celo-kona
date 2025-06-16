@@ -161,7 +161,7 @@ impl CeloSingleChainHost {
         let eigen_da_blob_provider = self
             .eigenda_proxy_address
             .clone()
-            .map(|base_url| OnlineEigenDABlobProvider::new(base_url));
+            .map(OnlineEigenDABlobProvider::new);
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
