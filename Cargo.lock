@@ -1702,6 +1702,7 @@ dependencies = [
  "celo-alloy-rpc-types-engine",
  "celo-executor",
  "celo-registry",
+ "celo-revm",
  "kona-executor",
  "kona-genesis",
  "kona-mpt",
