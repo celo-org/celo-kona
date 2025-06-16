@@ -7,6 +7,7 @@ use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::{EvmEnv, EvmFactory};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
+use celo_revm::constants::MAX_CODE_SIZE;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
@@ -42,9 +43,11 @@ where
 
     /// Returns the active [CfgEnv] for the executor.
     pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
-        CfgEnv::new()
+        let mut cfg_env = CfgEnv::new()
             .with_chain_id(self.config.op_rollup_config.l2_chain_id)
-            .with_spec(self.config.op_rollup_config.spec_id(timestamp))
+            .with_spec(self.config.op_rollup_config.spec_id(timestamp));
+        cfg_env.limit_contract_code_size = Some(MAX_CODE_SIZE);
+        cfg_env
     }
 
     /// Prepares a [BlockEnv] with the given [CeloPayloadAttributes].
