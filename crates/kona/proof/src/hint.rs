@@ -31,7 +31,7 @@ impl FromStr for CeloHintType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            CeloHintType::EIGENDA_CERT => Ok(Self::EigenDACert),
+            Self::EIGENDA_CERT => Ok(Self::EigenDACert),
             _ => Ok(Self::Original(HintType::from_str(value)?)),
         }
     }
@@ -40,7 +40,7 @@ impl FromStr for CeloHintType {
 impl From<CeloHintType> for &str {
     fn from(value: CeloHintType) -> Self {
         match value {
-            CeloHintType::EigenDACert => CeloHintType::EIGENDA_CERT,
+            CeloHintType::EigenDACert => Self::EIGENDA_CERT,
             CeloHintType::Original(ht) => ht.into(),
         }
     }
