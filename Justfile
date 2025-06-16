@@ -53,7 +53,7 @@ download-srs:
   if [ ! -f "resources/g1.point" ]; then
       echo "Downloading SRS G1 points to resources/g1.point ..."
       mkdir -p resources
-      curl -o resources/g1.point -L https://github.com/Layr-Labs/eigenda-proxy/raw/refs/heads/main/resources/g1.point
+      curl -o resources/g1.point -L https://github.com/Layr-Labs/eigenda-proxy/raw/refs/heads/main/resources/g1.point || { echo "Error: Failed to download SRS G1 points."; exit 1; }
   else
       echo "SRS file resources/g1.point already exists, skipping download"
   fi
