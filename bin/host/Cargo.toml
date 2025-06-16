@@ -87,7 +87,8 @@ ark-ff.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-mockito.workspace = true
+# Specifing the version here to avoid no_std violations
+mockito = "1.7.0"
 
 [features]
 default = ["single"]
