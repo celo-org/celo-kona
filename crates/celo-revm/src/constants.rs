@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use revm::primitives::{Address, HashMap, address};
 
 /// Maximum size of contract code in bytes (64KB == 65536 bytes)
-pub const MAX_CODE_SIZE: usize = 0x10000;
+pub const CELO_MAX_CODE_SIZE: usize = 0x10000;
 
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_ALFAJORES_CHAIN_ID: u64 = 44787;
