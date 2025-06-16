@@ -3,8 +3,7 @@
 use alloc::{str::FromStr, string::String, vec::Vec};
 use alloy_primitives::hex;
 use core::fmt::Display;
-use kona_proof::HintType;
-use kona_proof::errors::HintParsingError;
+use kona_proof::{HintType, errors::HintParsingError};
 
 /// The [CeloHintType] extends kona's [HintType] enum with additional variants.
 /// for EigenDA integration

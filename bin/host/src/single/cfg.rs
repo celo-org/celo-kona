@@ -1,7 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::CeloSingleChainHintHandler;
-use crate::single::eigenda_blobs::OnlineEigenDABlobProvider;
+use crate::single::{CeloSingleChainHintHandler, eigenda_blobs::OnlineEigenDABlobProvider};
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_proof::hint::CeloHintType;
