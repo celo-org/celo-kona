@@ -40,7 +40,7 @@ impl FromStr for CeloHintType {
 impl From<CeloHintType> for &str {
     fn from(value: CeloHintType) -> Self {
         match value {
-            CeloHintType::EigenDACert => Self::EIGENDA_CERT,
+            CeloHintType::EigenDACert => CeloHintType::EIGENDA_CERT,
             CeloHintType::Original(ht) => ht.into(),
         }
     }
