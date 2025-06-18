@@ -48,11 +48,11 @@ alloy-op-evm.workspace = true
 # General
 thiserror.workspace = true
 tracing.workspace = true
+serde = { workspace = true, features = ["derive", "alloc"] }
 
 # `test-utils` feature
 rand = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"], optional = true }
 tokio = { workspace = true, features = ["full"], optional = true }
 rstest = { workspace = true, optional = true }
 kona-registry = { workspace = true, optional = true }
@@ -71,7 +71,6 @@ celo-executor = { workspace = true, features = ["test-utils"] }
 test-utils = [
     "dep:rand",
     "dep:serde_json",
-    "dep:serde",
     "dep:tokio",
     "dep:rstest",
     "dep:kona-registry",

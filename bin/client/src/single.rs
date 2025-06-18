@@ -5,6 +5,7 @@ use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_driver::CeloDriver;
+use celo_executor::CeloRollupConfig;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
 use kona_client::single::FaultProofProgramError;
@@ -40,6 +41,7 @@ where
     ));
     let boot = BootInfo::load(oracle.as_ref()).await?;
     let rollup_config = Arc::new(boot.rollup_config);
+    let celo_rollup_config = Arc::new(CeloRollupConfig::from(rollup_config.as_ref().clone()));
     let safe_head_hash = fetch_safe_head_hash(oracle.as_ref(), boot.agreed_l2_output_root).await?;
 
     let mut l1_provider = OracleL1ChainProvider::new(boot.l1_head, oracle.clone());
@@ -104,7 +106,7 @@ where
     )
     .await?;
     let executor = CeloExecutor::new(
-        rollup_config.as_ref(),
+        celo_rollup_config.as_ref(),
         l2_provider.clone(),
         l2_provider,
         evm_factory,

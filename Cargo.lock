@@ -1627,6 +1627,7 @@ dependencies = [
  "async-trait",
  "celo-alloy-consensus",
  "celo-driver",
+ "celo-executor",
  "celo-proof",
  "cfg-if",
  "kona-client",

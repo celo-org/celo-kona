@@ -13,6 +13,7 @@ repository.workspace = true
 # Workspace
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
+celo-executor.workspace = true
 celo-proof.workspace = true
 celo-driver.workspace = true
 

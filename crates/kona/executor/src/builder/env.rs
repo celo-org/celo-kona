@@ -2,12 +2,12 @@
 
 use super::CeloStatelessL2Builder;
 use crate::util::decode_holocene_eip_1559_params;
+use crate::config::CeloRollupConfig;
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::{EvmEnv, EvmFactory};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
-use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 use revm::{
@@ -30,7 +30,7 @@ where
         base_fee_params: &BaseFeeParams,
     ) -> ExecutorResult<EvmEnv<OpSpecId>> {
         let block_env =
-            Self::prepare_block_env(spec_id, parent_header, payload_attrs, base_fee_params)?;
+            Self::prepare_block_env(spec_id, parent_header, payload_attrs, base_fee_params, self.config)?;
         let cfg_env = self.evm_cfg_env(
             payload_attrs
                 .op_payload_attributes
@@ -53,6 +53,7 @@ where
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
         base_fee_params: &BaseFeeParams,
+        config: &CeloRollupConfig,
     ) -> ExecutorResult<BlockEnv> {
         let blob_excess_gas_and_price = parent_header
             .maybe_next_block_excess_blob_gas(if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
@@ -67,8 +68,8 @@ where
         let mut next_block_base_fee = parent_header
             .next_block_base_fee(*base_fee_params)
             .unwrap_or_default();
-        // TODO: add CeloRollupConfig which includes eip1559_base_fee_floor and using it instead of hardcoding
-        next_block_base_fee = core::cmp::max(next_block_base_fee, 25_000_000_000);
+        // Apply the configured base fee floor
+        next_block_base_fee = core::cmp::max(next_block_base_fee, config.base_fee_floor());
 
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
         Ok(BlockEnv {
@@ -87,7 +88,7 @@ where
 
     /// Returns the active base fee parameters for the given payload attributes.
     pub(crate) fn active_base_fee_params(
-        config: &RollupConfig,
+        config: &CeloRollupConfig,
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
     ) -> ExecutorResult<BaseFeeParams> {

@@ -8,9 +8,8 @@ use async_trait::async_trait;
 use celo_alloy_consensus::CeloTxEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
-use celo_executor::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
+use celo_executor::{CeloBlockBuildingOutcome, CeloRollupConfig, CeloStatelessL2Builder};
 use kona_executor::TrieDBProvider;
-use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 
@@ -23,7 +22,7 @@ where
     Evm: EvmFactory + Send + Sync + Clone,
 {
     /// The rollup config for the executor.
-    rollup_config: &'a RollupConfig,
+    rollup_config: &'a CeloRollupConfig,
     /// The trie provider for the executor.
     trie_provider: P,
     /// The trie hinter for the executor.
@@ -42,7 +41,7 @@ where
 {
     /// Creates a new executor.
     pub const fn new(
-        rollup_config: &'a RollupConfig,
+        rollup_config: &'a CeloRollupConfig,
         trie_provider: P,
         trie_hinter: H,
         evm_factory: Evm,

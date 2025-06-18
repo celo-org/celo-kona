@@ -13,6 +13,7 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
+use crate::config::CeloRollupConfig;
 use op_revm::OpSpecId;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
@@ -25,8 +26,8 @@ where
     H: TrieHinter,
     Evm: EvmFactory,
 {
-    /// The [RollupConfig].
-    pub(crate) config: &'a RollupConfig,
+    /// The [CeloRollupConfig].
+    pub(crate) config: &'a CeloRollupConfig,
     /// The inner trie database.
     pub(crate) trie_db: TrieDB<P, H>,
     #[allow(rustdoc::broken_intra_doc_links)]
@@ -44,7 +45,7 @@ where
 {
     /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
-        config: &'a RollupConfig,
+        config: &'a CeloRollupConfig,
         evm_factory: Evm,
         provider: P,
         hinter: H,
@@ -53,7 +54,7 @@ where
         let trie_db = TrieDB::new(parent_header, provider, hinter);
         let factory = OpBlockExecutorFactory::new(
             CeloAlloyReceiptBuilder::default(),
-            config.clone(),
+            config.rollup_config.clone(),
             evm_factory,
         );
         Self {

@@ -10,6 +10,9 @@ extern crate tracing;
 mod builder;
 pub use builder::{CeloBlockBuildingOutcome, CeloStatelessL2Builder, compute_receipts_root};
 
+mod config;
+pub use config::CeloRollupConfig;
+
 pub(crate) mod util;
 
 pub(crate) mod constants;
