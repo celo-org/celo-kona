@@ -1,24 +1,18 @@
 //! Rollup Config Types
 
-use crate::{AltDAConfig, BaseFeeConfig, ChainGenesis, HardForkConfig, OP_MAINNET_BASE_FEE_CONFIG};
+use crate::CeloHardForkConfig;
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition};
 use alloy_op_hardforks::{OpHardfork, OpHardforks};
+#[cfg(feature = "serde")]
 use alloy_primitives::Address;
-
-/// The max rlp bytes per channel for the Bedrock hardfork.
-pub const MAX_RLP_BYTES_PER_CHANNEL_BEDROCK: u64 = 10_000_000;
-
-/// The max rlp bytes per channel for the Fjord hardfork.
-pub const MAX_RLP_BYTES_PER_CHANNEL_FJORD: u64 = 100_000_000;
-
-/// The max sequencer drift when the Fjord hardfork is active.
-pub const FJORD_MAX_SEQUENCER_DRIFT: u64 = 1800;
-
-/// The channel timeout once the Granite hardfork is active.
-pub const GRANITE_CHANNEL_TIMEOUT: u64 = 50;
-
-/// The default interop message expiry window. (1 hour, in seconds)
-pub const DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW: u64 = 60 * 60;
+#[cfg(feature = "serde")]
+use kona_genesis::{
+    AltDAConfig, BaseFeeConfig, ChainGenesis, GRANITE_CHANNEL_TIMEOUT, HardForkConfig,
+};
+use kona_genesis::{
+    FJORD_MAX_SEQUENCER_DRIFT, MAX_RLP_BYTES_PER_CHANNEL_BEDROCK, MAX_RLP_BYTES_PER_CHANNEL_FJORD,
+    RollupConfig,
+};
 
 #[cfg(feature = "serde")]
 const fn default_granite_channel_timeout() -> u64 {
@@ -27,139 +21,36 @@ const fn default_granite_channel_timeout() -> u64 {
 
 #[cfg(feature = "serde")]
 const fn default_interop_message_expiry_window() -> u64 {
+    use kona_genesis::DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW;
+
     DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW
 }
 
 /// The Rollup configuration.
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
-pub struct RollupConfig {
-    /// The genesis state of the rollup.
-    pub genesis: ChainGenesis,
-    /// The block time of the L2, in seconds.
-    pub block_time: u64,
-    /// Sequencer batches may not be more than MaxSequencerDrift seconds after
-    /// the L1 timestamp of the sequencing window end.
-    ///
-    /// Note: When L1 has many 1 second consecutive blocks, and L2 grows at fixed 2 seconds,
-    /// the L2 time may still grow beyond this difference.
-    ///
-    /// Note: After the Fjord hardfork, this value becomes a constant of `1800`.
-    pub max_sequencer_drift: u64,
-    /// The sequencer window size.
-    pub seq_window_size: u64,
-    /// Number of L1 blocks between when a channel can be opened and when it can be closed.
-    pub channel_timeout: u64,
-    /// The channel timeout after the Granite hardfork.
-    #[cfg_attr(feature = "serde", serde(default = "default_granite_channel_timeout"))]
-    pub granite_channel_timeout: u64,
-    /// The L1 chain ID
-    pub l1_chain_id: u64,
-    /// The L2 chain ID
-    pub l2_chain_id: u64,
+pub struct CeloRollupConfig {
     /// Hardfork timestamps.
     #[cfg_attr(feature = "serde", serde(flatten))]
-    pub hardforks: HardForkConfig,
-    /// `batch_inbox_address` is the L1 address that batches are sent to.
-    pub batch_inbox_address: Address,
-    /// `deposit_contract_address` is the L1 address that deposits are sent to.
-    pub deposit_contract_address: Address,
-    /// `l1_system_config_address` is the L1 address that the system config is stored at.
-    pub l1_system_config_address: Address,
-    /// `protocol_versions_address` is the L1 address that the protocol versions are stored at.
-    pub protocol_versions_address: Address,
-    /// The superchain config address.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub superchain_config_address: Option<Address>,
-    /// `blobs_enabled_l1_timestamp` is the timestamp to start reading blobs as a batch data
-    /// source. Optional.
-    #[cfg_attr(
-        feature = "serde",
-        serde(rename = "blobs_data", skip_serializing_if = "Option::is_none")
-    )]
-    pub blobs_enabled_l1_timestamp: Option<u64>,
-    /// `da_challenge_address` is the L1 address that the data availability challenge contract is
-    /// stored at.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub da_challenge_address: Option<Address>,
-    /// `interop_message_expiry_window` is the maximum time (in seconds) that an initiating message
-    /// can be referenced on a remote chain before it expires.
-    #[cfg_attr(feature = "serde", serde(default = "default_interop_message_expiry_window"))]
-    pub interop_message_expiry_window: u64,
-    /// `alt_da_config` is the chain-specific DA config for the rollup.
-    #[cfg_attr(feature = "serde", serde(rename = "alt_da"))]
-    pub alt_da_config: Option<AltDAConfig>,
-    /// `chain_op_config` is the chain-specific EIP1559 config for the rollup.
-    #[cfg_attr(feature = "serde", serde(default = "BaseFeeConfig::optimism"))]
-    pub chain_op_config: BaseFeeConfig,
+    pub hardforks: CeloHardForkConfig,
+    /// The OP rollup config.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub op_rollup_config: RollupConfig,
 }
 
 #[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for RollupConfig {
+impl<'a> arbitrary::Arbitrary<'a> for CeloRollupConfig {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        use crate::{
-            BASE_SEPOLIA_BASE_FEE_CONFIG, OP_MAINNET_BASE_FEE_CONFIG, OP_SEPOLIA_BASE_FEE_CONFIG,
-        };
-        let chain_op_config = match u32::arbitrary(u)? % 3 {
-            0 => OP_MAINNET_BASE_FEE_CONFIG,
-            1 => OP_SEPOLIA_BASE_FEE_CONFIG,
-            _ => BASE_SEPOLIA_BASE_FEE_CONFIG,
-        };
-
         Ok(Self {
-            genesis: ChainGenesis::arbitrary(u)?,
-            block_time: u.arbitrary()?,
-            max_sequencer_drift: u.arbitrary()?,
-            seq_window_size: u.arbitrary()?,
-            channel_timeout: u.arbitrary()?,
-            granite_channel_timeout: u.arbitrary()?,
-            l1_chain_id: u.arbitrary()?,
-            l2_chain_id: u.arbitrary()?,
-            hardforks: HardForkConfig::arbitrary(u)?,
-            batch_inbox_address: Address::arbitrary(u)?,
-            deposit_contract_address: Address::arbitrary(u)?,
-            l1_system_config_address: Address::arbitrary(u)?,
-            protocol_versions_address: Address::arbitrary(u)?,
-            superchain_config_address: Option::<Address>::arbitrary(u)?,
-            blobs_enabled_l1_timestamp: Option::<u64>::arbitrary(u)?,
-            da_challenge_address: Option::<Address>::arbitrary(u)?,
-            interop_message_expiry_window: u.arbitrary()?,
-            chain_op_config,
-            alt_da_config: Option::<AltDAConfig>::arbitrary(u)?,
+            op_rollup_config: RollupConfig::arbitrary(u)?,
+            hardforks: CeloHardForkConfig::arbitrary(u)?,
         })
     }
 }
 
-// Need to manually implement Default because [`BaseFeeParams`] has no Default impl.
-impl Default for RollupConfig {
-    fn default() -> Self {
-        Self {
-            genesis: ChainGenesis::default(),
-            block_time: 0,
-            max_sequencer_drift: 0,
-            seq_window_size: 0,
-            channel_timeout: 0,
-            granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
-            l1_chain_id: 0,
-            l2_chain_id: 0,
-            hardforks: HardForkConfig::default(),
-            batch_inbox_address: Address::ZERO,
-            deposit_contract_address: Address::ZERO,
-            l1_system_config_address: Address::ZERO,
-            protocol_versions_address: Address::ZERO,
-            superchain_config_address: None,
-            blobs_enabled_l1_timestamp: None,
-            da_challenge_address: None,
-            interop_message_expiry_window: DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW,
-            alt_da_config: None,
-            chain_op_config: OP_MAINNET_BASE_FEE_CONFIG,
-        }
-    }
-}
-
 #[cfg(feature = "revm")]
-impl RollupConfig {
+impl CeloRollupConfig {
     /// Returns the active [`op_revm::OpSpecId`] for the executor.
     ///
     /// ## Takes
@@ -188,129 +79,163 @@ impl RollupConfig {
     }
 }
 
-impl RollupConfig {
+impl CeloRollupConfig {
     /// Returns true if Regolith is active at the given timestamp.
     pub fn is_regolith_active(&self, timestamp: u64) -> bool {
-        self.hardforks.regolith_time.is_some_and(|t| timestamp >= t) ||
-            self.is_canyon_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .regolith_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_canyon_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Regolith block.
     pub fn is_first_regolith_block(&self, timestamp: u64) -> bool {
-        self.is_regolith_active(timestamp) &&
-            !self.is_regolith_active(timestamp.saturating_sub(self.block_time))
+        self.is_regolith_active(timestamp)
+            && !self.is_regolith_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Canyon is active at the given timestamp.
     pub fn is_canyon_active(&self, timestamp: u64) -> bool {
-        self.hardforks.canyon_time.is_some_and(|t| timestamp >= t) ||
-            self.is_delta_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .canyon_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_delta_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Canyon block.
     pub fn is_first_canyon_block(&self, timestamp: u64) -> bool {
-        self.is_canyon_active(timestamp) &&
-            !self.is_canyon_active(timestamp.saturating_sub(self.block_time))
+        self.is_canyon_active(timestamp)
+            && !self.is_canyon_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Delta is active at the given timestamp.
     pub fn is_delta_active(&self, timestamp: u64) -> bool {
-        self.hardforks.delta_time.is_some_and(|t| timestamp >= t) ||
-            self.is_ecotone_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .delta_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_ecotone_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Delta block.
     pub fn is_first_delta_block(&self, timestamp: u64) -> bool {
-        self.is_delta_active(timestamp) &&
-            !self.is_delta_active(timestamp.saturating_sub(self.block_time))
+        self.is_delta_active(timestamp)
+            && !self.is_delta_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Ecotone is active at the given timestamp.
     pub fn is_ecotone_active(&self, timestamp: u64) -> bool {
-        self.hardforks.ecotone_time.is_some_and(|t| timestamp >= t) ||
-            self.is_fjord_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .ecotone_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_fjord_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Ecotone block.
     pub fn is_first_ecotone_block(&self, timestamp: u64) -> bool {
-        self.is_ecotone_active(timestamp) &&
-            !self.is_ecotone_active(timestamp.saturating_sub(self.block_time))
+        self.is_ecotone_active(timestamp)
+            && !self.is_ecotone_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Fjord is active at the given timestamp.
     pub fn is_fjord_active(&self, timestamp: u64) -> bool {
-        self.hardforks.fjord_time.is_some_and(|t| timestamp >= t) ||
-            self.is_granite_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .fjord_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_granite_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Fjord block.
     pub fn is_first_fjord_block(&self, timestamp: u64) -> bool {
-        self.is_fjord_active(timestamp) &&
-            !self.is_fjord_active(timestamp.saturating_sub(self.block_time))
+        self.is_fjord_active(timestamp)
+            && !self.is_fjord_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Granite is active at the given timestamp.
     pub fn is_granite_active(&self, timestamp: u64) -> bool {
-        self.hardforks.granite_time.is_some_and(|t| timestamp >= t) ||
-            self.is_holocene_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .granite_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_holocene_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Granite block.
     pub fn is_first_granite_block(&self, timestamp: u64) -> bool {
-        self.is_granite_active(timestamp) &&
-            !self.is_granite_active(timestamp.saturating_sub(self.block_time))
+        self.is_granite_active(timestamp)
+            && !self.is_granite_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Holocene is active at the given timestamp.
     pub fn is_holocene_active(&self, timestamp: u64) -> bool {
-        self.hardforks.holocene_time.is_some_and(|t| timestamp >= t) ||
-            self.is_isthmus_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .holocene_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_isthmus_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Holocene block.
     pub fn is_first_holocene_block(&self, timestamp: u64) -> bool {
-        self.is_holocene_active(timestamp) &&
-            !self.is_holocene_active(timestamp.saturating_sub(self.block_time))
+        self.is_holocene_active(timestamp)
+            && !self.is_holocene_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if the pectra blob schedule is active at the given timestamp.
     pub fn is_pectra_blob_schedule_active(&self, timestamp: u64) -> bool {
-        self.hardforks.pectra_blob_schedule_time.is_some_and(|t| timestamp >= t)
+        self.hardforks
+            .op_hardfork_config
+            .pectra_blob_schedule_time
+            .is_some_and(|t| timestamp >= t)
     }
 
     /// Returns true if the timestamp marks the first pectra blob schedule block.
     pub fn is_first_pectra_blob_schedule_block(&self, timestamp: u64) -> bool {
-        self.is_pectra_blob_schedule_active(timestamp) &&
-            !self.is_pectra_blob_schedule_active(timestamp.saturating_sub(self.block_time))
+        self.is_pectra_blob_schedule_active(timestamp)
+            && !self.is_pectra_blob_schedule_active(
+                timestamp.saturating_sub(self.op_rollup_config.block_time),
+            )
     }
 
     /// Returns true if Isthmus is active at the given timestamp.
     pub fn is_isthmus_active(&self, timestamp: u64) -> bool {
-        self.hardforks.isthmus_time.is_some_and(|t| timestamp >= t) ||
-            self.is_interop_active(timestamp)
+        self.hardforks
+            .op_hardfork_config
+            .isthmus_time
+            .is_some_and(|t| timestamp >= t)
+            || self.is_interop_active(timestamp)
     }
 
     /// Returns true if the timestamp marks the first Isthmus block.
     pub fn is_first_isthmus_block(&self, timestamp: u64) -> bool {
-        self.is_isthmus_active(timestamp) &&
-            !self.is_isthmus_active(timestamp.saturating_sub(self.block_time))
+        self.is_isthmus_active(timestamp)
+            && !self.is_isthmus_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if Interop is active at the given timestamp.
     pub fn is_interop_active(&self, timestamp: u64) -> bool {
-        self.hardforks.interop_time.is_some_and(|t| timestamp >= t)
+        self.hardforks
+            .op_hardfork_config
+            .interop_time
+            .is_some_and(|t| timestamp >= t)
     }
 
     /// Returns true if the timestamp marks the first Interop block.
     pub fn is_first_interop_block(&self, timestamp: u64) -> bool {
-        self.is_interop_active(timestamp) &&
-            !self.is_interop_active(timestamp.saturating_sub(self.block_time))
+        self.is_interop_active(timestamp)
+            && !self.is_interop_active(timestamp.saturating_sub(self.op_rollup_config.block_time))
     }
 
     /// Returns true if a DA Challenge proxy Address is provided in the rollup config and the
     /// address is not zero.
     pub fn is_alt_da_enabled(&self) -> bool {
-        self.da_challenge_address.is_some_and(|addr| !addr.is_zero())
+        self.op_rollup_config
+            .da_challenge_address
+            .is_some_and(|addr| !addr.is_zero())
     }
 
     /// Returns the max sequencer drift for the given timestamp.
@@ -318,7 +243,7 @@ impl RollupConfig {
         if self.is_fjord_active(timestamp) {
             FJORD_MAX_SEQUENCER_DRIFT
         } else {
-            self.max_sequencer_drift
+            self.op_rollup_config.max_sequencer_drift
         }
     }
 
@@ -334,15 +259,15 @@ impl RollupConfig {
     /// Returns the channel timeout for the given timestamp.
     pub fn channel_timeout(&self, timestamp: u64) -> u64 {
         if self.is_granite_active(timestamp) {
-            self.granite_channel_timeout
+            self.op_rollup_config.granite_channel_timeout
         } else {
-            self.channel_timeout
+            self.op_rollup_config.channel_timeout
         }
     }
 
-    /// Returns the [HardForkConfig] using [RollupConfig] timestamps.
+    /// Returns the [CeloHardForkConfig] using [CeloRollupConfig] timestamps.
     #[deprecated(since = "0.1.0", note = "Use the `hardforks` field instead.")]
-    pub const fn hardfork_config(&self) -> HardForkConfig {
+    pub const fn hardfork_config(&self) -> CeloHardForkConfig {
         self.hardforks
     }
 
@@ -352,7 +277,9 @@ impl RollupConfig {
     /// This function assumes that the timestamp is aligned with the block time, and uses floor
     /// division in its computation.
     pub const fn block_number_from_timestamp(&self, timestamp: u64) -> u64 {
-        timestamp.saturating_sub(self.genesis.l2_time).saturating_div(self.block_time)
+        timestamp
+            .saturating_sub(self.op_rollup_config.genesis.l2_time)
+            .saturating_div(self.op_rollup_config.block_time)
     }
 
     /// Checks the scalar value in Ecotone.
@@ -379,7 +306,7 @@ impl RollupConfig {
     }
 }
 
-impl EthereumHardforks for RollupConfig {
+impl EthereumHardforks for CeloRollupConfig {
     fn ethereum_fork_activation(&self, fork: EthereumHardfork) -> ForkCondition {
         if fork <= EthereumHardfork::Berlin {
             // We assume that OP chains were launched with all forks before Berlin activated.
@@ -402,47 +329,55 @@ impl EthereumHardforks for RollupConfig {
     }
 }
 
-impl OpHardforks for RollupConfig {
+impl OpHardforks for CeloRollupConfig {
     fn op_fork_activation(&self, fork: OpHardfork) -> ForkCondition {
         match fork {
             OpHardfork::Bedrock => ForkCondition::Block(0),
             OpHardfork::Regolith => self
                 .hardforks
+                .op_hardfork_config
                 .regolith_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Canyon)),
             OpHardfork::Canyon => self
                 .hardforks
+                .op_hardfork_config
                 .canyon_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Ecotone)),
             OpHardfork::Ecotone => self
                 .hardforks
+                .op_hardfork_config
                 .ecotone_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Fjord)),
             OpHardfork::Fjord => self
                 .hardforks
+                .op_hardfork_config
                 .fjord_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Granite)),
             OpHardfork::Granite => self
                 .hardforks
+                .op_hardfork_config
                 .granite_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Holocene)),
             OpHardfork::Holocene => self
                 .hardforks
+                .op_hardfork_config
                 .holocene_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Isthmus)),
             OpHardfork::Isthmus => self
                 .hardforks
+                .op_hardfork_config
                 .isthmus_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(self.op_fork_activation(OpHardfork::Interop)),
             OpHardfork::Interop => self
                 .hardforks
+                .op_hardfork_config
                 .interop_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(ForkCondition::Never),
@@ -450,14 +385,136 @@ impl OpHardforks for RollupConfig {
     }
 }
 
+// TODO: find cleaner way
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Helper struct to deserialize all fields
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Helper {
+            // RollupConfig fields
+            genesis: ChainGenesis,
+            block_time: u64,
+            max_sequencer_drift: u64,
+            seq_window_size: u64,
+            channel_timeout: u64,
+            #[serde(default = "default_granite_channel_timeout")]
+            granite_channel_timeout: u64,
+            l1_chain_id: u64,
+            l2_chain_id: u64,
+            batch_inbox_address: Address,
+            deposit_contract_address: Address,
+            l1_system_config_address: Address,
+            protocol_versions_address: Address,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            superchain_config_address: Option<Address>,
+            #[serde(rename = "blobs_data", skip_serializing_if = "Option::is_none")]
+            blobs_enabled_l1_timestamp: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            da_challenge_address: Option<Address>,
+            #[serde(default = "default_interop_message_expiry_window")]
+            interop_message_expiry_window: u64,
+            #[serde(rename = "alt_da")]
+            alt_da_config: Option<AltDAConfig>,
+            #[serde(default = "BaseFeeConfig::optimism")]
+            chain_op_config: BaseFeeConfig,
+
+            // HardForkConfig fields (flattened from both RollupConfig and CeloHardForkConfig)
+            #[serde(default)]
+            regolith_time: Option<u64>,
+            #[serde(default)]
+            canyon_time: Option<u64>,
+            #[serde(default)]
+            delta_time: Option<u64>,
+            #[serde(default)]
+            ecotone_time: Option<u64>,
+            #[serde(default)]
+            fjord_time: Option<u64>,
+            #[serde(default)]
+            granite_time: Option<u64>,
+            #[serde(default)]
+            holocene_time: Option<u64>,
+            #[serde(default)]
+            pectra_blob_schedule_time: Option<u64>,
+            #[serde(default)]
+            isthmus_time: Option<u64>,
+            #[serde(default)]
+            interop_time: Option<u64>,
+
+            // CeloHardForkConfig specific field
+            #[serde(default)]
+            cel2_time: Option<u64>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+
+        // Construct HardForkConfig
+        let hardfork_config = HardForkConfig {
+            regolith_time: helper.regolith_time,
+            canyon_time: helper.canyon_time,
+            delta_time: helper.delta_time,
+            ecotone_time: helper.ecotone_time,
+            fjord_time: helper.fjord_time,
+            granite_time: helper.granite_time,
+            holocene_time: helper.holocene_time,
+            pectra_blob_schedule_time: helper.pectra_blob_schedule_time,
+            isthmus_time: helper.isthmus_time,
+            interop_time: helper.interop_time,
+        };
+
+        // Construct RollupConfig
+        let op_rollup_config = RollupConfig {
+            genesis: helper.genesis,
+            block_time: helper.block_time,
+            max_sequencer_drift: helper.max_sequencer_drift,
+            seq_window_size: helper.seq_window_size,
+            channel_timeout: helper.channel_timeout,
+            granite_channel_timeout: helper.granite_channel_timeout,
+            l1_chain_id: helper.l1_chain_id,
+            l2_chain_id: helper.l2_chain_id,
+            hardforks: hardfork_config,
+            batch_inbox_address: helper.batch_inbox_address,
+            deposit_contract_address: helper.deposit_contract_address,
+            l1_system_config_address: helper.l1_system_config_address,
+            protocol_versions_address: helper.protocol_versions_address,
+            superchain_config_address: helper.superchain_config_address,
+            blobs_enabled_l1_timestamp: helper.blobs_enabled_l1_timestamp,
+            da_challenge_address: helper.da_challenge_address,
+            interop_message_expiry_window: helper.interop_message_expiry_window,
+            alt_da_config: helper.alt_da_config,
+            chain_op_config: helper.chain_op_config,
+        };
+
+        // Construct CeloHardForkConfig
+        let hardforks = CeloHardForkConfig {
+            op_hardfork_config: hardfork_config,
+            cel2_time: helper.cel2_time,
+        };
+
+        Ok(Self {
+            hardforks,
+            op_rollup_config,
+        })
+    }
+}
+
 #[cfg(test)]
+#[cfg(feature = "serde")]
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
     use alloy_eips::BlockNumHash;
-    use alloy_primitives::address;
+    use alloy_primitives::{Address, address};
     #[cfg(feature = "serde")]
     use alloy_primitives::{U256, b256};
+    use kona_genesis::{
+        ChainGenesis, DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW, GRANITE_CHANNEL_TIMEOUT,
+        HardForkConfig,
+    };
 
     #[test]
     #[cfg(feature = "arbitrary")]
@@ -466,45 +523,51 @@ mod tests {
         use rand::Rng;
         let mut bytes = [0u8; 1024];
         rand::rng().fill(bytes.as_mut_slice());
-        RollupConfig::arbitrary(&mut arbitrary::Unstructured::new(&bytes)).unwrap();
+        CeloRollupConfig::arbitrary(&mut arbitrary::Unstructured::new(&bytes)).unwrap();
     }
 
     #[test]
     #[cfg(feature = "revm")]
     fn test_revm_spec_id() {
         // By default, the spec ID should be BEDROCK.
-        let mut config = RollupConfig {
-            hardforks: HardForkConfig { regolith_time: Some(10), ..Default::default() },
+        let mut config = CeloRollupConfig {
+            hardforks: CeloHardForkConfig {
+                op_hardfork_config: HardForkConfig {
+                    regolith_time: Some(10),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..Default::default()
         };
         assert_eq!(config.spec_id(0), op_revm::OpSpecId::BEDROCK);
         assert_eq!(config.spec_id(10), op_revm::OpSpecId::REGOLITH);
-        config.hardforks.canyon_time = Some(20);
+        config.hardforks.op_hardfork_config.canyon_time = Some(20);
         assert_eq!(config.spec_id(20), op_revm::OpSpecId::CANYON);
-        config.hardforks.ecotone_time = Some(30);
+        config.hardforks.op_hardfork_config.ecotone_time = Some(30);
         assert_eq!(config.spec_id(30), op_revm::OpSpecId::ECOTONE);
-        config.hardforks.fjord_time = Some(40);
+        config.hardforks.op_hardfork_config.fjord_time = Some(40);
         assert_eq!(config.spec_id(40), op_revm::OpSpecId::FJORD);
-        config.hardforks.holocene_time = Some(50);
+        config.hardforks.op_hardfork_config.holocene_time = Some(50);
         assert_eq!(config.spec_id(50), op_revm::OpSpecId::HOLOCENE);
-        config.hardforks.isthmus_time = Some(60);
+        config.hardforks.op_hardfork_config.isthmus_time = Some(60);
         assert_eq!(config.spec_id(60), op_revm::OpSpecId::ISTHMUS);
     }
 
     #[test]
     fn test_regolith_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_regolith_active(0));
-        config.hardforks.regolith_time = Some(10);
+        config.hardforks.op_hardfork_config.regolith_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(!config.is_regolith_active(9));
     }
 
     #[test]
     fn test_canyon_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_canyon_active(0));
-        config.hardforks.canyon_time = Some(10);
+        config.hardforks.op_hardfork_config.canyon_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(!config.is_canyon_active(9));
@@ -512,9 +575,9 @@ mod tests {
 
     #[test]
     fn test_delta_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_delta_active(0));
-        config.hardforks.delta_time = Some(10);
+        config.hardforks.op_hardfork_config.delta_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -523,9 +586,9 @@ mod tests {
 
     #[test]
     fn test_ecotone_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_ecotone_active(0));
-        config.hardforks.ecotone_time = Some(10);
+        config.hardforks.op_hardfork_config.ecotone_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -535,9 +598,9 @@ mod tests {
 
     #[test]
     fn test_fjord_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_fjord_active(0));
-        config.hardforks.fjord_time = Some(10);
+        config.hardforks.op_hardfork_config.fjord_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -548,9 +611,9 @@ mod tests {
 
     #[test]
     fn test_granite_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_granite_active(0));
-        config.hardforks.granite_time = Some(10);
+        config.hardforks.op_hardfork_config.granite_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -562,9 +625,9 @@ mod tests {
 
     #[test]
     fn test_holocene_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_holocene_active(0));
-        config.hardforks.holocene_time = Some(10);
+        config.hardforks.op_hardfork_config.holocene_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -577,8 +640,11 @@ mod tests {
 
     #[test]
     fn test_pectra_blob_schedule_active() {
-        let mut config = RollupConfig::default();
-        config.hardforks.pectra_blob_schedule_time = Some(10);
+        let mut config = CeloRollupConfig::default();
+        config
+            .hardforks
+            .op_hardfork_config
+            .pectra_blob_schedule_time = Some(10);
         // Pectra blob schedule is a unique fork, not included in the hierarchical ordering. Its
         // activation does not imply the activation of any other forks.
         assert!(!config.is_regolith_active(10));
@@ -594,9 +660,9 @@ mod tests {
 
     #[test]
     fn test_isthmus_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_isthmus_active(0));
-        config.hardforks.isthmus_time = Some(10);
+        config.hardforks.op_hardfork_config.isthmus_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -611,9 +677,9 @@ mod tests {
 
     #[test]
     fn test_interop_active() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_interop_active(0));
-        config.hardforks.interop_time = Some(10);
+        config.hardforks.op_hardfork_config.interop_time = Some(10);
         assert!(config.is_regolith_active(10));
         assert!(config.is_canyon_active(10));
         assert!(config.is_delta_active(10));
@@ -629,21 +695,26 @@ mod tests {
 
     #[test]
     fn test_is_first_fork_block() {
-        let cfg = RollupConfig {
-            hardforks: HardForkConfig {
-                regolith_time: Some(10),
-                canyon_time: Some(20),
-                delta_time: Some(30),
-                ecotone_time: Some(40),
-                fjord_time: Some(50),
-                granite_time: Some(60),
-                holocene_time: Some(70),
-                pectra_blob_schedule_time: Some(80),
-                isthmus_time: Some(90),
-                interop_time: Some(100),
+        let cfg = CeloRollupConfig {
+            hardforks: CeloHardForkConfig {
+                op_hardfork_config: HardForkConfig {
+                    regolith_time: Some(10),
+                    canyon_time: Some(20),
+                    delta_time: Some(30),
+                    ecotone_time: Some(40),
+                    fjord_time: Some(50),
+                    granite_time: Some(60),
+                    holocene_time: Some(70),
+                    pectra_blob_schedule_time: Some(80),
+                    isthmus_time: Some(90),
+                    interop_time: Some(100),
+                },
+                cel2_time: Some(110),
             },
-            block_time: 2,
-            ..Default::default()
+            op_rollup_config: RollupConfig {
+                block_time: 2,
+                ..Default::default()
+            },
         };
 
         // Regolith
@@ -694,32 +765,47 @@ mod tests {
 
     #[test]
     fn test_alt_da_enabled() {
-        let mut config = RollupConfig::default();
+        let mut config = CeloRollupConfig::default();
         assert!(!config.is_alt_da_enabled());
-        config.da_challenge_address = Some(Address::ZERO);
+        config.op_rollup_config.da_challenge_address = Some(Address::ZERO);
         assert!(!config.is_alt_da_enabled());
-        config.da_challenge_address = Some(address!("0000000000000000000000000000000000000001"));
+        config.op_rollup_config.da_challenge_address =
+            Some(address!("0000000000000000000000000000000000000001"));
         assert!(config.is_alt_da_enabled());
     }
 
     #[test]
     fn test_granite_channel_timeout() {
-        let mut config = RollupConfig {
-            channel_timeout: 100,
-            hardforks: HardForkConfig { granite_time: Some(10), ..Default::default() },
-            ..Default::default()
+        let mut config = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                channel_timeout: 100,
+                ..Default::default()
+            },
+            hardforks: CeloHardForkConfig {
+                op_hardfork_config: HardForkConfig {
+                    granite_time: Some(10),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         };
         assert_eq!(config.channel_timeout(0), 100);
         assert_eq!(config.channel_timeout(10), GRANITE_CHANNEL_TIMEOUT);
-        config.hardforks.granite_time = None;
+        config.hardforks.op_hardfork_config.granite_time = None;
         assert_eq!(config.channel_timeout(10), 100);
     }
 
     #[test]
     fn test_max_sequencer_drift() {
-        let mut config = RollupConfig { max_sequencer_drift: 100, ..Default::default() };
+        let mut config = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                max_sequencer_drift: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         assert_eq!(config.max_sequencer_drift(0), 100);
-        config.hardforks.fjord_time = Some(10);
+        config.hardforks.op_hardfork_config.fjord_time = Some(10);
         assert_eq!(config.max_sequencer_drift(0), 100);
         assert_eq!(config.max_sequencer_drift(10), FJORD_MAX_SEQUENCER_DRIFT);
     }
@@ -727,7 +813,7 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn test_deserialize_reference_rollup_config() {
-        use crate::{OP_MAINNET_BASE_FEE_CONFIG, SystemConfig};
+        use kona_genesis::{ChainGenesis, OP_MAINNET_BASE_FEE_CONFIG, RollupConfig, SystemConfig};
 
         let raw: &str = r#"
         {
@@ -759,6 +845,7 @@ mod tests {
           "delta_time": 0,
           "ecotone_time": 0,
           "fjord_time": 0,
+          "cel2_time": 0,
           "batch_inbox_address": "0xff00000000000000000000000000000000042069",
           "deposit_contract_address": "0x08073dc48dde578137b8af042bcbc1c2491f1eb2",
           "l1_system_config_address": "0x94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710",
@@ -767,63 +854,80 @@ mod tests {
             "eip1559Elasticity": "0x6",
             "eip1559Denominator": "0x32",
             "eip1559DenominatorCanyon": "0xfa"
-            },
+          },
           "alt_da": null
         }
         "#;
 
-        let expected = RollupConfig {
-            genesis: ChainGenesis {
-                l1: BlockNumHash {
-                    hash: b256!("481724ee99b1f4cb71d826e2ec5a37265f460e9b112315665c977f4050b0af54"),
-                    number: 10,
+        let expected = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                genesis: ChainGenesis {
+                    l1: BlockNumHash {
+                        hash: b256!(
+                            "481724ee99b1f4cb71d826e2ec5a37265f460e9b112315665c977f4050b0af54"
+                        ),
+                        number: 10,
+                    },
+                    l2: BlockNumHash {
+                        hash: b256!(
+                            "88aedfbf7dea6bfa2c4ff315784ad1a7f145d8f650969359c003bbed68c87631"
+                        ),
+                        number: 0,
+                    },
+                    l2_time: 1725557164,
+                    system_config: Some(SystemConfig {
+                        batcher_address: address!("c81f87a644b41e49b3221f41251f15c6cb00ce03"),
+                        overhead: U256::ZERO,
+                        scalar: U256::from(0xf4240),
+                        gas_limit: 30_000_000,
+                        base_fee_scalar: None,
+                        blob_base_fee_scalar: None,
+                        eip1559_denominator: None,
+                        eip1559_elasticity: None,
+                        operator_fee_scalar: None,
+                        operator_fee_constant: None,
+                    }),
                 },
-                l2: BlockNumHash {
-                    hash: b256!("88aedfbf7dea6bfa2c4ff315784ad1a7f145d8f650969359c003bbed68c87631"),
-                    number: 0,
+                block_time: 2,
+                max_sequencer_drift: 600,
+                seq_window_size: 3600,
+                channel_timeout: 300,
+                granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
+                l1_chain_id: 3151908,
+                l2_chain_id: 1337,
+                hardforks: HardForkConfig {
+                    regolith_time: Some(0),
+                    canyon_time: Some(0),
+                    delta_time: Some(0),
+                    ecotone_time: Some(0),
+                    fjord_time: Some(0),
+                    ..Default::default()
                 },
-                l2_time: 1725557164,
-                system_config: Some(SystemConfig {
-                    batcher_address: address!("c81f87a644b41e49b3221f41251f15c6cb00ce03"),
-                    overhead: U256::ZERO,
-                    scalar: U256::from(0xf4240),
-                    gas_limit: 30_000_000,
-                    base_fee_scalar: None,
-                    blob_base_fee_scalar: None,
-                    eip1559_denominator: None,
-                    eip1559_elasticity: None,
-                    operator_fee_scalar: None,
-                    operator_fee_constant: None,
-                }),
+                batch_inbox_address: address!("ff00000000000000000000000000000000042069"),
+                deposit_contract_address: address!("08073dc48dde578137b8af042bcbc1c2491f1eb2"),
+                l1_system_config_address: address!("94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710"),
+                protocol_versions_address: Address::ZERO,
+                superchain_config_address: None,
+                blobs_enabled_l1_timestamp: None,
+                da_challenge_address: None,
+                interop_message_expiry_window: DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW,
+                chain_op_config: OP_MAINNET_BASE_FEE_CONFIG,
+                alt_da_config: None,
             },
-            block_time: 2,
-            max_sequencer_drift: 600,
-            seq_window_size: 3600,
-            channel_timeout: 300,
-            granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
-            l1_chain_id: 3151908,
-            l2_chain_id: 1337,
-            hardforks: HardForkConfig {
-                regolith_time: Some(0),
-                canyon_time: Some(0),
-                delta_time: Some(0),
-                ecotone_time: Some(0),
-                fjord_time: Some(0),
-                ..Default::default()
+            hardforks: CeloHardForkConfig {
+                op_hardfork_config: HardForkConfig {
+                    regolith_time: Some(0),
+                    canyon_time: Some(0),
+                    delta_time: Some(0),
+                    ecotone_time: Some(0),
+                    fjord_time: Some(0),
+                    ..Default::default()
+                },
+                cel2_time: Some(0),
             },
-            batch_inbox_address: address!("ff00000000000000000000000000000000042069"),
-            deposit_contract_address: address!("08073dc48dde578137b8af042bcbc1c2491f1eb2"),
-            l1_system_config_address: address!("94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710"),
-            protocol_versions_address: Address::ZERO,
-            superchain_config_address: None,
-            blobs_enabled_l1_timestamp: None,
-            da_challenge_address: None,
-            interop_message_expiry_window: DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW,
-            chain_op_config: OP_MAINNET_BASE_FEE_CONFIG,
-            alt_da_config: None,
         };
 
-        let deserialized: RollupConfig = serde_json::from_str(raw).unwrap();
+        let deserialized: CeloRollupConfig = serde_json::from_str(raw).unwrap();
         assert_eq!(deserialized, expected);
     }
 
@@ -872,15 +976,21 @@ mod tests {
         }
         "#;
 
-        let err = serde_json::from_str::<RollupConfig>(raw).unwrap_err();
+        let err = serde_json::from_str::<CeloRollupConfig>(raw).unwrap_err();
         assert_eq!(err.classify(), serde_json::error::Category::Data);
     }
 
     #[test]
     fn test_compute_block_number_from_time() {
-        let cfg = RollupConfig {
-            genesis: ChainGenesis { l2_time: 10, ..Default::default() },
-            block_time: 2,
+        let cfg = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                genesis: ChainGenesis {
+                    l2_time: 10,
+                    ..Default::default()
+                },
+                block_time: 2,
+                ..Default::default()
+            },
             ..Default::default()
         };
 

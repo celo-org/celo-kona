@@ -1,7 +1,8 @@
+# TODO: remove unnecessary dependencies
 [package]
-name = "kona-genesis"
-version = "0.3.0"
-description = "Optimism genesis types"
+name = "celo-genesis"
+version = "0.1.0"
+description = "Celo genesis types"
 
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +16,9 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
+# Kona
+kona-genesis = { workspace = true, features = ["serde"] }
+
 # Alloy
 alloy-sol-types.workspace = true
 alloy-primitives.workspace = true
