@@ -155,9 +155,9 @@ revm-handler = { version = "3.0.1", default-features = false }
 revm-context = { version = "3.0.0", default-features = false }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", package = "hokulea-eigenda", default-features = false}
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", package = "hokulea-proof", default-features = false}
-eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", package = "eigenda-cert", default-features = false}
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "e332d7b973d649d6160f02db0b4d29c630dddf3c", default-features = false}
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "e332d7b973d649d6160f02db0b4d29c630dddf3c", default-features = false}
+eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", rev = "e332d7b973d649d6160f02db0b4d29c630dddf3c", default-features = false}
 
 # General
 url = "2.5.4"

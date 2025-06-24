@@ -3,8 +3,8 @@
 use crate::single::{CeloSingleChainHintHandler, eigenda_blobs::OnlineEigenDABlobProvider};
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
-use celo_proof::hint::CeloHintType;
 use celo_genesis::{CeloHardForkConfig, CeloRollupConfig};
+use celo_proof::hint::CeloHintType;
 use clap::Parser;
 use kona_cli::cli_styles;
 use kona_host::{
