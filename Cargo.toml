@@ -75,6 +75,7 @@ celo-executor = { version = "0.1.0", path = "crates/kona/executor", default-feat
 celo-driver = { version = "0.1.0", path = "crates/kona/driver", default-features = false }
 celo-proof = { version = "0.1.0", path = "crates/kona/proof", default-features = false }
 celo-protocol = { version = "0.1.0", path = "crates/kona/protocol", default-features = false }
+celo-genesis = { version = "0.1.0", path = "crates/kona/genesis", default-features = false }
 
 # Binaries
 kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.1", default-features = false }

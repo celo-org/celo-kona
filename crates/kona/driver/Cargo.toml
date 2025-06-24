@@ -18,6 +18,7 @@ celo-alloy-rpc-types-engine.workspace = true
 celo-alloy-consensus.workspace = true
 celo-executor.workspace = true
 celo-protocol.workspace = true
+celo-genesis.workspace = true
 
 # Kona
 kona-derive.workspace = true

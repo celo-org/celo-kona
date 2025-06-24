@@ -10,8 +10,8 @@ use alloy_primitives::{B256, Sealable, U256, logs_bloom};
 use alloy_trie::EMPTY_ROOT_HASH;
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBError, TrieDBProvider};
-use kona_genesis::RollupConfig;
 use kona_mpt::{TrieHinter, ordered_trie_with_encoder};
 use kona_protocol::{OutputRoot, Predeploys};
 use revm::{context::BlockEnv, database::BundleState};
@@ -171,7 +171,7 @@ where
 /// Computes the receipts root from the given set of receipts.
 pub fn compute_receipts_root(
     receipts: &[CeloReceiptEnvelope],
-    config: &RollupConfig,
+    config: &CeloRollupConfig,
     timestamp: u64,
 ) -> B256 {
     // There is a minor bug in op-geth and op-erigon where in the Regolith hardfork,

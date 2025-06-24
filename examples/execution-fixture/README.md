@@ -3,7 +3,7 @@
 The `CeloStatelessL2Builder` type uses static test data fixtures to run stateless execution of certain blocks offline. The
 test data fixtures include:
 
-* The `RollupConfig` of the chain that the block belongs to.
+* The `CeloRollupConfig` of the chain that the block belongs to.
 * The parent block header, which we apply state on top of.
 * The payload attributes for building the new block.
 * A `rocksdb` database containing the witness data for stateless execution of the block building job.

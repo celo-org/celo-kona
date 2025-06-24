@@ -1659,6 +1659,7 @@ dependencies = [
  "async-trait",
  "celo-alloy-consensus",
  "celo-driver",
+ "celo-genesis",
  "celo-proof",
  "cfg-if",
  "kona-client",
@@ -1700,6 +1701,7 @@ dependencies = [
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
+ "celo-genesis",
  "celo-protocol",
  "kona-derive",
  "kona-driver",
@@ -1733,6 +1735,7 @@ dependencies = [
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
+ "celo-genesis",
  "celo-registry",
  "kona-executor",
  "kona-genesis",
@@ -1752,6 +1755,29 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "celo-genesis"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 0.15.11",
+ "alloy-hardforks",
+ "alloy-op-hardforks",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "arbitrary",
+ "derive_more",
+ "kona-genesis",
+ "kona-serde",
+ "op-revm",
+ "rand 0.9.1",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "thiserror 2.0.12",
+ "toml",
 ]
 
 [[package]]
@@ -1777,6 +1803,7 @@ dependencies = [
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
+ "celo-genesis",
  "clap",
  "kona-cli",
  "kona-client",
@@ -1823,6 +1850,7 @@ dependencies = [
  "celo-alloy-rpc-types-engine",
  "celo-driver",
  "celo-executor",
+ "celo-genesis",
  "kona-derive",
  "kona-driver",
  "kona-executor",
@@ -1890,6 +1918,7 @@ dependencies = [
  "alloy-chains",
  "alloy-eips 0.15.11",
  "alloy-primitives",
+ "celo-genesis",
  "kona-genesis",
  "kona-registry",
  "lazy_static",

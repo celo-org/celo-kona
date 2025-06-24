@@ -16,6 +16,9 @@ workspace = true
 
 [dependencies]
 # Workspace
+celo-genesis = { workspace = true, features = ["serde"] }
+
+# Kona
 kona-genesis = { workspace = true, features = ["serde"] }
 kona-registry = { workspace = true }
 

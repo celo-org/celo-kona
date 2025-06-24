@@ -8,6 +8,7 @@ use alloy_rlp::Decodable;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, CeloTxType};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
+use celo_genesis::CeloRollupConfig;
 use celo_protocol::CeloL2BlockInfo;
 use core::fmt::Debug;
 use kona_derive::{
@@ -16,7 +17,6 @@ use kona_derive::{
     types::Signal,
 };
 use kona_driver::{DriverError, DriverPipeline, DriverResult, PipelineCursor, TipCursor};
-use kona_genesis::RollupConfig;
 use kona_protocol::{L2BlockInfo, OpAttributesWithParent};
 use spin::RwLock;
 
@@ -74,7 +74,7 @@ where
     /// - `Err(e)` - An error if the block could not be produced.
     pub async fn advance_to_target(
         &mut self,
-        cfg: &RollupConfig,
+        cfg: &CeloRollupConfig,
         mut target: Option<u64>,
     ) -> DriverResult<(L2BlockInfo, B256), E::Error> {
         loop {

@@ -6,8 +6,8 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::{EvmEnv, EvmFactory};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
-use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 use revm::{
@@ -43,7 +43,7 @@ where
     /// Returns the active [CfgEnv] for the executor.
     pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
         CfgEnv::new()
-            .with_chain_id(self.config.l2_chain_id)
+            .with_chain_id(self.config.op_rollup_config.l2_chain_id)
             .with_spec(self.config.spec_id(timestamp))
     }
 
@@ -87,7 +87,7 @@ where
 
     /// Returns the active base fee parameters for the given payload attributes.
     pub(crate) fn active_base_fee_params(
-        config: &RollupConfig,
+        config: &CeloRollupConfig,
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
     ) -> ExecutorResult<BaseFeeParams> {
@@ -101,15 +101,23 @@ where
                     .is_holocene_active(parent_header.timestamp)
                     .then(|| decode_holocene_eip_1559_params(parent_header))
                     .transpose()?
-                    .unwrap_or(config.chain_op_config.as_canyon_base_fee_params())
+                    .unwrap_or(
+                        config
+                            .op_rollup_config
+                            .chain_op_config
+                            .as_canyon_base_fee_params(),
+                    )
             } else if config.is_canyon_active(op_payload_attrs.payload_attributes.timestamp) {
                 // If the payload attribute timestamp is past canyon activation,
                 // use the canyon base fee params from the rollup config.
-                config.chain_op_config.as_canyon_base_fee_params()
+                config
+                    .op_rollup_config
+                    .chain_op_config
+                    .as_canyon_base_fee_params()
             } else {
                 // If the payload attribute timestamp is prior to canyon activation,
                 // use the default base fee params from the rollup config.
-                config.chain_op_config.as_base_fee_params()
+                config.op_rollup_config.chain_op_config.as_base_fee_params()
             };
 
         Ok(base_fee_params)

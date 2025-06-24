@@ -7,6 +7,7 @@ use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::{CeloHardForkConfig, CeloRollupConfig};
 use celo_registry::ROLLUP_CONFIGS;
 use kona_executor::{
     TrieDBProvider,
@@ -50,8 +51,17 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
     )
     .expect("Failed to deserialize fixture");
 
+    // Wrap RollupConfig to CeloRollupConfig
+    let rollup_config = fixture.op_executor_test_fixture.rollup_config;
+    let celo_rollup_config = CeloRollupConfig {
+        op_rollup_config: rollup_config.clone(),
+        hardforks: CeloHardForkConfig {
+            op_hardfork_config: rollup_config.hardforks,
+            cel2_time: Some(0),
+        },
+    };
     let mut executor = CeloStatelessL2Builder::new(
-        &fixture.op_executor_test_fixture.rollup_config,
+        &celo_rollup_config,
         CeloEvmFactory::default(),
         provider,
         NoopTrieHinter,
@@ -173,7 +183,7 @@ impl ExecutorTestFixtureCreator {
             .join("fixture.json");
         let fixture = ExecutorTestFixture {
             op_executor_test_fixture: OpExecutorTestFixture {
-                rollup_config: rollup_config.clone(),
+                rollup_config: rollup_config.op_rollup_config.clone(),
                 parent_header: parent_header.inner().clone(),
                 expected_block_hash: executing_header.hash_slow(),
                 executing_payload: payload_attrs.op_payload_attributes.clone(),
