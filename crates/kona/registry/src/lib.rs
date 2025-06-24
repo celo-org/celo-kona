@@ -6,7 +6,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub use alloy_primitives::map::{DefaultHashBuilder, HashMap};
-pub use kona_genesis::{ChainConfig, RollupConfig};
+pub use celo_genesis::CeloRollupConfig;
+pub use kona_genesis::ChainConfig;
 
 pub use kona_registry::chain_list::{Chain, ChainList};
 
@@ -24,16 +25,16 @@ lazy_static::lazy_static! {
     pub static ref OPCHAINS: HashMap<u64, ChainConfig, DefaultHashBuilder> = _INIT.op_chains.clone();
 
     /// Rollup configurations exported from the registry
-    pub static ref ROLLUP_CONFIGS: HashMap<u64, RollupConfig, DefaultHashBuilder> = _INIT.rollup_configs.clone();
+    pub static ref ROLLUP_CONFIGS: HashMap<u64, CeloRollupConfig, DefaultHashBuilder> = _INIT.rollup_configs.clone();
 }
 
-/// Returns a [RollupConfig] by its identifier.
-pub fn rollup_config_by_ident(ident: &str) -> Option<&RollupConfig> {
+/// Returns a [CeloRollupConfig] by its identifier.
+pub fn rollup_config_by_ident(ident: &str) -> Option<&CeloRollupConfig> {
     let chain_id = CHAINS.get_chain_by_ident(ident)?.chain_id;
     ROLLUP_CONFIGS.get(&chain_id)
 }
 
-/// Returns a [RollupConfig] by its identifier.
-pub fn rollup_config_by_alloy_ident(chain: &alloy_chains::Chain) -> Option<&RollupConfig> {
+/// Returns a [CeloRollupConfig] by its identifier.
+pub fn rollup_config_by_alloy_ident(chain: &alloy_chains::Chain) -> Option<&CeloRollupConfig> {
     ROLLUP_CONFIGS.get(&chain.id())
 }
