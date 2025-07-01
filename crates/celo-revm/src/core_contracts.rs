@@ -1,4 +1,4 @@
-use crate::{CeloContext, CeloTransaction, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloTransaction, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, TxKind, U256,
     map::{DefaultHashBuilder, HashMap},
@@ -64,7 +64,7 @@ pub fn get_revert_message(output: Bytes) -> String {
 }
 
 pub fn call<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
@@ -115,7 +115,7 @@ where
 }
 
 pub fn get_currencies<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
     DB: Database,
@@ -134,7 +134,7 @@ where
 }
 
 pub fn get_exchange_rates<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
@@ -163,7 +163,7 @@ where
 }
 
 pub fn get_intrinsic_gas<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where

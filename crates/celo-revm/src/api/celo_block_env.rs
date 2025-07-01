@@ -1,5 +1,4 @@
 use crate::{
-    CeloContext,
     core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
     evm::CeloEvm,
 };
@@ -18,7 +17,7 @@ impl CeloBlockEnv {
     /// Return a new [CeloBlockEnv] with updated exchange rates and intrinsic gas for all fee
     /// currencies in the FeeCurrencyDirectory.
     pub fn update_fee_currencies<DB, INSP>(
-        evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+        evm: &mut CeloEvm<DB, INSP>,
     ) -> Result<CeloBlockEnv, CoreContractError>
     where
         DB: Database,
