@@ -2,10 +2,10 @@ use crate::{CeloContext, CeloPrecompiles};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Inspector,
-    context::{ContextSetters, Evm},
+    context::Evm,
     context_interface::{Cfg, ContextTr},
     handler::{EvmTr, instructions::EthInstructions},
-    inspector::{InspectorEvmTr, JournalExt},
+    inspector::InspectorEvmTr,
     interpreter::{Interpreter, InterpreterAction, interpreter::EthInterpreter},
 };
 
@@ -50,7 +50,6 @@ where
 impl<DB, INSP> InspectorEvmTr for CeloEvm<DB, INSP>
 where
     DB: revm::Database,
-    CeloContext<DB>: ContextTr<Journal: JournalExt, Cfg: Cfg<Spec = OpSpecId>> + ContextSetters,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
     type Inspector = INSP;
