@@ -1,38 +1,17 @@
-use crate::{CeloBlockEnv, CeloContext, CeloEvm, handler::CeloHandler, transaction::CeloTxTr};
+use crate::{CeloBlockEnv, CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
-use op_revm::{OpHaltReason, OpSpecId, OpTransactionError};
+use op_revm::{OpHaltReason, OpTransactionError};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
-    context::{ContextSetters, JournalOutput},
     context_interface::{
-        Cfg, ContextTr, Database, JournalTr,
+        ContextTr, Database,
         result::{EVMError, ExecutionResult, ResultAndState},
     },
     handler::{EthFrame, EvmTr, Handler, SystemCallTx, system_call::SystemCallEvm},
     inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
 };
-
-// Type alias for Celo context
-pub trait CeloContextTr:
-    ContextTr<
-        Journal: JournalTr<FinalOutput = JournalOutput>,
-        Tx: CeloTxTr,
-        Cfg: Cfg<Spec = OpSpecId>,
-        Chain = CeloBlockEnv,
-    >
-{
-}
-
-impl<T> CeloContextTr for T where
-    T: ContextTr<
-            Journal: JournalTr<FinalOutput = JournalOutput>,
-            Tx: CeloTxTr,
-            Cfg: Cfg<Spec = OpSpecId>,
-            Chain = CeloBlockEnv,
-        >
-{
-}
+use revm_context::ContextSetters;
 
 /// Type alias for the error type of the CeloEvm.
 // TODO: replace with CeloTransactionError
