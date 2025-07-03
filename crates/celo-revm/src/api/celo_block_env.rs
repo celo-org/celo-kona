@@ -1,5 +1,5 @@
 use crate::{
-    core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
+    contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
     evm::CeloEvm,
     common::fee_currency_context::FeeCurrencyContext,
 };
@@ -35,7 +35,7 @@ impl CeloBlockEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBuilder, DefaultCelo, core_contracts::tests::make_celo_test_db};
+    use crate::{CeloBuilder, DefaultCelo, contracts::core_contracts::tests::make_celo_test_db};
     use alloy_primitives::{address, U256};
     use revm::Context;
 
