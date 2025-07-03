@@ -1,17 +1,16 @@
 use crate::{
     CeloContext,
+    common::fee_currency_context::FeeCurrencyContext,
     core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
     evm::CeloEvm,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
 use op_revm::L1BlockInfo;
 use revm::{Database, handler::EvmTr};
 
 #[derive(Debug, Clone, Default)]
 pub struct CeloBlockEnv {
     pub l1_block_info: L1BlockInfo,
-    pub exchange_rates: HashMap<Address, (U256, U256)>,
-    pub intrinsic_gas: HashMap<Address, U256>,
+    pub fee_currency_context: FeeCurrencyContext,
 }
 
 impl CeloBlockEnv {
@@ -26,10 +25,10 @@ impl CeloBlockEnv {
         let currencies = &get_currencies(evm)?;
         let exchange_rates = get_exchange_rates(evm, currencies)?;
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
+        let fee_currency_context = FeeCurrencyContext::new(exchange_rates, intrinsic_gas);
         Ok(CeloBlockEnv {
             l1_block_info: evm.ctx().chain.l1_block_info.clone(),
-            exchange_rates,
-            intrinsic_gas,
+            fee_currency_context: fee_currency_context,
         })
     }
 }
@@ -38,7 +37,7 @@ impl CeloBlockEnv {
 mod tests {
     use super::*;
     use crate::{CeloBuilder, DefaultCelo, core_contracts::tests::make_celo_test_db};
-    use alloy_primitives::{address, map::DefaultHashBuilder};
+    use alloy_primitives::{U256, address};
     use revm::Context;
 
     #[test]
@@ -47,18 +46,18 @@ mod tests {
         let mut evm = ctx.build_celo();
         let block_env = CeloBlockEnv::update_fee_currencies(&mut evm).unwrap();
 
-        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected.insert(
-            address!("0x1111111111111111111111111111111111111111"),
-            (U256::from(20), U256::from(10)),
-        );
-        assert_eq!(block_env.exchange_rates, expected);
+        let exchange_rate = block_env
+            .fee_currency_context
+            .currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111")))
+            .unwrap();
+        assert_eq!(exchange_rate, (U256::from(20), U256::from(10)));
 
-        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected.insert(
-            address!("0x1111111111111111111111111111111111111111"),
-            U256::from(50000),
-        );
-        assert_eq!(block_env.intrinsic_gas, expected);
+        let intrinsic_gas_cost = block_env
+            .fee_currency_context
+            .currency_intrinsic_gas_cost(Some(address!(
+                "0x1111111111111111111111111111111111111111"
+            )))
+            .unwrap();
+        assert_eq!(intrinsic_gas_cost, U256::from(50000));
     }
 }

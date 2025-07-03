@@ -6,6 +6,7 @@
 extern crate alloc as std;
 
 pub mod api;
+pub mod common;
 pub mod constants;
 pub mod core_contracts;
 pub mod evm;
