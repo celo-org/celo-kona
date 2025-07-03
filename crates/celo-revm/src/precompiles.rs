@@ -84,7 +84,7 @@ mod tests {
     use crate::{
         CeloBuilder, CeloContext, CeloTransaction, DefaultCelo,
         constants::{CELO_MAINNET_CHAIN_ID, get_addresses},
-        core_contracts::get_revert_message,
+        contracts::get_revert_message,
         precompiles::transfer::TRANSFER_GAS_COST,
     };
     use alloy_primitives::{TxKind, U256, address, hex};
