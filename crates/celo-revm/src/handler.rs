@@ -2,7 +2,7 @@
 
 use crate::{
     CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
-    core_contracts::CoreContractError, evm::CeloEvm,
+    contracts::core_contracts::CoreContractError, evm::CeloEvm, transaction::CeloTxTr,
 };
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
@@ -109,6 +109,8 @@ where
         let basefee = ctx.block().basefee() as u128;
         let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fee_currency = ctx.tx().fee_currency();
+        let fees_in_celo = fee_currency == None;
         let spec = ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
@@ -176,43 +178,79 @@ where
             )?;
         }
 
-        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
-
-        // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
-        // Transfer will be done inside `*_inner` functions.
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
             // this is not consensus critical, and it is used in testing.
             caller_account.info.balance = caller_account.info.balance.max(tx.value());
-        } else if !is_deposit && max_balance_spending > caller_account.info.balance {
-            // skip max balance check for deposit transactions.
-            // this check for deposit was skipped previously in `validate_tx_against_state` function
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(max_balance_spending),
-                balance: Box::new(caller_account.info.balance),
+        } else if !is_deposit {
+            // Check CELO balance for value transfer (value is always in CELO)
+            if tx.value() > caller_account.info.balance {
+                return Err(ERROR::from_string("lack of funds ({caller_account.info.balance}) for value payment ({tx.value()})".to_string()));
             }
-            .into());
-        } else {
-            let effective_balance_spending =
-                tx.effective_balance_spending(basefee, blob_price).expect(
-                    "effective balance is always smaller than max balance so it can't overflow",
-                );
 
-            // subtracting max balance spending with value that is going to be deducted later in the
-            // call.
-            let gas_balance_spending = effective_balance_spending - tx.value();
+            // Check balance for gas payment
+            if !fees_in_celo {
+                // CIP-64 transaction: check fee currency balance for gas payment
+                // First verify that the fee currency is registered
+                let fee_currency_context = &evm.ctx().chain().fee_currency_context;
 
-            // If the transaction is not a deposit transaction, subtract the L1 data fee from the
-            // caller's balance directly after minting the requested amount of ETH.
-            // Additionally deduct the operator fee from the caller's account.
-            //
-            // In case of deposit additional cost will be zero.
-            let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
+                // Check if the fee currency is registered
+                if fee_currency_context
+                    .currency_exchange_rate(fee_currency)
+                    .is_err()
+                {
+                    return Err(ERROR::from_string(
+                        "unregistered fee-currency address".to_string(),
+                    ));
+                }
 
-            caller_account.info.balance = caller_account
-                .info
-                .balance
-                .saturating_sub(op_gas_balance_spending);
+                // Get caller's balance in the fee currency token
+                // Note: This requires casting EVM to CeloEvm for the contracts::erc20 module
+                // For now, we'll implement a simpler check or return an error
+                // TODO: Implement proper type casting or redesign the get_balance function
+                return Err(ERROR::from_string(
+                    "CIP-64 balance validation requires implementation of EVM type casting"
+                        .to_string(),
+                ));
+            } else {
+                // Regular transaction: check CELO balance for both value and gas
+                let max_balance_spending =
+                    tx.max_balance_spending()?.saturating_add(additional_cost);
+
+                if max_balance_spending > caller_account.info.balance {
+                    return Err(InvalidTransaction::LackOfFundForMaxFee {
+                        fee: Box::new(max_balance_spending),
+                        balance: Box::new(caller_account.info.balance),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        if !is_balance_check_disabled {
+            if fee_currency.is_none() {
+                // Only deduct CELO for gas if not using fee currency
+                let effective_balance_spending =
+                    tx.effective_balance_spending(basefee, blob_price).expect(
+                        "effective balance is always smaller than max balance so it can't overflow",
+                    );
+
+                // subtracting max balance spending with value that is going to be deducted later in the call.
+                let gas_balance_spending = effective_balance_spending - tx.value();
+
+                // If the transaction is not a deposit transaction, subtract the L1 data fee from the
+                // caller's balance directly after minting the requested amount of ETH.
+                // Additionally deduct the operator fee from the caller's account.
+                //
+                // In case of deposit additional cost will be zero.
+                let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
+
+                caller_account.info.balance = caller_account
+                    .info
+                    .balance
+                    .saturating_sub(op_gas_balance_spending);
+            }
+            // For CIP-64 transactions, gas deduction from fee currency will be handled separately
         }
 
         // Touch account so we know it is changed.
