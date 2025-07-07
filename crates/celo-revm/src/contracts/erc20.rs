@@ -1,6 +1,6 @@
 //! ERC20 token interface for fee currency handling
 
-use crate::{CeloContext, CeloEvm};
+use crate::CeloEvm;
 use super::core_contracts::{self, CoreContractError};
 use alloy_sol_types::{sol, SolCall};
 use revm::{Database, primitives::{Address, Bytes, U256}};
@@ -30,7 +30,7 @@ sol! {
 
 /// Get the balance of an account for a given ERC20 token
 pub fn get_balance<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     token_address: Address,
     account: Address,
 ) -> Result<U256, CoreContractError>
