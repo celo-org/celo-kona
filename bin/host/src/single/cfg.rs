@@ -3,11 +3,11 @@
 use crate::single::CeloSingleChainHintHandler;
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
+use celo_genesis::CeloRollupConfig;
 use clap::Parser;
 use hokulea_host_bin::eigenda_blobs::OnlineEigenDABlobProvider;
 use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
-use kona_genesis::RollupConfig;
 use kona_host::{
     OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
     SharedKeyValueStore,
@@ -137,9 +137,13 @@ impl CeloSingleChainHost {
         self.kona_cfg.is_offline()
     }
 
-    /// Reads the [RollupConfig] from the file system and returns it as a string.
-    pub fn read_rollup_config(&self) -> Result<RollupConfig, SingleChainHostError> {
-        self.kona_cfg.read_rollup_config()
+    /// Reads the [CeloRollupConfig] from the file system and returns it as a string.
+    pub fn read_rollup_config(&self) -> Result<CeloRollupConfig, SingleChainHostError> {
+        let rollup_config = self.kona_cfg.read_rollup_config()?;
+        let celo_rollup_config = CeloRollupConfig {
+            op_rollup_config: rollup_config,
+        };
+        Ok(celo_rollup_config)
     }
 
     /// Creates the key-value store for the host backend.

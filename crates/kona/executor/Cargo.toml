@@ -18,6 +18,7 @@ celo-registry = { version = "0.1.0", path = "../registry" }
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["k256", "serde"] }
+celo-genesis = { workspace = true, features = ["revm"] }
 
 # Kona
 kona-executor.workspace = true

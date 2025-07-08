@@ -6,8 +6,8 @@ use alloy_consensus::Header;
 use alloy_eips::eip1559::BaseFeeParams;
 use alloy_primitives::{B64, Bytes};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult};
-use kona_genesis::RollupConfig;
 
 /// Parse Holocene [Header] extra data.
 ///
@@ -55,14 +55,14 @@ pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult
 /// Encode Holocene [Header] extra data.
 ///
 /// ## Takes
-/// - `config`: The [RollupConfig] for the chain.
+/// - `config`: The [CeloRollupConfig] for the chain.
 /// - `attributes`: The [CeloPayloadAttributes] for the block.
 ///
 /// ## Returns
 /// - `Ok(data)`: The encoded extra data.
 /// - `Err(ExecutorError::MissingEIP1559Params)`: If the EIP-1559 parameters are missing.
 pub(crate) fn encode_holocene_eip_1559_params(
-    config: &RollupConfig,
+    config: &CeloRollupConfig,
     attributes: &CeloPayloadAttributes,
 ) -> ExecutorResult<Bytes> {
     let payload_params = attributes
@@ -84,8 +84,11 @@ pub(crate) fn encode_holocene_eip_1559_params(
 /// Encodes the canyon base fee parameters, per Holocene spec.
 ///
 /// <https://specs.optimism.io/protocol/holocene/exec-engine.html#eip1559params-encoding>
-pub(crate) fn encode_canyon_base_fee_params(config: &RollupConfig) -> B64 {
-    let params = config.chain_op_config.as_canyon_base_fee_params();
+pub(crate) fn encode_canyon_base_fee_params(config: &CeloRollupConfig) -> B64 {
+    let params = config
+        .op_rollup_config
+        .chain_op_config
+        .as_canyon_base_fee_params();
 
     let mut buf = B64::ZERO;
     buf[..4].copy_from_slice(&(params.max_change_denominator as u32).to_be_bytes());
@@ -101,6 +104,7 @@ mod test {
     use alloy_primitives::{B64, b64, hex};
     use alloy_rpc_types_engine::PayloadAttributes;
     use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+    use celo_genesis::CeloRollupConfig;
     use kona_genesis::{BaseFeeConfig, RollupConfig};
     use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
@@ -167,13 +171,15 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_missing() {
-        let cfg = RollupConfig {
-            chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
+        let cfg = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                chain_op_config: BaseFeeConfig {
+                    eip1559_denominator: 32,
+                    eip1559_elasticity: 64,
+                    eip1559_denominator_canyon: 32,
+                },
+                ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(None);
 
@@ -182,13 +188,15 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_default() {
-        let cfg = RollupConfig {
-            chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
+        let cfg = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                chain_op_config: BaseFeeConfig {
+                    eip1559_denominator: 32,
+                    eip1559_elasticity: 64,
+                    eip1559_denominator_canyon: 32,
+                },
+                ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(Some(B64::ZERO));
 
@@ -200,13 +208,15 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params() {
-        let cfg = RollupConfig {
-            chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
+        let cfg = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                chain_op_config: BaseFeeConfig {
+                    eip1559_denominator: 32,
+                    eip1559_elasticity: 64,
+                    eip1559_denominator_canyon: 32,
+                },
+                ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(Some(b64!("0000004000000060")));
 
@@ -218,13 +228,15 @@ mod test {
 
     #[test]
     fn test_encode_canyon_1559_params() {
-        let cfg = RollupConfig {
-            chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
+        let cfg = CeloRollupConfig {
+            op_rollup_config: RollupConfig {
+                chain_op_config: BaseFeeConfig {
+                    eip1559_denominator: 32,
+                    eip1559_elasticity: 64,
+                    eip1559_denominator_canyon: 32,
+                },
+                ..Default::default()
             },
-            ..Default::default()
         };
         assert_eq!(
             encode_canyon_base_fee_params(&cfg),

@@ -19,6 +19,7 @@ alloy-celo-evm.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-alloy-network.workspace = true
 celo-proof.workspace = true
+celo-genesis = { workspace = true, features = ["std", "serde"] }
 
 # Kona Binaries
 kona-host = { workspace = true, features = ["single"] }

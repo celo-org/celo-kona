@@ -10,8 +10,8 @@ use alloy_evm::{
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
 use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
-use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 use revm::database::{State, states::bundle_state::BundleRetention};
@@ -25,14 +25,14 @@ where
     H: TrieHinter,
     Evm: EvmFactory,
 {
-    /// The [RollupConfig].
-    pub(crate) config: &'a RollupConfig,
+    /// The [CeloRollupConfig].
+    pub(crate) config: &'a CeloRollupConfig,
     /// The inner trie database.
     pub(crate) trie_db: TrieDB<P, H>,
     #[allow(rustdoc::broken_intra_doc_links)]
     /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block building
     /// routines.
-    pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, RollupConfig, Evm>,
+    pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig, Evm>,
 }
 
 impl<'a, P, H, Evm> CeloStatelessL2Builder<'a, P, H, Evm>
@@ -44,7 +44,7 @@ where
 {
     /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
-        config: &'a RollupConfig,
+        config: &'a CeloRollupConfig,
         evm_factory: Evm,
         provider: P,
         hinter: H,
@@ -74,7 +74,9 @@ where
         let base_fee_params =
             Self::active_base_fee_params(self.config, self.trie_db.parent_block_header(), &attrs)?;
         let evm_env = self.evm_env(
-            self.config.spec_id(op_attrs.payload_attributes.timestamp),
+            self.config
+                .op_rollup_config
+                .spec_id(op_attrs.payload_attributes.timestamp),
             self.trie_db.parent_block_header(),
             &attrs,
             &base_fee_params,
