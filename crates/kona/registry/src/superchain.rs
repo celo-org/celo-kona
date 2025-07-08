@@ -2,7 +2,8 @@
 
 use super::ChainList;
 use alloy_primitives::map::HashMap;
-use kona_genesis::{ChainConfig, RollupConfig, Superchains};
+use celo_genesis::CeloRollupConfig;
+use kona_genesis::{ChainConfig, Superchains};
 
 /// The registry containing all the superchain configurations.
 #[derive(Debug, Clone, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -13,7 +14,7 @@ pub struct Registry {
     /// Map of chain IDs to their chain configuration.
     pub op_chains: HashMap<u64, ChainConfig>,
     /// Map of chain IDs to their rollup configurations.
-    pub rollup_configs: HashMap<u64, RollupConfig>,
+    pub rollup_configs: HashMap<u64, CeloRollupConfig>,
 }
 
 impl Registry {
@@ -48,7 +49,11 @@ impl Registry {
                     .protocol_versions_addr
                     .expect("Missing protocol versions address");
                 rollup.superchain_config_address = superchain.config.superchain_config_addr;
-                rollup_configs.insert(chain_config.chain_id, rollup);
+                // Wrap RollupConfig to CeloRollupConfig
+                let celo_rollup = CeloRollupConfig {
+                    op_rollup_config: rollup,
+                };
+                rollup_configs.insert(chain_config.chain_id, celo_rollup);
                 op_chains.insert(chain_config.chain_id, chain_config);
             }
         }

@@ -5,6 +5,7 @@ use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_driver::CeloDriver;
+use celo_genesis::CeloRollupConfig;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
 use kona_client::single::FaultProofProgramError;
@@ -39,6 +40,13 @@ where
         hint_client.clone(),
     ));
     let boot = BootInfo::load(oracle.as_ref()).await?;
+
+    // Wrap RollupConfig to CeloRollupConfig
+    let celo_rollup_config = CeloRollupConfig {
+        op_rollup_config: boot.rollup_config.clone(),
+    };
+    let celo_rollup_config = Arc::new(celo_rollup_config);
+
     let rollup_config = Arc::new(boot.rollup_config);
     let safe_head_hash = fetch_safe_head_hash(oracle.as_ref(), boot.agreed_l2_output_root).await?;
 
@@ -104,7 +112,7 @@ where
     )
     .await?;
     let executor = CeloExecutor::new(
-        rollup_config.as_ref(),
+        celo_rollup_config.as_ref(),
         l2_provider.clone(),
         l2_provider,
         evm_factory,
@@ -115,7 +123,10 @@ where
     // Run the derivation pipeline until we are able to produce the output root of the claimed
     // L2 block.
     let (safe_head, output_root) = driver
-        .advance_to_target(rollup_config.as_ref(), Some(boot.claimed_l2_block_number))
+        .advance_to_target(
+            celo_rollup_config.as_ref(),
+            Some(boot.claimed_l2_block_number),
+        )
         .await?;
 
     ////////////////////////////////////////////////////////////////

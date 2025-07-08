@@ -6,8 +6,8 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::{EvmEnv, EvmFactory};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
-use kona_genesis::RollupConfig;
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
 use revm::{
@@ -43,8 +43,8 @@ where
     /// Returns the active [CfgEnv] for the executor.
     pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
         CfgEnv::new()
-            .with_chain_id(self.config.l2_chain_id)
-            .with_spec(self.config.spec_id(timestamp))
+            .with_chain_id(self.config.op_rollup_config.l2_chain_id)
+            .with_spec(self.config.op_rollup_config.spec_id(timestamp))
     }
 
     /// Prepares a [BlockEnv] with the given [CeloPayloadAttributes].
@@ -87,30 +87,44 @@ where
 
     /// Returns the active base fee parameters for the given payload attributes.
     pub(crate) fn active_base_fee_params(
-        config: &RollupConfig,
+        config: &CeloRollupConfig,
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
     ) -> ExecutorResult<BaseFeeParams> {
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
-        let base_fee_params =
-            if config.is_holocene_active(op_payload_attrs.payload_attributes.timestamp) {
-                // After Holocene activation, the base fee parameters are stored in the
-                // `extraData` field of the parent header. If Holocene wasn't active in the
-                // parent block, the default base fee parameters are used.
-                config
-                    .is_holocene_active(parent_header.timestamp)
-                    .then(|| decode_holocene_eip_1559_params(parent_header))
-                    .transpose()?
-                    .unwrap_or(config.chain_op_config.as_canyon_base_fee_params())
-            } else if config.is_canyon_active(op_payload_attrs.payload_attributes.timestamp) {
-                // If the payload attribute timestamp is past canyon activation,
-                // use the canyon base fee params from the rollup config.
-                config.chain_op_config.as_canyon_base_fee_params()
-            } else {
-                // If the payload attribute timestamp is prior to canyon activation,
-                // use the default base fee params from the rollup config.
-                config.chain_op_config.as_base_fee_params()
-            };
+        let base_fee_params = if config
+            .op_rollup_config
+            .is_holocene_active(op_payload_attrs.payload_attributes.timestamp)
+        {
+            // After Holocene activation, the base fee parameters are stored in the
+            // `extraData` field of the parent header. If Holocene wasn't active in the
+            // parent block, the default base fee parameters are used.
+            config
+                .op_rollup_config
+                .is_holocene_active(parent_header.timestamp)
+                .then(|| decode_holocene_eip_1559_params(parent_header))
+                .transpose()?
+                .unwrap_or(
+                    config
+                        .op_rollup_config
+                        .chain_op_config
+                        .as_canyon_base_fee_params(),
+                )
+        } else if config
+            .op_rollup_config
+            .is_canyon_active(op_payload_attrs.payload_attributes.timestamp)
+        {
+            // If the payload attribute timestamp is past canyon activation,
+            // use the canyon base fee params from the rollup config.
+            config
+                .op_rollup_config
+                .chain_op_config
+                .as_canyon_base_fee_params()
+        } else {
+            // If the payload attribute timestamp is prior to canyon activation,
+            // use the default base fee params from the rollup config.
+            config.op_rollup_config.chain_op_config.as_base_fee_params()
+        };
 
         Ok(base_fee_params)
     }
