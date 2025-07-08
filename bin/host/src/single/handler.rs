@@ -14,13 +14,15 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
-use celo_proof::hint::CeloHintType;
-use hokulea_eigenda::{
-    AltDACommitment, BYTES_PER_FIELD_ELEMENT, EigenDABlobData, PAYLOAD_ENCODING_VERSION_0,
-    RESERVED_EIGENDA_API_BYTE_FOR_RECENCY, RESERVED_EIGENDA_API_BYTE_FOR_VALIDITY,
-    RESERVED_EIGENDA_API_BYTE_INDEX,
+use hokulea_host_bin::{
+    cfg::{SingleChainHostWithEigenDA, SingleChainProvidersWithEigenDA},
+    handler::fetch_eigenda_hint,
 };
-use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
+use hokulea_proof::hint::ExtendedHintType;
+use kona_host::{
+    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::http_provider,
+    single::SingleChainProviders,
+};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
 use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
@@ -41,8 +43,9 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
+        println!("fetch_hint {:?}", hint);
         match hint.ty {
-            CeloHintType::Original(ty) => {
+            ExtendedHintType::Original(ty) => {
                 Self::fetch_original_hint(
                     Hint {
                         ty,
@@ -54,8 +57,34 @@ impl HintHandler for CeloSingleChainHintHandler {
                 )
                 .await
             }
-            CeloHintType::EigenDACert => {
-                Self::fetch_eigenda_cert_hint(hint.data, cfg, providers, kv).await
+            ExtendedHintType::EigenDACert => {
+                fetch_eigenda_hint(
+                    hint,
+                    &SingleChainHostWithEigenDA {
+                        kona_cfg: cfg.kona_cfg.clone(),
+                        eigenda_proxy_address: cfg.eigenda_proxy_address.clone(),
+                        verbose: 0,
+                    },
+                    &SingleChainProvidersWithEigenDA {
+                        kona_providers: SingleChainProviders {
+                            l1: providers.l1.clone(),
+                            l2: http_provider(
+                                &cfg.kona_cfg
+                                    .l2_node_address
+                                    .clone()
+                                    .ok_or(anyhow!("L2 node address must be set"))?,
+                            ),
+                            blobs: providers.blobs.clone(),
+                        },
+                        eigenda_blob_provider: providers
+                            .eigenda_blob_provider
+                            .as_ref()
+                            .ok_or(anyhow!("Eigen DA address must be set"))?
+                            .clone(),
+                    },
+                    kv,
+                )
+                .await
             }
         }
     }
@@ -438,102 +467,6 @@ impl CeloSingleChainHintHandler {
                     let key = PreimageKey::new_keccak256(*computed_hash);
                     kv_lock.set(key.into(), preimage.into())?;
                 }
-            }
-        }
-
-        Ok(())
-    }
-
-    const RECENCY_BUFFER: u64 = 100_000_000;
-
-    /// fetch_eigenda_cert_hint fetches and processes an EigenDA certificate hint.
-    async fn fetch_eigenda_cert_hint(
-        altda_commitment_bytes: Bytes,
-        cfg: &<Self as HintHandler>::Cfg,
-        providers: &<<Self as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
-        kv: SharedKeyValueStore,
-    ) -> Result<()> {
-        // Fetch the blob sidecar from the blob provider.
-        let response = providers
-            .eigenda_blob_provider
-            .as_ref()
-            .ok_or(anyhow!("EigenDA blob provider is not set"))?
-            .fetch_eigenda_blob(&altda_commitment_bytes)
-            .await
-            .map_err(|e| anyhow!("Failed to fetch EigenDA blob: {e}"))?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Failed to fetch eigenda blob, status {:?}",
-                response.error_for_status()
-            ));
-        }
-        let rollup_data = response.bytes().await.unwrap();
-
-        let altda_commitment: AltDACommitment = match altda_commitment_bytes.as_ref().try_into() {
-            Ok(a) => a,
-            Err(e) => {
-                return Err(anyhow!(
-                    "Failed to convert hint data to AltDACommitment: {e}"
-                ));
-            }
-        };
-
-        let mut kv_write_lock = kv.write().await;
-
-        let rollup_config = cfg
-            .kona_cfg
-            .read_rollup_config()
-            .map_err(|e| anyhow!("Failed to read rollup config: {}", e))?;
-
-        let recency = rollup_config.seq_window_size + Self::RECENCY_BUFFER;
-        let recency_be_bytes = recency.to_be_bytes();
-        let mut recency_address = altda_commitment.digest_template();
-        recency_address[RESERVED_EIGENDA_API_BYTE_INDEX] = RESERVED_EIGENDA_API_BYTE_FOR_RECENCY;
-
-        kv_write_lock.set(
-            PreimageKey::new(*keccak256(recency_address), PreimageKeyType::GlobalGeneric).into(),
-            recency_be_bytes.to_vec(),
-        )?;
-
-        let claimed_validity = true;
-        let mut validity_address = altda_commitment.digest_template();
-
-        validity_address[RESERVED_EIGENDA_API_BYTE_INDEX] = RESERVED_EIGENDA_API_BYTE_FOR_VALIDITY;
-
-        kv_write_lock.set(
-            PreimageKey::new(*keccak256(validity_address), PreimageKeyType::GlobalGeneric).into(),
-            vec![claimed_validity as u8],
-        )?;
-
-        // pre-populate eigenda blob field element by field element
-        let blob_length_fe = altda_commitment.get_num_field_element();
-
-        let eigenda_blob =
-            EigenDABlobData::encode(rollup_data.as_ref(), PAYLOAD_ENCODING_VERSION_0);
-
-        // implementation requires eigenda_blob to be multiple of 32
-        assert!(eigenda_blob.blob.len() % 32 == 0);
-        let fetch_num_element = (eigenda_blob.blob.len() / BYTES_PER_FIELD_ELEMENT) as u64;
-
-        let mut field_element_key = altda_commitment.digest_template();
-        // populate every field element (fe) onto database
-        for i in 0..blob_length_fe as u64 {
-            field_element_key[72..].copy_from_slice(i.to_be_bytes().as_ref());
-
-            let blob_key_hash = keccak256(field_element_key.as_ref());
-
-            if i < fetch_num_element {
-                kv_write_lock.set(
-                    PreimageKey::new(*blob_key_hash, PreimageKeyType::GlobalGeneric).into(),
-                    eigenda_blob.blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
-                )?;
-            } else {
-                // empty bytes for the missing part between the re-encoded blob and claimed blob length from the header
-                kv_write_lock.set(
-                    PreimageKey::new(*blob_key_hash, PreimageKeyType::GlobalGeneric).into(),
-                    vec![0u8; 32],
-                )?;
             }
         }
 

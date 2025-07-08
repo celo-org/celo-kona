@@ -5,4 +5,3 @@
 extern crate alloc;
 
 pub mod executor;
-pub mod hint;

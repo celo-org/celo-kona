@@ -3,9 +3,9 @@
 use crate::single::CeloSingleChainHintHandler;
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
-use celo_proof::hint::CeloHintType;
 use clap::Parser;
 use hokulea_host_bin::eigenda_blobs::OnlineEigenDABlobProvider;
+use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_genesis::RollupConfig;
 use kona_host::{
@@ -88,7 +88,7 @@ impl CeloSingleChainHost {
                 providers,
                 CeloSingleChainHintHandler,
             )
-            .with_proactive_hint(CeloHintType::Original(HintType::L2PayloadWitness));
+            .with_proactive_hint(ExtendedHintType::Original(HintType::L2PayloadWitness));
 
             task::spawn(async {
                 PreimageServer::new(
@@ -174,7 +174,7 @@ impl CeloSingleChainHost {
 }
 
 impl OnlineHostBackendCfg for CeloSingleChainHost {
-    type HintType = CeloHintType;
+    type HintType = ExtendedHintType;
     type Providers = CeloSingleChainProviders;
 }
 
