@@ -159,6 +159,7 @@ alloy-signer = { version = "1.0.9", default-features = false }
 # Hokulea
 hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "87c149553e552bd610945ff6516933aeb130fcc3", default-features = false}
 hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "87c149553e552bd610945ff6516933aeb130fcc3", default-features = false}
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "87c149553e552bd610945ff6516933aeb130fcc3", default-features = false}
 eigenda-cert = { git = "https://github.com/Layr-Labs/hokulea", rev = "87c149553e552bd610945ff6516933aeb130fcc3", default-features = false}
 
 # General

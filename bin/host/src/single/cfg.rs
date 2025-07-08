@@ -1,10 +1,11 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::{CeloSingleChainHintHandler, eigenda_blobs::OnlineEigenDABlobProvider};
+use crate::single::CeloSingleChainHintHandler;
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_proof::hint::CeloHintType;
 use clap::Parser;
+use hokulea_host_bin::eigenda_blobs::OnlineEigenDABlobProvider;
 use kona_cli::cli_styles;
 use kona_genesis::RollupConfig;
 use kona_host::{
@@ -161,7 +162,7 @@ impl CeloSingleChainHost {
         let eigen_da_blob_provider = self
             .eigenda_proxy_address
             .clone()
-            .map(OnlineEigenDABlobProvider::new);
+            .map(OnlineEigenDABlobProvider::new_http);
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
