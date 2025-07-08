@@ -43,7 +43,6 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        println!("fetch_hint {:?}", hint);
         match hint.ty {
             ExtendedHintType::Original(ty) => {
                 Self::fetch_original_hint(
