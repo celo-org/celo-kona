@@ -42,6 +42,15 @@ pub struct CeloSingleChainHost {
         env
     )]
     pub eigenda_proxy_address: Option<String>,
+
+    /// Verbosity level (-v, -vv, -vvv, etc.)
+    #[clap(
+        short,
+        long,
+        action = clap::ArgAction::Count,
+        default_value_t = 0
+    )]
+    pub verbose: u8,
 }
 
 impl CeloSingleChainHost {
