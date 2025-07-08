@@ -220,7 +220,6 @@ pprof = "0.15.0"
 arbtest = "0.3.2"
 proptest = "1.6.0"
 criterion = "0.5.1"
-mockito = "1.7.0"
 
 # Serialization
 rkyv = "0.8.10"

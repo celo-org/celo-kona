@@ -88,7 +88,6 @@ ark-ff.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-mockito.workspace = true
 
 [features]
 default = ["single"]
