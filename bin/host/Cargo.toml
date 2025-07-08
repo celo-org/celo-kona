@@ -18,6 +18,7 @@ celo-client.workspace = true
 alloy-celo-evm.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-alloy-network.workspace = true
+celo-proof.workspace = true
 celo-genesis = { workspace = true, features = ["std", "serde"] }
 
 # Kona Binaries
@@ -63,6 +64,11 @@ alloy-op-evm = { workspace = true, features = ["std"] }
 
 # Revm
 revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst"] }
+
+# Hokulea
+hokulea-eigenda.workspace = true
+hokulea-proof.workspace = true
+hokulea-host-bin.workspace = true
 
 # General
 anyhow.workspace = true

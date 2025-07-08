@@ -5,6 +5,8 @@ use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
+use hokulea_host_bin::eigenda_blobs::OnlineEigenDABlobProvider;
+use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
     OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
@@ -29,6 +31,26 @@ pub struct CeloSingleChainHost {
     /// Inherited kona_host::SingleChainHost CLI arguments.
     #[clap(flatten)]
     pub kona_cfg: SingleChainHost,
+
+    /// URL of the EigenDA Proxy endpoint.
+    #[clap(
+        long,
+        visible_alias = "eigenda",
+        requires = "l2_node_address",
+        requires = "l1_node_address",
+        requires = "l1_beacon_address",
+        env
+    )]
+    pub eigenda_proxy_address: Option<String>,
+
+    /// Verbosity level (-v, -vv, -vvv, etc.)
+    #[clap(
+        short,
+        long,
+        action = clap::ArgAction::Count,
+        default_value_t = 0
+    )]
+    pub verbose: u8,
 }
 
 impl CeloSingleChainHost {
@@ -75,7 +97,7 @@ impl CeloSingleChainHost {
                 providers,
                 CeloSingleChainHintHandler,
             )
-            .with_proactive_hint(HintType::L2PayloadWitness);
+            .with_proactive_hint(ExtendedHintType::Original(HintType::L2PayloadWitness));
 
             task::spawn(async {
                 PreimageServer::new(
@@ -150,17 +172,22 @@ impl CeloSingleChainHost {
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
         );
+        let eigen_da_blob_provider = self
+            .eigenda_proxy_address
+            .clone()
+            .map(OnlineEigenDABlobProvider::new_http);
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
             blobs: blob_provider,
             l2: l2_provider,
+            eigenda_blob_provider: eigen_da_blob_provider,
         })
     }
 }
 
 impl OnlineHostBackendCfg for CeloSingleChainHost {
-    type HintType = HintType;
+    type HintType = ExtendedHintType;
     type Providers = CeloSingleChainProviders;
 }
 
@@ -173,6 +200,8 @@ pub struct CeloSingleChainProviders {
     pub blobs: OnlineBlobProvider<OnlineBeaconClient>,
     /// The L2 EL provider.
     pub l2: RootProvider<Celo>,
+    /// The EigenDA blob provider
+    pub eigenda_blob_provider: Option<OnlineEigenDABlobProvider>,
 }
 
 #[cfg(test)]
@@ -257,6 +286,23 @@ mod test {
                 .as_slice(),
                 true,
             ),
+            (
+                [
+                    "--eigenda-proxy-address",
+                    "dummy",
+                    "--l1-node-address",
+                    "dummy",
+                    "--l2-node-address",
+                    "dummy",
+                    "--l1-beacon-address",
+                    "dummy",
+                    "--server",
+                    "--l2-chain-id",
+                    "0",
+                ]
+                .as_slice(),
+                true,
+            ),
             // invalid
             (
                 ["--server", "--native", "--l2-chain-id", "0"].as_slice(),
@@ -311,6 +357,19 @@ mod test {
                 false,
             ),
             ([].as_slice(), false),
+            (
+                [
+                    "--eigenda-proxy-address",
+                    "dummy",
+                    "--server",
+                    "--rollup-config-path",
+                    "dummy",
+                    "--data-dir",
+                    "dummy",
+                ]
+                .as_slice(),
+                false,
+            ),
         ];
 
         for (args_ext, valid) in cases.into_iter() {

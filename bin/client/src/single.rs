@@ -8,6 +8,8 @@ use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::executor::CeloExecutor;
 use core::fmt::Debug;
+use hokulea_eigenda::{EigenDABlobSource, EigenDADataSource};
+use hokulea_proof::eigenda_provider::OracleEigenDAProvider;
 use kona_client::single::FaultProofProgramError;
 use kona_derive::prelude::EthereumDataSource;
 use kona_executor::TrieDBProvider;
@@ -100,8 +102,13 @@ where
     l2_provider.set_cursor(cursor.clone());
 
     let evm_factory = CeloEvmFactory::default();
-    let da_provider =
+    let eth_data_source =
         EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
+
+    let eigenda_blob_provider = OracleEigenDAProvider::new(oracle.clone());
+    let eigenda_blob_source = EigenDABlobSource::new(eigenda_blob_provider);
+    let da_provider = EigenDADataSource::new(eth_data_source, eigenda_blob_source);
+
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
         cursor.clone(),

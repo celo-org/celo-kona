@@ -14,7 +14,15 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
-use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
+use hokulea_host_bin::{
+    cfg::{SingleChainHostWithEigenDA, SingleChainProvidersWithEigenDA},
+    handler::fetch_eigenda_hint,
+};
+use hokulea_proof::hint::ExtendedHintType;
+use kona_host::{
+    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::http_provider,
+    single::SingleChainProviders,
+};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
 use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
@@ -28,10 +36,66 @@ pub struct CeloSingleChainHintHandler;
 impl HintHandler for CeloSingleChainHintHandler {
     type Cfg = CeloSingleChainHost;
 
+    /// fetch_hint fetches and processes a hint based on its type.
     async fn fetch_hint(
         hint: Hint<<Self::Cfg as OnlineHostBackendCfg>::HintType>,
         cfg: &Self::Cfg,
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
+        kv: SharedKeyValueStore,
+    ) -> Result<()> {
+        match hint.ty {
+            ExtendedHintType::Original(ty) => {
+                Self::fetch_original_hint(
+                    Hint {
+                        ty,
+                        data: hint.data,
+                    },
+                    cfg,
+                    providers,
+                    kv,
+                )
+                .await
+            }
+            ExtendedHintType::EigenDACert => {
+                fetch_eigenda_hint(
+                    hint,
+                    &SingleChainHostWithEigenDA {
+                        kona_cfg: cfg.kona_cfg.clone(),
+                        eigenda_proxy_address: cfg.eigenda_proxy_address.clone(),
+                        verbose: cfg.verbose,
+                    },
+                    &SingleChainProvidersWithEigenDA {
+                        kona_providers: SingleChainProviders {
+                            l1: providers.l1.clone(),
+                            l2: http_provider(
+                                &cfg.kona_cfg
+                                    .l2_node_address
+                                    .clone()
+                                    .ok_or(anyhow!("L2 node address must be set"))?,
+                            ),
+                            blobs: providers.blobs.clone(),
+                        },
+                        eigenda_blob_provider: providers
+                            .eigenda_blob_provider
+                            .as_ref()
+                            .ok_or(anyhow!("Eigen DA blob provider must be set"))?
+                            .clone(),
+                    },
+                    kv,
+                )
+                .await
+            }
+        }
+    }
+}
+
+/// Implements the fetchers for each hint type.
+impl CeloSingleChainHintHandler {
+    /// fetch_original_hint fetches and processes an original hint.
+    async fn fetch_original_hint(
+        hint: Hint<HintType>,
+        cfg: &<Self as HintHandler>::Cfg,
+        providers: &<<Self as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
         match hint.ty {
