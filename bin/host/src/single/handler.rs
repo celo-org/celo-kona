@@ -15,9 +15,8 @@ use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_proof::hint::CeloHintType;
-use eigenda_cert::AltDACommitment;
 use hokulea_eigenda::{
-    BYTES_PER_FIELD_ELEMENT, EigenDABlobData, PAYLOAD_ENCODING_VERSION_0,
+    AltDACommitment, BYTES_PER_FIELD_ELEMENT, EigenDABlobData, PAYLOAD_ENCODING_VERSION_0,
     RESERVED_EIGENDA_API_BYTE_FOR_RECENCY, RESERVED_EIGENDA_API_BYTE_FOR_VALIDITY,
     RESERVED_EIGENDA_API_BYTE_INDEX,
 };
