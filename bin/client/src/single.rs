@@ -44,7 +44,6 @@ where
     // Wrap RollupConfig to CeloRollupConfig
     let celo_rollup_config = CeloRollupConfig {
         op_rollup_config: boot.rollup_config.clone(),
-        cel2_time: Some(0),
     };
     let celo_rollup_config = Arc::new(celo_rollup_config);
 

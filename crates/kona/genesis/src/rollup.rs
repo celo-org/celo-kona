@@ -6,17 +6,11 @@ use kona_genesis::RollupConfig;
 
 /// The Rollup configuration.
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CeloRollupConfig {
     /// The OP rollup config.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub op_rollup_config: RollupConfig,
-    /// `cel2_time` sets the activation time for the Celo L2 transition.
-    /// Active if `cel2_time` != None && L2 block timestamp >= Some(cel2_time), inactive
-    /// otherwise.
-    /// Always set to zero since this implementation does not support prior to Cel2.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub cel2_time: Option<u64>,
 }
 
 #[cfg(feature = "arbitrary")]
@@ -24,7 +18,6 @@ impl<'a> arbitrary::Arbitrary<'a> for CeloRollupConfig {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         Ok(Self {
             op_rollup_config: RollupConfig::arbitrary(u)?,
-            cel2_time: Some(0),
         })
     }
 }
@@ -108,6 +101,30 @@ impl OpHardforks for CeloRollupConfig {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        // Remove the cel2_time field if it exists
+        let mut json_obj = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("expected object"))?
+            .clone();
+
+        json_obj.remove("cel2_time");
+
+        // Deserialize the RollupConfig from the cleaned JSON
+        let op_rollup_config = RollupConfig::deserialize(serde_json::Value::Object(json_obj))
+            .map_err(serde::de::Error::custom)?;
+
+        Ok(Self { op_rollup_config })
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "serde")]
 mod tests {
@@ -141,7 +158,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            ..Default::default()
         };
         assert_eq!(
             config.op_rollup_config.spec_id(0),
@@ -333,7 +349,6 @@ mod tests {
                 block_time: 2,
                 ..Default::default()
             },
-            cel2_time: Some(110),
         };
 
         // Regolith
@@ -404,7 +419,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            cel2_time: Some(110),
         };
         assert_eq!(config.op_rollup_config.channel_timeout(0), 100);
         assert_eq!(
@@ -422,7 +436,6 @@ mod tests {
                 max_sequencer_drift: 100,
                 ..Default::default()
             },
-            ..Default::default()
         };
         assert_eq!(config.op_rollup_config.max_sequencer_drift(0), 100);
         config.op_rollup_config.hardforks.fjord_time = Some(10);
@@ -550,7 +563,6 @@ mod tests {
                     da_commitment_type: Some(String::from("GenericCommitment")),
                 }),
             },
-            cel2_time: Some(0),
         };
 
         let deserialized: CeloRollupConfig = serde_json::from_str(raw).unwrap();
@@ -589,6 +601,7 @@ mod tests {
           "delta_time": 0,
           "ecotone_time": 0,
           "fjord_time": 0,
+          "cel2_time": 0,
           "batch_inbox_address": "0xff00000000000000000000000000000000042069",
           "deposit_contract_address": "0x08073dc48dde578137b8af042bcbc1c2491f1eb2",
           "l1_system_config_address": "0x94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710",
@@ -617,7 +630,6 @@ mod tests {
                 block_time: 2,
                 ..Default::default()
             },
-            ..Default::default()
         };
 
         assert_eq!(cfg.op_rollup_config.block_number_from_timestamp(20), 5);

@@ -120,7 +120,6 @@ impl CeloSingleChainHost {
         let rollup_config = self.kona_cfg.read_rollup_config()?;
         let celo_rollup_config = CeloRollupConfig {
             op_rollup_config: rollup_config,
-            cel2_time: Some(0),
         };
         Ok(celo_rollup_config)
     }

@@ -55,7 +55,6 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
     let rollup_config = fixture.op_executor_test_fixture.rollup_config;
     let celo_rollup_config = CeloRollupConfig {
         op_rollup_config: rollup_config,
-        cel2_time: Some(0),
     };
     let mut executor = CeloStatelessL2Builder::new(
         &celo_rollup_config,

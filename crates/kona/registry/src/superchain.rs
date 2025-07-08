@@ -52,7 +52,6 @@ impl Registry {
                 // Wrap RollupConfig to CeloRollupConfig
                 let celo_rollup = CeloRollupConfig {
                     op_rollup_config: rollup,
-                    cel2_time: Some(0),
                 };
                 rollup_configs.insert(chain_config.chain_id, celo_rollup);
                 op_chains.insert(chain_config.chain_id, chain_config);

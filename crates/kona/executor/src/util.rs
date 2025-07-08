@@ -180,7 +180,6 @@ mod test {
                 },
                 ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(None);
 
@@ -198,7 +197,6 @@ mod test {
                 },
                 ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(Some(B64::ZERO));
 
@@ -219,7 +217,6 @@ mod test {
                 },
                 ..Default::default()
             },
-            ..Default::default()
         };
         let attrs = mock_payload(Some(b64!("0000004000000060")));
 
@@ -240,7 +237,6 @@ mod test {
                 },
                 ..Default::default()
             },
-            ..Default::default()
         };
         assert_eq!(
             encode_canyon_base_fee_params(&cfg),
