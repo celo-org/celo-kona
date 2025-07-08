@@ -79,7 +79,7 @@ impl HintHandler for CeloSingleChainHintHandler {
                         eigenda_blob_provider: providers
                             .eigenda_blob_provider
                             .as_ref()
-                            .ok_or(anyhow!("Eigen DA address must be set"))?
+                            .ok_or(anyhow!("Eigen DA blob provider must be set"))?
                             .clone(),
                     },
                     kv,
