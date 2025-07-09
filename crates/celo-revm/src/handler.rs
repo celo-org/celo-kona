@@ -1,6 +1,8 @@
 //!Handler related to Celo chain
 
-use crate::{CeloContext, constants::get_addresses};
+use crate::{
+    CeloContext, api::celo_block_env::CeloBlockEnv, constants::get_addresses, evm::CeloEvm,
+};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -23,7 +25,7 @@ use revm::{
     state::Account,
 };
 use revm_context::LocalContextTr;
-use std::boxed::Box;
+use std::{boxed::Box, string::ToString};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -45,14 +47,18 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<EVM, ERROR, FRAME, DB> Handler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: EvmTr<Context = CeloContext<DB>>,
     DB: Database,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
-    FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    FRAME: Frame<
+            Evm = CeloEvm<DB, INSP>,
+            Error = ERROR,
+            FrameResult = FrameResult,
+            FrameInit = FrameInput,
+        >,
 {
-    type Evm = EVM;
+    type Evm = CeloEvm<DB, INSP>;
     type Error = ERROR;
     type Frame = FRAME;
     type HaltReason = OpHaltReason;
@@ -78,6 +84,12 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        // Update fee currencies and get the updated block environment
+        let celo_block_env = CeloBlockEnv::update_fee_currencies(evm)
+            .map_err(|e| ERROR::from_string(e.to_string()))?;
+        // Update the chain with the new fee currency context
+        evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
+
         let ctx = evm.ctx();
 
         let basefee = ctx.block().basefee() as u128;
@@ -459,16 +471,16 @@ where
     }
 }
 
-impl<EVM, ERROR, FRAME, DB> InspectorHandler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: InspectorEvmTr<
+    CeloEvm<DB, INSP>: InspectorEvmTr<
             Context = CeloContext<DB>,
             Inspector: Inspector<CeloContext<DB>, EthInterpreter>,
         >,
     DB: Database,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
     FRAME: InspectorFrame<
-            Evm = EVM,
+            Evm = CeloEvm<DB, INSP>,
             Error = ERROR,
             FrameResult = FrameResult,
             FrameInit = FrameInput,

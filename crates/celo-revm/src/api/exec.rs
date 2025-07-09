@@ -36,7 +36,11 @@ where
     }
 
     fn replay(&mut self) -> Self::Output {
-        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+        >::new();
         h.run(self)
     }
 }
@@ -68,7 +72,11 @@ where
     }
 
     fn inspect_replay(&mut self) -> Self::Output {
-        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+        >::new();
         h.inspect_run(self)
     }
 }
@@ -100,7 +108,11 @@ where
             data,
             system_contract_address,
         ));
-        let mut h = CeloHandler::<_, _, EthFrame<_, _, _>>::new();
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+        >::new();
         h.run_system_call(self)
     }
 }
