@@ -1,6 +1,6 @@
 use crate::{constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
-    Address, Bytes, U256,
+    Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
@@ -21,7 +21,7 @@ use std::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
-    #[error(transparent)]
+    #[error("sol type error: {0}")]
     AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
@@ -120,10 +120,21 @@ where
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
+    if output_bytes.is_empty() {
+        return Err(CoreContractError::ExecutionFailed(
+            "Empty response from getCurrenciesCall, FeeCurrencyDirectory might be missing."
+                .to_string(),
+        ));
+    }
+
     // Decode the output
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
         Ok(decoded_return) => Ok(decoded_return),
-        Err(e) => Err(CoreContractError::from(e)),
+        Err(e) => Err(CoreContractError::ExecutionFailed(format!(
+            "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
+            hex::encode(output_bytes),
+            e
+        ))),
     }
 }
 
@@ -148,7 +159,14 @@ where
         // Decode the output
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
@@ -178,7 +196,14 @@ where
         // Decode the output
         let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getCurrencyConfigCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
