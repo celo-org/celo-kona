@@ -1,4 +1,4 @@
-use crate::{CeloBlockEnv, CeloContext, CeloEvm, handler::CeloHandler};
+use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpTransactionError};
 use revm::{
@@ -33,22 +33,6 @@ where
 
     fn set_block(&mut self, block: Self::Block) {
         self.0.ctx().set_block(block);
-
-        // Update the chain environment with fee currencies
-        // Warning: If ctx.set_block is called directly, the fee currencies are not updated. I
-        // would prefer to place this code in that function, but that would require forking the
-        // Context struct.
-        match CeloBlockEnv::update_fee_currencies(self) {
-            Ok(updated_block_env) => {
-                *self.0.ctx().chain() = updated_block_env;
-            }
-            Err(_e) => {
-                // Log and continue. It's better to continue with outdated or unset fee currency
-                // information rather than shutting down the node.
-                #[cfg(feature = "std")]
-                eprintln!("Failed to update fee currencies in set_block: {:?}", _e);
-            }
-        }
     }
 
     fn replay(&mut self) -> Self::Output {
