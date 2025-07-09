@@ -11,7 +11,7 @@ use revm::{
     inspector::Inspector,
     interpreter::interpreter::EthInterpreter,
 };
-use revm_context::Cfg;
+use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
 use std::{
     format,
@@ -76,11 +76,16 @@ where
     DB: Database,
     INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
-    // Use system call instead of regular transaction
+    // Preserve the tx set in the evm before the call, and restore it afterwards
+    let prev_tx = evm.ctx().tx().clone();
     let result = match evm.transact_system_call(address, calldata) {
-        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+        Err(e) => {
+            evm.ctx().set_tx(prev_tx);
+            return Err(CoreContractError::Evm(e.to_string()));
+        }
         Ok(o) => o.result,
     };
+    evm.ctx().set_tx(prev_tx);
 
     // Check success
     match result {
