@@ -1,8 +1,8 @@
 use crate::{
     CeloContext,
+    common::fee_currency_context::FeeCurrencyContext,
     core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
     evm::CeloEvm,
-    common::fee_currency_context::FeeCurrencyContext,
 };
 use op_revm::L1BlockInfo;
 use revm::{Database, handler::EvmTr};
@@ -37,7 +37,7 @@ impl CeloBlockEnv {
 mod tests {
     use super::*;
     use crate::{CeloBuilder, DefaultCelo, core_contracts::tests::make_celo_test_db};
-    use alloy_primitives::{address, U256};
+    use alloy_primitives::{U256, address};
     use revm::Context;
 
     #[test]
@@ -46,10 +46,18 @@ mod tests {
         let mut evm = ctx.build_celo();
         let block_env = CeloBlockEnv::update_fee_currencies(&mut evm).unwrap();
 
-        let exchange_rate = block_env.fee_currency_context.currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111"))).unwrap();
+        let exchange_rate = block_env
+            .fee_currency_context
+            .currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111")))
+            .unwrap();
         assert_eq!(exchange_rate, (U256::from(20), U256::from(10)));
 
-        let intrinsic_gas_cost = block_env.fee_currency_context.currency_intrinsic_gas_cost(Some(address!("0x1111111111111111111111111111111111111111"))).unwrap();
+        let intrinsic_gas_cost = block_env
+            .fee_currency_context
+            .currency_intrinsic_gas_cost(Some(address!(
+                "0x1111111111111111111111111111111111111111"
+            )))
+            .unwrap();
         assert_eq!(intrinsic_gas_cost, U256::from(50000));
     }
 }
