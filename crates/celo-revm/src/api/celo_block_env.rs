@@ -24,6 +24,10 @@ impl CeloBlockEnv {
     ) -> Result<CeloBlockEnv, CoreContractError>
     where
         DB: Database,
+        INSP: revm::inspector::Inspector<
+                crate::CeloContext<DB>,
+                revm::interpreter::interpreter::EthInterpreter,
+            >,
     {
         let currencies = &get_currencies(evm)?;
         let exchange_rates = get_exchange_rates(evm, currencies)?;

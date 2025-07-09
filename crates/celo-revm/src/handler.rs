@@ -1,8 +1,6 @@
 //!Handler related to Celo chain
 
-use crate::{
-    CeloContext, api::celo_block_env::CeloBlockEnv, constants::get_addresses, evm::CeloEvm,
-};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -50,6 +48,7 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
 impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
     FRAME: Frame<
             Evm = CeloEvm<DB, INSP>,
@@ -83,12 +82,15 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
-    ) -> Result<(), Self::Error> {
-        // Update fee currencies and get the updated block environment
-        let celo_block_env = CeloBlockEnv::update_fee_currencies(evm)
-            .map_err(|e| ERROR::from_string(e.to_string()))?;
-        // Update the chain with the new fee currency context
-        evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
+    ) -> Result<(), Self::Error>
+    where
+        INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
+    {
+        // // Update fee currencies and get the updated block environment
+        // let celo_block_env = CeloBlockEnv::update_fee_currencies(evm)
+        //     .map_err(|e| ERROR::from_string(e.to_string()))?;
+        // // Update the chain with the new fee currency context
+        // evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
 
         let ctx = evm.ctx();
 
@@ -473,9 +475,10 @@ where
 
 impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
     CeloEvm<DB, INSP>: InspectorEvmTr<
-            Context = CeloContext<DB>,
-            Inspector: Inspector<CeloContext<DB>, EthInterpreter>,
+            Context = crate::CeloContext<DB>,
+            Inspector: Inspector<crate::CeloContext<DB>, EthInterpreter>,
         >,
     DB: Database,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,

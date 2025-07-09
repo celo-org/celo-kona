@@ -1,14 +1,18 @@
-use crate::{CeloTransaction, constants::get_addresses, evm::CeloEvm};
+use crate::{constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
-    Address, Bytes, TxKind, U256,
+    Address, Bytes, U256,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use op_revm::OpTransaction;
-use revm::{Database, context::TxEnv, context_interface::ContextTr, handler::EvmTr};
+use revm::{
+    Database,
+    context_interface::ContextTr,
+    handler::{EvmTr, SystemCallEvm},
+    inspector::Inspector,
+    interpreter::interpreter::EthInterpreter,
+};
 use revm_context::Cfg;
 use revm_context_interface::result::{ExecutionResult, Output};
-use revm_handler::ExecuteEvm;
 use std::{
     format,
     string::{String, ToString},
@@ -70,29 +74,13 @@ pub fn call<DB, INSP>(
 ) -> Result<Bytes, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
-
-    // Do contract call
-    let tx = CeloTransaction {
-        op_tx: OpTransaction {
-            base: TxEnv {
-                kind: TxKind::Call(address),
-                data: calldata,
-                ..TxEnv::default()
-            },
-            ..OpTransaction::default()
-        },
-        ..CeloTransaction::default()
-    };
-    let result = match evm.transact(tx) {
+    // Use system call instead of regular transaction
+    let result = match evm.transact_system_call(address, calldata) {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o.result,
     };
-
-    // Revert changes made during the call
-    evm.ctx().journal().checkpoint_revert(checkpoint);
 
     // Check success
     match result {
@@ -119,6 +107,7 @@ pub fn get_currencies<DB, INSP>(
 ) -> Result<Vec<Address>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let output_bytes = call(
         evm,
@@ -139,6 +128,7 @@ pub fn get_exchange_rates<DB, INSP>(
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -168,6 +158,7 @@ pub fn get_intrinsic_gas<DB, INSP>(
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let mut intrinsic_gas =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());

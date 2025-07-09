@@ -20,6 +20,7 @@ type CeloError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, OpTr
 impl<DB, INSP> ExecuteEvm for CeloEvm<DB, INSP>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     type Output = Result<ResultAndState<OpHaltReason>, CeloError<CeloContext<DB>>>;
 
