@@ -30,7 +30,6 @@ celo-alloy-consensus.workspace = true
 revm = { workspace = true, features = ["secp256r1"] }
 op-revm = { workspace = true, features = ["serde"] }
 revm-context-interface.workspace = true
-revm-handler.workspace = true
 revm-context.workspace = true
 
 # Alloy
@@ -61,6 +60,7 @@ serde_json = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 bincode = { workspace = true, features = ["serde"] }
 alloy-eips.workspace = true
+revm-handler.workspace = true
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
