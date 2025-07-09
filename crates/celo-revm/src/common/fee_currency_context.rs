@@ -21,7 +21,7 @@ impl FeeCurrencyContext {
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<U256, String> {
-        if currency == None || currency.unwrap() == Address::ZERO {
+        if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok(U256::ZERO);
         }
 
@@ -36,7 +36,7 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
     ) -> Result<(U256, U256), String> {
-        if currency == None || currency.unwrap() == Address::ZERO {
+        if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok((U256::ONE, U256::ONE));
         }
 
@@ -52,7 +52,7 @@ impl FeeCurrencyContext {
         currency: Option<Address>,
         amount: U256,
     ) -> Result<U256, String> {
-        if currency == None || currency.unwrap() == Address::ZERO {
+        if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok(amount);
         }
 
@@ -68,7 +68,7 @@ impl FeeCurrencyContext {
         currency: Option<Address>,
         amount: U256,
     ) -> Result<U256, String> {
-        if currency == None || currency.unwrap() == Address::ZERO {
+        if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok(amount);
         }
 
