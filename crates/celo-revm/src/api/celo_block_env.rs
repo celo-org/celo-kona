@@ -5,7 +5,12 @@ use crate::{
     evm::CeloEvm,
 };
 use op_revm::L1BlockInfo;
-use revm::{Database, handler::EvmTr, inspector::Inspector};
+use revm::{
+    Database,
+    context_interface::{Block, ContextTr},
+    handler::EvmTr,
+    inspector::Inspector,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct CeloBlockEnv {
@@ -26,7 +31,9 @@ impl CeloBlockEnv {
         let currencies = &get_currencies(evm)?;
         let exchange_rates = get_exchange_rates(evm, currencies)?;
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
-        let fee_currency_context = FeeCurrencyContext::new(exchange_rates, intrinsic_gas);
+        let current_block_number = evm.ctx().block().number();
+        let fee_currency_context =
+            FeeCurrencyContext::new(exchange_rates, intrinsic_gas, current_block_number);
         Ok(CeloBlockEnv {
             l1_block_info: evm.ctx().chain.l1_block_info.clone(),
             fee_currency_context,
@@ -60,5 +67,11 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(intrinsic_gas_cost, U256::from(50000));
+
+        // Verify that updated_at_block is set to the current block number
+        assert_eq!(
+            block_env.fee_currency_context.updated_at_block,
+            evm.ctx().block().number()
+        );
     }
 }

@@ -7,16 +7,19 @@ use std::{format, string::String};
 pub struct FeeCurrencyContext {
     exchange_rates: HashMap<Address, (U256, U256)>,
     intrinsic_gas: HashMap<Address, U256>,
+    pub updated_at_block: u64,
 }
 
 impl FeeCurrencyContext {
     pub fn new(
         exchange_rates: HashMap<Address, (U256, U256)>,
         intrinsic_gas: HashMap<Address, U256>,
+        updated_at_block: u64,
     ) -> Self {
         Self {
             exchange_rates,
             intrinsic_gas,
+            updated_at_block,
         }
     }
 
