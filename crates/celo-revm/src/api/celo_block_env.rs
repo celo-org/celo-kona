@@ -28,7 +28,7 @@ impl CeloBlockEnv {
         let fee_currency_context = FeeCurrencyContext::new(exchange_rates, intrinsic_gas);
         Ok(CeloBlockEnv {
             l1_block_info: evm.ctx().chain.l1_block_info.clone(),
-            fee_currency_context: fee_currency_context,
+            fee_currency_context,
         })
     }
 }
