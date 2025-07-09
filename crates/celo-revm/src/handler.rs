@@ -1,6 +1,6 @@
 //!Handler related to Celo chain
 
-use crate::{api::exec::CeloContextTr, constants::get_addresses};
+use crate::{CeloBlockEnv, CeloContext, constants::get_addresses, evm::CeloEvm};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -23,7 +23,7 @@ use revm::{
     state::Account,
 };
 use revm_context::LocalContextTr;
-use std::boxed::Box;
+use std::{boxed::Box, string::ToString};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -45,15 +45,19 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<EVM, ERROR, FRAME> Handler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: EvmTr<Context: CeloContextTr>,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
-    // TODO `FrameResult` should be a generic trait.
-    // TODO `FrameInit` should be a generic.
-    FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    FRAME: Frame<
+            Evm = CeloEvm<DB, INSP>,
+            Error = ERROR,
+            FrameResult = FrameResult,
+            FrameInit = FrameInput,
+        >,
 {
-    type Evm = EVM;
+    type Evm = CeloEvm<DB, INSP>;
     type Error = ERROR;
     type Frame = FRAME;
     type HaltReason = OpHaltReason;
@@ -78,7 +82,24 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Self::Error>
+    where
+        INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
+    {
+        // Approach with raising the errors. Enable this when our tests are not broken by it.
+        // // Update fee currencies and get the updated block environment
+        // let celo_block_env = CeloBlockEnv::update_fee_currencies(evm)
+        //     .map_err(|e| ERROR::from_string(e.to_string()))?;
+        // // Update the chain with the new fee currency context
+        // evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
+
+        if let Ok(celo_block_env) =
+            CeloBlockEnv::update_fee_currencies(evm).map_err(|e| ERROR::from_string(e.to_string()))
+        {
+            // Update the chain with the new fee currency context
+            evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
+        }
+
         let ctx = evm.ctx();
 
         let basefee = ctx.block().basefee() as u128;
@@ -460,17 +481,17 @@ where
     }
 }
 
-impl<EVM, ERROR, FRAME> InspectorHandler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: InspectorEvmTr<
-            Context: CeloContextTr,
-            Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
+    CeloEvm<DB, INSP>: InspectorEvmTr<
+            Context = crate::CeloContext<DB>,
+            Inspector: Inspector<crate::CeloContext<DB>, EthInterpreter>,
         >,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
-    // TODO `FrameResult` should be a generic trait.
-    // TODO `FrameInit` should be a generic.
+    DB: Database,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
     FRAME: InspectorFrame<
-            Evm = EVM,
+            Evm = CeloEvm<DB, INSP>,
             Error = ERROR,
             FrameResult = FrameResult,
             FrameInit = FrameInput,

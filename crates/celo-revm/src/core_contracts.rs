@@ -1,14 +1,18 @@
-use crate::{CeloContext, CeloTransaction, constants::get_addresses, evm::CeloEvm};
+use crate::{constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
-    Address, Bytes, TxKind, U256,
+    Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use op_revm::OpTransaction;
-use revm::{Database, context::TxEnv, context_interface::ContextTr, handler::EvmTr};
-use revm_context::Cfg;
+use revm::{
+    Database,
+    context_interface::ContextTr,
+    handler::{EvmTr, SystemCallEvm},
+    inspector::Inspector,
+    interpreter::interpreter::EthInterpreter,
+};
+use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
-use revm_handler::ExecuteEvm;
 use std::{
     format,
     string::{String, ToString},
@@ -17,7 +21,7 @@ use std::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
-    #[error(transparent)]
+    #[error("sol type error: {0}")]
     AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
@@ -64,35 +68,24 @@ pub fn get_revert_message(output: Bytes) -> String {
 }
 
 pub fn call<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
-
-    // Do contract call
-    let tx = CeloTransaction {
-        op_tx: OpTransaction {
-            base: TxEnv {
-                kind: TxKind::Call(address),
-                data: calldata,
-                ..TxEnv::default()
-            },
-            ..OpTransaction::default()
-        },
-        ..CeloTransaction::default()
-    };
-    let result = match evm.transact(tx) {
-        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+    // Preserve the tx set in the evm before the call, and restore it afterwards
+    let prev_tx = evm.ctx().tx().clone();
+    let result = match evm.transact_system_call(address, calldata) {
+        Err(e) => {
+            evm.ctx().set_tx(prev_tx);
+            return Err(CoreContractError::Evm(e.to_string()));
+        }
         Ok(o) => o.result,
     };
-
-    // Revert changes made during the call
-    evm.ctx().journal().checkpoint_revert(checkpoint);
+    evm.ctx().set_tx(prev_tx);
 
     // Check success
     match result {
@@ -115,10 +108,11 @@ where
 }
 
 pub fn get_currencies<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let output_bytes = call(
         evm,
@@ -126,19 +120,31 @@ where
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
+    if output_bytes.is_empty() {
+        return Err(CoreContractError::ExecutionFailed(
+            "Empty response from getCurrenciesCall, FeeCurrencyDirectory might be missing."
+                .to_string(),
+        ));
+    }
+
     // Decode the output
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
         Ok(decoded_return) => Ok(decoded_return),
-        Err(e) => Err(CoreContractError::from(e)),
+        Err(e) => Err(CoreContractError::ExecutionFailed(format!(
+            "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
+            hex::encode(output_bytes),
+            e
+        ))),
     }
 }
 
 pub fn get_exchange_rates<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -153,7 +159,14 @@ where
         // Decode the output
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
@@ -163,11 +176,12 @@ where
 }
 
 pub fn get_intrinsic_gas<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<crate::CeloContext<DB>, EthInterpreter>,
 {
     let mut intrinsic_gas =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -182,7 +196,14 @@ where
         // Decode the output
         let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getCurrencyConfigCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
