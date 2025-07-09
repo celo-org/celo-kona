@@ -1,7 +1,7 @@
 use alloy_primitives::map::HashMap;
 use revm::primitives::{Address, U256};
 
-use std::{string::String, format};
+use std::{format, string::String};
 
 #[derive(Debug, Clone, Default)]
 pub struct FeeCurrencyContext {
@@ -10,8 +10,14 @@ pub struct FeeCurrencyContext {
 }
 
 impl FeeCurrencyContext {
-    pub fn new(exchange_rates: HashMap<Address, (U256, U256)>, intrinsic_gas: HashMap<Address, U256>) -> Self {
-        Self { exchange_rates, intrinsic_gas }
+    pub fn new(
+        exchange_rates: HashMap<Address, (U256, U256)>,
+        intrinsic_gas: HashMap<Address, U256>,
+    ) -> Self {
+        Self {
+            exchange_rates,
+            intrinsic_gas,
+        }
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<U256, String> {
@@ -26,7 +32,10 @@ impl FeeCurrencyContext {
         }
     }
 
-    pub fn currency_exchange_rate(&self, currency: Option<Address>) -> Result<(U256, U256), String> {
+    pub fn currency_exchange_rate(
+        &self,
+        currency: Option<Address>,
+    ) -> Result<(U256, U256), String> {
         if currency == None || currency.unwrap() == Address::ZERO {
             return Ok((U256::ONE, U256::ONE));
         }
@@ -38,7 +47,11 @@ impl FeeCurrencyContext {
         }
     }
 
-    pub fn celo_to_currency(&self, currency: Option<Address>, amount: U256) -> Result<U256, String> {
+    pub fn celo_to_currency(
+        &self,
+        currency: Option<Address>,
+        amount: U256,
+    ) -> Result<U256, String> {
         if currency == None || currency.unwrap() == Address::ZERO {
             return Ok(amount);
         }
@@ -50,7 +63,11 @@ impl FeeCurrencyContext {
         }
     }
 
-    pub fn currency_to_celo(&self, currency: Option<Address>, amount: U256) -> Result<U256, String> {
+    pub fn currency_to_celo(
+        &self,
+        currency: Option<Address>,
+        amount: U256,
+    ) -> Result<U256, String> {
         if currency == None || currency.unwrap() == Address::ZERO {
             return Ok(amount);
         }
