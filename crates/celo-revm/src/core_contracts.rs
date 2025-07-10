@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{Database, SystemCallEvm, context_interface::ContextTr, handler::EvmTr};
-use revm_context::Cfg;
+use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
 use std::{
     format,
@@ -71,15 +71,19 @@ where
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
+    // Preserve the tx set in the evm before the call to restore it afterwards
+    let prev_tx = evm.ctx().tx().clone();
 
     let result = match evm.transact_system_call(address, calldata) {
         Err(e) => {
+            evm.ctx().set_tx(prev_tx);
             return Err(CoreContractError::Evm(e.to_string()));
         }
         Ok(o) => o.result,
     };
 
-    // Revert changes made during the call
+    // Restore tx and revert changes made during the call
+    evm.ctx().set_tx(prev_tx);
     evm.ctx().journal().checkpoint_revert(checkpoint);
 
     // Check success
