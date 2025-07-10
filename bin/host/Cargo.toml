@@ -86,12 +86,16 @@ thiserror.workspace = true
 # KZG
 ark-ff.workspace = true
 
+# Memory profiling
+pprof = { workspace = true, optional = true }
+
 [dev-dependencies]
 proptest.workspace = true
 
 [features]
 default = ["single"]
 single = []
+memory-profiling = ["dep:pprof"]
 
 [[bin]]
 name = "celo-host"

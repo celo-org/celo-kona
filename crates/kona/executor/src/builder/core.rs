@@ -118,6 +118,19 @@ where
         let executor = self.factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
+        #[cfg(feature = "parallel")]
+        let transactions = {
+            use rayon::prelude::*;
+            // Collect first, then parallel process for better performance
+            let tx_iter = attrs.recovered_transactions_with_encoded();
+            let tx_vec: Vec<_> = tx_iter.collect();
+            tx_vec
+                .into_par_iter()
+                .collect::<Result<Vec<_>, RecoveryError>>()
+                .map_err(ExecutorError::Recovery)?
+        };
+        
+        #[cfg(not(feature = "parallel"))]
         let transactions = attrs
             .recovered_transactions_with_encoded()
             .collect::<Result<Vec<_>, RecoveryError>>()

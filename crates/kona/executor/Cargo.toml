@@ -50,6 +50,9 @@ alloy-op-evm.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Parallel processing
+rayon = { version = "1.10.0", optional = true }
+
 # `test-utils` feature
 rand = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -67,8 +70,15 @@ alloy-transport-http = { workspace = true, optional = true }
 
 [dev-dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
+criterion.workspace = true
+
+[[bench]]
+name = "execution_benchmark"
+harness = false
 
 [features]
+default = []
+parallel = ["dep:rayon"]
 test-utils = [
     "dep:rand",
     "dep:serde_json",

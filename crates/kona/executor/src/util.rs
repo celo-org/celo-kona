@@ -75,10 +75,11 @@ pub(crate) fn encode_holocene_eip_1559_params(
         payload_params
     };
 
-    let mut data = Vec::with_capacity(1 + 8);
-    data.push(HOLOCENE_EXTRA_DATA_VERSION);
-    data.extend_from_slice(params.as_ref());
-    Ok(data.into())
+    // Use stack allocation for small, fixed-size data to avoid heap allocation
+    let mut data = [0u8; 9];
+    data[0] = HOLOCENE_EXTRA_DATA_VERSION;
+    data[1..].copy_from_slice(params.as_ref());
+    Ok(Bytes::copy_from_slice(&data))
 }
 
 /// Encodes the canyon base fee parameters, per Holocene spec.

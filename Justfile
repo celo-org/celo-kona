@@ -43,9 +43,31 @@ lint-docs:
 build-native *args='':
   cargo build --workspace {{exclude_members}} $@
 
+# Build for the native target with performance optimizations
+build-native-fast *args='':
+  RUSTFLAGS="-C target-cpu=native" cargo build --workspace --jobs $(nproc) {{exclude_members}} $@
+
+# Build optimized for size
+build-size *args='':
+  cargo build --profile release-size --workspace {{exclude_members}} $@
+
+# Run benchmarks
+bench:
+  cargo bench --workspace {{exclude_members}}
+
+# Analyze binary sizes
+analyze-size:
+  cargo build --release --workspace {{exclude_members}}
+  @echo "Binary sizes:"
+  @ls -la target/release/celo-* 2>/dev/null || echo "No binaries found"
+
 # Check for unused dependencies in the crate graph.
 check-udeps:
   cargo +nightly udeps --workspace --all-features --all-targets
+
+# Run comprehensive performance analysis
+perf-analysis:
+  ./scripts/performance_analysis.sh
 
 # Download resources/g1.point if it doesn't exist.
 download-srs:

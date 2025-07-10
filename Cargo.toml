@@ -25,6 +25,13 @@ default-members = [
   "bin/client",
 ]
 
+[features]
+default = ["std"]
+std = []
+fast-compile = []
+minimal = []
+memory-profiling = []
+
 [workspace.metadata.cargo-udeps.ignore]
 normal = ["rustls-platform-verifier"]
 
@@ -62,6 +69,20 @@ inherits = "release"
 panic = "abort"
 codegen-units = 1
 lto = "fat"
+
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+overflow-checks = false
+debug = false
+incremental = true
+
+[profile.release-size]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 16
+panic = "abort"
 
 [workspace.dependencies]
 # Workspace

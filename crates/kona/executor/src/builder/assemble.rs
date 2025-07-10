@@ -184,17 +184,19 @@ pub fn compute_receipts_root(
     if config.op_rollup_config.is_regolith_active(timestamp)
         && !config.op_rollup_config.is_canyon_active(timestamp)
     {
-        let receipts = receipts
-            .iter()
-            .cloned()
-            .map(|receipt| match receipt {
+        // Pre-allocate with known capacity to avoid reallocations
+        let mut processed_receipts = Vec::with_capacity(receipts.len());
+        for receipt in receipts.iter() {
+            let processed_receipt = match receipt {
                 CeloReceiptEnvelope::Deposit(mut deposit_receipt) => {
                     deposit_receipt.receipt.deposit_nonce = None;
                     CeloReceiptEnvelope::Deposit(deposit_receipt)
                 }
-                _ => receipt,
-            })
-            .collect::<Vec<_>>();
+                _ => receipt.clone(),
+            };
+            processed_receipts.push(processed_receipt);
+        }
+        let receipts = processed_receipts;
 
         ordered_trie_with_encoder(receipts.as_ref(), |receipt, mut buf| {
             receipt.encode_2718(&mut buf)

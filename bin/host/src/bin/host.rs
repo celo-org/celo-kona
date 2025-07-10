@@ -53,11 +53,23 @@ async fn main() -> Result<()> {
     let cfg = HostCli::parse();
     init_tracing_subscriber(cfg.v, None::<EnvFilter>)?;
 
+    // Initialize memory profiling if enabled
+    #[cfg(feature = "memory-profiling")]
+    let _guard = pprof::ProfilerGuard::new(100).unwrap();
+
     match cfg.mode {
         #[cfg(feature = "single")]
         HostMode::Single(cfg) => {
             cfg.start().await?;
         }
+    }
+
+    // Generate memory profile if enabled
+    #[cfg(feature = "memory-profiling")]
+    if let Ok(report) = _guard.report().build() {
+        let file = std::fs::File::create("memory_profile.pb").unwrap();
+        report.pprof().unwrap().write_to_writer(file).unwrap();
+        info!("Memory profile saved to memory_profile.pb");
     }
 
     info!("Exiting host program.");
