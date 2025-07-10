@@ -1,14 +1,12 @@
-use crate::{CeloContext, CeloTransaction, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
-    Address, Bytes, TxKind, U256,
+    Address, Bytes, U256,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use op_revm::OpTransaction;
-use revm::{Database, context::TxEnv, context_interface::ContextTr, handler::EvmTr};
+use revm::{Database, SystemCallEvm, context_interface::ContextTr, handler::EvmTr};
 use revm_context::Cfg;
 use revm_context_interface::result::{ExecutionResult, Output};
-use revm_handler::ExecuteEvm;
 use std::{
     format,
     string::{String, ToString},
@@ -74,20 +72,10 @@ where
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
 
-    // Do contract call
-    let tx = CeloTransaction {
-        op_tx: OpTransaction {
-            base: TxEnv {
-                kind: TxKind::Call(address),
-                data: calldata,
-                ..TxEnv::default()
-            },
-            ..OpTransaction::default()
-        },
-        ..CeloTransaction::default()
-    };
-    let result = match evm.transact(tx) {
-        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+    let result = match evm.transact_system_call(address, calldata) {
+        Err(e) => {
+            return Err(CoreContractError::Evm(e.to_string()));
+        }
         Ok(o) => o.result,
     };
 
