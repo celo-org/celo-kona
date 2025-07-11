@@ -1,25 +1,28 @@
-use crate::CeloPrecompiles;
-use op_revm::OpEvm;
+use crate::{CeloContext, CeloPrecompiles};
+use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Inspector,
-    context::{ContextSetters, Evm},
-    context_interface::ContextTr,
-    handler::{
-        EvmTr, PrecompileProvider,
-        instructions::{EthInstructions, InstructionProvider},
-    },
-    inspector::{InspectorEvmTr, JournalExt},
-    interpreter::{Interpreter, InterpreterAction, InterpreterTypes, interpreter::EthInterpreter},
+    context::Evm,
+    context_interface::{Cfg, ContextTr},
+    handler::{EvmTr, instructions::EthInstructions},
+    inspector::InspectorEvmTr,
+    interpreter::{Interpreter, InterpreterAction, interpreter::EthInterpreter},
 };
 
-pub struct CeloEvm<CTX, INSP, I = EthInstructions<EthInterpreter, CTX>, P = CeloPrecompiles>(
-    pub OpEvm<CTX, INSP, I, P>,
+pub struct CeloEvm<DB: revm::Database, INSP>(
+    pub  OpEvm<
+        CeloContext<DB>,
+        INSP,
+        EthInstructions<EthInterpreter, CeloContext<DB>>,
+        CeloPrecompiles,
+    >,
 );
 
-impl<CTX: ContextTr, INSP>
-    CeloEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, CeloPrecompiles>
+impl<DB, INSP> CeloEvm<DB, INSP>
+where
+    DB: revm::Database,
 {
-    pub fn new(ctx: CTX, inspector: INSP) -> Self {
+    pub fn new(ctx: CeloContext<DB>, inspector: INSP) -> Self {
         Self(OpEvm(Evm {
             ctx,
             inspector,
@@ -29,12 +32,12 @@ impl<CTX: ContextTr, INSP>
     }
 
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<CTX, INSP> {
+    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP> {
         Self(OpEvm(self.0.0.with_inspector(inspector)))
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<CTX, INSP> {
+    pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<DB, INSP> {
         Self(OpEvm(self.0.0.with_precompiles(precompiles)))
     }
 
@@ -44,15 +47,10 @@ impl<CTX: ContextTr, INSP>
     }
 }
 
-impl<CTX, INSP, I, P> InspectorEvmTr for CeloEvm<CTX, INSP, I, P>
+impl<DB, INSP> InspectorEvmTr for CeloEvm<DB, INSP>
 where
-    CTX: ContextTr<Journal: JournalExt> + ContextSetters,
-    I: InstructionProvider<
-            Context = CTX,
-            InterpreterTypes: InterpreterTypes<Output = InterpreterAction>,
-        >,
-    P: PrecompileProvider<CTX>,
-    INSP: Inspector<CTX, I::InterpreterTypes>,
+    DB: revm::Database,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
     type Inspector = INSP;
 
@@ -66,35 +64,25 @@ where
 
     fn run_inspect_interpreter(
         &mut self,
-        interpreter: &mut Interpreter<
-            <Self::Instructions as InstructionProvider>::InterpreterTypes,
-        >,
-    ) -> <<Self::Instructions as InstructionProvider>::InterpreterTypes as InterpreterTypes>::Output
-    {
+        interpreter: &mut Interpreter<EthInterpreter>,
+    ) -> InterpreterAction {
         self.0.run_inspect_interpreter(interpreter)
     }
 }
 
-impl<CTX, INSP, I, P> EvmTr for CeloEvm<CTX, INSP, I, P>
+impl<DB, INSP> EvmTr for CeloEvm<DB, INSP>
 where
-    CTX: ContextTr,
-    I: InstructionProvider<
-            Context = CTX,
-            InterpreterTypes: InterpreterTypes<Output = InterpreterAction>,
-        >,
-    P: PrecompileProvider<CTX>,
+    DB: revm::Database,
+    CeloContext<DB>: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    type Context = CTX;
-    type Instructions = I;
-    type Precompiles = P;
+    type Context = CeloContext<DB>;
+    type Instructions = EthInstructions<EthInterpreter, CeloContext<DB>>;
+    type Precompiles = CeloPrecompiles;
 
     fn run_interpreter(
         &mut self,
-        interpreter: &mut Interpreter<
-            <Self::Instructions as InstructionProvider>::InterpreterTypes,
-        >,
-    ) -> <<Self::Instructions as InstructionProvider>::InterpreterTypes as InterpreterTypes>::Output
-    {
+        interpreter: &mut Interpreter<EthInterpreter>,
+    ) -> InterpreterAction {
         self.0.run_interpreter(interpreter)
     }
 

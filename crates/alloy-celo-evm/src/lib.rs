@@ -19,9 +19,7 @@ use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, ResultAndState},
-    handler::instructions::EthInstructions,
     inspector::NoOpInspector,
-    interpreter::interpreter::EthInterpreter,
 };
 
 pub mod block;
@@ -33,12 +31,7 @@ pub mod block;
 /// [`CeloEvm`](celo_revm::CeloEvm) type.
 #[allow(missing_debug_implementations)] // missing celo_revm::CeloContext Debug impl
 pub struct CeloEvm<DB: Database, I> {
-    inner: celo_revm::CeloEvm<
-        CeloContext<DB>,
-        I,
-        EthInstructions<EthInterpreter, CeloContext<DB>>,
-        CeloPrecompiles,
-    >,
+    inner: celo_revm::CeloEvm<DB, I>,
     inspect: bool,
 }
 
@@ -64,14 +57,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
-    pub const fn new(
-        evm: celo_revm::CeloEvm<
-            CeloContext<DB>,
-            I,
-            EthInstructions<EthInterpreter, CeloContext<DB>>,
-        >,
-        inspect: bool,
-    ) -> Self {
+    pub const fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
         Self {
             inner: evm,
             inspect,
