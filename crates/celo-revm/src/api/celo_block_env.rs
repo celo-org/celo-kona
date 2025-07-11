@@ -5,7 +5,7 @@ use crate::{
     evm::CeloEvm,
 };
 use op_revm::L1BlockInfo;
-use revm::{Database, handler::EvmTr};
+use revm::{Database, handler::EvmTr, inspector::Inspector};
 
 #[derive(Debug, Clone, Default)]
 pub struct CeloBlockEnv {
@@ -17,10 +17,11 @@ impl CeloBlockEnv {
     /// Return a new [CeloBlockEnv] with updated exchange rates and intrinsic gas for all fee
     /// currencies in the FeeCurrencyDirectory.
     pub fn update_fee_currencies<DB, INSP>(
-        evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+        evm: &mut CeloEvm<DB, INSP>,
     ) -> Result<CeloBlockEnv, CoreContractError>
     where
         DB: Database,
+        INSP: Inspector<CeloContext<DB>>,
     {
         let currencies = &get_currencies(evm)?;
         let exchange_rates = get_exchange_rates(evm, currencies)?;
