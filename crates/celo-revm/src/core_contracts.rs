@@ -1,14 +1,16 @@
-use crate::{CeloContext, CeloTransaction, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
-    Address, Bytes, TxKind, U256,
+    Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use op_revm::OpTransaction;
-use revm::{Database, context::TxEnv, context_interface::ContextTr, handler::EvmTr};
-use revm_context::Cfg;
+use revm::{
+    Database,
+    context_interface::ContextTr,
+    handler::{EvmTr, SystemCallEvm},
+};
+use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
-use revm_handler::ExecuteEvm;
 use std::{
     format,
     string::{String, ToString},
@@ -17,7 +19,7 @@ use std::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
-    #[error(transparent)]
+    #[error("sol type error: {0}")]
     AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
@@ -73,29 +75,22 @@ where
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
+    // Preserve the tx set in the evm before the call to restore it afterwards
+    let prev_tx = evm.ctx().tx().clone();
 
-    // Do contract call
-    let tx = CeloTransaction {
-        op_tx: OpTransaction {
-            base: TxEnv {
-                kind: TxKind::Call(address),
-                data: calldata,
-                ..TxEnv::default()
-            },
-            ..OpTransaction::default()
-        },
-        ..CeloTransaction::default()
-    };
-    let result = match evm.transact(tx) {
+    let call_result = evm.transact_system_call(address, calldata);
+
+    // Restore tx and revert changes made during the call
+    evm.ctx().set_tx(prev_tx);
+    evm.ctx().journal().checkpoint_revert(checkpoint);
+
+    let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o.result,
     };
 
-    // Revert changes made during the call
-    evm.ctx().journal().checkpoint_revert(checkpoint);
-
     // Check success
-    match result {
+    match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
             ..
@@ -126,10 +121,21 @@ where
         getCurrenciesCall {}.abi_encode().into(),
     )?;
 
+    if output_bytes.is_empty() {
+        return Err(CoreContractError::ExecutionFailed(
+            "Empty response from getCurrenciesCall, FeeCurrencyDirectory might be missing."
+                .to_string(),
+        ));
+    }
+
     // Decode the output
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
         Ok(decoded_return) => Ok(decoded_return),
-        Err(e) => Err(CoreContractError::from(e)),
+        Err(e) => Err(CoreContractError::ExecutionFailed(format!(
+            "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
+            hex::encode(output_bytes),
+            e
+        ))),
     }
 }
 
@@ -153,7 +159,14 @@ where
         // Decode the output
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
@@ -182,7 +195,14 @@ where
         // Decode the output
         let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
-            Err(e) => return Err(CoreContractError::from(e)),
+            Err(e) => {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "Failed to decode getCurrencyConfigCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes),
+                    e
+                )));
+            }
         };
 
         _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
