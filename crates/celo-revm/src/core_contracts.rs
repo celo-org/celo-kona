@@ -78,20 +78,19 @@ where
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
-    let result = match evm.transact_system_call(address, calldata) {
-        Err(e) => {
-            evm.ctx().set_tx(prev_tx);
-            return Err(CoreContractError::Evm(e.to_string()));
-        }
-        Ok(o) => o.result,
-    };
+    let call_result = evm.transact_system_call(address, calldata);
 
     // Restore tx and revert changes made during the call
     evm.ctx().set_tx(prev_tx);
     evm.ctx().journal().checkpoint_revert(checkpoint);
 
+    let exec_result = match call_result {
+        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+        Ok(o) => o.result,
+    };
+
     // Check success
-    match result {
+    match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
             ..
