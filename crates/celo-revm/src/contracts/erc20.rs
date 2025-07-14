@@ -58,8 +58,8 @@ where
 pub fn debit_gas_fees<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     fee_currency_address: Address,
-    from: Address, 
-    value: U256
+    from: Address,
+    value: U256,
 ) -> Result<(), CoreContractError>
 where
     DB: Database,
@@ -107,7 +107,9 @@ where
 
 /// Encode a debitGasFees call (for testing purposes)
 pub fn encode_debit_gas_fees_call(from: Address, value: U256) -> Bytes {
-    IFeeCurrencyERC20::debitGasFeesCall { from, value }.abi_encode().into()
+    IFeeCurrencyERC20::debitGasFeesCall { from, value }
+        .abi_encode()
+        .into()
 }
 
 /// Encode a creditGasFees call (for testing purposes)
@@ -174,14 +176,14 @@ mod tests {
 
         // debitGasFees selector is 0x58cf9672
         assert_eq!(&encoded[0..4], &[0x58, 0xcf, 0x96, 0x72]);
-        
+
         // Check that the 'from' address is properly encoded
         let expected_from_offset = 4 + 12; // selector + padding
         assert_eq!(
             &encoded[expected_from_offset..expected_from_offset + 20],
             from.as_slice()
         );
-        
+
         // Check that the value is properly encoded in the last 32 bytes
         let value_bytes = value.to_be_bytes::<32>();
         assert_eq!(&encoded[36..68], &value_bytes);
@@ -225,11 +227,11 @@ mod tests {
         let from = address!("0x1111111111111111111111111111111111111111");
         let value = U256::from(500u64);
         let calldata = IFeeCurrencyERC20::debitGasFeesCall { from, value };
-        
+
         // Verify the call can be decoded back
         let encoded = calldata.abi_encode();
         let decoded = IFeeCurrencyERC20::debitGasFeesCall::abi_decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.from, from);
         assert_eq!(decoded.value, value);
     }
@@ -255,11 +257,11 @@ mod tests {
             gatewayFee: gateway_fee,
             baseTxFee: base_tx_fee,
         };
-        
+
         // Verify the call can be decoded back
         let encoded = calldata.abi_encode();
         let decoded = IFeeCurrencyERC20::creditGasFeesCall::abi_decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.from, from);
         assert_eq!(decoded.feeRecipient, fee_recipient);
         assert_eq!(decoded.gatewayFeeRecipient, gateway_fee_recipient);
@@ -278,7 +280,7 @@ mod tests {
 
         // Should encode properly even with zero value
         assert_eq!(&encoded[0..4], &[0x58, 0xcf, 0x96, 0x72]);
-        
+
         // Value should be all zeros in the last 32 bytes
         let zero_bytes = [0u8; 32];
         assert_eq!(&encoded[36..68], &zero_bytes);
