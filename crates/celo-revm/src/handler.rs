@@ -17,7 +17,7 @@ use revm::{
         EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
         pre_execution::validate_account_nonce_and_code,
     },
-    inspector::{InspectorEvmTr, InspectorFrame, InspectorHandler},
+    inspector::{InspectorFrame, InspectorHandler},
     interpreter::{FrameInput, Gas, interpreter::EthInterpreter},
     primitives::{HashMap, U256, hardfork::SpecId},
     state::Account,
@@ -466,10 +466,6 @@ where
 
 impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    CeloEvm<DB, INSP>: InspectorEvmTr<
-            Context = CeloContext<DB>,
-            Inspector: Inspector<CeloContext<DB>, EthInterpreter>,
-        >,
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
