@@ -8,6 +8,7 @@ use revm::{
     Database,
     context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
+    inspector::Inspector,
 };
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
@@ -66,12 +67,13 @@ pub fn get_revert_message(output: Bytes) -> String {
 }
 
 pub fn call<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
 ) -> Result<Bytes, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
 {
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
@@ -110,10 +112,11 @@ where
 }
 
 pub fn get_currencies<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
 ) -> Result<Vec<Address>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
 {
     let output_bytes = call(
         evm,
@@ -140,11 +143,12 @@ where
 }
 
 pub fn get_exchange_rates<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
 {
     let mut exchange_rates =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
@@ -176,11 +180,12 @@ where
 }
 
 pub fn get_intrinsic_gas<DB, INSP>(
-    evm: &mut CeloEvm<CeloContext<DB>, INSP>,
+    evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
 ) -> Result<HashMap<Address, U256>, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
 {
     let mut intrinsic_gas =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());

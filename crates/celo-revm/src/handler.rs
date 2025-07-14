@@ -1,6 +1,6 @@
 //!Handler related to Celo chain
 
-use crate::{api::exec::CeloContextTr, constants::get_addresses};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -8,7 +8,7 @@ use op_revm::{
     transaction::{OpTransactionError, OpTxTr, deposit::DEPOSIT_TRANSACTION_TYPE},
 };
 use revm::{
-    Database,
+    Database, Inspector,
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{ExecutionResult, FromStringError, InvalidTransaction, ResultAndState},
@@ -17,7 +17,7 @@ use revm::{
         EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
         pre_execution::validate_account_nonce_and_code,
     },
-    inspector::{Inspector, InspectorEvmTr, InspectorFrame, InspectorHandler},
+    inspector::{InspectorFrame, InspectorHandler},
     interpreter::{FrameInput, Gas, interpreter::EthInterpreter},
     primitives::{HashMap, U256, hardfork::SpecId},
     state::Account,
@@ -45,15 +45,19 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<EVM, ERROR, FRAME> Handler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: EvmTr<Context: CeloContextTr>,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
-    // TODO `FrameResult` should be a generic trait.
-    // TODO `FrameInit` should be a generic.
-    FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    FRAME: Frame<
+            Evm = CeloEvm<DB, INSP>,
+            Error = ERROR,
+            FrameResult = FrameResult,
+            FrameInit = FrameInput,
+        >,
 {
-    type Evm = EVM;
+    type Evm = CeloEvm<DB, INSP>;
     type Error = ERROR;
     type Frame = FRAME;
     type HaltReason = OpHaltReason;
@@ -460,17 +464,13 @@ where
     }
 }
 
-impl<EVM, ERROR, FRAME> InspectorHandler for CeloHandler<EVM, ERROR, FRAME>
+impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
-    EVM: InspectorEvmTr<
-            Context: CeloContextTr,
-            Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
-        >,
-    ERROR: EvmTrError<EVM> + From<OpTransactionError> + FromStringError + IsTxError,
-    // TODO `FrameResult` should be a generic trait.
-    // TODO `FrameInit` should be a generic.
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
     FRAME: InspectorFrame<
-            Evm = EVM,
+            Evm = CeloEvm<DB, INSP>,
             Error = ERROR,
             FrameResult = FrameResult,
             FrameInit = FrameInput,
