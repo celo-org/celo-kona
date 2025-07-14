@@ -1,10 +1,10 @@
 //! ERC20 token interface for fee currency handling
 
 use super::core_contracts::{self, CoreContractError};
-use crate::evm::CeloEvm;
+use crate::{CeloContext, evm::CeloEvm};
 use alloy_sol_types::{SolCall, sol};
 use revm::{
-    Database,
+    Database, Inspector,
     primitives::{Address, Bytes, U256},
 };
 
@@ -39,6 +39,7 @@ pub fn get_balance<DB, INSP>(
 ) -> Result<U256, CoreContractError>
 where
     DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
 {
     // Prepare the balanceOf call
     let calldata = IFeeCurrencyERC20::balanceOfCall { account }

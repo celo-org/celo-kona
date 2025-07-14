@@ -2,8 +2,8 @@
 
 use crate::{
     CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
-    contracts::core_contracts::CoreContractError, evm::CeloEvm, transaction::CeloTxTr,
-};
+    contracts::core_contracts::CoreContractError, contracts::erc20, evm::CeloEvm, transaction::CeloTxTr,
+}
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -110,13 +110,14 @@ where
         let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fee_currency = ctx.tx().fee_currency();
-        let fees_in_celo = fee_currency == None;
+        let fees_in_celo = fee_currency.is_none();
         let spec = ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
         let mint = ctx.tx().mint();
+        let fee_currency_context = ctx.chain().fee_currency_context.clone();
 
         let mut additional_cost = U256::ZERO;
 
@@ -152,9 +153,55 @@ where
             }
         }
 
-        let (tx, journal) = ctx.tx_journal();
+        // Extract values needed for balance check before borrowing evm
+        let (caller_addr, gas_limit, max_fee_per_gas, tx_value, tx_nonce, is_tx_call) = {
+            let ctx = evm.ctx();
+            let tx = ctx.tx();
+            (
+                tx.caller(),
+                tx.gas_limit(),
+                tx.max_fee_per_gas(),
+                tx.value(),
+                tx.nonce(),
+                tx.kind().is_call(),
+            )
+        };
 
-        let caller_account = journal.load_account_code(tx.caller())?.data;
+        // For CIP-64 transactions, check ERC20 balance before borrowing caller_account
+        if !fees_in_celo && !is_balance_check_disabled && !is_deposit {
+            // Check if the fee currency is registered
+            if fee_currency_context
+                .currency_exchange_rate(fee_currency)
+                .is_err()
+            {
+                return Err(ERROR::from_string(
+                    "unregistered fee-currency address".to_string(),
+                ));
+            }
+
+            // Get ERC20 balance using the erc20 module
+            let fee_currency_addr = fee_currency.unwrap();
+
+            let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
+                .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+
+            let gas_cost = (gas_limit as u128)
+                .checked_mul(max_fee_per_gas)
+                .and_then(|gas_cost| Some(U256::from(gas_cost)))
+                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+
+            if balance < gas_cost {
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(gas_cost),
+                    balance: Box::new(balance),
+                }
+                .into());
+            }
+        }
+
+        // Now handle all account operations
+        let (tx, journal) = evm.ctx().tx_journal();
+        let caller_account = journal.load_account_code(caller_addr)?.data;
 
         // If the transaction is a deposit with a `mint` value, add the mint value
         // in wei to the caller's balance. This should be persisted to the database
@@ -164,15 +211,15 @@ where
                 caller_account.info.balance =
                     caller_account.info.balance.saturating_add(U256::from(mint));
             }
-            if tx.kind().is_call() {
+            if is_tx_call {
                 caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
             }
         } else {
             // validates account nonce and code
             validate_account_nonce_and_code(
                 &mut caller_account.info,
-                tx.nonce(),
-                tx.kind().is_call(),
+                tx_nonce,
+                is_tx_call,
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
             )?;
@@ -181,38 +228,18 @@ where
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
             // this is not consensus critical, and it is used in testing.
-            caller_account.info.balance = caller_account.info.balance.max(tx.value());
+            caller_account.info.balance = caller_account.info.balance.max(tx_value);
         } else if !is_deposit {
             // Check CELO balance for value transfer (value is always in CELO)
-            if tx.value() > caller_account.info.balance {
-                return Err(ERROR::from_string("lack of funds ({caller_account.info.balance}) for value payment ({tx.value()})".to_string()));
-            }
-
-            // Check balance for gas payment
-            if !fees_in_celo {
-                // CIP-64 transaction: check fee currency balance for gas payment
-                // First verify that the fee currency is registered
-                let fee_currency_context = &evm.ctx().chain().fee_currency_context;
-
-                // Check if the fee currency is registered
-                if fee_currency_context
-                    .currency_exchange_rate(fee_currency)
-                    .is_err()
-                {
-                    return Err(ERROR::from_string(
-                        "unregistered fee-currency address".to_string(),
-                    ));
-                }
-
-                // Get caller's balance in the fee currency token
-                // Note: This requires casting EVM to CeloEvm for the contracts::erc20 module
-                // For now, we'll implement a simpler check or return an error
-                // TODO: Implement proper type casting or redesign the get_balance function
+            if tx_value > caller_account.info.balance {
                 return Err(ERROR::from_string(
-                    "CIP-64 balance validation requires implementation of EVM type casting"
+                    "lack of funds ({caller_account.info.balance}) for value payment ({tx_value})"
                         .to_string(),
                 ));
-            } else {
+            }
+
+            // Check balance for gas payment for regular transactions
+            if fees_in_celo {
                 // Regular transaction: check CELO balance for both value and gas
                 let max_balance_spending =
                     tx.max_balance_spending()?.saturating_add(additional_cost);
@@ -227,6 +254,7 @@ where
             }
         }
 
+        // Handle balance deduction for CELO gas fees
         if !is_balance_check_disabled {
             if fee_currency.is_none() {
                 // Only deduct CELO for gas if not using fee currency
