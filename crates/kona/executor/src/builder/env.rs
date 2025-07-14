@@ -1,7 +1,7 @@
 //! Environment utility functions for [CeloStatelessL2Builder].
 
 use super::CeloStatelessL2Builder;
-use crate::{constants::CELO_BASE_FEE_FLOOR, util::decode_holocene_eip_1559_params};
+use crate::{constants::CELO_EIP_1559_BASE_FEE_FLOOR, util::decode_holocene_eip_1559_params};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::{EvmEnv, EvmFactory};
@@ -67,7 +67,7 @@ where
         let mut next_block_base_fee = parent_header
             .next_block_base_fee(*base_fee_params)
             .unwrap_or_default();
-        next_block_base_fee = core::cmp::max(next_block_base_fee, CELO_BASE_FEE_FLOOR);
+        next_block_base_fee = core::cmp::max(next_block_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR);
 
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
         Ok(BlockEnv {

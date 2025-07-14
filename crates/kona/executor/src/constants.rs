@@ -10,4 +10,4 @@ pub(crate) const SHA256_EMPTY: B256 =
     b256!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
 /// The Celo EIP-1559 base fee floor (in wei).
-pub(crate) const CELO_BASE_FEE_FLOOR: u64 = 25_000_000_000;
+pub(crate) const CELO_EIP_1559_BASE_FEE_FLOOR: u64 = 25_000_000_000;
