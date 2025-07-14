@@ -202,7 +202,7 @@ impl ExecutorTestFixtureCreator {
         assert_eq!(
             outcome.header.inner(),
             &executing_header.inner,
-            "Produced header does not match the expected header"
+            "Produced header (left) does not match the expected header (right)"
         );
         fs::write(
             fixture_path.as_path(),
