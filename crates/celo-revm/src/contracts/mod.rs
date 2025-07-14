@@ -5,9 +5,7 @@ pub mod erc20;
 
 // Re-export commonly used items for convenience
 pub use core_contracts::{
-    CoreContractError, call, mutable_call, get_currencies, get_exchange_rates, get_intrinsic_gas,
-    get_revert_message,
+    CoreContractError, call, get_currencies, get_exchange_rates, get_intrinsic_gas,
+    get_revert_message, mutable_call,
 };
-pub use erc20::{
-    IFeeCurrencyERC20, credit_gas_fees, debit_gas_fees, get_balance,
-};
+pub use erc20::{IFeeCurrencyERC20, credit_gas_fees, debit_gas_fees, get_balance};

@@ -80,7 +80,7 @@ where
     // Create checkpoint to revert changes after the call
     let checkpoint = evm.ctx().journal().checkpoint();
     let call_result = mutable_call(evm, address, calldata);
-    
+
     // Revert changes made during the call
     evm.ctx().journal().checkpoint_revert(checkpoint);
 

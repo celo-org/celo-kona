@@ -167,7 +167,7 @@ where
             )
         };
 
-        // For CIP-64 transactions, check ERC20 balance before borrowing caller_account
+        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
         if !fees_in_celo && !is_balance_check_disabled && !is_deposit {
             // Check if the fee currency is registered
             if fee_currency_context
@@ -197,6 +197,10 @@ where
                 }
                 .into());
             }
+
+            // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+            erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+                .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
         }
 
         // Now handle all account operations
@@ -278,7 +282,8 @@ where
                     .balance
                     .saturating_sub(op_gas_balance_spending);
             }
-            // For CIP-64 transactions, gas deduction from fee currency will be handled separately
+            // We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
+            // because it will be deducted later
         }
 
         // Touch account so we know it is changed.
