@@ -51,7 +51,7 @@ where
 
     // Decode the balance
     IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output_bytes)
-        .map_err(|e| CoreContractError::from(e))
+        .map_err(CoreContractError::from)
 }
 
 /// Call debitGasFees to deduct gas fees from the fee currency
@@ -73,6 +73,7 @@ where
 }
 
 /// Call creditGasFees to distribute gas fees
+#[allow(clippy::too_many_arguments)]
 pub fn credit_gas_fees<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     fee_currency_address: Address,
@@ -113,6 +114,7 @@ pub fn encode_debit_gas_fees_call(from: Address, value: U256) -> Bytes {
 }
 
 /// Encode a creditGasFees call (for testing purposes)
+#[allow(clippy::too_many_arguments)]
 pub fn encode_credit_gas_fees_call(
     from: Address,
     fee_recipient: Address,
