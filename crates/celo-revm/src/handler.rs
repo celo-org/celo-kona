@@ -27,7 +27,7 @@ use revm::{
     state::Account,
 };
 use revm_context::LocalContextTr;
-use std::{boxed::Box, string::ToString};
+use std::{boxed::Box, format, string::ToString};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
