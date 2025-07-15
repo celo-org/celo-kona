@@ -188,7 +188,7 @@ where
 
             let gas_cost = (gas_limit as u128)
                 .checked_mul(max_fee_per_gas)
-                .and_then(|gas_cost| Some(U256::from(gas_cost)))
+                .map(|gas_cost| U256::from(gas_cost))
                 .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
 
             if balance < gas_cost {
@@ -260,31 +260,29 @@ where
         }
 
         // Handle balance deduction for CELO gas fees
-        if !is_balance_check_disabled {
-            if fee_currency.is_none() {
-                // Only deduct CELO for gas if not using fee currency
-                let effective_balance_spending =
-                    tx.effective_balance_spending(basefee, blob_price).expect(
-                        "effective balance is always smaller than max balance so it can't overflow",
-                    );
+        // Note:We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
+        // because it will be deducted later in the call
+        if !is_balance_check_disabled && fee_currency.is_none() {
+            // Only deduct CELO for gas if not using fee currency
+            let effective_balance_spending =
+                tx.effective_balance_spending(basefee, blob_price).expect(
+                    "effective balance is always smaller than max balance so it can't overflow",
+                );
 
-                // subtracting max balance spending with value that is going to be deducted later in the call.
-                let gas_balance_spending = effective_balance_spending - tx.value();
+            // subtracting max balance spending with value that is going to be deducted later in the call.
+            let gas_balance_spending = effective_balance_spending - tx.value();
 
-                // If the transaction is not a deposit transaction, subtract the L1 data fee from the
-                // caller's balance directly after minting the requested amount of ETH.
-                // Additionally deduct the operator fee from the caller's account.
-                //
-                // In case of deposit additional cost will be zero.
-                let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
+            // If the transaction is not a deposit transaction, subtract the L1 data fee from the
+            // caller's balance directly after minting the requested amount of ETH.
+            // Additionally deduct the operator fee from the caller's account.
+            //
+            // In case of deposit additional cost will be zero.
+            let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
-                caller_account.info.balance = caller_account
-                    .info
-                    .balance
-                    .saturating_sub(op_gas_balance_spending);
-            }
-            // We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
-            // because it will be deducted later
+            caller_account.info.balance = caller_account
+                .info
+                .balance
+                .saturating_sub(op_gas_balance_spending);
         }
 
         // Touch account so we know it is changed.
@@ -472,19 +470,20 @@ where
             } else {
                 // For CIP-64 transactions, we need to credit the fee currency
                 // Extract all values first to avoid borrowing conflicts
-                let fee_currency_addr = evm.ctx().tx().fee_currency().unwrap();
-                let fee_currency = evm.ctx().tx().fee_currency();
-                let basefee = evm.ctx().block().basefee() as u128;
-                let chain_id = evm.ctx().cfg().chain_id();
+                let ctx = evm.ctx();
+                let fee_currency_addr = ctx.tx().fee_currency().unwrap();
+                let fee_currency = ctx.tx().fee_currency();
+                let basefee = ctx.block().basefee() as u128;
+                let chain_id = ctx.cfg().chain_id();
                 let fee_handler = get_addresses(chain_id).fee_handler;
-                let mut fee_recipient = evm.ctx().block().beneficiary();
+                let mut fee_recipient = ctx.block().beneficiary();
                 if fee_recipient == Address::ZERO {
                     fee_recipient = fee_handler;
                 }
-                let enveloped = evm.ctx().tx().enveloped_tx().cloned();
-                let spec = evm.ctx().cfg().spec();
-                let effective_gas_price = evm.ctx().tx().effective_gas_price(basefee);
-                let caller = evm.ctx().tx().caller();
+                let enveloped = ctx.tx().enveloped_tx().cloned();
+                let spec = ctx.cfg().spec();
+                let effective_gas_price = ctx.tx().effective_gas_price(basefee);
+                let caller = ctx.tx().caller();
 
                 let Some(enveloped_tx) = &enveloped else {
                     return Err(ERROR::from_string(

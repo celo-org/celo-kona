@@ -84,7 +84,7 @@ where
     // Revert changes made during the call
     evm.ctx().journal().checkpoint_revert(checkpoint);
 
-    return call_result;
+    call_result
 }
 
 pub fn mutable_call<DB, INSP>(
