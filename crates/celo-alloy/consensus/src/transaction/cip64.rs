@@ -88,8 +88,8 @@ pub struct TxCip64 {
     pub input: Bytes,
     /// The address of the whitelisted currency to be used to pay for gas.
     /// This is a Celo-specific field not present in Ethereum transactions.
-    // pub fee_currency: Option<eddress>, // TODO: enable optional
-    pub fee_currency: Address,
+    /// None means the native currency is used.
+    pub fee_currency: Option<Address>,
 }
 
 impl TxCip64 {
@@ -112,8 +112,7 @@ impl TxCip64 {
         mem::size_of::<U256>() + // value
         self.access_list.size() + // access_list
         self.input.len() + // input
-        // self.fee_currency.as_ref().map_or(0, |_| mem::size_of::<Address>()) // fee_currency
-        mem::size_of::<Address>()
+        self.fee_currency.as_ref().map_or(0, |_| mem::size_of::<Address>()) // fee_currency
     }
 }
 
@@ -129,7 +128,7 @@ impl RlpEcdsaEncodableTx for TxCip64 {
             + self.value.length()
             + self.input.0.length()
             + self.access_list.length()
-            + self.fee_currency.length()
+            + self.fee_currency.as_ref().map_or(1, |addr| addr.length())
     }
 
     /// Encodes only the transaction's fields into the desired buffer, without
@@ -144,7 +143,11 @@ impl RlpEcdsaEncodableTx for TxCip64 {
         self.value.encode(out);
         self.input.0.encode(out);
         self.access_list.encode(out);
-        self.fee_currency.encode(out);
+        // Always encode fee_currency, None as empty string
+        match self.fee_currency {
+            Some(addr) => addr.encode(out),
+            None => (&[] as &[u8]).encode(out),
+        }
     }
 }
 
@@ -177,7 +180,7 @@ impl RlpEcdsaDecodableTx for TxCip64 {
             value: Decodable::decode(buf)?,
             input: Decodable::decode(buf)?,
             access_list: Decodable::decode(buf)?,
-            fee_currency: Decodable::decode(buf)?,
+            fee_currency: Decodable::decode(buf).ok(),
         })
     }
 }
@@ -392,8 +395,7 @@ pub(crate) mod serde_bincode_compat {
         value: U256,
         access_list: Cow<'a, AccessList>,
         input: Cow<'a, Bytes>,
-        // fee_currency: Option<Address>,
-        fee_currency: Address,
+        fee_currency: Option<Address>,
     }
 
     impl<'a> From<&'a super::TxCip64> for TxCip64<'a> {
@@ -561,8 +563,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
 
         let sig = Signature::from_scalars_and_parity(
@@ -598,8 +599,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
 
         let sig = Signature::from_scalars_and_parity(
