@@ -22,7 +22,7 @@ use revm::{
         pre_execution::validate_account_nonce_and_code,
     },
     inspector::{InspectorFrame, InspectorHandler},
-    interpreter::{FrameInput, Gas, interpreter::EthInterpreter},
+    interpreter::{FrameInput, Gas, InitialAndFloorGas, interpreter::EthInterpreter},
     primitives::{HashMap, U256, hardfork::SpecId},
     state::Account,
 };
@@ -46,6 +46,191 @@ impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<ERROR, FRAME, DB, INSP> CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    FRAME: Frame<
+            Evm = CeloEvm<DB, INSP>,
+            Error = ERROR,
+            FrameResult = FrameResult,
+            FrameInit = FrameInput,
+        >,
+{
+    // For CIP-64 transactions, we need to credit the fee currency, which does everything
+    // in the same call:
+    // - refund
+    // - reward beneficiary
+    // - reward caller
+    // - pay for l1 cost
+    fn cip64_credit_fee_currency(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+        exec_result: &mut FrameResult,
+    ) -> Result<(), ERROR> {
+        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+
+        if is_deposit || evm.ctx().tx().fee_currency().is_none() {
+            return Ok(());
+        }
+
+        // Extract all values first to avoid borrowing conflicts
+        let ctx = evm.ctx();
+        let fee_currency_addr = ctx.tx().fee_currency().unwrap();
+        let fee_currency = ctx.tx().fee_currency();
+        let basefee = ctx.block().basefee() as u128;
+        let chain_id = ctx.cfg().chain_id();
+        let fee_handler = get_addresses(chain_id).fee_handler;
+        let mut fee_recipient = ctx.block().beneficiary();
+        if fee_recipient == Address::ZERO {
+            fee_recipient = fee_handler;
+        }
+        let enveloped = ctx.tx().enveloped_tx().cloned();
+        let spec = ctx.cfg().spec();
+        let effective_gas_price = ctx.tx().effective_gas_price(basefee);
+        let caller = ctx.tx().caller();
+
+        let Some(enveloped_tx) = &enveloped else {
+            return Err(ERROR::from_string(
+                "[OPTIMISM] Failed to load enveloped transaction.".into(),
+            ));
+        };
+
+        // Calculate L1 cost and operator fee refund
+        let (l1_cost, operator_fee_refund) = {
+            let l1_block_info = &mut evm.ctx().chain().l1_block_info;
+            let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
+            let operator_fee_refund = l1_block_info.operator_fee_refund(exec_result.gas(), spec);
+            (l1_cost, operator_fee_refund)
+        };
+
+        // Convert costs to fee currency
+        let (base_fee_in_erc20, l1_cost_in_erc20, operator_fee_refund_in_erc20) = {
+            let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+            let base_fee_in_erc20 = fee_currency_context
+                .celo_to_currency(fee_currency, U256::from(basefee))
+                .map_err(|e| ERROR::from_string(e))?;
+            let l1_cost_in_erc20 = fee_currency_context
+                .celo_to_currency(fee_currency, l1_cost)
+                .map_err(|e| ERROR::from_string(e))?;
+            let operator_fee_refund_in_erc20 = fee_currency_context
+                .celo_to_currency(fee_currency, operator_fee_refund)
+                .map_err(|e| ERROR::from_string(e))?;
+            (
+                base_fee_in_erc20,
+                l1_cost_in_erc20,
+                operator_fee_refund_in_erc20,
+            )
+        };
+
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20.try_into().unwrap();
+        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
+        let tx_fee_tip_in_erc20 =
+            tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
+
+        // Our old `creditGasFees` function does not accept an l1DataFee and
+        // the fee currencies do not implement the new interface yet. Since tip
+        // and data fee both go to the sequencer, we can work around that for
+        // now by adding the l1DataFee to the tip.
+        let fee_tip_in_erc20 = l1_cost_in_erc20.saturating_add(U256::from(tx_fee_tip_in_erc20));
+
+        // Return balance of not spend gas.
+        let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
+            (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
+        ))
+        .saturating_add(operator_fee_refund_in_erc20);
+
+        let base_tx_charge =
+            base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
+
+        erc20::credit_gas_fees(
+            evm,
+            fee_currency_addr,
+            caller,
+            fee_recipient,
+            Address::ZERO,
+            fee_handler,
+            refund_in_erc20,
+            fee_tip_in_erc20,
+            U256::ZERO,
+            base_tx_charge,
+        )
+        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn cip64_validate_erc20_and_debit_gas_fees(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+    ) -> Result<(), ERROR> {
+        // Extract all needed values first to avoid borrowing conflicts
+        let (
+            fee_currency,
+            fees_in_celo,
+            is_balance_check_disabled,
+            is_deposit,
+            caller_addr,
+            gas_limit,
+            max_fee_per_gas,
+        ) = {
+            let ctx = evm.ctx();
+            let tx = ctx.tx();
+            let fee_currency = tx.fee_currency();
+            (
+                fee_currency,
+                fee_currency.is_none(),
+                ctx.cfg().is_balance_check_disabled(),
+                tx.tx_type() == DEPOSIT_TRANSACTION_TYPE,
+                tx.caller(),
+                tx.gas_limit(),
+                tx.max_fee_per_gas(),
+            )
+        };
+
+        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+
+        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
+        if !fees_in_celo && !is_balance_check_disabled && !is_deposit {
+            // Check if the fee currency is registered
+            if fee_currency_context
+                .currency_exchange_rate(fee_currency)
+                .is_err()
+            {
+                return Err(ERROR::from_string(
+                    "unregistered fee-currency address".to_string(),
+                ));
+            }
+
+            // Get ERC20 balance using the erc20 module
+            let fee_currency_addr = fee_currency.unwrap();
+
+            let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
+                .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+
+            let gas_cost = (gas_limit as u128)
+                .checked_mul(max_fee_per_gas)
+                .map(|gas_cost| U256::from(gas_cost))
+                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+
+            if balance < gas_cost {
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(gas_cost),
+                    balance: Box::new(balance),
+                }
+                .into());
+            }
+
+            // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+            erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+                .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+        }
+        Ok(())
     }
 }
 
@@ -118,7 +303,6 @@ where
         let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
         let mint = ctx.tx().mint();
-        let fee_currency_context = ctx.chain().fee_currency_context.clone();
 
         let mut additional_cost = U256::ZERO;
 
@@ -154,59 +338,11 @@ where
             }
         }
 
-        // Extract values needed for balance check before borrowing evm
-        let (caller_addr, gas_limit, max_fee_per_gas, tx_value, tx_nonce, is_tx_call) = {
-            let ctx = evm.ctx();
-            let tx = ctx.tx();
-            (
-                tx.caller(),
-                tx.gas_limit(),
-                tx.max_fee_per_gas(),
-                tx.value(),
-                tx.nonce(),
-                tx.kind().is_call(),
-            )
-        };
-
-        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
-        if !fees_in_celo && !is_balance_check_disabled && !is_deposit {
-            // Check if the fee currency is registered
-            if fee_currency_context
-                .currency_exchange_rate(fee_currency)
-                .is_err()
-            {
-                return Err(ERROR::from_string(
-                    "unregistered fee-currency address".to_string(),
-                ));
-            }
-
-            // Get ERC20 balance using the erc20 module
-            let fee_currency_addr = fee_currency.unwrap();
-
-            let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-                .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
-
-            let gas_cost = (gas_limit as u128)
-                .checked_mul(max_fee_per_gas)
-                .map(|gas_cost| U256::from(gas_cost))
-                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
-
-            if balance < gas_cost {
-                return Err(InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(gas_cost),
-                    balance: Box::new(balance),
-                }
-                .into());
-            }
-
-            // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-            erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
-                .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
-        }
+        self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
 
         // Now handle all account operations
         let (tx, journal) = evm.ctx().tx_journal();
-        let caller_account = journal.load_account_code(caller_addr)?.data;
+        let caller_account = journal.load_account_code(tx.caller())?.data;
 
         // If the transaction is a deposit with a `mint` value, add the mint value
         // in wei to the caller's balance. This should be persisted to the database
@@ -216,15 +352,15 @@ where
                 caller_account.info.balance =
                     caller_account.info.balance.saturating_add(U256::from(mint));
             }
-            if is_tx_call {
+            if tx.kind().is_call() {
                 caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
             }
         } else {
             // validates account nonce and code
             validate_account_nonce_and_code(
                 &mut caller_account.info,
-                tx_nonce,
-                is_tx_call,
+                tx.nonce(),
+                tx.kind().is_call(),
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
             )?;
@@ -233,10 +369,10 @@ where
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
             // this is not consensus critical, and it is used in testing.
-            caller_account.info.balance = caller_account.info.balance.max(tx_value);
+            caller_account.info.balance = caller_account.info.balance.max(tx.value());
         } else if !is_deposit {
             // Check CELO balance for value transfer (value is always in CELO)
-            if tx_value > caller_account.info.balance {
+            if tx.value() > caller_account.info.balance {
                 return Err(ERROR::from_string(
                     "lack of funds ({caller_account.info.balance}) for value payment ({tx_value})"
                         .to_string(),
@@ -285,8 +421,10 @@ where
                 .saturating_sub(op_gas_balance_spending);
         }
 
-        // Touch account so we know it is changed.
-        caller_account.mark_touch();
+        if fees_in_celo || tx.value() > U256::ZERO {
+            // Touch account so we know it is changed.
+            caller_account.mark_touch();
+        }
         Ok(())
     }
 
@@ -423,138 +561,48 @@ where
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
-        if !is_deposit {
-            if evm.ctx().tx().fee_currency().is_none() {
-                self.mainnet.reward_beneficiary(evm, exec_result)?;
-                let basefee = evm.ctx().block().basefee() as u128;
+        if !is_deposit && evm.ctx().tx().fee_currency().is_none() {
+            self.mainnet.reward_beneficiary(evm, exec_result)?;
+            let basefee = evm.ctx().block().basefee() as u128;
 
-                // If the transaction is not a deposit transaction, fees are paid out
-                // to both the Base Fee Vault as well as the L1 Fee Vault.
-                let ctx = evm.ctx();
-                let enveloped = ctx.tx().enveloped_tx().cloned();
-                let spec = ctx.cfg().spec();
-                let l1_block_info = &mut ctx.chain().l1_block_info;
+            // If the transaction is not a deposit transaction, fees are paid out
+            // to both the Base Fee Vault as well as the L1 Fee Vault.
+            let ctx = evm.ctx();
+            let enveloped = ctx.tx().enveloped_tx().cloned();
+            let spec = ctx.cfg().spec();
+            let l1_block_info = &mut ctx.chain().l1_block_info;
 
-                let Some(enveloped_tx) = &enveloped else {
-                    return Err(ERROR::from_string(
-                        "[OPTIMISM] Failed to load enveloped transaction.".into(),
-                    ));
-                };
+            let Some(enveloped_tx) = &enveloped else {
+                return Err(ERROR::from_string(
+                    "[OPTIMISM] Failed to load enveloped transaction.".into(),
+                ));
+            };
 
-                let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
-                let mut operator_fee_cost = U256::ZERO;
-                if spec.is_enabled_in(OpSpecId::ISTHMUS) {
-                    operator_fee_cost = l1_block_info.operator_fee_charge(
-                        enveloped_tx,
-                        U256::from(exec_result.gas().spent_sub_refunded()),
-                    );
-                }
-                // Send the L1 cost of the transaction to the L1 Fee Vault.
-                let mut l1_fee_vault_account = ctx.journal().load_account(L1_FEE_RECIPIENT)?;
-                l1_fee_vault_account.mark_touch();
-                l1_fee_vault_account.info.balance += l1_cost;
-
-                // Send the base fee of the transaction to the FeeHandler.
-                let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
-                let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
-                base_fee_vault_account.mark_touch();
-                base_fee_vault_account.info.balance += U256::from(
-                    basefee.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
+            let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
+            let mut operator_fee_cost = U256::ZERO;
+            if spec.is_enabled_in(OpSpecId::ISTHMUS) {
+                operator_fee_cost = l1_block_info.operator_fee_charge(
+                    enveloped_tx,
+                    U256::from(exec_result.gas().spent_sub_refunded()),
                 );
-
-                // Send the operator fee of the transaction to the coinbase.
-                let mut operator_fee_vault_account =
-                    evm.ctx().journal().load_account(OPERATOR_FEE_RECIPIENT)?;
-                operator_fee_vault_account.mark_touch();
-                operator_fee_vault_account.data.info.balance += operator_fee_cost;
-            } else {
-                // For CIP-64 transactions, we need to credit the fee currency
-                // Extract all values first to avoid borrowing conflicts
-                let ctx = evm.ctx();
-                let fee_currency_addr = ctx.tx().fee_currency().unwrap();
-                let fee_currency = ctx.tx().fee_currency();
-                let basefee = ctx.block().basefee() as u128;
-                let chain_id = ctx.cfg().chain_id();
-                let fee_handler = get_addresses(chain_id).fee_handler;
-                let mut fee_recipient = ctx.block().beneficiary();
-                if fee_recipient == Address::ZERO {
-                    fee_recipient = fee_handler;
-                }
-                let enveloped = ctx.tx().enveloped_tx().cloned();
-                let spec = ctx.cfg().spec();
-                let effective_gas_price = ctx.tx().effective_gas_price(basefee);
-                let caller = ctx.tx().caller();
-
-                let Some(enveloped_tx) = &enveloped else {
-                    return Err(ERROR::from_string(
-                        "[OPTIMISM] Failed to load enveloped transaction.".into(),
-                    ));
-                };
-
-                // Calculate L1 cost and operator fee refund
-                let (l1_cost, operator_fee_refund) = {
-                    let l1_block_info = &mut evm.ctx().chain().l1_block_info;
-                    let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
-                    let operator_fee_refund =
-                        l1_block_info.operator_fee_refund(exec_result.gas(), spec);
-                    (l1_cost, operator_fee_refund)
-                };
-
-                // Convert costs to fee currency
-                let (base_fee_in_erc20, l1_cost_in_erc20, operator_fee_refund_in_erc20) = {
-                    let fee_currency_context = &evm.ctx().chain().fee_currency_context;
-                    let base_fee_in_erc20 = fee_currency_context
-                        .celo_to_currency(fee_currency, U256::from(basefee))
-                        .map_err(|e| ERROR::from_string(e))?;
-                    let l1_cost_in_erc20 = fee_currency_context
-                        .celo_to_currency(fee_currency, l1_cost)
-                        .map_err(|e| ERROR::from_string(e))?;
-                    let operator_fee_refund_in_erc20 = fee_currency_context
-                        .celo_to_currency(fee_currency, operator_fee_refund)
-                        .map_err(|e| ERROR::from_string(e))?;
-                    (
-                        base_fee_in_erc20,
-                        l1_cost_in_erc20,
-                        operator_fee_refund_in_erc20,
-                    )
-                };
-
-                // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-                let base_fee_in_erc20_u128: u128 = base_fee_in_erc20.try_into().unwrap();
-                let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
-                let tx_fee_tip_in_erc20 =
-                    tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
-
-                // Our old `creditGasFees` function does not accept an l1DataFee and
-                // the fee currencies do not implement the new interface yet. Since tip
-                // and data fee both go to the sequencer, we can work around that for
-                // now by adding the l1DataFee to the tip.
-                let fee_tip_in_erc20 =
-                    l1_cost_in_erc20.saturating_add(U256::from(tx_fee_tip_in_erc20));
-
-                // Return balance of not spend gas.
-                let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
-                    (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
-                ))
-                .saturating_add(operator_fee_refund_in_erc20);
-
-                let base_tx_charge = base_fee_in_erc20
-                    .saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
-
-                erc20::credit_gas_fees(
-                    evm,
-                    fee_currency_addr,
-                    caller,
-                    fee_recipient,
-                    Address::ZERO,
-                    fee_handler,
-                    refund_in_erc20,
-                    fee_tip_in_erc20,
-                    U256::ZERO,
-                    base_tx_charge,
-                )
-                .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
             }
+            // Send the L1 cost of the transaction to the L1 Fee Vault.
+            let mut l1_fee_vault_account = ctx.journal().load_account(L1_FEE_RECIPIENT)?;
+            l1_fee_vault_account.mark_touch();
+            l1_fee_vault_account.info.balance += l1_cost;
+
+            // Send the base fee of the transaction to the FeeHandler.
+            let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
+            let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
+            base_fee_vault_account.mark_touch();
+            base_fee_vault_account.info.balance +=
+                U256::from(basefee.saturating_mul(exec_result.gas().spent_sub_refunded() as u128));
+
+            // Send the operator fee of the transaction to the coinbase.
+            let mut operator_fee_vault_account =
+                evm.ctx().journal().load_account(OPERATOR_FEE_RECIPIENT)?;
+            operator_fee_vault_account.mark_touch();
+            operator_fee_vault_account.data.info.balance += operator_fee_cost;
         }
         Ok(())
     }
@@ -578,6 +626,27 @@ where
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
         Ok(result)
+    }
+
+    fn post_execution(
+        &self,
+        evm: &mut Self::Evm,
+        mut exec_result: FrameResult,
+        init_and_floor_gas: InitialAndFloorGas,
+        eip7702_gas_refund: i64,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Calculate final refund and add EIP-7702 refund to gas.
+        self.refund(evm, &mut exec_result, eip7702_gas_refund);
+        // Ensure gas floor is met and minimum floor gas is spent.
+        self.eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
+        // Return unused gas to caller
+        self.reimburse_caller(evm, &mut exec_result)?;
+        // Pay transaction fees to beneficiary
+        self.reward_beneficiary(evm, &mut exec_result)?;
+        // CIP-64: Credit the fee currency to the fee handler
+        self.cip64_credit_fee_currency(evm, &mut exec_result)?;
+        // Prepare transaction output
+        self.output(evm, exec_result)
     }
 
     fn catch_error(
