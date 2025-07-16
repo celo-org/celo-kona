@@ -86,7 +86,8 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        if evm.ctx().chain().fee_currency_context.updated_at_block != evm.ctx().block().number() {
+        let current_block = evm.ctx().block().number();
+        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
             // Update the chain with the new fee currency context
             evm.ctx().chain().fee_currency_context = FeeCurrencyContext::new_from_evm(evm)
                 .map_err(|e| ERROR::from_string(e.to_string()))?;

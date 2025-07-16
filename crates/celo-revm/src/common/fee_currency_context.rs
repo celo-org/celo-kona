@@ -16,14 +16,14 @@ use std::{format, string::String};
 pub struct FeeCurrencyContext {
     exchange_rates: HashMap<Address, (U256, U256)>,
     intrinsic_gas: HashMap<Address, U256>,
-    pub updated_at_block: u64,
+    pub updated_at_block: Option<u64>,
 }
 
 impl FeeCurrencyContext {
     pub fn new(
         exchange_rates: HashMap<Address, (U256, U256)>,
         intrinsic_gas: HashMap<Address, U256>,
-        updated_at_block: u64,
+        updated_at_block: Option<u64>,
     ) -> Self {
         Self {
             exchange_rates,
@@ -47,7 +47,7 @@ impl FeeCurrencyContext {
         Ok(FeeCurrencyContext::new(
             exchange_rates,
             intrinsic_gas,
-            current_block_number,
+            Some(current_block_number),
         ))
     }
 
@@ -140,7 +140,7 @@ mod tests {
 
         // Verify that updated_at_block is set to the current block number
         assert_eq!(
-            fee_currency_context.updated_at_block,
+            fee_currency_context.updated_at_block.unwrap(),
             evm.ctx().block().number
         );
     }
