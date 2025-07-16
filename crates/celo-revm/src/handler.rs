@@ -96,7 +96,7 @@ where
 
         let Some(enveloped_tx) = &enveloped else {
             return Err(ERROR::from_string(
-                "[OPTIMISM] Failed to load enveloped transaction.".into(),
+                "[CELO] Failed to load enveloped transaction.".into(),
             ));
         };
 
@@ -128,7 +128,9 @@ where
         };
 
         // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20.try_into().unwrap();
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
         let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
         let tx_fee_tip_in_erc20 =
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
@@ -373,10 +375,11 @@ where
         } else if !is_deposit {
             // Check CELO balance for value transfer (value is always in CELO)
             if tx.value() > caller_account.info.balance {
-                return Err(ERROR::from_string(
-                    "lack of funds ({caller_account.info.balance}) for value payment ({tx_value})"
-                        .to_string(),
-                ));
+                return Err(ERROR::from_string(format!(
+                    "lack of funds ({}) for value payment ({})",
+                    caller_account.info.balance,
+                    tx.value()
+                )));
             }
 
             // Check balance for gas payment for regular transactions
@@ -396,7 +399,7 @@ where
         }
 
         // Handle balance deduction for CELO gas fees
-        // Note:We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
+        // Note: We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
         // because it will be deducted later in the call
         if !is_balance_check_disabled && fee_currency.is_none() {
             // Only deduct CELO for gas if not using fee currency
