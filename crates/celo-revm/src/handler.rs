@@ -145,11 +145,9 @@ where
             fee_currency_addr,
             caller,
             fee_recipient,
-            Address::ZERO,
             fee_handler,
             refund_in_erc20,
             fee_tip_in_erc20,
-            U256::ZERO,
             base_tx_charge,
         )
         .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
