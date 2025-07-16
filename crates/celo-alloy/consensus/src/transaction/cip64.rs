@@ -180,7 +180,18 @@ impl RlpEcdsaDecodableTx for TxCip64 {
             value: Decodable::decode(buf)?,
             input: Decodable::decode(buf)?,
             access_list: Decodable::decode(buf)?,
-            fee_currency: Decodable::decode(buf).ok(),
+            fee_currency: {
+                let bytes: Bytes = Decodable::decode(buf)?;
+                if bytes.is_empty() {
+                    None
+                } else if bytes.len() == 20 {
+                    Some(Address::from_slice(&bytes))
+                } else {
+                    return Err(alloy_rlp::Error::Custom(
+                        "Invalid fee_currency address length",
+                    ));
+                }
+            },
         })
     }
 }
