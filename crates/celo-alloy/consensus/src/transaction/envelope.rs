@@ -1021,8 +1021,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
         let signature = Signature::test_signature();
         let tx_signed = tx.into_signed(signature);
@@ -1049,8 +1048,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
         let signature = Signature::test_signature();
         let tx_envelope: CeloTxEnvelope = tx.into_signed(signature).into();
@@ -1070,7 +1068,9 @@ mod tests {
 
         let tx = CeloTxEnvelope::decode_2718(&mut b[..].as_ref()).unwrap();
         let cip64 = tx.as_cip64().unwrap();
-        assert_ne!(cip64.tx().fee_currency, Address::ZERO);
+        assert!(
+            cip64.tx().fee_currency.is_some() && cip64.tx().fee_currency != Some(Address::ZERO)
+        );
     }
 
     #[test]

@@ -14,7 +14,6 @@ use revm::{
 use revm_context::ContextSetters;
 
 /// Type alias for the error type of the CeloEvm.
-// TODO: replace with CeloTransactionError
 type CeloError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, OpTransactionError>;
 
 impl<DB, INSP> ExecuteEvm for CeloEvm<DB, INSP>
