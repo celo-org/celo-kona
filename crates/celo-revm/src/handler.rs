@@ -1,6 +1,9 @@
 //!Handler related to Celo chain
 
-use crate::{CeloBlockEnv, CeloContext, constants::get_addresses, evm::CeloEvm};
+use crate::{
+    CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
+    evm::CeloEvm,
+};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -85,7 +88,7 @@ where
     ) -> Result<(), Self::Error> {
         if evm.ctx().chain().fee_currency_context.updated_at_block != evm.ctx().block().number() {
             // Update the chain with the new fee currency context
-            evm.ctx().chain().fee_currency_context = CeloBlockEnv::update_fee_currencies(evm)
+            evm.ctx().chain().fee_currency_context = FeeCurrencyContext::new_from_evm(evm)
                 .map_err(|e| ERROR::from_string(e.to_string()))?;
         }
 
