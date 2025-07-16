@@ -95,6 +95,7 @@ where
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
+                    // TODO: log a debug message here.
                 }
                 Err(e) => {
                     return Err(ERROR::from_string(e.to_string()));
