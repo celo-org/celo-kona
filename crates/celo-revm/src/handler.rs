@@ -84,11 +84,9 @@ where
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
         if evm.ctx().chain().fee_currency_context.updated_at_block != evm.ctx().block().number() {
-            // Update fee currencies and get the updated block environment
-            let celo_block_env = CeloBlockEnv::update_fee_currencies(evm)
-                .map_err(|e| ERROR::from_string(e.to_string()))?;
             // Update the chain with the new fee currency context
-            evm.ctx().chain().fee_currency_context = celo_block_env.fee_currency_context;
+            evm.ctx().chain().fee_currency_context = CeloBlockEnv::update_fee_currencies(evm)
+                .map_err(|e| ERROR::from_string(e.to_string()))?;
         }
 
         let ctx = evm.ctx();

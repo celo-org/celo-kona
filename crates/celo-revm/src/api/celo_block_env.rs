@@ -23,7 +23,7 @@ impl CeloBlockEnv {
     /// currencies in the FeeCurrencyDirectory.
     pub fn update_fee_currencies<DB, INSP>(
         evm: &mut CeloEvm<DB, INSP>,
-    ) -> Result<CeloBlockEnv, CoreContractError>
+    ) -> Result<FeeCurrencyContext, CoreContractError>
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
@@ -32,12 +32,11 @@ impl CeloBlockEnv {
         let exchange_rates = get_exchange_rates(evm, currencies)?;
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
         let current_block_number = evm.ctx().block().number();
-        let fee_currency_context =
-            FeeCurrencyContext::new(exchange_rates, intrinsic_gas, current_block_number);
-        Ok(CeloBlockEnv {
-            l1_block_info: evm.ctx().chain.l1_block_info.clone(),
-            fee_currency_context,
-        })
+        Ok(FeeCurrencyContext::new(
+            exchange_rates,
+            intrinsic_gas,
+            current_block_number,
+        ))
     }
 }
 
@@ -52,16 +51,14 @@ mod tests {
     fn test_update_block_env() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let block_env = CeloBlockEnv::update_fee_currencies(&mut evm).unwrap();
+        let fee_currency_context = CeloBlockEnv::update_fee_currencies(&mut evm).unwrap();
 
-        let exchange_rate = block_env
-            .fee_currency_context
+        let exchange_rate = fee_currency_context
             .currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111")))
             .unwrap();
         assert_eq!(exchange_rate, (U256::from(20), U256::from(10)));
 
-        let intrinsic_gas_cost = block_env
-            .fee_currency_context
+        let intrinsic_gas_cost = fee_currency_context
             .currency_intrinsic_gas_cost(Some(address!(
                 "0x1111111111111111111111111111111111111111"
             )))
@@ -70,7 +67,7 @@ mod tests {
 
         // Verify that updated_at_block is set to the current block number
         assert_eq!(
-            block_env.fee_currency_context.updated_at_block,
+            fee_currency_context.updated_at_block,
             evm.ctx().block().number()
         );
     }
