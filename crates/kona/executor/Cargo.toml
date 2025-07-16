@@ -64,6 +64,8 @@ alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"
 alloy-rpc-client = { workspace = true, optional = true }
 #alloy-transport = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true }
+leveldb = "0.8.6"
+db-key = "0.0.5"
 
 [dev-dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
