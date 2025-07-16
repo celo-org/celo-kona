@@ -100,45 +100,27 @@ where
         };
 
         // Calculate L1 cost and operator fee refund
-        let (l1_cost, operator_fee_refund) = {
-            let l1_block_info = &mut evm.ctx().chain().l1_block_info;
-            let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
-            let operator_fee_refund = l1_block_info.operator_fee_refund(exec_result.gas(), spec);
-            (l1_cost, operator_fee_refund)
-        };
+        let l1_block_info = &mut evm.ctx().chain().l1_block_info;
+        let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
+        let operator_fee_refund = l1_block_info.operator_fee_refund(exec_result.gas(), spec);
 
         // Convert costs to fee currency
-        let (
-            base_fee_in_erc20,
-            l1_cost_in_erc20,
-            operator_fee_refund_in_erc20,
-            effective_gas_price,
-            tip_gas_price,
-        ) = {
-            let fee_currency_context = &evm.ctx().chain().fee_currency_context;
-            let base_fee_in_erc20 = fee_currency_context
-                .celo_to_currency(fee_currency, U256::from(basefee))
-                .map_err(|e| ERROR::from_string(e))?;
-            let l1_cost_in_erc20 = fee_currency_context
-                .celo_to_currency(fee_currency, l1_cost)
-                .map_err(|e| ERROR::from_string(e))?;
-            let operator_fee_refund_in_erc20 = fee_currency_context
-                .celo_to_currency(fee_currency, operator_fee_refund)
-                .map_err(|e| ERROR::from_string(e))?;
-            // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-            let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
-                .try_into()
-                .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
-            let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
-            let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
-            (
-                base_fee_in_erc20,
-                l1_cost_in_erc20,
-                operator_fee_refund_in_erc20,
-                effective_gas_price,
-                tip_gas_price,
-            )
-        };
+        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let base_fee_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, U256::from(basefee))
+            .map_err(|e| ERROR::from_string(e))?;
+        let l1_cost_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, l1_cost)
+            .map_err(|e| ERROR::from_string(e))?;
+        let operator_fee_refund_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, operator_fee_refund)
+            .map_err(|e| ERROR::from_string(e))?;
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
 
         let tx_fee_tip_in_erc20 =
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
@@ -179,29 +161,15 @@ where
         &self,
         evm: &mut CeloEvm<DB, INSP>,
     ) -> Result<(), ERROR> {
-        // Extract all needed values first to avoid borrowing conflicts
-        let (
-            fee_currency,
-            fees_in_celo,
-            is_balance_check_disabled,
-            is_deposit,
-            caller_addr,
-            gas_limit,
-            basefee,
-        ) = {
-            let ctx = evm.ctx();
-            let tx = ctx.tx();
-            let fee_currency = tx.fee_currency();
-            (
-                fee_currency,
-                fee_currency.is_none(),
-                ctx.cfg().is_balance_check_disabled(),
-                tx.tx_type() == DEPOSIT_TRANSACTION_TYPE,
-                tx.caller(),
-                tx.gas_limit(),
-                ctx.block().basefee(),
-            )
-        };
+        let ctx = evm.ctx();
+        let tx = ctx.tx();
+        let fee_currency = tx.fee_currency();
+        let fees_in_celo = fee_currency.is_none();
+        let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
+        let is_deposit = tx.tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let caller_addr = tx.caller();
+        let gas_limit = tx.gas_limit();
+        let basefee = ctx.block().basefee();
 
         if fees_in_celo || is_balance_check_disabled || is_deposit {
             return Ok(());
