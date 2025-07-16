@@ -1,6 +1,9 @@
 //!Handler related to Celo chain
 
-use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
+use crate::{
+    CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
+    core_contracts::CoreContractError, evm::CeloEvm,
+};
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -23,7 +26,7 @@ use revm::{
     state::Account,
 };
 use revm_context::LocalContextTr;
-use std::boxed::Box;
+use std::{boxed::Box, string::ToString};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -83,6 +86,23 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        let current_block = evm.ctx().block().number();
+        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
+            // Update the chain with the new fee currency context
+            match FeeCurrencyContext::new_from_evm(evm) {
+                Ok(fee_currency_context) => {
+                    evm.ctx().chain().fee_currency_context = fee_currency_context;
+                }
+                Err(CoreContractError::CoreContractMissing(_)) => {
+                    // If core contracts are missing, we are probably in a non-celo test env.
+                    // TODO: log a debug message here.
+                }
+                Err(e) => {
+                    return Err(ERROR::from_string(e.to_string()));
+                }
+            }
+        }
+
         let ctx = evm.ctx();
 
         let basefee = ctx.block().basefee() as u128;
