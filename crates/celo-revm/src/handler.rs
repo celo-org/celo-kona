@@ -149,7 +149,7 @@ where
         // now by adding the l1DataFee to the tip.
         let fee_tip_in_erc20 = l1_cost_in_erc20.saturating_add(U256::from(tx_fee_tip_in_erc20));
 
-        // Return balance of not spend gas.
+        // Return balance of not spent gas.
         let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
             (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
         ))
