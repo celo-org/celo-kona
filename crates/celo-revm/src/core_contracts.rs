@@ -20,6 +20,8 @@ use std::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
+    #[error("Core contract missing at address {0}")]
+    CoreContractMissing(Address),
     #[error("sol type error: {0}")]
     AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
@@ -118,17 +120,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let output_bytes = call(
-        evm,
-        get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
-        getCurrenciesCall {}.abi_encode().into(),
-    )?;
+    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
+    let output_bytes = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
 
     if output_bytes.is_empty() {
-        return Err(CoreContractError::ExecutionFailed(
-            "Empty response from getCurrenciesCall, FeeCurrencyDirectory might be missing."
-                .to_string(),
-        ));
+        return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
     }
 
     // Decode the output

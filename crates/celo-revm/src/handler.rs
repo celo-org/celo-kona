@@ -2,7 +2,7 @@
 
 use crate::{
     CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
-    evm::CeloEvm,
+    core_contracts::CoreContractError, evm::CeloEvm,
 };
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
@@ -89,8 +89,17 @@ where
         let current_block = evm.ctx().block().number();
         if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
             // Update the chain with the new fee currency context
-            evm.ctx().chain().fee_currency_context = FeeCurrencyContext::new_from_evm(evm)
-                .map_err(|e| ERROR::from_string(e.to_string()))?;
+            match FeeCurrencyContext::new_from_evm(evm) {
+                Ok(fee_currency_context) => {
+                    evm.ctx().chain().fee_currency_context = fee_currency_context;
+                }
+                Err(CoreContractError::CoreContractMissing(_)) => {
+                    // If core contracts are missing, we are probably in a non-celo test env.
+                }
+                Err(e) => {
+                    return Err(ERROR::from_string(e.to_string()));
+                }
+            }
         }
 
         let ctx = evm.ctx();
