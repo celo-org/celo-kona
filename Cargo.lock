@@ -1718,6 +1718,7 @@ dependencies = [
  "celo-executor",
  "celo-genesis",
  "celo-registry",
+ "celo-revm",
  "kona-executor",
  "kona-genesis",
  "kona-mpt",

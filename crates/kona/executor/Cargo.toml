@@ -19,6 +19,7 @@ alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["k256", "serde"] }
 celo-genesis = { workspace = true, features = ["revm"] }
+celo-revm.workspace = true
 
 # Kona
 kona-executor.workspace = true

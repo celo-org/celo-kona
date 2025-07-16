@@ -88,8 +88,8 @@ pub struct TxCip64 {
     pub input: Bytes,
     /// The address of the whitelisted currency to be used to pay for gas.
     /// This is a Celo-specific field not present in Ethereum transactions.
-    // pub fee_currency: Option<eddress>, // TODO: enable optional
-    pub fee_currency: Address,
+    /// None means the native currency is used.
+    pub fee_currency: Option<Address>,
 }
 
 impl TxCip64 {
@@ -112,8 +112,7 @@ impl TxCip64 {
         mem::size_of::<U256>() + // value
         self.access_list.size() + // access_list
         self.input.len() + // input
-        // self.fee_currency.as_ref().map_or(0, |_| mem::size_of::<Address>()) // fee_currency
-        mem::size_of::<Address>()
+        self.fee_currency.as_ref().map_or(0, |_| mem::size_of::<Address>()) // fee_currency
     }
 }
 
@@ -129,7 +128,7 @@ impl RlpEcdsaEncodableTx for TxCip64 {
             + self.value.length()
             + self.input.0.length()
             + self.access_list.length()
-            + self.fee_currency.length()
+            + self.fee_currency.as_ref().map_or(1, |addr| addr.length())
     }
 
     /// Encodes only the transaction's fields into the desired buffer, without
@@ -144,7 +143,11 @@ impl RlpEcdsaEncodableTx for TxCip64 {
         self.value.encode(out);
         self.input.0.encode(out);
         self.access_list.encode(out);
-        self.fee_currency.encode(out);
+        // Always encode fee_currency, None as empty string
+        match self.fee_currency {
+            Some(addr) => addr.encode(out),
+            None => (&[] as &[u8]).encode(out),
+        }
     }
 }
 
@@ -177,7 +180,18 @@ impl RlpEcdsaDecodableTx for TxCip64 {
             value: Decodable::decode(buf)?,
             input: Decodable::decode(buf)?,
             access_list: Decodable::decode(buf)?,
-            fee_currency: Decodable::decode(buf)?,
+            fee_currency: {
+                let bytes: Bytes = Decodable::decode(buf)?;
+                if bytes.is_empty() {
+                    None
+                } else if bytes.len() == 20 {
+                    Some(Address::from_slice(&bytes))
+                } else {
+                    return Err(alloy_rlp::Error::Custom(
+                        "Invalid fee_currency address length",
+                    ));
+                }
+            },
         })
     }
 }
@@ -392,8 +406,7 @@ pub(crate) mod serde_bincode_compat {
         value: U256,
         access_list: Cow<'a, AccessList>,
         input: Cow<'a, Bytes>,
-        // fee_currency: Option<Address>,
-        fee_currency: Address,
+        fee_currency: Option<Address>,
     }
 
     impl<'a> From<&'a super::TxCip64> for TxCip64<'a> {
@@ -561,8 +574,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
 
         let sig = Signature::from_scalars_and_parity(
@@ -598,8 +610,7 @@ mod tests {
             max_fee_per_gas: 0x26442dbed,
             max_priority_fee_per_gas: 0x4d7ee,
             access_list: AccessList::default(),
-            // fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
-            fee_currency: address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b"),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
         };
 
         let sig = Signature::from_scalars_and_parity(
@@ -616,6 +627,95 @@ mod tests {
 
         // Also verify that the encoded transaction matches what we observed on the real blockchain
         let expected_encoded_tx = "0x7bf8a882a4ec8207058304d7ee85026442dbed8303644c947a1e295c4babdf229776680c93ed0f73d069abc080a4cac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563c0942f25deb3848c207fc8e0c34035b3ba7fc157602b80a0aa0cfaa3df893578b3504062b862428f0e4a94046370cf2a4fd6c392c0760dd8a01337d022bbb8faed78a9707e6c38d51f575816e7f85aa540f3d37a9081c58a71";
+        assert_eq!(format!("0x7b{}", hex::encode(buf)), expected_encoded_tx);
+    }
+
+    /*  The following real tx is used as test data:
+
+    > call `debug_getRawTransaction` 0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf on Baklava
+    0x7bf86e82f37002830f42408506fc23ac00830186a094fb968b52d25549ec2dd26a9f650a0a0f135a43588080c08001a073220f0dbf123a982c75f006d76c6949e75a2bf89255432e2bf2c5016c37d0f3a01c69a201f1c24233c4a0fe8539073a7b4d3b370a25b8c00d2cf8e93a3694b9b7
+
+    > cast tx 0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf --json | jq .
+    {
+      "hash": "0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf",
+      "type": "0x7b",
+      "accessList": [],
+      "chainId": "0xf370",
+      "gas": "0x186a0",
+      "gasPrice": "0x5d22cfc40",
+      "input": "0x",
+      "maxFeePerGas": "0x6fc23ac00",
+      "maxPriorityFeePerGas": "0xf4240",
+      "nonce": "0x2",
+      "r": "0x73220f0dbf123a982c75f006d76c6949e75a2bf89255432e2bf2c5016c37d0f3",
+      "s": "0x1c69a201f1c24233c4a0fe8539073a7b4d3b370a25b8c00d2cf8e93a3694b9b7",
+      "to": "0xfb968b52d25549ec2dd26a9f650a0a0f135a4358",
+      "v": "0x1",
+      "value": "0x0",
+      "yParity": "0x1",
+      "blockHash": "0x51a4dc762c46b813c1454e65dee028e427a8bf33615a6ba93fb992bde989bdfd",
+      "blockNumber": "0x26ec371",
+      "transactionIndex": "0x1",
+      "from": "0x52bcbd8bf68ee24a15adcd05951a49ae6c168a14"
+    }
+
+    >  cast receipt 0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf --json | jq 'del(.logs)'
+    {
+      "status": "0x1",
+      "cumulativeGasUsed": "0x105e8",
+      "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "type": "0x7b",
+      "transactionHash": "0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf",
+      "transactionIndex": "0x1",
+      "blockHash": "0x51a4dc762c46b813c1454e65dee028e427a8bf33615a6ba93fb992bde989bdfd",
+      "blockNumber": "0x26ec371",
+      "gasUsed": "0x5208",
+      "effectiveGasPrice": "0x5d22cfc40",
+      "from": "0x52bcbd8bf68ee24a15adcd05951a49ae6c168a14",
+      "to": "0xfb968b52d25549ec2dd26a9f650a0a0f135a4358",
+      "contractAddress": null,
+      "baseFee": "0x5d21dba00",
+      "l1BaseFeeScalar": "0x0",
+      "l1BlobBaseFee": "0x1",
+      "l1BlobBaseFeeScalar": "0x0",
+      "l1Fee": "0x0",
+      "l1GasPrice": "0xa",
+      "l1GasUsed": "0x640"
+    }
+    */
+
+    #[test]
+    fn encode_decode_cip64_with_none_fee_currency() {
+        let hash: B256 =
+            b256!("0xb7ae6b434382473c8beaba396d0bb119be1738d2ec1381e58be7cf45c65312bf");
+
+        let tx = TxCip64 {
+            chain_id: 0xf370,
+            nonce: 0x2,
+            gas_limit: 0x186a0,
+            to: address!("0xfb968b52d25549ec2dd26a9f650a0a0f135a4358").into(),
+            value: U256::from(0_u64),
+            input: hex!("0x").into(),
+            max_fee_per_gas: 0x6fc23ac00,
+            max_priority_fee_per_gas: 0xf4240,
+            access_list: AccessList::default(),
+            fee_currency: None,
+        };
+
+        let sig = Signature::from_scalars_and_parity(
+            b256!("0x73220f0dbf123a982c75f006d76c6949e75a2bf89255432e2bf2c5016c37d0f3"),
+            b256!("0x1c69a201f1c24233c4a0fe8539073a7b4d3b370a25b8c00d2cf8e93a3694b9b7"),
+            true,
+        );
+
+        let mut buf = vec![];
+        tx.rlp_encode_signed(&sig, &mut buf);
+        let decoded = TxCip64::rlp_decode_signed(&mut &buf[..]).unwrap();
+        assert_eq!(decoded, tx.into_signed(sig));
+        assert_eq!(*decoded.hash(), hash);
+
+        // Also verify that the encoded transaction matches what we observed on the real blockchain
+        let expected_encoded_tx = "0x7bf86e82f37002830f42408506fc23ac00830186a094fb968b52d25549ec2dd26a9f650a0a0f135a43588080c08001a073220f0dbf123a982c75f006d76c6949e75a2bf89255432e2bf2c5016c37d0f3a01c69a201f1c24233c4a0fe8539073a7b4d3b370a25b8c00d2cf8e93a3694b9b7";
         assert_eq!(format!("0x7b{}", hex::encode(buf)), expected_encoded_tx);
     }
 }

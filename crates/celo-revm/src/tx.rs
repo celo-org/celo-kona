@@ -85,10 +85,9 @@ impl FromTxWithEncoded<CeloTxEnvelope> for CeloTransaction<TxEnv> {
             Default::default()
         };
 
-        let fee_currency: Option<Address> = if let CeloTxEnvelope::Cip64(tx) = tx {
-            Some(tx.tx().fee_currency)
-        } else {
-            None
+        let fee_currency: Option<Address> = match tx {
+            CeloTxEnvelope::Cip64(tx) => tx.tx().fee_currency,
+            _ => None,
         };
 
         Self {
