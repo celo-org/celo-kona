@@ -22,7 +22,10 @@ use revm::{
         pre_execution::validate_account_nonce_and_code,
     },
     inspector::{InspectorFrame, InspectorHandler},
-    interpreter::{FrameInput, Gas, InitialAndFloorGas, interpreter::EthInterpreter},
+    interpreter::{
+        FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
+        interpreter::EthInterpreter,
+    },
     primitives::{HashMap, U256, hardfork::SpecId},
     state::Account,
 };
@@ -220,6 +223,52 @@ where
 
         Ok(())
     }
+
+    fn validate_celo_initial_tx_gas(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+    ) -> Result<InitialAndFloorGas, ERROR> {
+        // Extract needed values first to avoid borrowing conflicts
+        let ctx = evm.ctx();
+        let fee_currency = ctx.tx().fee_currency();
+        let gas_limit = ctx.tx().gas_limit();
+        let spec = ctx.cfg().spec();
+
+        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
+
+        if fee_currency.is_some() && fee_currency.unwrap() != Address::ZERO {
+            let intrinsic_gas_for_erc20 = ctx
+                .chain()
+                .fee_currency_context
+                .currency_intrinsic_gas_cost(fee_currency)
+                .map_err(|e| ERROR::from_string(e))?;
+            let intrinsic_gas_for_erc20_u64: u64 = intrinsic_gas_for_erc20.try_into().expect(
+                "Failed to convert intrinsic gas for erc20 to u64: value exceeds u64 range",
+            );
+            gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20_u64);
+        }
+
+        // Additional check to see if limit is big enough to cover initial gas.
+        if gas.initial_gas > gas_limit {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: gas.initial_gas,
+            }
+            .into());
+        }
+
+        // EIP-7623: Increase calldata cost
+        // floor gas should be less than gas limit.
+        if spec.into_eth_spec().is_enabled_in(SpecId::PRAGUE) && gas.floor_gas > gas_limit {
+            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                gas_floor: gas.floor_gas,
+                gas_limit,
+            }
+            .into());
+        };
+
+        Ok(gas)
+    }
 }
 
 impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
@@ -238,6 +287,11 @@ where
     type Error = ERROR;
     type Frame = FRAME;
     type HaltReason = OpHaltReason;
+
+    fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
+        self.validate_env(evm)?;
+        self.validate_celo_initial_tx_gas(evm)
+    }
 
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Do not perform any extra validation for deposit transactions, they are pre-verified on
@@ -627,7 +681,8 @@ where
         // Calculate final refund and add EIP-7702 refund to gas.
         self.refund(evm, &mut exec_result, eip7702_gas_refund);
         // Ensure gas floor is met and minimum floor gas is spent.
-        self.eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
+        self.mainnet
+            .eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
         // Return unused gas to caller
         self.reimburse_caller(evm, &mut exec_result)?;
         // Pay transaction fees to beneficiary
