@@ -91,7 +91,6 @@ where
         }
         let enveloped = ctx.tx().enveloped_tx().cloned();
         let spec = ctx.cfg().spec();
-        let effective_gas_price = ctx.tx().effective_gas_price(basefee);
         let caller = ctx.tx().caller();
 
         let Some(enveloped_tx) = &enveloped else {
@@ -109,7 +108,13 @@ where
         };
 
         // Convert costs to fee currency
-        let (base_fee_in_erc20, l1_cost_in_erc20, operator_fee_refund_in_erc20) = {
+        let (
+            base_fee_in_erc20,
+            l1_cost_in_erc20,
+            operator_fee_refund_in_erc20,
+            effective_gas_price,
+            tip_gas_price,
+        ) = {
             let fee_currency_context = &evm.ctx().chain().fee_currency_context;
             let base_fee_in_erc20 = fee_currency_context
                 .celo_to_currency(fee_currency, U256::from(basefee))
@@ -120,18 +125,21 @@ where
             let operator_fee_refund_in_erc20 = fee_currency_context
                 .celo_to_currency(fee_currency, operator_fee_refund)
                 .map_err(|e| ERROR::from_string(e))?;
+            // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+            let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+                .try_into()
+                .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+            let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+            let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
             (
                 base_fee_in_erc20,
                 l1_cost_in_erc20,
                 operator_fee_refund_in_erc20,
+                effective_gas_price,
+                tip_gas_price,
             )
         };
 
-        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
-            .try_into()
-            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
-        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
         let tx_fee_tip_in_erc20 =
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
 
@@ -179,7 +187,7 @@ where
             is_deposit,
             caller_addr,
             gas_limit,
-            max_fee_per_gas,
+            basefee,
         ) = {
             let ctx = evm.ctx();
             let tx = ctx.tx();
@@ -191,47 +199,59 @@ where
                 tx.tx_type() == DEPOSIT_TRANSACTION_TYPE,
                 tx.caller(),
                 tx.gas_limit(),
-                tx.max_fee_per_gas(),
+                ctx.block().basefee(),
             )
         };
+
+        if fees_in_celo || is_balance_check_disabled || is_deposit {
+            return Ok(());
+        }
 
         let fee_currency_context = &evm.ctx().chain().fee_currency_context;
 
         // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
-        if !fees_in_celo && !is_balance_check_disabled && !is_deposit {
-            // Check if the fee currency is registered
-            if fee_currency_context
-                .currency_exchange_rate(fee_currency)
-                .is_err()
-            {
-                return Err(ERROR::from_string(
-                    "unregistered fee-currency address".to_string(),
-                ));
-            }
-
-            // Get ERC20 balance using the erc20 module
-            let fee_currency_addr = fee_currency.unwrap();
-
-            let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-                .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
-
-            let gas_cost = (gas_limit as u128)
-                .checked_mul(max_fee_per_gas)
-                .map(|gas_cost| U256::from(gas_cost))
-                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
-
-            if balance < gas_cost {
-                return Err(InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(gas_cost),
-                    balance: Box::new(balance),
-                }
-                .into());
-            }
-
-            // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-            erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
-                .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+        // Check if the fee currency is registered
+        if fee_currency_context
+            .currency_exchange_rate(fee_currency)
+            .is_err()
+        {
+            return Err(ERROR::from_string(
+                "unregistered fee-currency address".to_string(),
+            ));
         }
+
+        let base_fee_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, U256::from(basefee))
+            .map_err(|e| ERROR::from_string(e))?;
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+
+        // Get ERC20 balance using the erc20 module
+        let fee_currency_addr = fee_currency.unwrap();
+
+        let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
+            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+
+        let gas_cost = (gas_limit as u128)
+            .checked_mul(effective_gas_price)
+            .map(|gas_cost| U256::from(gas_cost))
+            .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+
+        if balance < gas_cost {
+            return Err(InvalidTransaction::LackOfFundForMaxFee {
+                fee: Box::new(gas_cost),
+                balance: Box::new(balance),
+            }
+            .into());
+        }
+
+        // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+        erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+            .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+
         Ok(())
     }
 }
