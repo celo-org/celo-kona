@@ -133,6 +133,7 @@ impl CeloL2BlockInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use alloy_consensus::Header;
     use alloy_primitives::{B256, b256};
     use celo_alloy_consensus::CeloBlock;
@@ -164,72 +165,80 @@ mod tests {
         assert_eq!(BlockInfo::from(block), expected);
     }
 
-    // TODO: enable it once test_utils mod added
-    // #[test]
-    // fn test_from_block_and_genesis() {
-    //     use crate::test_utils::RAW_BEDROCK_INFO_TX;
-    //     let genesis = ChainGenesis {
-    //         l1: BlockNumHash { hash: B256::from([4; 32]), number: 2 },
-    //         l2: BlockNumHash { hash: B256::from([5; 32]), number: 1 },
-    //         ..Default::default()
-    //     };
-    //     let tx_env = alloy_rpc_types_eth::Transaction {
-    //         inner: alloy_consensus::transaction::Recovered::new_unchecked(
-    //             op_alloy_consensus::OpTxEnvelope::Deposit(alloy_primitives::Sealed::new(
-    //                 op_alloy_consensus::TxDeposit {
-    //                     input: alloy_primitives::Bytes::from(&RAW_BEDROCK_INFO_TX),
-    //                     ..Default::default()
-    //                 },
-    //             )),
-    //             Default::default(),
-    //         ),
-    //         block_hash: None,
-    //         block_number: Some(1),
-    //         effective_gas_price: Some(1),
-    //         transaction_index: Some(0),
-    //     };
-    //     let block: alloy_rpc_types_eth::Block<op_alloy_rpc_types::Transaction> =
-    //         alloy_rpc_types_eth::Block {
-    //             header: alloy_rpc_types_eth::Header {
-    //                 hash: b256!("04d6fefc87466405ba0e5672dcf5c75325b33e5437da2a42423080aab8be889b"),
-    //                 inner: alloy_consensus::Header {
-    //                     number: 3,
-    //                     parent_hash: b256!(
-    //                         "0202020202020202020202020202020202020202020202020202020202020202"
-    //                     ),
-    //                     timestamp: 1,
-    //                     ..Default::default()
-    //                 },
-    //                 ..Default::default()
-    //             },
-    //             transactions: alloy_rpc_types_eth::BlockTransactions::Full(vec![
-    //                 op_alloy_rpc_types::Transaction {
-    //                     inner: tx_env,
-    //                     deposit_nonce: None,
-    //                     deposit_receipt_version: None,
-    //                 },
-    //             ]),
-    //             ..Default::default()
-    //         };
-    //     let expected = L2BlockInfo {
-    //         block_info: BlockInfo {
-    //             hash: b256!("e65ecd961cee8e4d2d6e1d424116f6fe9a794df0244578b6d5860a3d2dfcd97e"),
-    //             number: 3,
-    //             parent_hash: b256!(
-    //                 "0202020202020202020202020202020202020202020202020202020202020202"
-    //             ),
-    //             timestamp: 1,
-    //         },
-    //         l1_origin: BlockNumHash {
-    //             hash: b256!("392012032675be9f94aae5ab442de73c5f4fb1bf30fa7dd0d2442239899a40fc"),
-    //             number: 18334955,
-    //         },
-    //         seq_num: 4,
-    //     };
-    //     let block = block.into_consensus();
-    //     let derived = L2BlockInfo::from_block_and_genesis(&block, &genesis).unwrap();
-    //     assert_eq!(derived, expected);
-    // }
+    #[test]
+    fn test_from_block_and_genesis() {
+        use kona_protocol::test_utils::RAW_BEDROCK_INFO_TX;
+        let genesis = ChainGenesis {
+            l1: BlockNumHash {
+                hash: B256::from([4; 32]),
+                number: 2,
+            },
+            l2: BlockNumHash {
+                hash: B256::from([5; 32]),
+                number: 1,
+            },
+            ..Default::default()
+        };
+        let tx_env = alloy_rpc_types_eth::Transaction {
+            inner: alloy_consensus::transaction::Recovered::new_unchecked(
+                celo_alloy_consensus::CeloTxEnvelope::Deposit(alloy_primitives::Sealed::new(
+                    op_alloy_consensus::TxDeposit {
+                        input: alloy_primitives::Bytes::from(&RAW_BEDROCK_INFO_TX),
+                        ..Default::default()
+                    },
+                )),
+                Default::default(),
+            ),
+            block_hash: None,
+            block_number: Some(1),
+            effective_gas_price: Some(1),
+            transaction_index: Some(0),
+        };
+        let block: alloy_rpc_types_eth::Block<celo_alloy_rpc_types::CeloTransaction> =
+            alloy_rpc_types_eth::Block {
+                header: alloy_rpc_types_eth::Header {
+                    hash: b256!("04d6fefc87466405ba0e5672dcf5c75325b33e5437da2a42423080aab8be889b"),
+                    inner: alloy_consensus::Header {
+                        number: 3,
+                        parent_hash: b256!(
+                            "0202020202020202020202020202020202020202020202020202020202020202"
+                        ),
+                        timestamp: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                transactions: alloy_rpc_types_eth::BlockTransactions::Full(vec![
+                    celo_alloy_rpc_types::CeloTransaction {
+                        inner: tx_env,
+                        deposit_nonce: None,
+                        deposit_receipt_version: None,
+                        fee_currency: None,
+                    },
+                ]),
+                ..Default::default()
+            };
+        let expected = CeloL2BlockInfo {
+            op_l2_block_info: L2BlockInfo {
+                block_info: BlockInfo {
+                    hash: b256!("e65ecd961cee8e4d2d6e1d424116f6fe9a794df0244578b6d5860a3d2dfcd97e"),
+                    number: 3,
+                    parent_hash: b256!(
+                        "0202020202020202020202020202020202020202020202020202020202020202"
+                    ),
+                    timestamp: 1,
+                },
+                l1_origin: BlockNumHash {
+                    hash: b256!("392012032675be9f94aae5ab442de73c5f4fb1bf30fa7dd0d2442239899a40fc"),
+                    number: 18334955,
+                },
+                seq_num: 4,
+            },
+        };
+        let block = block.into_consensus();
+        let derived = CeloL2BlockInfo::from_block_and_genesis(&block, &genesis).unwrap();
+        assert_eq!(derived, expected);
+    }
 
     #[test]
     fn test_l2_block_info_invalid_genesis_hash() {
