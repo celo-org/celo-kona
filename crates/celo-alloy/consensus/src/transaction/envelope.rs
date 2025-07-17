@@ -12,7 +12,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::{Decodable, Encodable};
-use op_alloy_consensus::{OpTxType, TxDeposit};
+use op_alloy_consensus::TxDeposit;
 
 /// The Ethereum [EIP-2718] Transaction Envelope, modified for Celo.
 ///
@@ -685,11 +685,11 @@ impl Encodable2718 for CeloTxEnvelope {
     fn type_flag(&self) -> Option<u8> {
         match self {
             Self::Legacy(_) => None,
-            Self::Eip2930(_) => Some(OpTxType::Eip2930 as u8),
-            Self::Eip1559(_) => Some(OpTxType::Eip1559 as u8),
-            Self::Eip7702(_) => Some(OpTxType::Eip7702 as u8),
+            Self::Eip2930(_) => Some(CeloTxType::Eip2930 as u8),
+            Self::Eip1559(_) => Some(CeloTxType::Eip1559 as u8),
+            Self::Eip7702(_) => Some(CeloTxType::Eip7702 as u8),
             Self::Cip64(_) => Some(CeloTxType::Cip64.into()),
-            Self::Deposit(_) => Some(OpTxType::Deposit as u8),
+            Self::Deposit(_) => Some(CeloTxType::Deposit as u8),
         }
     }
 
