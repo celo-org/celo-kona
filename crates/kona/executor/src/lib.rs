@@ -16,3 +16,5 @@ pub(crate) mod constants;
 
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
+
+pub(crate)mod leveldb_trie_provider;
