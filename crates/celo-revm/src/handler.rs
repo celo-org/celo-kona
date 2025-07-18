@@ -89,6 +89,9 @@ where
         let chain_id = ctx.cfg().chain_id();
         let fee_handler = get_addresses(chain_id).fee_handler;
         let mut fee_recipient = ctx.block().beneficiary();
+
+        // Not all fee currencies can handle a receiver being the zero address.
+        // In that case send the fee to the base fee recipient, which we know is non-zero.
         if fee_recipient == Address::ZERO {
             fee_recipient = fee_handler;
         }
@@ -165,16 +168,9 @@ where
         let ctx = evm.ctx();
         let tx = ctx.tx();
         let fee_currency = tx.fee_currency();
-        let fees_in_celo = fee_currency.is_none();
-        let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
-        let is_deposit = tx.tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let caller_addr = tx.caller();
         let gas_limit = tx.gas_limit();
         let basefee = ctx.block().basefee();
-
-        if fees_in_celo || is_balance_check_disabled || is_deposit {
-            return Ok(());
-        }
 
         let fee_currency_context = &evm.ctx().chain().fee_currency_context;
 
@@ -245,6 +241,8 @@ where
             let intrinsic_gas_for_erc20_u64: u64 = intrinsic_gas_for_erc20.try_into().expect(
                 "Failed to convert intrinsic gas for erc20 to u64: value exceeds u64 range",
             );
+            // Adding only in the initial gas, and not the floor because we never addapted the
+            // eip7623 to the cip64 (discussions being taken)
             gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20_u64);
         }
 
@@ -380,7 +378,9 @@ where
             }
         }
 
-        self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
+        if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
+            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
+        }
 
         // Now handle all account operations
         let (tx, journal) = evm.ctx().tx_journal();
@@ -441,7 +441,7 @@ where
         // Handle balance deduction for CELO gas fees
         // Note: We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
         // because it will be deducted later in the call
-        if !is_balance_check_disabled && fee_currency.is_none() {
+        if !is_balance_check_disabled && fees_in_celo {
             // Only deduct CELO for gas if not using fee currency
             let effective_balance_spending =
                 tx.effective_balance_spending(basefee, blob_price).expect(
