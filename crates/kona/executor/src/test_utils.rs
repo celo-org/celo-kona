@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::{path::PathBuf};
 use tokio::fs;
 use alloy_primitives::hex;
+use std::time::Instant;
 
 /// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
 /// produced block hash matches the expected block hash.
@@ -198,9 +199,15 @@ impl ExecutorTestFixtureCreator {
             NoopTrieHinter,
             parent_header,
         );
+        let start = Instant::now();
+
         let outcome = executor
             .build_block(payload_attrs)
             .expect("Failed to execute block");
+
+        println!(
+            "Block building took: {:.2?}", start.elapsed()
+        );
 
         assert_eq!(
             outcome.header.inner(),
