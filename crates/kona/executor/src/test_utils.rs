@@ -246,21 +246,27 @@ impl TrieDBProvider for ExecutorTestFixtureCreator {
     }
 
     fn header_by_hash(&self, hash: B256) -> Result<Header, Self::Error> {
-        self.op_executor_test_fixture_creator.header_by_hash(hash)
+        panic!("Not implemented");
+        // self.op_executor_test_fixture_creator.header_by_hash(hash)
     }
 }
-
+/// LevelDBAndRPCTrieDBProvider
+#[allow(missing_debug_implementations)]
 pub struct LevelDBAndRPCTrieDBProvider {
+    /// The LevelDB database.
     db: Database<LevelDBKey>,
 }
 
 use thiserror::Error;
 
+/// Error type for the TrieDBProvider.
 #[derive(Debug, Error)]
 #[error("TrieDBProviderError: {error}")]
 pub enum TrieDBProviderError {
+    /// Indicates that the key was not found in the database.
     #[error("Key not found: {0}")]
     KeyNotFound(LevelDBKey),
+    /// Indicates that an error occurred while reading from the database.
     #[error("Error: {0}")]
     Error(String),
 }
@@ -284,8 +290,9 @@ impl TrieDBProvider for LevelDBAndRPCTrieDBProvider {
 
 // TODO figure out how to construct the header key and get the header from the db
     fn header_by_hash(&self, hash: B256) -> Result<Header, Self::Error> {
-        let options = ReadOptions::new();
-        let key = LevelDBKey::new(hash.to_vec());
+        panic!("Not implemented, should not be called");
+        // let options = ReadOptions::new();
+        // let key = LevelDBKey::new(hash.to_vec());
         // self.op_executor_test_fixture_creator.header_by_hash(hash).ok_or_else(|| LevelDBTrieDBProviderError::KeyNotFound(hash)).map(Bytes::from)
         // self.db.get(options, key).map_err(|e| LevelDBTrieDBProviderError::Error(e.to_string()))?.ok_or_else(|| LevelDBTrieDBProviderError::KeyNotFound(hash)).map(Bytes::from)
     }
@@ -308,12 +315,14 @@ impl TrieProvider for LevelDBAndRPCTrieDBProvider {
     }
 }
 
+/// LevelDBKey is a key for the LevelDB database.
 #[derive(Debug)]
 pub struct LevelDBKey {
     key: Vec<u8>,
 }
 
 impl LevelDBKey {
+    /// Constructs a new key from a byte vector.
     pub fn new(key: Vec<u8>) -> Self {
         Self { key }
     }
