@@ -40,6 +40,9 @@ pub struct ExecutionFixtureCommand {
     /// L2 block number to execute.
     #[arg(long, short = 'b')]
     pub block_number: u64,
+    /// The path to the leveldb database to use.
+    #[arg(long, short = 'l')]
+    pub leveldb_path: PathBuf,
     /// The output directory for the fixture.
     #[arg(long, short = 'o')]
     pub output_dir: Option<PathBuf>,
@@ -68,7 +71,7 @@ async fn main() -> Result<()> {
             .join("crates/kona/executor/testdata")
     };
 
-    ExecutorTestFixtureCreator::new(cli.l2_rpc.as_str(), cli.block_number, output_dir)
+    ExecutorTestFixtureCreator::new(cli.l2_rpc.as_str(), cli.block_number, cli.leveldb_path, output_dir)
         .create_static_fixture()
         .await;
 

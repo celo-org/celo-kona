@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 use std::time::Instant;
+use crate::leveldb_trie_provider::LevelDBTrieProvider;
 
 /// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
 /// produced block hash matches the expected block hash.
@@ -89,17 +90,20 @@ pub struct ExecutorTestFixture {
 pub struct ExecutorTestFixtureCreator {
     /// [`kona_executor::test_utils::ExecutorTestFixtureCreator`]
     pub op_executor_test_fixture_creator: OpExecutorTestFixtureCreator,
+    /// The path to the leveldb database to use.
+    pub leveldb_path: PathBuf,
 }
 
 impl ExecutorTestFixtureCreator {
     /// Creates a new [`ExecutorTestFixtureCreator`] with the given parameters.
-    pub fn new(provider_url: &str, block_number: u64, base_fixture_directory: PathBuf) -> Self {
+    pub fn new(provider_url: &str, block_number: u64, leveldb_path: PathBuf, base_fixture_directory: PathBuf) -> Self {
         Self {
             op_executor_test_fixture_creator: OpExecutorTestFixtureCreator::new(
                 provider_url,
                 block_number,
                 base_fixture_directory,
             ),
+            leveldb_path,
         }
     }
 }
@@ -190,10 +194,12 @@ impl ExecutorTestFixtureCreator {
             executing_payload: payload_attrs.clone(),
         };
 
+        let trie_db_provider = LevelDBTrieProvider::new(&self.leveldb_path);
+
         let mut executor = CeloStatelessL2Builder::new(
             rollup_config,
             CeloEvmFactory::default(),
-            self,
+            trie_db_provider,
             NoopTrieHinter,
             parent_header,
         );
