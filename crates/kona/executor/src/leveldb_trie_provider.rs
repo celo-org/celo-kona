@@ -18,7 +18,7 @@ use std::path::Path;
 
 /// LevelDBAndRPCTrieDBProvider
 #[allow(missing_debug_implementations)]
-pub(crate) struct LevelDBAndRPCTrieDBProvider {
+pub(crate) struct LevelDBTrieProvider {
     /// The LevelDB database.
     db: Database<LevelDBKey>,
 }
@@ -37,16 +37,16 @@ pub(crate) enum TrieDBProviderError {
     Error(String),
 }
 
-impl LevelDBAndRPCTrieDBProvider {
+impl LevelDBTrieProvider {
     /// Constructs a new LevelDBAndRPCTrieDBProvider.
-    pub(crate) fn new(path: &str) -> Self {
-        let db = Database::open(Path::new(path), Options::new()).unwrap();
+    pub(crate) fn new(path: &Path) -> Self {
+        let db = Database::open(path, Options::new()).unwrap();
         Self { db }
     }
 }
 
 
-impl TrieDBProvider for LevelDBAndRPCTrieDBProvider {
+impl TrieDBProvider for LevelDBTrieProvider {
     fn bytecode_by_hash(&self, hash: B256) -> Result<Bytes, Self::Error> {
 
         const CODE_PREFIX: u8 = b'c';
@@ -73,7 +73,7 @@ impl TrieDBProvider for LevelDBAndRPCTrieDBProvider {
 }
 
 
-impl TrieProvider for LevelDBAndRPCTrieDBProvider {
+impl TrieProvider for LevelDBTrieProvider {
     type Error = TrieDBProviderError;
 
     fn trie_node_by_hash(&self, hash: B256) -> Result<TrieNode, Self::Error> {
