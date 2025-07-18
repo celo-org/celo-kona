@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
-rocksdb = { workspace = true,  default-features = false, features = ["lz4"] }
 
 anyhow.workspace = true
 url.workspace = true
