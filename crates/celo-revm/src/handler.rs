@@ -75,16 +75,17 @@ where
         evm: &mut CeloEvm<DB, INSP>,
         exec_result: &mut FrameResult,
     ) -> Result<(), ERROR> {
-        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let ctx = evm.ctx();
+        let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fee_currency = ctx.tx().fee_currency();
+        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
+        let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
 
-        if is_deposit || evm.ctx().tx().fee_currency().is_none() {
+        if is_deposit || fees_in_celo || is_balance_check_disabled {
             return Ok(());
         }
 
         // Extract all values first to avoid borrowing conflicts
-        let ctx = evm.ctx();
-        let fee_currency_addr = ctx.tx().fee_currency().unwrap();
-        let fee_currency = ctx.tx().fee_currency();
         let basefee = ctx.block().basefee() as u128;
         let chain_id = ctx.cfg().chain_id();
         let fee_handler = get_addresses(chain_id).fee_handler;
@@ -148,7 +149,7 @@ where
 
         erc20::credit_gas_fees(
             evm,
-            fee_currency_addr,
+            fee_currency.unwrap(),
             caller,
             fee_recipient,
             fee_handler,
@@ -336,7 +337,7 @@ where
         let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fee_currency = ctx.tx().fee_currency();
-        let fees_in_celo = fee_currency.is_none();
+        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
         let spec = ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
