@@ -389,15 +389,6 @@ where
             // this is not consensus critical, and it is used in testing.
             caller_account.info.balance = caller_account.info.balance.max(tx.value());
         } else if !is_deposit {
-            // Check CELO balance for value transfer (value is always in CELO)
-            if tx.value() > caller_account.info.balance {
-                return Err(ERROR::from_string(format!(
-                    "lack of funds ({}) for value payment ({})",
-                    caller_account.info.balance,
-                    tx.value()
-                )));
-            }
-
             // Check balance for gas payment for regular transactions
             if fees_in_celo {
                 // Regular transaction: check CELO balance for both value and gas
@@ -410,6 +401,15 @@ where
                         balance: Box::new(caller_account.info.balance),
                     }
                     .into());
+                }
+            } else {
+                // Check CELO balance for value transfer (value is always in CELO)
+                if tx.value() > caller_account.info.balance {
+                    return Err(ERROR::from_string(format!(
+                        "lack of funds ({}) for value payment ({})",
+                        caller_account.info.balance,
+                        tx.value()
+                    )));
                 }
             }
         }
