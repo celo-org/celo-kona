@@ -1,4 +1,3 @@
-# TODO: remove unnecessary dependencies
 [package]
 name = "celo-protocol"
 version = "0.1.0"
@@ -26,7 +25,6 @@ kona-protocol.workspace = true
 
 # OP Alloy
 op-alloy-consensus.workspace = true
-op-alloy-rpc-types.workspace = true
 
 # Alloy
 alloy-primitives = { workspace = true, features = ["map"] }
@@ -39,16 +37,13 @@ op-alloy-rpc-types-engine.workspace = true
 
 # Misc
 rand = { workspace = true, features = ["small_rng"] }
-tracing.workspace = true
 thiserror.workspace = true
-async-trait.workspace = true
 unsigned-varint.workspace = true
 derive_more = { workspace = true, features = ["display"] }
 
 # Compression
 brotli.workspace = true
 miniz_oxide.workspace = true
-alloc-no-stdlib.workspace = true
 
 # `arbitrary` feature
 arbitrary = { workspace = true, features = ["derive"], optional = true }
@@ -66,17 +61,12 @@ kona-protocol = { workspace = true, features = ["test-utils"] }
 brotli = { workspace = true, features = ["std"] }
 spin.workspace = true
 rand = { workspace = true, features = ["std", "std_rng"] }
-rstest.workspace = true
-proptest.workspace = true
 serde_json.workspace = true
-alloy-sol-types.workspace = true
-tokio = { workspace = true, features = ["full"] }
 arbitrary = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 alloy-primitives = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus.workspace = true
 alloy-rpc-types-eth.workspace = true
-op-alloy-rpc-types.workspace = true
 
 [features]
 default = []
