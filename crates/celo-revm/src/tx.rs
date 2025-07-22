@@ -90,14 +90,7 @@ impl FromTxWithEncoded<CeloTxEnvelope> for CeloTransaction<TxEnv> {
             _ => None,
         };
 
-        Self {
-            op_tx: OpTransaction {
-                base,
-                enveloped_tx: Some(encoded),
-                deposit,
-            },
-            fee_currency,
-        }
+        Self { op_tx: OpTransaction { base, enveloped_tx: Some(encoded), deposit }, fee_currency }
     }
 }
 

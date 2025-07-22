@@ -91,8 +91,8 @@ impl CeloTransactionRequest {
         self
     }
 
-    /// Builds [`CeloTypedTransaction`] from this builder. See [`TransactionRequest::build_typed_tx`]
-    /// for more info.
+    /// Builds [`CeloTypedTransaction`] from this builder. See
+    /// [`TransactionRequest::build_typed_tx`] for more info.
     ///
     /// Note that EIP-4844 transactions are not supported by Celo and will be converted into
     /// EIP-1559 transactions.

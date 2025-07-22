@@ -44,18 +44,13 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
     let kv_store = DB::open(&options, fixture_dir.path().join("kv"))
         .unwrap_or_else(|e| panic!("Failed to open database at {fixture_dir:?}: {e}"));
     let provider = DiskTrieNodeProvider::new(kv_store);
-    let fixture: ExecutorTestFixture = serde_json::from_slice(
-        &fs::read(fixture_dir.path().join("fixture.json"))
-            .await
-            .unwrap(),
-    )
-    .expect("Failed to deserialize fixture");
+    let fixture: ExecutorTestFixture =
+        serde_json::from_slice(&fs::read(fixture_dir.path().join("fixture.json")).await.unwrap())
+            .expect("Failed to deserialize fixture");
 
     // Wrap RollupConfig to CeloRollupConfig
     let rollup_config = fixture.op_executor_test_fixture.rollup_config;
-    let celo_rollup_config = CeloRollupConfig {
-        op_rollup_config: rollup_config,
-    };
+    let celo_rollup_config = CeloRollupConfig { op_rollup_config: rollup_config };
     let mut executor = CeloStatelessL2Builder::new(
         &celo_rollup_config,
         CeloEvmFactory::default(),
@@ -111,9 +106,7 @@ impl ExecutorTestFixtureCreator {
             .get_chain_id()
             .await
             .expect("Failed to get chain ID");
-        let rollup_config = ROLLUP_CONFIGS
-            .get(&chain_id)
-            .expect("Rollup config not found");
+        let rollup_config = ROLLUP_CONFIGS.get(&chain_id).expect("Rollup config not found");
 
         let executing_block = self
             .op_executor_test_fixture_creator
@@ -174,10 +167,7 @@ impl ExecutorTestFixtureCreator {
             },
         };
 
-        let fixture_path = self
-            .op_executor_test_fixture_creator
-            .data_dir
-            .join("fixture.json");
+        let fixture_path = self.op_executor_test_fixture_creator.data_dir.join("fixture.json");
         let fixture = ExecutorTestFixture {
             op_executor_test_fixture: OpExecutorTestFixture {
                 rollup_config: rollup_config.op_rollup_config.clone(),
@@ -195,21 +185,14 @@ impl ExecutorTestFixtureCreator {
             NoopTrieHinter,
             parent_header,
         );
-        let outcome = executor
-            .build_block(payload_attrs)
-            .expect("Failed to execute block");
+        let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
 
         assert_eq!(
             outcome.header.inner(),
             &executing_header.inner,
             "Produced header (left) does not match the expected header (right)"
         );
-        fs::write(
-            fixture_path.as_path(),
-            serde_json::to_vec(&fixture).unwrap(),
-        )
-        .await
-        .unwrap();
+        fs::write(fixture_path.as_path(), serde_json::to_vec(&fixture).unwrap()).await.unwrap();
 
         // Tar the fixture.
         let data_dir = fixture_path.parent().unwrap();
@@ -223,9 +206,7 @@ impl ExecutorTestFixtureCreator {
             .expect("Failed to tar fixture");
 
         // Remove the leftover directory.
-        fs::remove_dir_all(data_dir)
-            .await
-            .expect("Failed to remove temporary directory");
+        fs::remove_dir_all(data_dir).await.expect("Failed to remove temporary directory");
     }
 }
 

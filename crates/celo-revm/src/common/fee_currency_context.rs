@@ -25,11 +25,7 @@ impl FeeCurrencyContext {
         intrinsic_gas: HashMap<Address, U256>,
         updated_at_block: Option<u64>,
     ) -> Self {
-        Self {
-            exchange_rates,
-            intrinsic_gas,
-            updated_at_block,
-        }
+        Self { exchange_rates, intrinsic_gas, updated_at_block }
     }
 
     /// Initialize with values read from the EVM
@@ -44,11 +40,7 @@ impl FeeCurrencyContext {
         let exchange_rates = get_exchange_rates(evm, currencies)?;
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
         let current_block_number = evm.ctx().block().number;
-        Ok(FeeCurrencyContext::new(
-            exchange_rates,
-            intrinsic_gas,
-            Some(current_block_number),
-        ))
+        Ok(FeeCurrencyContext::new(exchange_rates, intrinsic_gas, Some(current_block_number)))
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<U256, String> {
@@ -139,9 +131,6 @@ mod tests {
         assert_eq!(intrinsic_gas_cost, U256::from(50000));
 
         // Verify that updated_at_block is set to the current block number
-        assert_eq!(
-            fee_currency_context.updated_at_block.unwrap(),
-            evm.ctx().block().number
-        );
+        assert_eq!(fee_currency_context.updated_at_block.unwrap(), evm.ctx().block().number);
     }
 }

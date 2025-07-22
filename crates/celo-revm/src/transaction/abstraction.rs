@@ -27,28 +27,19 @@ pub struct CeloTransaction<T: Transaction> {
 
 impl<T: Transaction> CeloTransaction<T> {
     pub fn new(op_tx: OpTransaction<T>) -> Self {
-        Self {
-            op_tx,
-            fee_currency: None,
-        }
+        Self { op_tx, fee_currency: None }
     }
 }
 
 impl Default for CeloTransaction<TxEnv> {
     fn default() -> Self {
-        Self {
-            op_tx: OpTransaction::default(),
-            fee_currency: None,
-        }
+        Self { op_tx: OpTransaction::default(), fee_currency: None }
     }
 }
 
 impl<TX: Transaction + SystemCallTx> SystemCallTx for CeloTransaction<TX> {
     fn new_system_tx(data: Bytes, system_contract_address: Address) -> Self {
-        CeloTransaction::new(OpTransaction::new(TX::new_system_tx(
-            data,
-            system_contract_address,
-        )))
+        CeloTransaction::new(OpTransaction::new(TX::new_system_tx(data, system_contract_address)))
     }
 }
 
@@ -181,10 +172,7 @@ mod tests {
         assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);
         // Verify common fields access
         assert_eq!(cip64_tx.gas_limit(), 10);
-        assert_eq!(
-            cip64_tx.kind(),
-            revm::primitives::TxKind::Call(Address::ZERO)
-        );
+        assert_eq!(cip64_tx.kind(), revm::primitives::TxKind::Call(Address::ZERO));
         // Verify gas related calculations
         assert_eq!(cip64_tx.effective_gas_price(90), 95);
         assert_eq!(cip64_tx.max_fee_per_gas(), 100);

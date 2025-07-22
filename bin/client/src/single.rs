@@ -36,17 +36,13 @@ where
     //                          PROLOGUE                          //
     ////////////////////////////////////////////////////////////////
 
-    let oracle = Arc::new(CachingOracle::new(
-        ORACLE_LRU_SIZE,
-        oracle_client.clone(),
-        hint_client.clone(),
-    ));
+    let oracle =
+        Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
     // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config = CeloRollupConfig {
-        op_rollup_config: boot.op_boot_info.rollup_config.clone(),
-    };
+    let celo_rollup_config =
+        CeloRollupConfig { op_rollup_config: boot.op_boot_info.rollup_config.clone() };
     let celo_rollup_config = Arc::new(celo_rollup_config);
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
@@ -179,13 +175,8 @@ where
         .send(caching_oracle)
         .await?;
     caching_oracle
-        .get_exact(
-            PreimageKey::new_keccak256(*agreed_l2_output_root),
-            output_preimage.as_mut(),
-        )
+        .get_exact(PreimageKey::new_keccak256(*agreed_l2_output_root), output_preimage.as_mut())
         .await?;
 
-    output_preimage[96..128]
-        .try_into()
-        .map_err(OracleProviderError::SliceConversion)
+    output_preimage[96..128].try_into().map_err(OracleProviderError::SliceConversion)
 }

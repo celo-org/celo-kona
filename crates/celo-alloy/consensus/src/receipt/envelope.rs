@@ -47,7 +47,8 @@ pub enum CeloReceiptEnvelope<T = Log> {
     ///
     /// [CIP-64]: https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md
     #[cfg_attr(feature = "serde", serde(rename = "0x7b", alias = "0x7B"))]
-    Cip64(ReceiptWithBloom<Receipt<T>>), // TODO: replace with CeloCip64Receipt which includes baseFee
+    Cip64(ReceiptWithBloom<Receipt<T>>), /* TODO: replace with CeloCip64Receipt which includes
+                                          * baseFee */
     /// Receipt envelope with type flag 126, containing a [deposit] receipt.
     ///
     /// [deposit]: https://specs.optimism.io/protocol/deposits.html
@@ -67,32 +68,24 @@ impl CeloReceiptEnvelope<Log> {
     ) -> Self {
         let logs = logs.into_iter().cloned().collect::<Vec<_>>();
         let logs_bloom = logs_bloom(&logs);
-        let inner_receipt = Receipt {
-            status: Eip658Value::Eip658(status),
-            cumulative_gas_used,
-            logs,
-        };
+        let inner_receipt =
+            Receipt { status: Eip658Value::Eip658(status), cumulative_gas_used, logs };
         match tx_type {
-            CeloTxType::Legacy => Self::Legacy(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip2930 => Self::Eip2930(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip1559 => Self::Eip1559(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip7702 => Self::Eip7702(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Cip64 => Self::Cip64(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
+            CeloTxType::Legacy => {
+                Self::Legacy(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip2930 => {
+                Self::Eip2930(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip1559 => {
+                Self::Eip1559(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip7702 => {
+                Self::Eip7702(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Cip64 => {
+                Self::Cip64(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
             CeloTxType::Deposit => {
                 let inner = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
@@ -161,8 +154,7 @@ impl<T> CeloReceiptEnvelope<T> {
 
     /// Return the receipt's deposit version if it is a deposit receipt.
     pub fn deposit_receipt_version(&self) -> Option<u64> {
-        self.as_deposit_receipt()
-            .and_then(|r| r.deposit_receipt_version)
+        self.as_deposit_receipt().and_then(|r| r.deposit_receipt_version)
     }
 
     /// Returns the deposit receipt if it is a deposit receipt.
@@ -185,11 +177,11 @@ impl<T> CeloReceiptEnvelope<T> {
     /// receipt types may be added.
     pub const fn as_receipt(&self) -> Option<&Receipt<T>> {
         match self {
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t)
-            | Self::Cip64(t) => Some(&t.receipt),
+            Self::Legacy(t) |
+            Self::Eip2930(t) |
+            Self::Eip1559(t) |
+            Self::Eip7702(t) |
+            Self::Cip64(t) => Some(&t.receipt),
             Self::Deposit(t) => Some(&t.receipt.inner),
         }
     }
@@ -305,25 +297,22 @@ impl Encodable2718 for CeloReceiptEnvelope {
         }
         match self {
             Self::Deposit(t) => t.encode(out),
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t)
-            | Self::Cip64(t) => t.encode(out),
+            Self::Legacy(t) |
+            Self::Eip2930(t) |
+            Self::Eip1559(t) |
+            Self::Eip7702(t) |
+            Self::Cip64(t) => t.encode(out),
         }
     }
 }
 
 impl Decodable2718 for CeloReceiptEnvelope {
     fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
-        match ty
-            .try_into()
-            .map_err(|_| Eip2718Error::UnexpectedType(ty))?
-        {
-            CeloTxType::Legacy => Err(alloy_rlp::Error::Custom(
-                "type-0 eip2718 transactions are not supported",
-            )
-            .into()),
+        match ty.try_into().map_err(|_| Eip2718Error::UnexpectedType(ty))? {
+            CeloTxType::Legacy => {
+                Err(alloy_rlp::Error::Custom("type-0 eip2718 transactions are not supported")
+                    .into())
+            }
             CeloTxType::Eip1559 => Ok(Self::Eip1559(Decodable::decode(buf)?)),
             CeloTxType::Eip7702 => Ok(Self::Eip7702(Decodable::decode(buf)?)),
             CeloTxType::Eip2930 => Ok(Self::Eip2930(Decodable::decode(buf)?)),

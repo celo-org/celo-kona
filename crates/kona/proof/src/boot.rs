@@ -44,10 +44,7 @@ impl CeloBootInfo {
 
         let mut l2_output_root: B256 = B256::ZERO;
         oracle
-            .get_exact(
-                PreimageKey::new_local(L2_OUTPUT_ROOT_KEY.to()),
-                l2_output_root.as_mut(),
-            )
+            .get_exact(PreimageKey::new_local(L2_OUTPUT_ROOT_KEY.to()), l2_output_root.as_mut())
             .await
             .map_err(OracleProviderError::Preimage)?;
 

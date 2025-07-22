@@ -52,7 +52,5 @@ lazy_static! {
 
 /// Returns the addresses for the given chain ID, or Mainnet addresses if not found.
 pub fn get_addresses(chain_id: u64) -> &'static CeloAddresses {
-    CELO_ADDRESSES
-        .get(&chain_id)
-        .unwrap_or(&CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID])
+    CELO_ADDRESSES.get(&chain_id).unwrap_or(&CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID])
 }

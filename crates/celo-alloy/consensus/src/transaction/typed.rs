@@ -407,16 +407,17 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
             Self::Eip1559(tx) => tx.rlp_encoded_fields_length(),
             Self::Eip7702(tx) => tx.rlp_encoded_fields_length(),
             Self::Cip64(tx) => tx.rlp_encoded_fields_length(),
-            // Self::Deposit(tx) => tx.rlp_encoded_fields_length(), // TODO: cannot use this since the function is private
+            // Self::Deposit(tx) => tx.rlp_encoded_fields_length(), // TODO: cannot use this since
+            // the function is private
             Self::Deposit(tx) => {
-                tx.source_hash.length()
-                    + tx.from.length()
-                    + tx.to.length()
-                    + tx.mint.length()
-                    + tx.value.length()
-                    + tx.gas_limit.length()
-                    + tx.is_system_transaction.length()
-                    + tx.input.0.length()
+                tx.source_hash.length() +
+                    tx.from.length() +
+                    tx.to.length() +
+                    tx.mint.length() +
+                    tx.value.length() +
+                    tx.gas_limit.length() +
+                    tx.is_system_transaction.length() +
+                    tx.input.0.length()
             }
         }
     }
@@ -428,7 +429,8 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
             Self::Eip1559(tx) => tx.rlp_encode_fields(out),
             Self::Eip7702(tx) => tx.rlp_encode_fields(out),
             Self::Cip64(tx) => tx.rlp_encode_fields(out),
-            // Self::Deposit(tx) => tx.rlp_encode_fields(out), // TODO: cannot use this since the function is private
+            // Self::Deposit(tx) => tx.rlp_encode_fields(out), // TODO: cannot use this since the
+            // function is private
             Self::Deposit(tx) => {
                 tx.source_hash.encode(out);
                 tx.from.encode(out);

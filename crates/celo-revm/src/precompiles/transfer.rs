@@ -69,9 +69,7 @@ where
     }
 
     if caller_address != constants::get_addresses(context.cfg().chain_id()).celo_token {
-        return Err(PrecompileError::Other(
-            "invalid caller for transfer precompile".to_string(),
-        ));
+        return Err(PrecompileError::Other("invalid caller for transfer precompile".to_string()));
     }
 
     if input.len() != 96 {
@@ -84,13 +82,9 @@ where
 
     let result = context.journal().transfer(from, to, value);
     if let Ok(Some(transfer_err)) = result {
-        return Err(PrecompileError::Other(format!(
-            "transfer error occurred: {transfer_err:?}"
-        )));
+        return Err(PrecompileError::Other(format!("transfer error occurred: {transfer_err:?}")));
     } else if let Err(db_err) = result {
-        return Err(PrecompileError::Other(format!(
-            "database error occurred: {db_err:?}"
-        )));
+        return Err(PrecompileError::Other(format!("database error occurred: {db_err:?}")));
     }
 
     Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new()))

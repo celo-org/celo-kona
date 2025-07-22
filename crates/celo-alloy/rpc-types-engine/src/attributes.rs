@@ -26,8 +26,7 @@ impl CeloPayloadAttributes {
         &self,
         default_base_fee_params: BaseFeeParams,
     ) -> Result<Bytes, EIP1559ParamError> {
-        self.op_payload_attributes
-            .get_holocene_extra_data(default_base_fee_params)
+        self.op_payload_attributes.get_holocene_extra_data(default_base_fee_params)
     }
 
     /// Extracts the Holocene 1599 parameters from the encoded form:
@@ -42,18 +41,14 @@ impl CeloPayloadAttributes {
     ///
     /// This iterator will be empty if there are no transactions in the attributes.
     pub fn decoded_transactions(&self) -> impl Iterator<Item = Eip2718Result<CeloTxEnvelope>> + '_ {
-        self.op_payload_attributes
-            .transactions
-            .iter()
-            .flatten()
-            .map(|tx_bytes| {
-                let mut buf = tx_bytes.as_ref();
-                let tx = CeloTxEnvelope::decode_2718(&mut buf).map_err(alloy_rlp::Error::from)?;
-                if !buf.is_empty() {
-                    return Err(alloy_rlp::Error::UnexpectedLength.into());
-                }
-                Ok(tx)
-            })
+        self.op_payload_attributes.transactions.iter().flatten().map(|tx_bytes| {
+            let mut buf = tx_bytes.as_ref();
+            let tx = CeloTxEnvelope::decode_2718(&mut buf).map_err(alloy_rlp::Error::from)?;
+            if !buf.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength.into());
+            }
+            Ok(tx)
+        })
     }
 
     /// Returns iterator over decoded transactions with their original encoded bytes.
@@ -177,10 +172,7 @@ mod test {
             },
         };
         let extra_data = attributes.get_holocene_extra_data(BaseFeeParams::new(80, 60));
-        assert_eq!(
-            extra_data.unwrap(),
-            Bytes::copy_from_slice(&[0, 0, 0, 0, 8, 0, 0, 0, 8])
-        );
+        assert_eq!(extra_data.unwrap(), Bytes::copy_from_slice(&[0, 0, 0, 0, 8, 0, 0, 0, 8]));
     }
 
     #[test]
@@ -192,9 +184,6 @@ mod test {
             },
         };
         let extra_data = attributes.get_holocene_extra_data(BaseFeeParams::new(80, 60));
-        assert_eq!(
-            extra_data.unwrap(),
-            Bytes::copy_from_slice(&[0, 0, 0, 0, 80, 0, 0, 0, 60])
-        );
+        assert_eq!(extra_data.unwrap(), Bytes::copy_from_slice(&[0, 0, 0, 0, 80, 0, 0, 0, 60]));
     }
 }
