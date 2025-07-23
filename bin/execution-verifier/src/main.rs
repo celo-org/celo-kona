@@ -50,6 +50,9 @@ pub struct ExecutionVerifierCommand {
     /// L2 inclusive ending block number to execute.
     #[arg(long)]
     pub end_block: u64,
+    /// Number of concurrent tasks to run.
+    #[arg(long, default_value = "100")]
+    pub concurrency: usize,
 }
 
 /// The execution verifier command
@@ -71,7 +74,7 @@ async fn main() -> Result<()> {
         .expect("Rollup config not found");
 
     // Create semaphore to limit concurrency to 500
-    let semaphore = Arc::new(Semaphore::new(5000));
+    let semaphore = Arc::new(Semaphore::new(cli.concurrency));
 
     let start = Instant::now();
     let mut tasks = Vec::new();
