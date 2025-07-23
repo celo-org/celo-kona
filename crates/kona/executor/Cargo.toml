@@ -64,7 +64,7 @@ alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"
 alloy-rpc-client = { workspace = true, optional = true }
 #alloy-transport = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true }
-leveldb = "0.8.6"
+rusty-leveldb = { git = "https://github.com/robofinch/leveldb-rs", branch = "master"}
 db-key = "0.0.5"
 
 [dev-dependencies]

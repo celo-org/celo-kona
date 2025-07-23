@@ -256,7 +256,7 @@ impl TrieDBProvider for ExecutorTestFixtureCreator {
         self.op_executor_test_fixture_creator.bytecode_by_hash(hash)
     }
 
-    fn header_by_hash(&self, hash: B256) -> Result<Header, Self::Error> {
+    fn header_by_hash(&self, _hash: B256) -> Result<Header, Self::Error> {
         panic!("Not implemented");
         // self.op_executor_test_fixture_creator.header_by_hash(hash)
     }
