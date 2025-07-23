@@ -62,6 +62,14 @@ async fn main() -> Result<()> {
 
     let trie = Trie::new(&provider);
 
+    let chain_id = provider
+        .get_chain_id()
+        .await
+        .expect("Failed to get chain ID");
+    let rollup_config = ROLLUP_CONFIGS
+        .get(&chain_id)
+        .expect("Rollup config not found");
+
     let mut parent_header = provider
         .get_block_by_number((cli.start_block - 1).into())
         .await
@@ -73,14 +81,6 @@ async fn main() -> Result<()> {
 
     let start = Instant::now();
     for block_number in cli.start_block..=cli.end_block {
-        let chain_id = provider
-            .get_chain_id()
-            .await
-            .expect("Failed to get chain ID");
-        let rollup_config = ROLLUP_CONFIGS
-            .get(&chain_id)
-            .expect("Rollup config not found");
-
         let executing_block = provider
             .get_block_by_number(block_number.into())
             .await
@@ -141,9 +141,19 @@ async fn main() -> Result<()> {
         parent_header = executing_block.header.inner.seal_slow();
     }
     let elapsed = start.elapsed();
-    println!("Total verification time to verify {} blocks took: {:?}", cli.end_block - cli.start_block, elapsed);
-    println!("Time per block: {:?}", elapsed / (cli.end_block - cli.start_block) as u32);
-    println!("Successfully verified execution for blocks {} to {}", cli.start_block, cli.end_block);
+    println!(
+        "Total verification time to verify {} blocks took: {:?}",
+        cli.end_block - cli.start_block,
+        elapsed
+    );
+    println!(
+        "Time per block: {:?}",
+        elapsed / (cli.end_block - cli.start_block) as u32
+    );
+    println!(
+        "Successfully verified execution for blocks {} to {}",
+        cli.start_block, cli.end_block
+    );
     Ok(())
 }
 
