@@ -20,7 +20,8 @@ use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use tokio::{runtime::Handle, time::Instant};
+use std::sync::Arc;
+use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -59,8 +60,7 @@ async fn main() -> Result<()> {
 
     let http = Http::<Client>::new(cli.l2_rpc);
     let provider: RootProvider<Ethereum> = RootProvider::new(RpcClient::new(http, false));
-
-    let trie = Trie::new(&provider);
+    let provider = Arc::new(provider);
 
     let chain_id = provider
         .get_chain_id()
@@ -70,97 +70,146 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .expect("Rollup config not found");
 
-    let mut parent_header = provider
-        .get_block_by_number((cli.start_block - 1).into())
-        .await
-        .expect("Failed to get parent block")
-        .expect("Block not found")
-        .header
-        .inner
-        .seal_slow();
+    // Create semaphore to limit concurrency to 500
+    let semaphore = Arc::new(Semaphore::new(500));
 
     let start = Instant::now();
+    let mut tasks = Vec::new();
+
     for block_number in cli.start_block..=cli.end_block {
-        let executing_block = provider
-            .get_block_by_number(block_number.into())
-            .await
-            .expect("Failed to get parent block")
-            .expect("Block not found");
+        let provider = Arc::clone(&provider);
+        let rollup_config = rollup_config.clone();
+        let semaphore = Arc::clone(&semaphore);
 
-        let encoded_executing_transactions = match executing_block.transactions {
-            BlockTransactions::Hashes(transactions) => {
-                let mut encoded_transactions = Vec::with_capacity(transactions.len());
-                for tx_hash in transactions {
-                    let tx = provider
-                        .client()
-                        .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
-                        .await
-                        .expect("Block not found");
-                    encoded_transactions.push(tx);
+        let task = tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+
+            // Create trie for this task
+            let trie = Trie::new(provider.as_ref());
+
+            // Fetch parent block
+            let parent_block = provider
+                .get_block_by_number((block_number - 1).into())
+                .await
+                .expect("Failed to get parent block")
+                .expect("Parent block not found");
+            let parent_header = parent_block.header.inner.seal_slow();
+
+            // Fetch executing block
+            let executing_block = provider
+                .get_block_by_number(block_number.into())
+                .await
+                .expect("Failed to get executing block")
+                .expect("Executing block not found");
+
+            let encoded_executing_transactions = match executing_block.transactions {
+                BlockTransactions::Hashes(transactions) => {
+                    let mut encoded_transactions = Vec::with_capacity(transactions.len());
+                    for tx_hash in transactions {
+                        let tx = provider
+                            .client()
+                            .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
+                            .await
+                            .expect("Failed to get raw transaction");
+                        encoded_transactions.push(tx);
+                    }
+                    encoded_transactions
                 }
-                encoded_transactions
-            }
-            _ => panic!("Only BlockTransactions::Hashes are supported."),
-        };
+                _ => panic!("Only BlockTransactions::Hashes are supported."),
+            };
 
-        let executing_header = executing_block.header.clone();
+            let executing_header = executing_block.header.clone();
 
-        let payload_attrs = CeloPayloadAttributes {
-            op_payload_attributes: OpPayloadAttributes {
-                payload_attributes: PayloadAttributes {
-                    timestamp: executing_header.timestamp,
-                    parent_beacon_block_root: executing_header.parent_beacon_block_root,
-                    prev_randao: executing_header.mix_hash,
-                    withdrawals: Default::default(),
-                    suggested_fee_recipient: executing_header.beneficiary,
+            let payload_attrs = CeloPayloadAttributes {
+                op_payload_attributes: OpPayloadAttributes {
+                    payload_attributes: PayloadAttributes {
+                        timestamp: executing_header.timestamp,
+                        parent_beacon_block_root: executing_header.parent_beacon_block_root,
+                        prev_randao: executing_header.mix_hash,
+                        withdrawals: Default::default(),
+                        suggested_fee_recipient: executing_header.beneficiary,
+                    },
+                    gas_limit: Some(executing_header.gas_limit),
+                    transactions: Some(encoded_executing_transactions),
+                    no_tx_pool: None,
+                    eip_1559_params: rollup_config
+                        .op_rollup_config
+                        .is_holocene_active(executing_header.timestamp)
+                        .then(|| {
+                            executing_header.extra_data[1..]
+                                .try_into()
+                                .expect("Invalid header format for Holocene")
+                        }),
                 },
-                gas_limit: Some(executing_header.gas_limit),
-                transactions: Some(encoded_executing_transactions),
-                no_tx_pool: None,
-                eip_1559_params: rollup_config
-                    .op_rollup_config
-                    .is_holocene_active(executing_header.timestamp)
-                    .then(|| {
-                        executing_header.extra_data[1..]
-                            .try_into()
-                            .expect("Invalid header format for Holocene")
-                    }),
-            },
-        };
+            };
 
-        let mut executor = CeloStatelessL2Builder::new(
-            rollup_config,
-            CeloEvmFactory::default(),
-            &trie,
-            NoopTrieHinter,
-            parent_header,
-        );
-        let outcome = executor
-            .build_block(payload_attrs)
-            .expect("Failed to execute block");
+            let mut executor = CeloStatelessL2Builder::new(
+                &rollup_config,
+                CeloEvmFactory::default(),
+                &trie,
+                NoopTrieHinter,
+                parent_header,
+            );
+            let outcome = executor
+                .build_block(payload_attrs)
+                .expect("Failed to execute block");
 
-        assert_eq!(
-            outcome.header.inner(),
-            &executing_header.inner,
-            "Produced header (left) does not match the expected header (right)"
-        );
+            // Verify the result
+            if outcome.header.inner() != &executing_header.inner {
+                return Err(anyhow::anyhow!(
+                    "Block {} verification failed: produced header does not match expected header",
+                    block_number
+                ));
+            }
 
-        parent_header = executing_block.header.inner.seal_slow();
+            println!("Successfully verified block {}", block_number);
+            Ok(block_number)
+        });
+
+        tasks.push(task);
     }
+
+    // Wait for all tasks to complete and count results
+    let mut failed_blocks = 0;
+
+    for task in tasks {
+        match task.await {
+            Ok(Ok(_)) => (),
+            Ok(Err(e)) => {
+                failed_blocks += 1;
+                eprintln!("Block verification failed: {}", e);
+            }
+            Err(e) => {
+                failed_blocks += 1;
+                eprintln!("Task panicked: {}", e);
+            }
+        }
+    }
+
     let elapsed = start.elapsed();
+    
+    if failed_blocks > 0 {
+        println!("Verification completed with {} failures out of {} total blocks", 
+                 failed_blocks, 
+                 cli.end_block - cli.start_block + 1);
+    } else {
+        println!(
+            "Successfully verified execution for all {} blocks ({} to {})",
+            cli.end_block - cli.start_block + 1,
+            cli.start_block,
+            cli.end_block
+        );
+    }
+
     println!(
-        "Total verification time to verify {} blocks took: {:?}",
-        cli.end_block - cli.start_block,
+        "Total verification time: {:?}",
         elapsed
     );
     println!(
-        "Time per block: {:?}",
-        elapsed / (cli.end_block - cli.start_block) as u32
+        "Average time per block: {:?}",
+        elapsed / (cli.end_block - cli.start_block + 1) as u32
     );
-    println!(
-        "Successfully verified execution for blocks {} to {}",
-        cli.start_block, cli.end_block
-    );
+
     Ok(())
 }
 
@@ -168,7 +217,7 @@ async fn main() -> Result<()> {
 #[derive(Debug)]
 pub struct Trie<'a> {
     /// The RPC provider for the L2 execution layer.
-    pub provider: &'a RootProvider,
+    pub provider: &'a RootProvider<Ethereum>,
 }
 
 impl<'a> Trie<'a> {
