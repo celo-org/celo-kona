@@ -51,7 +51,7 @@ pub struct ExecutionVerifierCommand {
     #[arg(long)]
     pub end_block: u64,
     /// Number of concurrent tasks to run.
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value = "25")]
     pub concurrency: usize,
 }
 
