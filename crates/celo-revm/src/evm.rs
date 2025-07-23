@@ -147,7 +147,10 @@ mod tests {
 
         // balance should be 100
         assert_eq!(
-            output.state.get(&Address::default()).map(|a| a.info.balance),
+            output
+                .state
+                .get(&Address::default())
+                .map(|a| a.info.balance),
             Some(U256::from(100))
         );
     }
@@ -163,7 +166,9 @@ mod tests {
                 tx.op_tx.base.kind = TxKind::Call(BENCH_TARGET);
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::HOLOCENE)
-            .with_db(BenchmarkDB::new_bytecode(Bytecode::new_legacy([opcode::POP].into())));
+            .with_db(BenchmarkDB::new_bytecode(Bytecode::new_legacy(
+                [opcode::POP].into(),
+            )));
 
         // POP would return a halt.
         let mut evm = ctx.build_celo();
@@ -173,7 +178,10 @@ mod tests {
         // balance should be 100 + previous balance
         assert_eq!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::FailedDeposit, gas_used: 30_000_000 }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::FailedDeposit,
+                gas_used: 30_000_000
+            }
         );
         assert_eq!(
             output.state.get(&BENCH_CALLER).map(|a| a.info.balance),
@@ -280,7 +288,10 @@ mod tests {
         // assert bails early because input size too big
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -330,7 +341,10 @@ mod tests {
         // assert fails post gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -377,7 +391,10 @@ mod tests {
         // assert fails pre gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -408,7 +425,10 @@ mod tests {
         // assert fails post gas check, because input is wrong layout
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -459,7 +479,10 @@ mod tests {
         // assert fails post gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -506,7 +529,10 @@ mod tests {
         // assert fails pre gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -537,7 +563,10 @@ mod tests {
         // assert fails post gas check, because input is wrong layout
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -582,7 +611,10 @@ mod tests {
         // assert fails pre gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -613,7 +645,10 @@ mod tests {
         // assert fails post gas check, because input is wrong layout
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -672,7 +707,10 @@ mod tests {
         // assert fails post gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -731,7 +769,10 @@ mod tests {
         // assert fails post gas check, because input is wrong size
         assert!(matches!(
             output.result,
-            ExecutionResult::Halt { reason: OpHaltReason::Base(HaltReason::PrecompileError), .. }
+            ExecutionResult::Halt {
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                ..
+            }
         ));
     }
 
@@ -756,8 +797,13 @@ mod tests {
             }
         }*/
 
-        let contract_data: Bytes =
-            Bytes::from([opcode::PUSH1, 0x00, opcode::DUP1, opcode::LOG0, opcode::STOP]);
+        let contract_data: Bytes = Bytes::from([
+            opcode::PUSH1,
+            0x00,
+            opcode::DUP1,
+            opcode::LOG0,
+            opcode::STOP,
+        ]);
         let bytecode = Bytecode::new_raw(contract_data);
 
         let ctx = Context::celo()

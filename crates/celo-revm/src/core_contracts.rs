@@ -95,15 +95,21 @@ where
 
     // Check success
     match exec_result {
-        ExecutionResult::Success { output: Output::Call(bytes), .. } => Ok(bytes),
-        ExecutionResult::Halt { reason, .. } => {
-            Err(CoreContractError::ExecutionFailed(format!("halt: {:?}", reason)))
-        }
+        ExecutionResult::Success {
+            output: Output::Call(bytes),
+            ..
+        } => Ok(bytes),
+        ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
+            "halt: {:?}",
+            reason
+        ))),
         ExecutionResult::Revert { output, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "revert: {}",
             get_revert_message(output)
         ))),
-        _ => Err(CoreContractError::ExecutionFailed("unexpected result".into())),
+        _ => Err(CoreContractError::ExecutionFailed(
+            "unexpected result".into(),
+        )),
     }
 }
 
@@ -321,16 +327,21 @@ pub(crate) mod tests {
         let mut evm = ctx.build_celo();
         let currencies = get_currencies(&mut evm).unwrap();
 
-        assert_eq!(currencies, vec![address!("0x1111111111111111111111111111111111111111")]);
+        assert_eq!(
+            currencies,
+            vec![address!("0x1111111111111111111111111111111111111111")]
+        );
     }
 
     #[test]
     fn test_get_exchange_rates() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let exchange_rates =
-            get_exchange_rates(&mut evm, &[address!("0x1111111111111111111111111111111111111111")])
-                .unwrap();
+        let exchange_rates = get_exchange_rates(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
@@ -344,13 +355,17 @@ pub(crate) mod tests {
     fn test_get_intrinsic_gas() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let intrinsic_gas =
-            get_intrinsic_gas(&mut evm, &[address!("0x1111111111111111111111111111111111111111")])
-                .unwrap();
+        let intrinsic_gas = get_intrinsic_gas(
+            &mut evm,
+            &[address!("0x1111111111111111111111111111111111111111")],
+        )
+        .unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected
-            .insert(address!("0x1111111111111111111111111111111111111111"), U256::from(50000));
+        _ = expected.insert(
+            address!("0x1111111111111111111111111111111111111111"),
+            U256::from(50000),
+        );
         assert_eq!(intrinsic_gas, expected);
     }
 }

@@ -23,7 +23,9 @@ impl CeloPrecompiles {
     /// Create a new precompile provider with the given OpSpec.
     #[inline]
     pub fn new_with_spec(spec: OpSpecId) -> Self {
-        Self { op_precompiles: OpPrecompiles::new_with_spec(spec) }
+        Self {
+            op_precompiles: OpPrecompiles::new_with_spec(spec),
+        }
     }
 }
 
@@ -50,7 +52,8 @@ where
         if *address == TRANSFER_ADDRESS {
             transfer_run(context, inputs, gas_limit)
         } else {
-            self.op_precompiles.run(context, address, inputs, is_static, gas_limit)
+            self.op_precompiles
+                .run(context, address, inputs, is_static, gas_limit)
         }
     }
 
@@ -64,8 +67,8 @@ where
 
     #[inline]
     fn contains(&self, address: &Address) -> bool {
-        *address == TRANSFER_ADDRESS ||
-            <OpPrecompiles as PrecompileProvider<CTX>>::contains(&self.op_precompiles, address)
+        *address == TRANSFER_ADDRESS
+            || <OpPrecompiles as PrecompileProvider<CTX>>::contains(&self.op_precompiles, address)
     }
 }
 
@@ -142,7 +145,10 @@ mod tests {
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             from,
-            AccountInfo { balance: U256::from(initial_balance), ..Default::default() },
+            AccountInfo {
+                balance: U256::from(initial_balance),
+                ..Default::default()
+            },
         );
 
         // Test calling with valid parameters
@@ -153,41 +159,79 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.chain_id = CELO_MAINNET_CHAIN_ID)
             .with_db(db);
 
-        let res = precompiles.run(&mut ctx, &TRANSFER_ADDRESS, &inputs, false, TRANSFER_GAS_COST);
+        let res = precompiles.run(
+            &mut ctx,
+            &TRANSFER_ADDRESS,
+            &inputs,
+            false,
+            TRANSFER_GAS_COST,
+        );
         assert!(res.is_ok());
 
         let JournalOutput { state, .. } = ctx.journal().finalize();
         let from_account = state.get(&from).unwrap();
         let to_account = state.get(&to).unwrap();
-        assert_eq!(from_account.info.balance, U256::from(initial_balance - value));
+        assert_eq!(
+            from_account.info.balance,
+            U256::from(initial_balance - value)
+        );
         assert_eq!(to_account.info.balance, U256::from(value));
 
         // Test calling with too little gas
-        let res =
-            precompiles.run(&mut ctx, &TRANSFER_ADDRESS, &inputs, false, TRANSFER_GAS_COST - 1_000);
+        let res = precompiles.run(
+            &mut ctx,
+            &TRANSFER_ADDRESS,
+            &inputs,
+            false,
+            TRANSFER_GAS_COST - 1_000,
+        );
         assert!(matches!(
             res,
-            Ok(Some(InterpreterResult { result: InstructionResult::PrecompileOOG, .. }))
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::PrecompileOOG,
+                ..
+            }))
         ));
 
         // Test calling with too short input
         let short_input = CallInput::Bytes(Bytes::from(vec![0; 63]));
-        let bad_input = InputsImpl { input: short_input, ..inputs };
-        let res =
-            precompiles.run(&mut ctx, &TRANSFER_ADDRESS, &bad_input, false, TRANSFER_GAS_COST);
+        let bad_input = InputsImpl {
+            input: short_input,
+            ..inputs
+        };
+        let res = precompiles.run(
+            &mut ctx,
+            &TRANSFER_ADDRESS,
+            &bad_input,
+            false,
+            TRANSFER_GAS_COST,
+        );
         assert!(matches!(
             res,
-            Ok(Some(InterpreterResult { result: InstructionResult::PrecompileError, .. }))
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::PrecompileError,
+                ..
+            }))
         ));
 
         // Test calling from the wrong address
-        let wrong_inputs =
-            InputsImpl { caller_address: Address::with_last_byte(3), ..inputs.clone() };
-        let res =
-            precompiles.run(&mut ctx, &TRANSFER_ADDRESS, &wrong_inputs, false, TRANSFER_GAS_COST);
+        let wrong_inputs = InputsImpl {
+            caller_address: Address::with_last_byte(3),
+            ..inputs.clone()
+        };
+        let res = precompiles.run(
+            &mut ctx,
+            &TRANSFER_ADDRESS,
+            &wrong_inputs,
+            false,
+            TRANSFER_GAS_COST,
+        );
         assert!(matches!(
             res,
-            Ok(Some(InterpreterResult { result: InstructionResult::PrecompileError, .. }))
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::PrecompileError,
+                ..
+            }))
         ));
 
         // Test calling with value bigger than balance
@@ -206,7 +250,10 @@ mod tests {
         );
         assert!(matches!(
             res,
-            Ok(Some(InterpreterResult { result: InstructionResult::PrecompileError, .. }))
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::PrecompileError,
+                ..
+            }))
         ));
     }
 
@@ -227,7 +274,10 @@ mod tests {
             db.insert_account_info(celo_address, account_info);
         }
 
-        let account_info = AccountInfo { balance: U256::from(100), ..AccountInfo::default() };
+        let account_info = AccountInfo {
+            balance: U256::from(100),
+            ..AccountInfo::default()
+        };
         db.insert_account_info(caller, account_info);
 
         db

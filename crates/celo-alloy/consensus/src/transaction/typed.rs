@@ -410,14 +410,14 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
             // Self::Deposit(tx) => tx.rlp_encoded_fields_length(), // TODO: cannot use this since
             // the function is private
             Self::Deposit(tx) => {
-                tx.source_hash.length() +
-                    tx.from.length() +
-                    tx.to.length() +
-                    tx.mint.length() +
-                    tx.value.length() +
-                    tx.gas_limit.length() +
-                    tx.is_system_transaction.length() +
-                    tx.input.0.length()
+                tx.source_hash.length()
+                    + tx.from.length()
+                    + tx.to.length()
+                    + tx.mint.length()
+                    + tx.value.length()
+                    + tx.gas_limit.length()
+                    + tx.is_system_transaction.length()
+                    + tx.input.0.length()
             }
         }
     }
