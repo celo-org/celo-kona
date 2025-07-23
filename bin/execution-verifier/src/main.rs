@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
         .expect("Rollup config not found");
 
     // Create semaphore to limit concurrency to 500
-    let semaphore = Arc::new(Semaphore::new(500));
+    let semaphore = Arc::new(Semaphore::new(5000));
 
     let start = Instant::now();
     let mut tasks = Vec::new();
