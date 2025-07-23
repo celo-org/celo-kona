@@ -1,6 +1,7 @@
 //! Execution verifier for Celo Kona
 //!
 //! This binary provides execution verification functionality for the Celo Kona project.
+
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
 use alloy_network::Ethereum;
@@ -19,7 +20,7 @@ use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, time::Instant};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
         .inner
         .seal_slow();
 
+    let start = Instant::now();
     for block_number in cli.start_block..=cli.end_block {
         let chain_id = provider
             .get_chain_id()
@@ -138,6 +140,9 @@ async fn main() -> Result<()> {
             .expect("Failed to execute block");
         parent_header = executing_block.header.inner.seal_slow();
     }
+    let elapsed = start.elapsed();
+    println!("Total verification time to verify {} blocks took: {:?}", cli.end_block - cli.start_block, elapsed);
+    println!("Time per block: {:?}", elapsed / (cli.end_block - cli.start_block) as u32);
     println!("Successfully verified execution for blocks {} to {}", cli.start_block, cli.end_block);
     Ok(())
 }
