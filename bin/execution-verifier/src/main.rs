@@ -135,9 +135,16 @@ async fn main() -> Result<()> {
             NoopTrieHinter,
             parent_header,
         );
-        executor
+        let outcome = executor
             .build_block(payload_attrs)
             .expect("Failed to execute block");
+
+        assert_eq!(
+            outcome.header.inner(),
+            &executing_header.inner,
+            "Produced header (left) does not match the expected header (right)"
+        );
+
         parent_header = executing_block.header.inner.seal_slow();
     }
     let elapsed = start.elapsed();
