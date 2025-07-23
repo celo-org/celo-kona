@@ -2461,9 +2461,28 @@ dependencies = [
 name = "execution-verifier"
 version = "0.1.0"
 dependencies = [
+ "alloy-celo-evm",
+ "alloy-consensus",
+ "alloy-network",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rlp",
+ "alloy-rpc-client",
+ "alloy-rpc-types-engine",
+ "alloy-transport-http",
  "anyhow",
+ "celo-alloy-rpc-types-engine",
+ "celo-executor",
+ "celo-registry",
+ "clap",
+ "kona-cli",
  "kona-executor",
+ "kona-mpt",
+ "op-alloy-rpc-types-engine",
+ "thiserror",
  "tokio",
+ "tracing-subscriber 0.3.19",
+ "url",
 ]
 
 [[package]]
