@@ -35,6 +35,7 @@ kona-mpt.workspace = true
 thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
+futures.workspace = true
 
 
 [lints]
