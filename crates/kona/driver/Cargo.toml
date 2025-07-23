@@ -1,4 +1,3 @@
-# TODO: remove unnecessary dependencies
 [package]
 name = "celo-driver"
 description = "A no_std derivation pipeline driver"
@@ -22,8 +21,6 @@ celo-genesis.workspace = true
 
 # Kona
 kona-derive.workspace = true
-kona-executor.workspace = true
-kona-genesis.workspace = true
 kona-protocol.workspace = true
 kona-driver.workspace = true
 
@@ -31,14 +28,8 @@ kona-driver.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-evm.workspace = true
-
-# OP Alloy
-op-alloy-consensus.workspace = true
-op-alloy-rpc-types-engine.workspace = true
 
 # Misc
 async-trait.workspace = true
 spin.workspace = true
-thiserror.workspace = true
 tracing.workspace = true

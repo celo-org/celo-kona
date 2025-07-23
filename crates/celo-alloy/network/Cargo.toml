@@ -1,4 +1,3 @@
-# TODO: remove unnecessary dependencies
 [package]
 name = "celo-alloy-network"
 description = "Celo blockchain RPC behavior abstraction"
