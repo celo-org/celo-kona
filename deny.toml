@@ -44,8 +44,8 @@ expression = "LicenseRef-ring"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
-ignore = false
-registries = []
+ignore = true
+ignore-sources = ["https://github.com/Layr-Labs/hokulea"]
 
 [bans]
 multiple-versions = "warn"
@@ -62,7 +62,11 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/paradigmxyz/reth"]
+allow-git = [
+    "https://github.com/paradigmxyz/reth",
+    "https://github.com/Layr-Labs/hokulea",
+    "https://github.com/op-rs/kona"
+]
 
 [sources.allow-org]
 github = []
