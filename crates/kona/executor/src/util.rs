@@ -30,26 +30,19 @@ pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult
 
     // Parse the EIP-1559 parameters.
     let data = &header.extra_data[1..];
-    let denominator = u32::from_be_bytes(
-        data[..4]
-            .try_into()
-            .map_err(|_| ExecutorError::InvalidExtraData)?,
-    ) as u128;
-    let elasticity = u32::from_be_bytes(
-        data[4..]
-            .try_into()
-            .map_err(|_| ExecutorError::InvalidExtraData)?,
-    ) as u128;
+    let denominator =
+        u32::from_be_bytes(data[..4].try_into().map_err(|_| ExecutorError::InvalidExtraData)?)
+            as u128;
+    let elasticity =
+        u32::from_be_bytes(data[4..].try_into().map_err(|_| ExecutorError::InvalidExtraData)?)
+            as u128;
 
     // Check for potential division by zero.
     if denominator == 0 {
         return Err(ExecutorError::InvalidExtraData);
     }
 
-    Ok(BaseFeeParams {
-        elasticity_multiplier: elasticity,
-        max_change_denominator: denominator,
-    })
+    Ok(BaseFeeParams { elasticity_multiplier: elasticity, max_change_denominator: denominator })
 }
 
 /// Encode Holocene [Header] extra data.
@@ -85,10 +78,7 @@ pub(crate) fn encode_holocene_eip_1559_params(
 ///
 /// <https://specs.optimism.io/protocol/holocene/exec-engine.html#eip1559params-encoding>
 pub(crate) fn encode_canyon_base_fee_params(config: &CeloRollupConfig) -> B64 {
-    let params = config
-        .op_rollup_config
-        .chain_op_config
-        .as_canyon_base_fee_params();
+    let params = config.op_rollup_config.chain_op_config.as_canyon_base_fee_params();
 
     let mut buf = B64::ZERO;
     buf[..4].copy_from_slice(&(params.max_change_denominator as u32).to_be_bytes());
@@ -129,10 +119,7 @@ mod test {
     #[test]
     fn test_decode_holocene_eip_1559_params() {
         let params = hex!("00BEEFBABE0BADC0DE");
-        let mock_header = Header {
-            extra_data: params.to_vec().into(),
-            ..Default::default()
-        };
+        let mock_header = Header { extra_data: params.to_vec().into(), ..Default::default() };
         let params = decode_holocene_eip_1559_params(&mock_header).unwrap();
 
         assert_eq!(params.elasticity_multiplier, 0x0BAD_C0DE);
@@ -142,30 +129,21 @@ mod test {
     #[test]
     fn test_decode_holocene_eip_1559_params_invalid_version() {
         let params = hex!("01BEEFBABE0BADC0DE");
-        let mock_header = Header {
-            extra_data: params.to_vec().into(),
-            ..Default::default()
-        };
+        let mock_header = Header { extra_data: params.to_vec().into(), ..Default::default() };
         assert!(decode_holocene_eip_1559_params(&mock_header).is_err());
     }
 
     #[test]
     fn test_decode_holocene_eip_1559_params_invalid_denominator() {
         let params = hex!("00000000000BADC0DE");
-        let mock_header = Header {
-            extra_data: params.to_vec().into(),
-            ..Default::default()
-        };
+        let mock_header = Header { extra_data: params.to_vec().into(), ..Default::default() };
         assert!(decode_holocene_eip_1559_params(&mock_header).is_err());
     }
 
     #[test]
     fn test_decode_holocene_eip_1559_params_invalid_length() {
         let params = hex!("00");
-        let mock_header = Header {
-            extra_data: params.to_vec().into(),
-            ..Default::default()
-        };
+        let mock_header = Header { extra_data: params.to_vec().into(), ..Default::default() };
         assert!(decode_holocene_eip_1559_params(&mock_header).is_err());
     }
 
@@ -238,9 +216,6 @@ mod test {
                 ..Default::default()
             },
         };
-        assert_eq!(
-            encode_canyon_base_fee_params(&cfg),
-            b64!("0000002000000040")
-        );
+        assert_eq!(encode_canyon_base_fee_params(&cfg), b64!("0000002000000040"));
     }
 }

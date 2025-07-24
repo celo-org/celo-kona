@@ -1757,10 +1757,16 @@ dependencies = [
  "celo-driver",
  "celo-executor",
  "celo-genesis",
+ "celo-registry",
  "kona-executor",
  "kona-mpt",
+ "kona-preimage",
+ "kona-proof",
  "op-revm",
+ "serde",
+ "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

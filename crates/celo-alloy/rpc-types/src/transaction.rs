@@ -17,10 +17,7 @@ pub use request::CeloTransactionRequest;
     try_from = "tx_serde::CeloTransactionSerdeHelper",
     into = "tx_serde::CeloTransactionSerdeHelper"
 )]
-#[cfg_attr(
-    all(any(test, feature = "arbitrary"), feature = "k256"),
-    derive(arbitrary::Arbitrary)
-)]
+#[cfg_attr(all(any(test, feature = "arbitrary"), feature = "k256"), derive(arbitrary::Arbitrary))]
 pub struct CeloTransaction {
     /// Ethereum Transaction Types
     #[deref]
@@ -177,11 +174,7 @@ mod tx_serde {
             with = "alloy_serde::quantity::opt"
         )]
         deposit_nonce: Option<u64>,
-        #[serde(
-            default,
-            rename = "feeCurrency",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(default, rename = "feeCurrency", skip_serializing_if = "Option::is_none")]
         fee_currency: Option<Address>,
     }
 
@@ -239,12 +232,7 @@ mod tx_serde {
                 block_number,
                 transaction_index,
                 deposit_receipt_version,
-                other: OptionalFields {
-                    from,
-                    effective_gas_price,
-                    deposit_nonce,
-                    fee_currency,
-                },
+                other: OptionalFields { from, effective_gas_price, deposit_nonce, fee_currency },
             }
         }
     }
@@ -332,10 +320,7 @@ mod tests {
         let CeloTxEnvelope::Cip64(_inner) = tx.as_ref() else {
             panic!("Expected CIP-64 transaction");
         };
-        assert_eq!(
-            tx.fee_currency,
-            Some(address!("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72"))
-        );
+        assert_eq!(tx.fee_currency, Some(address!("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72")));
 
         let deserialized = serde_json::to_value(&tx).unwrap();
         let expected = serde_json::from_str::<serde_json::Value>(rpc_tx).unwrap();

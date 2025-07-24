@@ -88,10 +88,11 @@ where
                 }
             }
 
-            let OpAttributesWithParent {
-                inner: mut attributes,
-                ..
-            } = match self.pipeline.produce_payload(tip_cursor.l2_safe_head).await {
+            let OpAttributesWithParent { inner: mut attributes, .. } = match self
+                .pipeline
+                .produce_payload(tip_cursor.l2_safe_head)
+                .await
+            {
                 Ok(attrs) => attrs,
                 Err(PipelineErrorKind::Critical(PipelineError::EndOfSource)) => {
                     warn!(target: "client", "Exhausted data source; Halting derivation and using current safe head.");
@@ -119,11 +120,9 @@ where
                 }
             };
 
-            let celo_attributes = CeloPayloadAttributes {
-                op_payload_attributes: attributes.clone(),
-            };
-            self.executor
-                .update_safe_head(tip_cursor.l2_safe_head_header.clone());
+            let celo_attributes =
+                CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
+            self.executor.update_safe_head(tip_cursor.l2_safe_head_header.clone());
             let outcome = match self.executor.execute_payload(celo_attributes).await {
                 Ok(outcome) => outcome,
                 Err(e) => {
@@ -150,11 +149,9 @@ where
                         });
 
                         // Retry the execution.
-                        let celo_attributes = CeloPayloadAttributes {
-                            op_payload_attributes: attributes.clone(),
-                        };
-                        self.executor
-                            .update_safe_head(tip_cursor.l2_safe_head_header.clone());
+                        let celo_attributes =
+                            CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
+                        self.executor.update_safe_head(tip_cursor.l2_safe_head_header.clone());
                         match self.executor.execute_payload(celo_attributes).await {
                             Ok(header) => header,
                             Err(e) => {
@@ -191,10 +188,7 @@ where
             };
 
             // Get the pipeline origin and update the tip cursor.
-            let origin = self
-                .pipeline
-                .origin()
-                .ok_or(PipelineError::MissingOrigin.crit())?;
+            let origin = self.pipeline.origin().ok_or(PipelineError::MissingOrigin.crit())?;
             let celo_l2_info = CeloL2BlockInfo::from_block_and_genesis(
                 &block,
                 &self.pipeline.rollup_config().genesis,
@@ -203,9 +197,7 @@ where
             let tip_cursor = TipCursor::new(
                 l2_info,
                 outcome.header.clone(),
-                self.executor
-                    .compute_output_root()
-                    .map_err(DriverError::Executor)?,
+                self.executor.compute_output_root().map_err(DriverError::Executor)?,
             );
 
             // Advance the derivation pipeline cursor

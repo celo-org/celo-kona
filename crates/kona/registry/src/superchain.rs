@@ -50,18 +50,12 @@ impl Registry {
                     .expect("Missing protocol versions address");
                 rollup.superchain_config_address = superchain.config.superchain_config_addr;
                 // Wrap RollupConfig to CeloRollupConfig
-                let celo_rollup = CeloRollupConfig {
-                    op_rollup_config: rollup,
-                };
+                let celo_rollup = CeloRollupConfig { op_rollup_config: rollup };
                 rollup_configs.insert(chain_config.chain_id, celo_rollup);
                 op_chains.insert(chain_config.chain_id, chain_config);
             }
         }
 
-        Self {
-            chain_list,
-            op_chains,
-            rollup_configs,
-        }
+        Self { chain_list, op_chains, rollup_configs }
     }
 }

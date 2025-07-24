@@ -1,4 +1,5 @@
-//! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during execution.
+//! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during
+//! execution.
 
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::block::CeloAlloyReceiptBuilder;
@@ -30,8 +31,8 @@ where
     /// The inner trie database.
     pub(crate) trie_db: TrieDB<P, H>,
     #[allow(rustdoc::broken_intra_doc_links)]
-    /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block building
-    /// routines.
+    /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block
+    /// building routines.
     pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig, Evm>,
 }
 
@@ -56,11 +57,7 @@ where
             config.clone(),
             evm_factory,
         );
-        Self {
-            config,
-            trie_db,
-            factory,
-        }
+        Self { config, trie_db, factory }
     }
 
     /// Builds a new block on top of the parent state, using the given [`CeloPayloadAttributes`].
@@ -74,9 +71,7 @@ where
         let base_fee_params =
             Self::active_base_fee_params(self.config, self.trie_db.parent_block_header(), &attrs)?;
         let evm_env = self.evm_env(
-            self.config
-                .op_rollup_config
-                .spec_id(op_attrs.payload_attributes.timestamp),
+            self.config.op_rollup_config.spec_id(op_attrs.payload_attributes.timestamp),
             self.trie_db.parent_block_header(),
             &attrs,
             &base_fee_params,
@@ -168,10 +163,7 @@ impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)>
     fn from(
         (header, execution_result): (Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>),
     ) -> Self {
-        Self {
-            header,
-            execution_result,
-        }
+        Self { header, execution_result }
     }
 }
 

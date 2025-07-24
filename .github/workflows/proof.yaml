@@ -1,0 +1,55 @@
+name: Proof
+on:
+# TODO: Enable this workflow and add witness file when Baklava has Eigen v2 activated
+#  push:
+#    branches: [ main ]
+#  merge_group:
+#  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host-client-offline-runs:
+    name: FPP e2e - ${{ matrix.target}} | ${{ matrix.name }}
+    strategy:
+      matrix:
+        target: [ "native" ]
+        name: [ "Celo Baklava (Isthmus) - Block #41325014" ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          components: llvm-tools-preview
+          prefix-key: ${{ matrix.target }}-${{ matrix.name }}
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Set run environment
+        run: |
+          if [[ ${{ contains(matrix.name, 41325014) }} == true ]]; then
+            BLOCK_NUMBER=41325014
+            echo "BLOCK_NUMBER=$BLOCK_NUMBER" >> $GITHUB_ENV
+            echo "L2_CLAIM=0xdd5e8181a24d701c647d19cb6c6fdfd2e22d4cd43f92872a498517666759e121" >> $GITHUB_ENV
+            echo "L2_OUTPUT_ROOT=0x4b04d3aca926e537251010da2be41f8af95bce21878aefba3a771a6ba84178e3" >> $GITHUB_ENV
+            echo "L2_HEAD=0x3ff9c2d9cd5d5902f9e4a84f7b958d8f455fa7a460aaa3461df2a6ca7f032245" >> $GITHUB_ENV
+            echo "L1_HEAD=0x0cbc875f1763a936cbba96ec282fa7977cfdb2825f23a8dc90068b0722e450b0" >> $GITHUB_ENV
+            echo "L2_CHAIN_ID=62320" >> $GITHUB_ENV
+            echo "WITNESS_TAR_NAME=isthmus-celo-baklava-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
+          fi
+      - name: Decompress witness data directory
+        run: |
+          tar --zstd -xvf ./bin/client/testdata/$WITNESS_TAR_NAME -C .
+      - name: Run host + client offline
+        working-directory: ./bin/client
+        run: |
+          mkdir -p ../../target
+          just run-client-${{ matrix.target }}-offline \
+            $BLOCK_NUMBER \
+            $L2_CLAIM \
+            $L2_OUTPUT_ROOT \
+            $L2_HEAD \
+            $L1_HEAD \
+            $L2_CHAIN_ID

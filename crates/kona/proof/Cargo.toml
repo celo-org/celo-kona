@@ -18,10 +18,13 @@ celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
+celo-registry = { version = "0.1.0", path = "../registry" }
 
 # Kona
 kona-mpt.workspace = true
 kona-executor.workspace = true
+kona-proof.workspace = true
+kona-preimage.workspace = true
 
 # Alloy
 alloy-consensus.workspace = true
@@ -32,6 +35,9 @@ alloy-evm.workspace = true
 op-revm.workspace = true
 
 # General
+serde.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
 async-trait.workspace = true
 
 # `std` feature dependencies

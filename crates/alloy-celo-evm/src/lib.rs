@@ -58,10 +58,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
     pub const fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
-        Self {
-            inner: evm,
-            inspect,
-        }
+        Self { inner: evm, inspect }
     }
 }
 
@@ -130,14 +127,15 @@ where
                     gas_limit: 30_000_000,
                     value: U256::ZERO,
                     data,
-                    // Setting the gas price to zero enforces that no value is transferred as part of
-                    // the call, and that the call will not count against the block's
-                    // gas limit
+                    // Setting the gas price to zero enforces that no value is transferred as part
+                    // of the call, and that the call will not count against the
+                    // block's gas limit
                     gas_price: 0,
                     // The chain ID check is not relevant here and is disabled if set to None
                     chain_id: None,
-                    // Setting the gas priority fee to None ensures the effective gas price is derived
-                    // from the `gas_price` field, which we need to be zero
+                    // Setting the gas priority fee to None ensures the effective gas price is
+                    // derived from the `gas_price` field, which we need to be
+                    // zero
                     gas_priority_fee: None,
                     access_list: Default::default(),
                     // blob fields can be None for this tx
@@ -192,12 +190,7 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Context {
-            block: block_env,
-            cfg: cfg_env,
-            journaled_state,
-            ..
-        } = self.inner.0.0.ctx;
+        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.0.0.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }

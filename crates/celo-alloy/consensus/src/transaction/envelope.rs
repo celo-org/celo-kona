@@ -29,15 +29,9 @@ use op_alloy_consensus::TxDeposit;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "serde",
-    serde(
-        into = "serde_from::TaggedTxEnvelope",
-        from = "serde_from::MaybeTaggedTxEnvelope"
-    )
+    serde(into = "serde_from::TaggedTxEnvelope", from = "serde_from::MaybeTaggedTxEnvelope")
 )]
-#[cfg_attr(
-    all(any(test, feature = "arbitrary"), feature = "k256"),
-    derive(arbitrary::Arbitrary)
-)]
+#[cfg_attr(all(any(test, feature = "arbitrary"), feature = "k256"), derive(arbitrary::Arbitrary))]
 pub enum CeloTxEnvelope {
     /// An untagged [`TxLegacy`].
     Legacy(Signed<TxLegacy>),
@@ -447,7 +441,8 @@ impl CeloTxEnvelope {
 
     /// Attempts to convert the celo variant into an ethereum [`TxEnvelope`].
     ///
-    /// Returns the envelope as error if it is a variant unsupported on ethereum: [`TxDeposit`, `TxCip64`]
+    /// Returns the envelope as error if it is a variant unsupported on ethereum: [`TxDeposit`,
+    /// `TxCip64`]
     pub fn try_into_eth_envelope(self) -> Result<TxEnvelope, Self> {
         match self {
             Self::Legacy(tx) => Ok(tx.into()),
@@ -500,9 +495,7 @@ impl CeloTxEnvelope {
     ) -> Result<alloy_consensus::transaction::Recovered<Self>, alloy_consensus::crypto::RecoveryError>
     {
         let signer = self.recover_signer()?;
-        Ok(alloy_consensus::transaction::Recovered::new_unchecked(
-            self, signer,
-        ))
+        Ok(alloy_consensus::transaction::Recovered::new_unchecked(self, signer))
     }
 
     /// Recover the signer of the transaction and returns a `Recovered<&Self>`
@@ -512,9 +505,7 @@ impl CeloTxEnvelope {
     ) -> Result<alloy_consensus::transaction::Recovered<&Self>, alloy_primitives::SignatureError>
     {
         let signer = self.recover_signer()?;
-        Ok(alloy_consensus::transaction::Recovered::new_unchecked(
-            self, signer,
-        ))
+        Ok(alloy_consensus::transaction::Recovered::new_unchecked(self, signer))
     }
 
     /// Returns mutable access to the input bytes.
@@ -660,19 +651,16 @@ impl Decodable for CeloTxEnvelope {
 
 impl Decodable2718 for CeloTxEnvelope {
     fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
-        match ty
-            .try_into()
-            .map_err(|_| Eip2718Error::UnexpectedType(ty))?
-        {
+        match ty.try_into().map_err(|_| Eip2718Error::UnexpectedType(ty))? {
             CeloTxType::Eip2930 => Ok(Self::Eip2930(TxEip2930::rlp_decode_signed(buf)?)),
             CeloTxType::Eip1559 => Ok(Self::Eip1559(TxEip1559::rlp_decode_signed(buf)?)),
             CeloTxType::Eip7702 => Ok(Self::Eip7702(TxEip7702::rlp_decode_signed(buf)?)),
             CeloTxType::Cip64 => Ok(Self::Cip64(TxCip64::rlp_decode_signed(buf)?)),
             CeloTxType::Deposit => Ok(Self::Deposit(TxDeposit::decode(buf)?.seal_slow())),
-            CeloTxType::Legacy => Err(alloy_rlp::Error::Custom(
-                "type-0 eip2718 transactions are not supported",
-            )
-            .into()),
+            CeloTxType::Legacy => {
+                Err(alloy_rlp::Error::Custom("type-0 eip2718 transactions are not supported")
+                    .into())
+            }
         }
     }
 
@@ -907,26 +895,21 @@ pub mod serde_bincode_compat {
     impl<'a> From<CeloTxEnvelope<'a>> for super::CeloTxEnvelope {
         fn from(value: CeloTxEnvelope<'a>) -> Self {
             match value {
-                CeloTxEnvelope::Legacy {
-                    signature,
-                    transaction,
-                } => Self::Legacy(Signed::new_unhashed(transaction.into(), signature)),
-                CeloTxEnvelope::Eip2930 {
-                    signature,
-                    transaction,
-                } => Self::Eip2930(Signed::new_unhashed(transaction.into(), signature)),
-                CeloTxEnvelope::Eip1559 {
-                    signature,
-                    transaction,
-                } => Self::Eip1559(Signed::new_unhashed(transaction.into(), signature)),
-                CeloTxEnvelope::Eip7702 {
-                    signature,
-                    transaction,
-                } => Self::Eip7702(Signed::new_unhashed(transaction.into(), signature)),
-                CeloTxEnvelope::Cip64 {
-                    signature,
-                    transaction,
-                } => Self::Cip64(Signed::new_unhashed(transaction.into(), signature)),
+                CeloTxEnvelope::Legacy { signature, transaction } => {
+                    Self::Legacy(Signed::new_unhashed(transaction.into(), signature))
+                }
+                CeloTxEnvelope::Eip2930 { signature, transaction } => {
+                    Self::Eip2930(Signed::new_unhashed(transaction.into(), signature))
+                }
+                CeloTxEnvelope::Eip1559 { signature, transaction } => {
+                    Self::Eip1559(Signed::new_unhashed(transaction.into(), signature))
+                }
+                CeloTxEnvelope::Eip7702 { signature, transaction } => {
+                    Self::Eip7702(Signed::new_unhashed(transaction.into(), signature))
+                }
+                CeloTxEnvelope::Cip64 { signature, transaction } => {
+                    Self::Cip64(Signed::new_unhashed(transaction.into(), signature))
+                }
                 CeloTxEnvelope::Deposit { hash, transaction } => {
                     Self::Deposit(Sealed::new_unchecked(transaction.into(), hash))
                 }

@@ -27,10 +27,7 @@ impl arbitrary::Arbitrary<'_> for CeloL2BlockInfo {
         Ok(Self {
             op_l2_block_info: L2BlockInfo {
                 block_info: g.arbitrary()?,
-                l1_origin: BlockNumHash {
-                    number: g.arbitrary()?,
-                    hash: g.arbitrary()?,
-                },
+                l1_origin: BlockNumHash { number: g.arbitrary()?, hash: g.arbitrary()? },
                 seq_num: g.arbitrary()?,
             },
         })
@@ -40,9 +37,7 @@ impl arbitrary::Arbitrary<'_> for CeloL2BlockInfo {
 impl CeloL2BlockInfo {
     /// Instantiates a new [CeloL2BlockInfo].
     pub const fn new(block_info: BlockInfo, l1_origin: BlockNumHash, seq_num: u64) -> Self {
-        Self {
-            op_l2_block_info: L2BlockInfo::new(block_info, l1_origin, seq_num),
-        }
+        Self { op_l2_block_info: L2BlockInfo::new(block_info, l1_origin, seq_num) }
     }
 
     /// Constructs an [`CeloL2BlockInfo`] from a given [`alloy_rpc_types_eth::Block`] and
@@ -61,9 +56,7 @@ impl CeloL2BlockInfo {
             if block_info.hash != genesis.l2.hash {
                 return Err(FromBlockError::InvalidGenesisHash);
             }
-            return Ok(Self {
-                op_l2_block_info: L2BlockInfo::new(block_info, genesis.l1, 0),
-            });
+            return Ok(Self { op_l2_block_info: L2BlockInfo::new(block_info, genesis.l1, 0) });
         }
         Self::from_block_and_genesis(&block.into_consensus(), genesis)
     }
@@ -95,9 +88,7 @@ impl CeloL2BlockInfo {
             (l1_info.id(), l1_info.sequence_number())
         };
 
-        Ok(Self {
-            op_l2_block_info: L2BlockInfo::new(block_info, l1_origin, sequence_number),
-        })
+        Ok(Self { op_l2_block_info: L2BlockInfo::new(block_info, l1_origin, sequence_number) })
     }
 
     /// Constructs an [`L2BlockInfo`] From a given [`OpExecutionPayload`] and [`ChainGenesis`].
@@ -169,14 +160,8 @@ mod tests {
     fn test_from_block_and_genesis() {
         use kona_protocol::test_utils::RAW_BEDROCK_INFO_TX;
         let genesis = ChainGenesis {
-            l1: BlockNumHash {
-                hash: B256::from([4; 32]),
-                number: 2,
-            },
-            l2: BlockNumHash {
-                hash: B256::from([5; 32]),
-                number: 1,
-            },
+            l1: BlockNumHash { hash: B256::from([4; 32]), number: 2 },
+            l2: BlockNumHash { hash: B256::from([5; 32]), number: 1 },
             ..Default::default()
         };
         let tx_env = alloy_rpc_types_eth::Transaction {
@@ -243,14 +228,8 @@ mod tests {
     #[test]
     fn test_l2_block_info_invalid_genesis_hash() {
         let genesis = ChainGenesis {
-            l1: BlockNumHash {
-                hash: B256::from([4; 32]),
-                number: 2,
-            },
-            l2: BlockNumHash {
-                hash: B256::from([5; 32]),
-                number: 1,
-            },
+            l1: BlockNumHash { hash: B256::from([4; 32]), number: 2 },
+            l2: BlockNumHash { hash: B256::from([5; 32]), number: 1 },
             ..Default::default()
         };
         let celo_block = CeloBlock {
@@ -287,10 +266,7 @@ mod tests {
                     parent_hash: B256::from([2; 32]),
                     timestamp: 1,
                 },
-                l1_origin: BlockNumHash {
-                    hash: B256::from([3; 32]),
-                    number: 2,
-                },
+                l1_origin: BlockNumHash { hash: B256::from([3; 32]), number: 2 },
                 seq_num: 3,
             },
         };
@@ -324,10 +300,7 @@ mod tests {
                     parent_hash: B256::from([2; 32]),
                     timestamp: 1,
                 },
-                l1_origin: BlockNumHash {
-                    hash: B256::from([3; 32]),
-                    number: 2,
-                },
+                l1_origin: BlockNumHash { hash: B256::from([3; 32]), number: 2 },
                 seq_num: 3,
             },
         };

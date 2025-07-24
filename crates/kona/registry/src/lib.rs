@@ -1,5 +1,6 @@
 //! Temporary crate for Celo which is not included in [superchain-registry].
-//! TODO: When Celo is included in [superchain-registry], we can remove `celo-registry` crate.
+//! TODO: When Celo network which we want to use for CI is included in [superchain-registry], we can
+//! remove `celo-registry` crate.
 //!
 //! [superchain-registry]: https://github.com/ethereum-optimism/superchain-registry/pull/1008/files
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

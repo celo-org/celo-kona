@@ -27,12 +27,8 @@ mod tests {
             OpChainHardforks::op_mainnet(),
             CeloEvmFactory::default(),
         );
-        let mut db = State::builder()
-            .with_database(CacheDB::<EmptyDB>::default())
-            .build();
-        let evm = executor_factory
-            .evm_factory()
-            .create_evm(&mut db, EvmEnv::default());
+        let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
+        let evm = executor_factory.evm_factory().create_evm(&mut db, EvmEnv::default());
         let mut executor = executor_factory.create_executor(evm, OpBlockExecutionCtx::default());
         let tx = Recovered::new_unchecked(
             CeloTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::new(

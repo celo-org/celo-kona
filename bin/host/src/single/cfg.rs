@@ -140,9 +140,7 @@ impl CeloSingleChainHost {
     /// Reads the [CeloRollupConfig] from the file system and returns it as a string.
     pub fn read_rollup_config(&self) -> Result<CeloRollupConfig, SingleChainHostError> {
         let rollup_config = self.kona_cfg.read_rollup_config()?;
-        let celo_rollup_config = CeloRollupConfig {
-            op_rollup_config: rollup_config,
-        };
+        let celo_rollup_config = CeloRollupConfig { op_rollup_config: rollup_config };
         Ok(celo_rollup_config)
     }
 
@@ -172,10 +170,8 @@ impl CeloSingleChainHost {
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
         );
-        let eigen_da_blob_provider = self
-            .eigenda_proxy_address
-            .clone()
-            .map(OnlineEigenDABlobProvider::new_http);
+        let eigen_da_blob_provider =
+            self.eigenda_proxy_address.clone().map(OnlineEigenDABlobProvider::new_http);
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
@@ -229,36 +225,10 @@ mod test {
 
         let cases = [
             // valid
-            (
-                ["--server", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(),
-                true,
-            ),
-            (
-                [
-                    "--server",
-                    "--rollup-config-path",
-                    "dummy",
-                    "--data-dir",
-                    "dummy",
-                ]
-                .as_slice(),
-                true,
-            ),
-            (
-                ["--native", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(),
-                true,
-            ),
-            (
-                [
-                    "--native",
-                    "--rollup-config-path",
-                    "dummy",
-                    "--data-dir",
-                    "dummy",
-                ]
-                .as_slice(),
-                true,
-            ),
+            (["--server", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(), true),
+            (["--server", "--rollup-config-path", "dummy", "--data-dir", "dummy"].as_slice(), true),
+            (["--native", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(), true),
+            (["--native", "--rollup-config-path", "dummy", "--data-dir", "dummy"].as_slice(), true),
             (
                 [
                     "--l1-node-address",
@@ -304,58 +274,15 @@ mod test {
                 true,
             ),
             // invalid
-            (
-                ["--server", "--native", "--l2-chain-id", "0"].as_slice(),
-                false,
-            ),
-            (
-                [
-                    "--l2-chain-id",
-                    "0",
-                    "--rollup-config-path",
-                    "dummy",
-                    "--server",
-                ]
-                .as_slice(),
-                false,
-            ),
+            (["--server", "--native", "--l2-chain-id", "0"].as_slice(), false),
+            (["--l2-chain-id", "0", "--rollup-config-path", "dummy", "--server"].as_slice(), false),
             (["--server"].as_slice(), false),
             (["--native"].as_slice(), false),
             (["--rollup-config-path", "dummy"].as_slice(), false),
             (["--l2-chain-id", "0"].as_slice(), false),
-            (
-                [
-                    "--l1-node-address",
-                    "dummy",
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                ]
-                .as_slice(),
-                false,
-            ),
-            (
-                [
-                    "--l2-node-address",
-                    "dummy",
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                ]
-                .as_slice(),
-                false,
-            ),
-            (
-                [
-                    "--l1-beacon-address",
-                    "dummy",
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                ]
-                .as_slice(),
-                false,
-            ),
+            (["--l1-node-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
+            (["--l2-node-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
+            (["--l1-beacon-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
             ([].as_slice(), false),
             (
                 [
@@ -373,11 +300,7 @@ mod test {
         ];
 
         for (args_ext, valid) in cases.into_iter() {
-            let args = default_flags
-                .iter()
-                .chain(args_ext.iter())
-                .cloned()
-                .collect::<Vec<_>>();
+            let args = default_flags.iter().chain(args_ext.iter()).cloned().collect::<Vec<_>>();
 
             let parsed = CeloSingleChainHost::try_parse_from(args);
             assert_eq!(parsed.is_ok(), valid);

@@ -66,7 +66,8 @@ where
     type HaltReason = OpHaltReason;
 
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
-        // Do not perform any extra validation for deposit transactions, they are pre-verified on L1.
+        // Do not perform any extra validation for deposit transactions, they are pre-verified on
+        // L1.
         let ctx = evm.ctx();
         let tx = ctx.tx();
         let tx_type = tx.tx_type();
@@ -197,7 +198,8 @@ where
                     "effective balance is always smaller than max balance so it can't overflow",
                 );
 
-            // subtracting max balance spending with value that is going to be deducted later in the call.
+            // subtracting max balance spending with value that is going to be deducted later in the
+            // call.
             let gas_balance_spending = effective_balance_spending - tx.value();
 
             // If the transaction is not a deposit transaction, subtract the L1 data fee from the
@@ -243,13 +245,12 @@ where
             //
             // Hardfork Behavior:
             // - Bedrock (success path):
-            //   - Deposit transactions (non-system) report their gas limit as the usage.
-            //     No refunds.
+            //   - Deposit transactions (non-system) report their gas limit as the usage. No
+            //     refunds.
             //   - Deposit transactions (system) report 0 gas used. No refunds.
             //   - Regular transactions report gas usage as normal.
             // - Regolith (success path):
-            //   - Deposit transactions (all) report their gas used as normal. Refunds
-            //     enabled.
+            //   - Deposit transactions (all) report their gas used as normal. Refunds enabled.
             //   - Regular transactions report their gas used as normal.
             if !is_deposit || is_regolith {
                 // For regular transactions prior to Regolith and all transactions after
@@ -270,12 +271,12 @@ where
             //
             // Hardfork Behavior:
             // - Bedrock (revert path):
-            //   - Deposit transactions (all) report the gas limit as the amount of gas
-            //     used on failure. No refunds.
+            //   - Deposit transactions (all) report the gas limit as the amount of gas used on
+            //     failure. No refunds.
             //   - Regular transactions receive a refund on remaining gas as normal.
             // - Regolith (revert path):
-            //   - Deposit transactions (all) report the actual gas used as the amount of
-            //     gas used on failure. Refunds on remaining gas enabled.
+            //   - Deposit transactions (all) report the actual gas used as the amount of gas used
+            //     on failure. Refunds on remaining gas enabled.
             //   - Regular transactions receive a refund on remaining gas as normal.
             if !is_deposit || is_regolith {
                 gas.erase_cost(remaining);
@@ -955,8 +956,9 @@ mod tests {
             .reimburse_caller(&mut evm, &mut exec_result)
             .unwrap();
 
-        // Compute the expected refund amount. If the transaction is a deposit, the operator fee refund never
-        // applies. If the transaction is not a deposit, the operator fee refund is added to the refund amount.
+        // Compute the expected refund amount. If the transaction is a deposit, the operator fee
+        // refund never applies. If the transaction is not a deposit, the operator fee
+        // refund is added to the refund amount.
         let mut expected_refund =
             U256::from(GAS_PRICE * (gas.remaining() + gas.refunded() as u64) as u128);
         let op_fee_refund = evm

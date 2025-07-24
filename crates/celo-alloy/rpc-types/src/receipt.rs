@@ -19,11 +19,7 @@ pub struct CeloTransactionReceipt {
     #[serde(flatten)]
     pub l1_block_info: L1BlockInfo,
     /// BaseFee stored in fee currency for fee currency txs.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "alloy_serde::quantity::opt"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
     pub base_fee: Option<u128>,
 }
 
@@ -95,10 +91,7 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
         fn convert_standard_receipt(
             receipt: ReceiptWithBloom<Receipt<alloy_rpc_types_eth::Log>>,
         ) -> ReceiptWithBloom<Receipt<alloy_primitives::Log>> {
-            let ReceiptWithBloom {
-                logs_bloom,
-                receipt,
-            } = receipt;
+            let ReceiptWithBloom { logs_bloom, receipt } = receipt;
 
             let consensus_logs = receipt.logs.into_iter().map(|log| log.inner).collect();
             ReceiptWithBloom {
@@ -123,16 +116,8 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
                 Self::Eip7702(convert_standard_receipt(receipt))
             }
             CeloReceiptEnvelope::Cip64(receipt) => Self::Cip64(convert_standard_receipt(receipt)),
-            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom {
-                logs_bloom,
-                receipt,
-            }) => {
-                let consensus_logs = receipt
-                    .inner
-                    .logs
-                    .into_iter()
-                    .map(|log| log.inner)
-                    .collect();
+            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom { logs_bloom, receipt }) => {
+                let consensus_logs = receipt.inner.logs.into_iter().map(|log| log.inner).collect();
                 let consensus_receipt = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
                         inner: Receipt {
