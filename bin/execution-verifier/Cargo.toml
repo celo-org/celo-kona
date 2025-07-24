@@ -36,6 +36,7 @@ thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 futures.workspace = true
+rusty-leveldb = { git = "https://github.com/robofinch/leveldb-rs", branch = "master"}
 
 
 [lints]

@@ -1,13 +1,13 @@
 //! Execution verifier for Celo Kona
 //!
 //! This binary provides execution verification functionality for the Celo Kona project.
+mod rpc_trie_provider;
+mod leveldb_trie_provider;
 
 use alloy_celo_evm::CeloEvmFactory;
-use alloy_consensus::Header;
 use alloy_network::Ethereum;
 use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, RootProvider, network::primitives::BlockTransactions};
-use alloy_rlp::Decodable;
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_transport_http::{Client, Http};
@@ -17,18 +17,16 @@ use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
 use kona_cli::init_tracing_subscriber;
-use kona_executor::TrieDBProvider;
-use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use kona_mpt::{NoopTrieHinter};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::sync::Arc;
-use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
+use tokio::{sync::Semaphore, time::Instant};
 use tracing_subscriber::EnvFilter;
 use url::Url;
-
-// use kona_registry::ROLLUP_CONFIGS;
-// use kona_executor::CeloStatelessL2Builder;
-// use alloy_celo_evm::CeloEvmFactory;
-// use kona_mpt::NoopTrieHinter;
+use std::path::PathBuf;
+use crate::rpc_trie_provider::RPCTrieProvider;
+use crate::leveldb_trie_provider::LevelDBTrieProvider;
+use kona_executor::TrieDBProvider;
 
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
@@ -41,9 +39,12 @@ pub struct ExecutionVerifierCommand {
     /// By default, the verbosity level is set to 3 (info level).
     #[arg(long, short, default_value = "3", action = ArgAction::Count)]
     pub v: u8,
-    /// The L2 archive EL to use.
+    /// The L2 archive node RPC to use.
     #[arg(long)]
     pub l2_rpc: Url,
+    /// The path to the leveldb database to use.
+    #[arg(long)]
+    pub leveldb_path: PathBuf,
     /// L2 inclusive starting block number to execute.
     #[arg(long)]
     pub start_block: u64,
@@ -73,6 +74,15 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .expect("Rollup config not found");
 
+    let leveldb_trie = Arc::new(LevelDBTrieProvider::new(&cli.leveldb_path));
+
+        // let leveldb_trie: Option<Arc<LevelDBTrieProvider>> = if let Some(leveldb_path) = cli.leveldb_path {
+        //     Some(Arc::new(LevelDBTrieProvider::new(&leveldb_path)))
+        // } else {
+        //     None
+        // };
+    // let leveldb_trie = Arc::new(leveldb_trie);
+
     // Create semaphore to limit concurrency to 500
     let semaphore = Arc::new(Semaphore::new(cli.concurrency));
 
@@ -83,12 +93,18 @@ async fn main() -> Result<()> {
         let provider = Arc::clone(&provider);
         let rollup_config = rollup_config.clone();
         let semaphore = Arc::clone(&semaphore);
+        let leveldb_trie = Arc::clone(&leveldb_trie);
 
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
 
-            // Create trie for this task
-            let trie = Trie::new(provider.as_ref());
+
+            // // Create trie for this task
+            // let trie: dyn TrieDBProvider = if let Some(leveldb_trie) = leveldb_trie.as_ref() {
+            //     leveldb_trie.as_ref()
+            // } else {
+            //     RPCTrieProvider::new(provider.as_ref())
+            // };
 
             // Fetch parent block
             let parent_block = provider
@@ -149,7 +165,7 @@ async fn main() -> Result<()> {
             let mut executor = CeloStatelessL2Builder::new(
                 &rollup_config,
                 CeloEvmFactory::default(),
-                &trie,
+                leveldb_trie.as_ref(),
                 NoopTrieHinter,
                 parent_header,
             );
@@ -190,11 +206,13 @@ async fn main() -> Result<()> {
     }
 
     let elapsed = start.elapsed();
-    
+
     if failed_blocks > 0 {
-        println!("Verification completed with {} failures out of {} total blocks", 
-                 failed_blocks, 
-                 cli.end_block - cli.start_block + 1);
+        println!(
+            "Verification completed with {} failures out of {} total blocks",
+            failed_blocks,
+            cli.end_block - cli.start_block + 1
+        );
     } else {
         println!(
             "Successfully verified execution for all {} blocks ({} to {})",
@@ -204,10 +222,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    println!(
-        "Total verification time: {:?}",
-        elapsed
-    );
+    println!("Total verification time: {:?}", elapsed);
     println!(
         "Average time per block: {:?}",
         elapsed / (cli.end_block - cli.start_block + 1) as u32
@@ -216,107 +231,3 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// A trie provider for the L2 execution layer.
-#[derive(Debug)]
-pub struct Trie<'a> {
-    /// The RPC provider for the L2 execution layer.
-    pub provider: &'a RootProvider<Ethereum>,
-}
-
-impl<'a> Trie<'a> {
-    /// Create a new [`Trie`] instance.
-    pub fn new(provider: &'a RootProvider) -> Self {
-        Self { provider }
-    }
-}
-
-impl<'a> TrieProvider for &Trie<'a> {
-    type Error = TrieError;
-
-    fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
-        // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_dbGet", &[key])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
-            })
-        })?;
-
-        // Decode the preimage into a trie node.
-        TrieNode::decode(&mut preimage.as_ref()).map_err(TrieError::Rlp)
-    }
-}
-
-impl<'a> TrieDBProvider for &Trie<'a> {
-    fn bytecode_by_hash(&self, hash: B256) -> Result<Bytes, Self::Error> {
-        // geth hashdb scheme code hash key prefix
-        const CODE_PREFIX: u8 = b'c';
-
-        // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                // Attempt to fetch the code from the L2 chain provider.
-                let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
-                let code = self
-                    .provider
-                    .client()
-                    .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    .await;
-
-                // Check if the first attempt to fetch the code failed. If it did, try fetching the
-                // code hash preimage without the geth hashdb scheme prefix.
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_) => self
-                        .provider
-                        .client()
-                        .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                        .await
-                        .map_err(|_| TrieError::PreimageNotFound)?,
-                };
-
-                Ok(code)
-            })
-        })?;
-
-        Ok(preimage)
-    }
-
-    fn header_by_hash(&self, hash: B256) -> Result<Header, Self::Error> {
-        let encoded_header: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_getRawHeader", &[hash])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
-            })
-        })?;
-
-        // Decode the Header.
-        Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
-    }
-}
-
-/// An error type for the [`DiskTrieNodeProvider`] and [`ExecutorTestFixtureCreator`].
-#[derive(Debug, thiserror::Error)]
-pub enum TrieError {
-    /// The preimage was not found in the key-value store.
-    #[error("Preimage not found")]
-    PreimageNotFound,
-    /// Failed to decode the RLP-encoded data.
-    #[error("Failed to decode RLP: {0}")]
-    Rlp(alloy_rlp::Error),
-    /// Failed to write back to the key-value store.
-    #[error("Failed to write back to key value store")]
-    KVStore,
-}
