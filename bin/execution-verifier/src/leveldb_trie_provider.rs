@@ -1,4 +1,4 @@
-use rusty_leveldb::{DB,Options};
+use rusty_leveldb::{DB,Options, Snapshot};
 use alloy_primitives::hex;
 use kona_mpt::{TrieNode, TrieProvider};
 use kona_executor::{
@@ -20,6 +20,7 @@ use std::sync::Mutex;
 pub(crate) struct LevelDBTrieProvider {
     /// The LevelDB database.
     db: Mutex<DB>,
+    snapshot: Snapshot,
 }
 
 use thiserror::Error;
@@ -39,8 +40,9 @@ pub(crate) enum TrieDBProviderError {
 impl LevelDBTrieProvider {
     /// Constructs a new LevelDBAndRPCTrieDBProvider.
     pub(crate) fn new(path: &Path) -> Self {
-        let db = DB::open(path, Options::default()).unwrap();
-        Self { db: Mutex::new(db) }
+        let mut db = DB::open(path, Options::default()).unwrap();
+        let snapshot = db.get_snapshot();
+        Self { db: Mutex::new(db), snapshot: snapshot }
     }
 }
 
@@ -52,8 +54,7 @@ impl TrieDBProvider for &LevelDBTrieProvider {
         let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
         
         let mut db = self.db.lock().unwrap();
-        let snapshot = db.get_snapshot();
-        db.get_at(&snapshot, &code_hash)
+        db.get_at(&self.snapshot, &code_hash)
             .map_err(|e| TrieDBProviderError::Error(e.to_string()))?
             .ok_or_else(|| TrieDBProviderError::KeyNotFound(code_hash))
             .map(Bytes::from)
@@ -75,10 +76,9 @@ impl TrieProvider for &LevelDBTrieProvider {
     type Error = TrieDBProviderError;
 
     fn trie_node_by_hash(&self, hash: B256) -> Result<TrieNode, Self::Error> {
-         
-            let mut db = self.db.lock().unwrap();
-            let snapshot = db.get_snapshot();
-            let trie_node_bytes = db.get_at(&snapshot, &hash.to_vec())
+        let trie_node_bytes = self
+            .db.lock().unwrap()
+            .get_at(&self.snapshot, &hash.to_vec())
             .map_err(|e| TrieDBProviderError::Error(e.to_string()))?
             .ok_or_else(|| TrieDBProviderError::KeyNotFound(hash.to_vec()))
             .map(Bytes::from)?;
