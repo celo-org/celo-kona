@@ -6,11 +6,14 @@ use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
 use alloy_network::Ethereum;
 use alloy_primitives::{B256, Bytes, Sealable};
-use alloy_provider::{Provider, RootProvider, network::primitives::BlockTransactions};
+use alloy_provider::{
+    Provider, ProviderBuilder, RootProvider, network::primitives::BlockTransactions,
+};
 use alloy_rlp::Decodable;
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_transport_http::{Client, Http};
+use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
@@ -41,9 +44,9 @@ pub struct ExecutionVerifierCommand {
     /// By default, the verbosity level is set to 3 (info level).
     #[arg(long, short, default_value = "3", action = ArgAction::Count)]
     pub v: u8,
-    /// The L2 archive EL to use.
+    /// The rpc connection to use, can be either an http or https URL or a file path to an IPC socket.
     #[arg(long)]
-    pub l2_rpc: Url,
+    pub l2_rpc: String,
     /// L2 inclusive starting block number to execute.
     #[arg(long)]
     pub start_block: u64,
@@ -61,8 +64,32 @@ async fn main() -> Result<()> {
     let cli = ExecutionVerifierCommand::parse();
     init_tracing_subscriber(cli.v, None::<EnvFilter>)?;
 
-    let http = Http::<Client>::new(cli.l2_rpc);
-    let provider: RootProvider<Ethereum> = RootProvider::new(RpcClient::new(http, false));
+    // Check if l2_rpc is a URL or a file path
+    let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
+        url if url.starts_with("http://") || url.starts_with("https://") => {
+            // It's a URL - use HTTP transport
+            println!("Using HTTP transport for URL: {}", cli.l2_rpc);
+            let url = cli.l2_rpc.parse::<Url>().expect("Invalid L2 RPC URL");
+            let http = Http::<Client>::new(url);
+            RootProvider::new(RpcClient::new(http, false))
+        }
+        file_path if std::path::Path::new(file_path).exists() => {
+            // It's a file path - use IPC transport
+            println!("Using IPC transport for file path: {}", cli.l2_rpc);
+            let ipc = IpcConnect::new(cli.l2_rpc);
+            ProviderBuilder::new()
+                .connect_ipc(ipc)
+                .await?
+                .root()
+                .clone()
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported RPC format: {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                cli.l2_rpc
+            ));
+        }
+    };
     let provider = Arc::new(provider);
 
     let chain_id = provider
@@ -190,11 +217,13 @@ async fn main() -> Result<()> {
     }
 
     let elapsed = start.elapsed();
-    
+
     if failed_blocks > 0 {
-        println!("Verification completed with {} failures out of {} total blocks", 
-                 failed_blocks, 
-                 cli.end_block - cli.start_block + 1);
+        println!(
+            "Verification completed with {} failures out of {} total blocks",
+            failed_blocks,
+            cli.end_block - cli.start_block + 1
+        );
     } else {
         println!(
             "Successfully verified execution for all {} blocks ({} to {})",
@@ -204,10 +233,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    println!(
-        "Total verification time: {:?}",
-        elapsed
-    );
+    println!("Total verification time: {:?}", elapsed);
     println!(
         "Average time per block: {:?}",
         elapsed / (cli.end_block - cli.start_block + 1) as u32
