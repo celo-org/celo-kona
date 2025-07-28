@@ -1,11 +1,9 @@
 name: Proof
 on:
-# TODO: Enable this workflow and add witness file when Baklava has Eigen v2 activated
-#  push:
-#    branches: [ main ]
-#  merge_group:
-#  pull_request:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+  merge_group:
+  pull_request:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,7 +14,7 @@ jobs:
     strategy:
       matrix:
         target: [ "native" ]
-        name: [ "Celo Baklava (Isthmus) - Block #41325014" ]
+        name: [ "Celo Sepolia (Isthmus) - Block #428928" ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -29,15 +27,15 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Set run environment
         run: |
-          if [[ ${{ contains(matrix.name, 41325014) }} == true ]]; then
-            BLOCK_NUMBER=41325014
+          if [[ ${{ contains(matrix.name, 428928) }} == true ]]; then
+            BLOCK_NUMBER=428928
             echo "BLOCK_NUMBER=$BLOCK_NUMBER" >> $GITHUB_ENV
-            echo "L2_CLAIM=0xdd5e8181a24d701c647d19cb6c6fdfd2e22d4cd43f92872a498517666759e121" >> $GITHUB_ENV
-            echo "L2_OUTPUT_ROOT=0x4b04d3aca926e537251010da2be41f8af95bce21878aefba3a771a6ba84178e3" >> $GITHUB_ENV
-            echo "L2_HEAD=0x3ff9c2d9cd5d5902f9e4a84f7b958d8f455fa7a460aaa3461df2a6ca7f032245" >> $GITHUB_ENV
-            echo "L1_HEAD=0x0cbc875f1763a936cbba96ec282fa7977cfdb2825f23a8dc90068b0722e450b0" >> $GITHUB_ENV
-            echo "L2_CHAIN_ID=62320" >> $GITHUB_ENV
-            echo "WITNESS_TAR_NAME=isthmus-celo-baklava-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
+            echo "L2_CLAIM=0xdd9032c387755cdcb4e070eb1d916bb587bb4a91a2a98193551918c5d8e70450" >> $GITHUB_ENV
+            echo "L2_OUTPUT_ROOT=0x5ed0c7fd581f37aaf0c255a00e1871c949931bae3378d1a0b868f1cc2694698c" >> $GITHUB_ENV
+            echo "L2_HEAD=0xc3c8a7e7158c154d0514ab2dfb631344fd0ebc71789f5e70d8bd7f48e571c7af" >> $GITHUB_ENV
+            echo "L1_HEAD=0xb923ce7b81bf6bf76b2225cfe411f0ce16a725f51a812bf24b0cc2ab0a04bca2" >> $GITHUB_ENV
+            echo "L2_CHAIN_ID=11142220" >> $GITHUB_ENV
+            echo "WITNESS_TAR_NAME=isthmus-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
           fi
       - name: Decompress witness data directory
         run: |
