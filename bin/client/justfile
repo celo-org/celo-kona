@@ -41,6 +41,7 @@ run-client-native l1_rpc l1_beacon_rpc l2_rpc rollup_node_rpc eigenda_proxy_addr
 
   echo "Running host program with native client program..."
   cargo r --bin celo-host --release -- \
+    {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
     --agreed-l2-head-hash $AGREED_L2_HEAD_HASH \
@@ -53,8 +54,7 @@ run-client-native l1_rpc l1_beacon_rpc l2_rpc rollup_node_rpc eigenda_proxy_addr
     --eigenda-proxy-address $EIGENDA_PROXY_ADDRESS \
     --native \
     --data-dir ./data \
-    $CHAIN_ID_OR_ROLLUP_CONFIG_ARG \
-    {{verbosity}}
+    $CHAIN_ID_OR_ROLLUP_CONFIG_ARG
 
 # Run the client program natively with the host program attached, in offline mode.
 run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l2_chain_id verbosity='':
@@ -72,6 +72,7 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
 
   echo "Running host program with native client program..."
   cargo r --bin celo-host -- \
+    {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
     --agreed-l2-head-hash $AGREED_L2_HEAD_HASH \
@@ -80,5 +81,4 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
     --claimed-l2-block-number $CLAIMED_L2_BLOCK_NUMBER \
     --l2-chain-id $L2_CHAIN_ID \
     --native \
-    --data-dir ./data \
-    {{verbosity}}
+    --data-dir ./data
