@@ -15,9 +15,9 @@ use kona_host::{
     single::{SingleChainHost, SingleChainHostError},
 };
 use kona_preimage::{
-    BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
+    BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer, PreimageKey,
 };
-use kona_proof::HintType;
+use kona_proof::{HintType, boot::L2_ROLLUP_CONFIG_KEY};
 use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
 use kona_std_fpvm::{FileChannel, FileDescriptor};
 use serde::Serialize;
@@ -76,7 +76,7 @@ impl CeloSingleChainHost {
     where
         C: Channel + Send + Sync + 'static,
     {
-        let kv_store = self.create_key_value_store()?;
+        let kv_store = self.create_key_value_store().await?;
 
         let task_handle = if self.is_offline() {
             task::spawn(async {
@@ -145,8 +145,29 @@ impl CeloSingleChainHost {
     }
 
     /// Creates the key-value store for the host backend.
-    pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
-        self.kona_cfg.create_key_value_store()
+    pub async fn create_key_value_store(
+        &self,
+    ) -> Result<SharedKeyValueStore, SingleChainHostError> {
+        let kv_store = self.kona_cfg.create_key_value_store()?;
+
+        // If we have a rollup config path, initialize the preimage oracle with the rollup config
+        // data
+        if self.kona_cfg.rollup_config_path.is_some() {
+            let rollup_config = self.read_rollup_config()?;
+            let rollup_config_json = serde_json::to_vec(&rollup_config.op_rollup_config)
+                .map_err(|_e| SingleChainHostError::Other("Failed to serialize rollup config"))?;
+
+            // Store the rollup config in the preimage oracle
+            kv_store
+                .write()
+                .await
+                .set(PreimageKey::new_local(L2_ROLLUP_CONFIG_KEY.to()).into(), rollup_config_json)
+                .map_err(|_e| {
+                    SingleChainHostError::Other("Failed to store rollup config in preimage oracle")
+                })?;
+        }
+
+        Ok(kv_store)
     }
 
     /// Creates the providers required for the host backend.
