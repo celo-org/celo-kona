@@ -1,7 +1,7 @@
 //! Receipt types for RPC
 
 use alloy_consensus::{Receipt, ReceiptWithBloom};
-use celo_alloy_consensus::CeloReceiptEnvelope;
+use celo_alloy_consensus::{CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope};
 use op_alloy_consensus::{OpDepositReceipt, OpDepositReceiptWithBloom};
 use op_alloy_rpc_types::L1BlockInfo;
 use serde::{Deserialize, Serialize};
@@ -115,9 +115,39 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
             CeloReceiptEnvelope::Eip7702(receipt) => {
                 Self::Eip7702(convert_standard_receipt(receipt))
             }
-            CeloReceiptEnvelope::Cip64(receipt) => Self::Cip64(convert_standard_receipt(receipt)),
-            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom { logs_bloom, receipt }) => {
-                let consensus_logs = receipt.inner.logs.into_iter().map(|log| log.inner).collect();
+            CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+                logs_bloom,
+                receipt,
+            }) => {
+                let consensus_logs = receipt
+                    .inner
+                    .logs
+                    .into_iter()
+                    .map(|log| log.inner)
+                    .collect();
+                let consensus_receipt = CeloCip64ReceiptWithBloom {
+                    receipt: CeloCip64Receipt {
+                        inner: Receipt {
+                            status: receipt.inner.status,
+                            cumulative_gas_used: receipt.inner.cumulative_gas_used,
+                            logs: consensus_logs,
+                        },
+                        base_fee: receipt.base_fee,
+                    },
+                    logs_bloom,
+                };
+                Self::Cip64(consensus_receipt)
+            },
+            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom {
+                logs_bloom,
+                receipt,
+            }) => {
+                let consensus_logs = receipt
+                    .inner
+                    .logs
+                    .into_iter()
+                    .map(|log| log.inner)
+                    .collect();
                 let consensus_receipt = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
                         inner: Receipt {

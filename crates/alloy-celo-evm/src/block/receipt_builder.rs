@@ -4,9 +4,17 @@
 use alloy_consensus::Eip658Value;
 use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
-use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
+use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType, CeloCip64Receipt};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
+
+pub trait CeloReceiptBuilder: Debug {
+    /// Receipt type.
+    type Receipt;
+
+    /// Builds receipt for a deposit transaction.
+    fn build_cip64_receipt(&self, inner: CeloCip64Receipt) -> Self::Receipt;
+}
 
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Default, Clone, Copy)]
@@ -22,6 +30,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
         ctx: ReceiptBuilderCtx<'a, CeloTxEnvelope, E>,
     ) -> Result<Self::Receipt, ReceiptBuilderCtx<'a, CeloTxEnvelope, E>> {
         match ctx.tx.tx_type() {
+            CeloTxType::Cip64 => Err(ctx),
             CeloTxType::Deposit => Err(ctx),
             ty => {
                 let receipt = alloy_consensus::Receipt {
@@ -36,7 +45,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                     CeloTxType::Eip2930 => CeloReceiptEnvelope::Eip2930(receipt),
                     CeloTxType::Eip1559 => CeloReceiptEnvelope::Eip1559(receipt),
                     CeloTxType::Eip7702 => CeloReceiptEnvelope::Eip7702(receipt),
-                    CeloTxType::Cip64 => CeloReceiptEnvelope::Cip64(receipt),
+                    CeloTxType::Cip64 => unreachable!(),
                     CeloTxType::Deposit => unreachable!(),
                 })
             }
@@ -45,5 +54,13 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
 
     fn build_deposit_receipt(&self, inner: OpDepositReceipt) -> Self::Receipt {
         CeloReceiptEnvelope::Deposit(inner.with_bloom())
+    }
+}
+
+impl CeloReceiptBuilder for CeloAlloyReceiptBuilder {
+    type Receipt = CeloReceiptEnvelope;
+
+    fn build_cip64_receipt(&self, inner: CeloCip64Receipt) -> Self::Receipt {
+        CeloReceiptEnvelope::Cip64(inner.with_bloom())
     }
 }
