@@ -42,7 +42,9 @@
             "delta_time": 0,
             "ecotone_time": 0,
             "fjord_time": 0,
-            "granite_time": 0
+            "granite_time": 0,
+            "holocene_time": 1752073200,
+            "isthmus_time": 1752073200
           },
           "optimism": {
             "eip1559Elasticity": 5,
