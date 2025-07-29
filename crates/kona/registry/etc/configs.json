@@ -176,6 +176,83 @@
             "MIPS": "0x8A12E1754f729C0856E2E32D4821577f0B245bfA",
             "PreimageOracle": "0xfaB0F466955D87e596Ca87E20c505bB6470D0DC4"
           }
+        },
+        {
+          "Name": "Celo Alfajores",
+          "PublicRPC": "https://alfajores-forno.celo-testnet.org",
+          "SequencerRPC": "https://sequencer.alfajores.celo-testnet.org",
+          "Explorer": "https://celo-alfajores.blockscout.com",
+          "SuperchainLevel": 0,
+          "GovernedByOptimism": false,
+          "DataAvailabilityType": "alt-da",
+          "l2_chain_id": 44787,
+          "batch_inbox_address": "0xff00000000000000000000000000000000044787",
+          "block_time": 1,
+          "seq_window_size": 3600,
+          "max_sequencer_drift": 1800,
+          "GasPayingToken": "0xF194afDf50B03e69Bd7D057c1Aa9e10c9954E4C9",
+          "hardfork_configuration": {
+            "canyon_time": 0,
+            "delta_time": 0,
+            "ecotone_time": 0,
+            "fjord_time": 0,
+            "granite_time": 0,
+            "holocene_time": 1750863600,
+            "isthmus_time": 1750863600
+          },
+          "optimism": {
+            "eip1559Elasticity": 5,
+            "eip1559Denominator": 400,
+            "eip1559DenominatorCanyon": 400
+          },
+          "alt_da": {
+            "da_challenge_window": 1,
+            "da_resolve_window": 1,
+            "da_commitment_type": "GenericCommitment"
+          },
+          "genesis": {
+            "l2_time": 1727337408,
+            "l1": {
+              "hash": "0x64728368a04f067bc2abe78c1de17f3711b054c4f3e979955fd8482af85e86db",
+              "number": 2411247
+            },
+            "l2": {
+              "hash": "0xe96cb39b59ebe02553e47424e7f57dbfbffca905c3ff350765985289754a00a3",
+              "number": 26384000
+            },
+            "system_config": {
+              "batcherAddr": "0x6f9cc6bfe1a0b446a36453d150905bbd6a4784e0",
+              "overhead": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "scalar": "0x00000000000000000000000000000000000000000000000000000000000f4240",
+              "gasLimit": 30000000
+            }
+          },
+          "Roles": {
+            "SystemConfigOwner": "0xe571b94CF7e95C46DFe6bEa529335f4A11d15D92",
+            "ProxyAdminOwner": "0xe571b94CF7e95C46DFe6bEa529335f4A11d15D92",
+            "Guardian": "0xe571b94CF7e95C46DFe6bEa529335f4A11d15D92",
+            "Challenger": "0xe571b94CF7e95C46DFe6bEa529335f4A11d15D92",
+            "Proposer": "0x06d010A07D9076d6E7af80E54E26036941221bFA",
+            "UnsafeBlockSigner": "0x280F2AB4a7bC6c78bcFFBE91E9E369C5FB4e5a29",
+            "BatchSubmitter": "0x6f9cc6BfE1A0b446A36453d150905BBD6A4784e0"
+          },
+          "Addresses": {
+            "AddressManager": "0xF9f47a32F0BB1F92cF200b1CC9a1713F96b65284",
+            "L1CrossDomainMessengerProxy": "0xF1eE12842631A56a860A38C20B588F4Bb872a4F8",
+            "L1ERC721BridgeProxy": "0x514912297580a20B7a0C2930BC8503d2C13Da642",
+            "L1StandardBridgeProxy": "0xD1B0E0581973c9eB7f886967A606b9441A897037",
+            "L2OutputOracleProxy": "0x4a2635e9e4f6e45817b1D402ac4904c1d1752438",
+            "OptimismMintableERC20FactoryProxy": "0xa950F004F069B0bF9201b17e71549c7711d4a9d5",
+            "OptimismPortalProxy": "0x82527353927d8D069b3B452904c942dA149BA381",
+            "SystemConfigProxy": "0x499b0C1F4BDC76d61b1D13b03384eac65FAF50c7",
+            "ProxyAdmin": "0x4630583d066520aF0E3fda0de2C628EEd2888683",
+            "SuperchainConfig": "0x4da82a327773965b8d4d85fa3db8249b387458e7",
+            "AnchorStateRegistryProxy": "0x65c969f8ed6fb525cf4de41679c457ed92491a0e",
+            "DelayedWETHProxy": "0x8e2a6D372557c9661045f26B140E7A189C38D80C",
+            "DisputeGameFactoryProxy": "0xE28AAdcd9883746c0e5068F58f9ea06027b214cb",
+            "MIPS": "0xaa59a0777648bc75cd10364083e878c1ccd6112a",
+            "PreimageOracle": "0x1fb8cdfc6831fc866ed9c51af8817da5c287add3"
+          }
         }
       ]
     }
