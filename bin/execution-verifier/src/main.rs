@@ -28,11 +28,6 @@ use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-// use kona_registry::ROLLUP_CONFIGS;
-// use kona_executor::CeloStatelessL2Builder;
-// use alloy_celo_evm::CeloEvmFactory;
-// use kona_mpt::NoopTrieHinter;
-
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -62,32 +57,39 @@ pub struct ExecutionVerifierCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = ExecutionVerifierCommand::parse();
+
+    // Add after CLI parsing
+    if cli.start_block > cli.end_block {
+        return Err(anyhow::anyhow!("start_block must be <= end_block"));
+    }
+    if cli.start_block == 0 {
+        return Err(anyhow::anyhow!(
+            "start_block must be > 0 (need parent block)"
+        ));
+    }
+
     init_tracing_subscriber(cli.v, None::<EnvFilter>)?;
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("http://") || url.starts_with("https://") => {
-            // It's a URL - use HTTP transport
-            println!("Using HTTP transport for URL: {}", cli.l2_rpc);
-            let url = cli.l2_rpc.parse::<Url>().expect("Invalid L2 RPC URL");
+            let url = cli.l2_rpc.parse::<Url>().expect(&format!("Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.", cli.l2_rpc));
             let http = Http::<Client>::new(url);
             RootProvider::new(RpcClient::new(http, false))
         }
-        file_path if std::path::Path::new(file_path).exists() => {
-            // It's a file path - use IPC transport
-            println!("Using IPC transport for file path: {}", cli.l2_rpc);
+
+        file_path => {
+            if !std::path::Path::new(file_path).exists() {
+                return Err(anyhow::anyhow!(
+                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.", cli.l2_rpc,
+                ));
+            }
             let ipc = IpcConnect::new(cli.l2_rpc);
             ProviderBuilder::new()
                 .connect_ipc(ipc)
                 .await?
                 .root()
                 .clone()
-        }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported RPC format: {}. Only HTTP/HTTPS URLs and file paths are supported.",
-                cli.l2_rpc
-            ));
         }
     };
     let provider = Arc::new(provider);
@@ -100,7 +102,6 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .expect("Rollup config not found");
 
-    // Create semaphore to limit concurrency to 500
     let semaphore = Arc::new(Semaphore::new(cli.concurrency));
 
     let start = Instant::now();
@@ -217,17 +218,17 @@ async fn main() -> Result<()> {
     }
 
     let elapsed = start.elapsed();
-
+    let total_blocks = cli.end_block - cli.start_block + 1;
     if failed_blocks > 0 {
         println!(
             "Verification completed with {} failures out of {} total blocks",
             failed_blocks,
-            cli.end_block - cli.start_block + 1
+            total_blocks
         );
     } else {
         println!(
             "Successfully verified execution for all {} blocks ({} to {})",
-            cli.end_block - cli.start_block + 1,
+            total_blocks,
             cli.start_block,
             cli.end_block
         );
@@ -236,7 +237,7 @@ async fn main() -> Result<()> {
     println!("Total verification time: {:?}", elapsed);
     println!(
         "Average time per block: {:?}",
-        elapsed / (cli.end_block - cli.start_block + 1) as u32
+        elapsed / total_blocks as u32
     );
 
     Ok(())
