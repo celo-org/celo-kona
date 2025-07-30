@@ -73,7 +73,10 @@ async fn main() -> Result<()> {
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("http://") || url.starts_with("https://") => {
-            let url = cli.l2_rpc.parse::<Url>().expect(&format!("Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.", cli.l2_rpc));
+            let url = cli.l2_rpc.parse::<Url>().expect(&format!(
+                "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                cli.l2_rpc
+            ));
             let http = Http::<Client>::new(url);
             RootProvider::new(RpcClient::new(http, false))
         }
@@ -81,7 +84,8 @@ async fn main() -> Result<()> {
         file_path => {
             if !std::path::Path::new(file_path).exists() {
                 return Err(anyhow::anyhow!(
-                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.", cli.l2_rpc,
+                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                    cli.l2_rpc,
                 ));
             }
             let ipc = IpcConnect::new(cli.l2_rpc);
@@ -193,7 +197,7 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            println!("Successfully verified block {}", block_number);
+            println!("Successlly verified block {}", block_number);
             Ok(block_number)
         });
 
@@ -222,15 +226,12 @@ async fn main() -> Result<()> {
     if failed_blocks > 0 {
         println!(
             "Verification completed with {} failures out of {} total blocks",
-            failed_blocks,
-            total_blocks
+            failed_blocks, total_blocks
         );
     } else {
         println!(
             "Successfully verified execution for all {} blocks ({} to {})",
-            total_blocks,
-            cli.start_block,
-            cli.end_block
+            total_blocks, cli.start_block, cli.end_block
         );
     }
 
