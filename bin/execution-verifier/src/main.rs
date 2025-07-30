@@ -335,7 +335,7 @@ impl<'a> TrieDBProvider for &Trie<'a> {
     }
 }
 
-/// An error type for the [`DiskTrieNodeProvider`] and [`ExecutorTestFixtureCreator`].
+/// An error type for the [`TrieProvider`] and [`TrieDBProvider`].
 #[derive(Debug, thiserror::Error)]
 pub enum TrieError {
     /// The preimage was not found in the key-value store.
