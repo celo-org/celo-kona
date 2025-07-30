@@ -73,10 +73,12 @@ async fn main() -> Result<()> {
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("http://") || url.starts_with("https://") => {
-            let url = cli.l2_rpc.parse::<Url>().expect(&format!(
-                "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
-                cli.l2_rpc
-            ));
+            let url = cli.l2_rpc.parse::<Url>().unwrap_or_else(|_| {
+                panic!(
+                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                    cli.l2_rpc
+                )
+            });
             let http = Http::<Client>::new(url);
             RootProvider::new(RpcClient::new(http, false))
         }
@@ -253,12 +255,12 @@ pub struct Trie<'a> {
 
 impl<'a> Trie<'a> {
     /// Create a new [`Trie`] instance.
-    pub fn new(provider: &'a RootProvider) -> Self {
+    pub const fn new(provider: &'a RootProvider) -> Self {
         Self { provider }
     }
 }
 
-impl<'a> TrieProvider for &Trie<'a> {
+impl TrieProvider for &Trie<'_> {
     type Error = TrieError;
 
     fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
@@ -281,7 +283,7 @@ impl<'a> TrieProvider for &Trie<'a> {
     }
 }
 
-impl<'a> TrieDBProvider for &Trie<'a> {
+impl TrieDBProvider for &Trie<'_> {
     fn bytecode_by_hash(&self, hash: B256) -> Result<Bytes, Self::Error> {
         // geth hashdb scheme code hash key prefix
         const CODE_PREFIX: u8 = b'c';
