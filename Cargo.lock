@@ -2478,7 +2478,6 @@ dependencies = [
  "celo-executor",
  "celo-registry",
  "clap",
- "futures",
  "kona-cli",
  "kona-executor",
  "kona-mpt",
