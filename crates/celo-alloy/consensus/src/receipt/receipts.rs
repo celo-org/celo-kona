@@ -58,10 +58,7 @@ impl<T: Encodable> CeloCip64Receipt<T> {
 
     /// Returns RLP header for this receipt encoding with the given [`Bloom`].
     pub fn rlp_header_with_bloom(&self, bloom: &Bloom) -> Header {
-        Header {
-            list: true,
-            payload_length: self.rlp_encoded_fields_length_with_bloom(bloom),
-        }
+        Header { list: true, payload_length: self.rlp_encoded_fields_length_with_bloom(bloom) }
     }
 }
 
@@ -72,19 +69,12 @@ impl<T: Decodable> CeloCip64Receipt<T> {
     pub fn rlp_decode_fields_with_bloom(
         buf: &mut &[u8],
     ) -> alloy_rlp::Result<ReceiptWithBloom<Self>> {
-        let ReceiptWithBloom {
-            receipt: inner,
-            logs_bloom,
-        } = Receipt::rlp_decode_fields_with_bloom(buf)?;
+        let ReceiptWithBloom { receipt: inner, logs_bloom } =
+            Receipt::rlp_decode_fields_with_bloom(buf)?;
 
-        let base_fee = (!buf.is_empty())
-            .then(|| Decodable::decode(buf))
-            .transpose()?;
+        let base_fee = (!buf.is_empty()).then(|| Decodable::decode(buf)).transpose()?;
 
-        Ok(ReceiptWithBloom {
-            logs_bloom,
-            receipt: Self { inner, base_fee },
-        })
+        Ok(ReceiptWithBloom { logs_bloom, receipt: Self { inner, base_fee } })
     }
 }
 
@@ -172,7 +162,7 @@ where
     T: arbitrary::Arbitrary<'a>,
 {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        use alloc::vec::Vec;
+        use std::vec::Vec;
         let base_fee = Option::<u128>::arbitrary(u)?;
         Ok(Self {
             inner: Receipt {
@@ -188,10 +178,10 @@ where
 /// Bincode-compatible [`CeloCip64Receipt`] serde implementation.
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
 pub(crate) mod serde_bincode_compat {
-    use alloc::borrow::Cow;
     use alloy_consensus::Receipt;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_with::{DeserializeAs, SerializeAs};
+    use std::borrow::Cow;
 
     /// Bincode-compatible [`super::CeloCip64Receipt`] serde implementation.
     ///
@@ -274,7 +264,7 @@ pub(crate) mod serde_bincode_compat {
         use serde_with::serde_as;
 
         #[test]
-        fn test_tx_deposit_bincode_roundtrip() {
+        fn test_tx_cip64_bincode_roundtrip() {
             #[serde_as]
             #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
             struct Data<T: Serialize + DeserializeOwned + Clone + 'static> {
@@ -310,11 +300,47 @@ mod tests {
     use alloy_rlp::{Decodable, Encodable};
 
     #[cfg(not(feature = "std"))]
-    use alloc::{vec, vec::Vec};
+    use std::{vec, vec::Vec};
 
     // Test vector from: https://eips.ethereum.org/EIPS/eip-2481
     #[test]
-    fn decode_legacy_receipt() {
+    fn decode_cip64_receipt() {
+        let data = hex!(
+            "f9016a8001b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f85ff85d940000000000000000000000000000000000000011f842a0000000000000000000000000000000000000000000000000000000000000deada0000000000000000000000000000000000000000000000000000000000000beef830100ff8343d573"
+        );
+
+        // EIP658Receipt
+        let expected = CeloCip64ReceiptWithBloom {
+            receipt: CeloCip64Receipt {
+                inner: Receipt {
+                    status: false.into(),
+                    cumulative_gas_used: 0x1,
+                    logs: vec![Log {
+                        address: address!("0000000000000000000000000000000000000011"),
+                        data: LogData::new_unchecked(
+                            vec![
+                                b256!(
+                                    "000000000000000000000000000000000000000000000000000000000000dead"
+                                ),
+                                b256!(
+                                    "000000000000000000000000000000000000000000000000000000000000beef"
+                                ),
+                            ],
+                            bytes!("0100ff"),
+                        ),
+                    }],
+                },
+                base_fee: Some(4445555),
+            },
+            logs_bloom: [0; 256].into(),
+        };
+
+        let receipt = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
+        assert_eq!(receipt, expected);
+    }
+
+    #[test]
+    fn decode_cip64_receipt_with_empty_base_fee() {
         let data = hex!(
             "f901668001b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f85ff85d940000000000000000000000000000000000000011f842a0000000000000000000000000000000000000000000000000000000000000deada0000000000000000000000000000000000000000000000000000000000000beef830100ff"
         );
@@ -345,12 +371,16 @@ mod tests {
             logs_bloom: [0; 256].into(),
         };
 
+        let mut data2 = vec![];
+        expected.encode(&mut data2);
+        println!("PONTI data: {:?}", hex::encode(&data2));
+
         let receipt = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
         assert_eq!(receipt, expected);
     }
 
     #[test]
-    fn gigantic_receipt() {
+    fn gigantic_cip64_receipt() {
         let receipt = CeloCip64Receipt {
             inner: Receipt {
                 cumulative_gas_used: 16747627,
@@ -376,7 +406,7 @@ mod tests {
                     },
                 ],
             },
-            base_fee: None,
+            base_fee: Some(4445555),
         }
         .with_bloom();
 
@@ -385,18 +415,16 @@ mod tests {
         receipt.encode(&mut data);
         let decoded = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
 
-        // receipt.clone().to_compact(&mut data);
-        // let (decoded, _) = Receipt::from_compact(&data[..], data.len());
         assert_eq!(decoded, receipt);
     }
 
     #[test]
-    fn regolith_receipt_roundtrip() {
+    fn receipt_cip64_roundtrip() {
         let data = hex!(
-            "f9010c0182b741b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0833d3bbf"
+            "f9010c0182b741b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c08343d573"
         );
 
-        // Deposit Receipt (post-regolith)
+        // CIP-64 Receipt
         let expected = CeloCip64ReceiptWithBloom {
             receipt: CeloCip64Receipt {
                 inner: Receipt::<Log> {
@@ -404,7 +432,7 @@ mod tests {
                     logs: vec![],
                     status: true.into(),
                 },
-                base_fee: Some(4012991),
+                base_fee: Some(4445555),
             },
             logs_bloom: [0; 256].into(),
         };
@@ -414,33 +442,6 @@ mod tests {
 
         let mut buf = Vec::new();
         receipt.encode(&mut buf);
-        assert_eq!(buf, &data[..]);
-    }
-
-    #[test]
-    fn post_canyon_receipt_roundtrip() {
-        let data = hex!(
-            "f9010d0182b741b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0833d3bbf01"
-        );
-
-        // Deposit Receipt (post-regolith)
-        let expected = CeloCip64ReceiptWithBloom {
-            receipt: CeloCip64Receipt {
-                inner: Receipt::<Log> {
-                    cumulative_gas_used: 46913,
-                    logs: vec![],
-                    status: true.into(),
-                },
-                base_fee: Some(4012991),
-            },
-            logs_bloom: [0; 256].into(),
-        };
-
-        let receipt = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
-        assert_eq!(receipt, expected);
-
-        let mut buf = Vec::new();
-        expected.encode(&mut buf);
         assert_eq!(buf, &data[..]);
     }
 }

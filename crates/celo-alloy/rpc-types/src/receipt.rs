@@ -115,16 +115,8 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
             CeloReceiptEnvelope::Eip7702(receipt) => {
                 Self::Eip7702(convert_standard_receipt(receipt))
             }
-            CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
-                logs_bloom,
-                receipt,
-            }) => {
-                let consensus_logs = receipt
-                    .inner
-                    .logs
-                    .into_iter()
-                    .map(|log| log.inner)
-                    .collect();
+            CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom { logs_bloom, receipt }) => {
+                let consensus_logs = receipt.inner.logs.into_iter().map(|log| log.inner).collect();
                 let consensus_receipt = CeloCip64ReceiptWithBloom {
                     receipt: CeloCip64Receipt {
                         inner: Receipt {
@@ -138,16 +130,8 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
                 };
                 Self::Cip64(consensus_receipt)
             }
-            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom {
-                logs_bloom,
-                receipt,
-            }) => {
-                let consensus_logs = receipt
-                    .inner
-                    .logs
-                    .into_iter()
-                    .map(|log| log.inner)
-                    .collect();
+            CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom { logs_bloom, receipt }) => {
+                let consensus_logs = receipt.inner.logs.into_iter().map(|log| log.inner).collect();
                 let consensus_receipt = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
                         inner: Receipt {

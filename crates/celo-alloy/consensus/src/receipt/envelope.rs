@@ -74,28 +74,21 @@ impl CeloReceiptEnvelope<Log> {
         let inner_receipt =
             Receipt { status: Eip658Value::Eip658(status), cumulative_gas_used, logs };
         match tx_type {
-            CeloTxType::Legacy => Self::Legacy(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip2930 => Self::Eip2930(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip1559 => Self::Eip1559(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
-            CeloTxType::Eip7702 => Self::Eip7702(ReceiptWithBloom {
-                receipt: inner_receipt,
-                logs_bloom,
-            }),
+            CeloTxType::Legacy => {
+                Self::Legacy(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip2930 => {
+                Self::Eip2930(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip1559 => {
+                Self::Eip1559(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
+            CeloTxType::Eip7702 => {
+                Self::Eip7702(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+            }
             CeloTxType::Cip64 => {
                 let inner = CeloCip64ReceiptWithBloom {
-                    receipt: CeloCip64Receipt {
-                        inner: inner_receipt,
-                        base_fee,
-                    },
+                    receipt: CeloCip64Receipt { inner: inner_receipt, base_fee },
                     logs_bloom,
                 };
                 Self::Cip64(inner)

@@ -1,6 +1,8 @@
 use crate::{
     CeloContext, CeloEvm,
-    core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
+    contracts::core_contracts::{
+        CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas,
+    },
 };
 use alloy_primitives::map::HashMap;
 use revm::{
