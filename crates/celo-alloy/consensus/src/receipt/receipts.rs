@@ -1,6 +1,5 @@
 //! Transaction receipt types for Celo.
 
-use super::CeloTxReceipt;
 use alloy_consensus::{
     Eip658Value, Receipt, ReceiptWithBloom, RlpDecodableReceipt, RlpEncodableReceipt, TxReceipt,
 };
@@ -59,7 +58,10 @@ impl<T: Encodable> CeloCip64Receipt<T> {
 
     /// Returns RLP header for this receipt encoding with the given [`Bloom`].
     pub fn rlp_header_with_bloom(&self, bloom: &Bloom) -> Header {
-        Header { list: true, payload_length: self.rlp_encoded_fields_length_with_bloom(bloom) }
+        Header {
+            list: true,
+            payload_length: self.rlp_encoded_fields_length_with_bloom(bloom),
+        }
     }
 }
 
@@ -70,10 +72,14 @@ impl<T: Decodable> CeloCip64Receipt<T> {
     pub fn rlp_decode_fields_with_bloom(
         buf: &mut &[u8],
     ) -> alloy_rlp::Result<ReceiptWithBloom<Self>> {
-        let ReceiptWithBloom { receipt: inner, logs_bloom } =
-            Receipt::rlp_decode_fields_with_bloom(buf)?;
+        let ReceiptWithBloom {
+            receipt: inner,
+            logs_bloom,
+        } = Receipt::rlp_decode_fields_with_bloom(buf)?;
 
-        let base_fee = (!buf.is_empty()).then(|| Decodable::decode(buf)).transpose()?;
+        let base_fee = (!buf.is_empty())
+            .then(|| Decodable::decode(buf))
+            .transpose()?;
 
         Ok(ReceiptWithBloom {
             logs_bloom,
@@ -152,12 +158,6 @@ impl<T: Decodable> RlpDecodableReceipt for CeloCip64Receipt<T> {
     }
 }
 
-impl CeloTxReceipt for CeloCip64Receipt {
-    fn base_fee(&self) -> Option<u128> {
-        self.base_fee
-    }
-}
-
 /// [`CeloCip64Receipt`] with calculated bloom filter, modified for the Celo Stack.
 ///
 /// This convenience type allows us to lazily calculate the bloom filter for a
@@ -173,7 +173,7 @@ where
 {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         use alloc::vec::Vec;
-        let base_fee = Option::<u64>::arbitrary(u)?;
+        let base_fee = Option::<u128>::arbitrary(u)?;
         Ok(Self {
             inner: Receipt {
                 status: Eip658Value::arbitrary(u)?,

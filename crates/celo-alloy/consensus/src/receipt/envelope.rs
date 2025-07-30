@@ -1,6 +1,9 @@
 //! Receipt envelope types for Celo.
 
-use crate::{receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom}, CeloTxType};
+use crate::{
+    CeloTxType,
+    receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom},
+};
 use alloy_consensus::{Eip658Value, Receipt, ReceiptWithBloom, TxReceipt};
 use alloy_eips::{
     Typed2718,
@@ -96,7 +99,7 @@ impl CeloReceiptEnvelope<Log> {
                     logs_bloom,
                 };
                 Self::Cip64(inner)
-            },
+            }
             CeloTxType::Deposit => {
                 let inner = OpDepositReceiptWithBloom {
                     receipt: OpDepositReceipt {
@@ -209,10 +212,9 @@ impl<T> CeloReceiptEnvelope<T> {
     /// receipt types may be added.
     pub const fn as_receipt(&self) -> Option<&Receipt<T>> {
         match self {
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t) => Some(&t.receipt),
+            Self::Legacy(t) | Self::Eip2930(t) | Self::Eip1559(t) | Self::Eip7702(t) => {
+                Some(&t.receipt)
+            }
             Self::Cip64(t) => Some(&t.receipt.inner),
             Self::Deposit(t) => Some(&t.receipt.inner),
         }
@@ -330,10 +332,9 @@ impl Encodable2718 for CeloReceiptEnvelope {
         match self {
             Self::Deposit(t) => t.encode(out),
             Self::Cip64(t) => t.encode(out),
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t) => t.encode(out),
+            Self::Legacy(t) | Self::Eip2930(t) | Self::Eip1559(t) | Self::Eip7702(t) => {
+                t.encode(out)
+            }
         }
     }
 }
@@ -424,8 +425,15 @@ mod tests {
 
     #[test]
     fn legacy_receipt_from_parts() {
-        let receipt =
-            CeloReceiptEnvelope::from_parts(true, 100, vec![], CeloTxType::Legacy, None, None, None);
+        let receipt = CeloReceiptEnvelope::from_parts(
+            true,
+            100,
+            vec![],
+            CeloTxType::Legacy,
+            None,
+            None,
+            None,
+        );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);
@@ -434,8 +442,15 @@ mod tests {
 
     #[test]
     fn cip64_receipt_from_parts() {
-        let receipt =
-            CeloReceiptEnvelope::from_parts(true, 100, vec![], CeloTxType::Cip64, None, None, Some(1 as u128));
+        let receipt = CeloReceiptEnvelope::from_parts(
+            true,
+            100,
+            vec![],
+            CeloTxType::Cip64,
+            None,
+            None,
+            Some(1 as u128),
+        );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);

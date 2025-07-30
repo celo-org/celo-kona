@@ -40,7 +40,7 @@ impl<'a, P, H, Evm> CeloStatelessL2Builder<'a, P, H, Evm>
 where
     P: TrieDBProvider,
     H: TrieHinter,
-    Evm: EvmFactory<Spec = OpSpecId> + 'static,
+    Evm: EvmFactory<Spec = OpSpecId> + Clone + 'static,
     <Evm as EvmFactory>::Tx: FromTxWithEncoded<CeloTxEnvelope> + FromRecoveredTx<CeloTxEnvelope>,
 {
     /// Creates a new [CeloStatelessL2Builder] instance.

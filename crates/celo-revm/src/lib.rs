@@ -5,11 +5,15 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+#[cfg(not(feature = "std"))]
+use spin as _;
+
 pub mod api;
 pub mod common;
 pub mod constants;
 pub mod contracts;
 pub mod evm;
+pub mod global_context;
 pub mod handler;
 pub mod precompiles;
 pub mod transaction;

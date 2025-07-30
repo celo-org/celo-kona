@@ -137,7 +137,7 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
                     logs_bloom,
                 };
                 Self::Cip64(consensus_receipt)
-            },
+            }
             CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom {
                 logs_bloom,
                 receipt,
