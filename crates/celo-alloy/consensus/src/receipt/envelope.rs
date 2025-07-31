@@ -443,7 +443,7 @@ mod tests {
             CeloTxType::Cip64,
             None,
             None,
-            Some(1 as u128),
+            Some(1_u128),
         );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);

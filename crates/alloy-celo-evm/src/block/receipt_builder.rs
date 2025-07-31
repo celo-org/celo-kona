@@ -6,7 +6,6 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::fee_currency_context::FeeCurrencyContext;
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
@@ -32,18 +31,14 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                         // Paid with Celo
                         Some(base_fee)
                     } else {
-                        let fee_currency = cip64.tx().fee_currency;
-                        if let Some(fee_currency_context) =
-                            celo_revm::global_context::get_fee_currency_context()
-                        {
-                            fee_currency_context
-                                .celo_to_currency(fee_currency, U256::from(base_fee))
-                                .ok()
-                                .and_then(|v| v.try_into().ok())
-                        } else {
-                            // If no context available, return None
-                            None
-                        }
+                        celo_revm::global_context::get_fee_currency_context().and_then(
+                            |fee_currency_context| {
+                                fee_currency_context
+                                    .celo_to_currency(cip64.tx().fee_currency, U256::from(base_fee))
+                                    .ok()
+                                    .and_then(|v| v.try_into().ok())
+                            },
+                        )
                     }
                 } else {
                     None

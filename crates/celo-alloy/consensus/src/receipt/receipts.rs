@@ -199,7 +199,7 @@ pub(crate) mod serde_bincode_compat {
     /// }
     /// ```
     #[derive(Debug, Serialize, Deserialize)]
-    pub struct CeloCip64Receipt<'a, T: Clone> {
+    struct CeloCip64Receipt<'a, T: Clone> {
         logs: Cow<'a, [T]>,
         status: bool,
         cumulative_gas_used: u64,
