@@ -15,7 +15,7 @@ jobs:
       matrix:
         target: [ "native" ]
         name: [ "Celo Sepolia (Isthmus) - Block #428928" ]
-    runs-on: ubuntu-latest
+    runs-on: ["op-stack", "self-hosted", "org"]
     timeout-minutes: 20
     steps:
       - name: Checkout sources
@@ -25,9 +25,26 @@ jobs:
           components: llvm-tools-preview
           prefix-key: ${{ matrix.target }}-${{ matrix.name }}
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install zstd
+        run: |
+          if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y zstd
+          elif command -v yum &> /dev/null; then
+            sudo yum install -y zstd
+          elif command -v brew &> /dev/null; then
+            brew install zstd
+          else
+            echo "Package manager not found, trying to install zstd manually"
+            # Fallback: download and install zstd manually
+            curl -L https://github.com/facebook/zstd/releases/download/v1.5.5/zstd-1.5.5.tar.gz | tar xz
+            cd zstd-1.5.5
+            make && sudo make install
+            cd ..
+          fi
       - name: Set run environment
         run: |
-          if [[ ${{ contains(matrix.name, 428928) }} == true ]]; then
+          echo "Matrix name: ${{ matrix.name }}"
+          if [[ "${{ matrix.name }}" == *"428928"* ]]; then
             BLOCK_NUMBER=428928
             echo "BLOCK_NUMBER=$BLOCK_NUMBER" >> $GITHUB_ENV
             echo "L2_CLAIM=0xdd9032c387755cdcb4e070eb1d916bb587bb4a91a2a98193551918c5d8e70450" >> $GITHUB_ENV
@@ -36,9 +53,15 @@ jobs:
             echo "L1_HEAD=0xb923ce7b81bf6bf76b2225cfe411f0ce16a725f51a812bf24b0cc2ab0a04bca2" >> $GITHUB_ENV
             echo "L2_CHAIN_ID=11142220" >> $GITHUB_ENV
             echo "WITNESS_TAR_NAME=isthmus-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
+            echo "WITNESS_TAR_NAME set to: isthmus-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst"
+          else
+            echo "Matrix name does not contain 428928, condition failed"
           fi
       - name: Decompress witness data directory
         run: |
+          echo "WITNESS_TAR_NAME: $WITNESS_TAR_NAME"
+          echo "Full path: ./bin/client/testdata/$WITNESS_TAR_NAME"
+          ls -la ./bin/client/testdata/
           tar --zstd -xvf ./bin/client/testdata/$WITNESS_TAR_NAME -C .
       - name: Run host + client offline
         working-directory: ./bin/client
