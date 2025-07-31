@@ -85,7 +85,7 @@
           "Addresses": {
             "AddressManager": "0x55093104b76FAA602F9d6c35A5FFF576bE78d753",
             "L1CrossDomainMessengerProxy": "0x1AC1181fc4e4F877963680587AEAa2C90D7EbB95",
-            "L1ERC721BridgeProxy": "0x3C519816C5BdC0a0199147594F83feD4F5847f13",
+            "L1Erc721BridgeProxy": "0x3C519816C5BdC0a0199147594F83feD4F5847f13",
             "L1StandardBridgeProxy": "0x9C4955b92F34148dbcfDCD82e9c9eCe5CF2badfe",
             "L2OutputOracleProxy": "0x7617b249AEb1F06c90BDF9C4F6C903C09a6a4220",
             "OptimismMintableERC20FactoryProxy": "0x6f0E4f1EB98A52EfaCF7BE11d48B9d9d6510A906",
@@ -266,7 +266,7 @@
           "Addresses": {
             "AddressManager": "0xF9f47a32F0BB1F92cF200b1CC9a1713F96b65284",
             "L1CrossDomainMessengerProxy": "0xF1eE12842631A56a860A38C20B588F4Bb872a4F8",
-            "L1ERC721BridgeProxy": "0x514912297580a20B7a0C2930BC8503d2C13Da642",
+            "L1Erc721BridgeProxy": "0x514912297580a20B7a0C2930BC8503d2C13Da642",
             "L1StandardBridgeProxy": "0xD1B0E0581973c9eB7f886967A606b9441A897037",
             "L2OutputOracleProxy": "0x4a2635e9e4f6e45817b1D402ac4904c1d1752438",
             "OptimismMintableERC20FactoryProxy": "0xa950F004F069B0bF9201b17e71549c7711d4a9d5",
