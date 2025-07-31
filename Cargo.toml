@@ -22,6 +22,7 @@ members = [
 default-members = [
   "bin/host",
   "bin/client",
+  "bin/execution-verifier",
 ]
 
 [workspace.metadata.cargo-udeps.ignore]
