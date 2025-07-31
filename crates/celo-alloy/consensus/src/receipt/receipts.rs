@@ -371,9 +371,6 @@ mod tests {
             logs_bloom: [0; 256].into(),
         };
 
-        let mut data2 = vec![];
-        expected.encode(&mut data2);
-        println!("PONTI data: {:?}", hex::encode(&data2));
 
         let receipt = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
         assert_eq!(receipt, expected);
