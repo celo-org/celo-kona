@@ -217,7 +217,7 @@
           "block_time": 1,
           "seq_window_size": 3600,
           "max_sequencer_drift": 1800,
-          "GasPayingToken": "0xF194afDf50B03e69Bd7D057c1Aa9e10c9954E4C9",
+          "GasPayingToken": "0x3E3FEA3F31ff162a460f11Af4c53f39E743fd88c",
           "hardfork_configuration": {
             "canyon_time": 0,
             "delta_time": 0,
