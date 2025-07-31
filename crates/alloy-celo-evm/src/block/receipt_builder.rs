@@ -10,22 +10,10 @@ use celo_revm::common::fee_currency_context::FeeCurrencyContext;
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
-/// Trait for building Celo-specific receipts.
-pub trait CeloReceiptBuilder: Debug {
-    /// Receipt type.
-    type Receipt;
-
-    /// Sets the fee currency context.
-    fn set_fee_currency_context(&mut self, fee_currency_context: FeeCurrencyContext);
-}
-
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct CeloAlloyReceiptBuilder {
-    /// The fee currency context
-    pub fee_currency_context: Option<FeeCurrencyContext>,
-}
+pub struct CeloAlloyReceiptBuilder;
 
 impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
     type Transaction = CeloTxEnvelope;
@@ -40,25 +28,22 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 let base_fee = ctx.evm.block().basefee as u128;
                 // For CIP-64 transactions, calculate the base fee in ERC20
                 let base_fee_in_erc20 = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
-                    if let Some(fee_currency) = cip64.tx().fee_currency {
-                        // Try to get context from instance first, then fall back to global
-                        if let Some(ctx) = &self.fee_currency_context {
-                            ctx.celo_to_currency(Some(fee_currency), U256::from(base_fee))
-                                .ok()
-                                .and_then(|v| v.try_into().ok())
-                        } else if let Some(global_ctx) =
+                    if cip64.tx().fee_currency.is_none() {
+                        // Paid with Celo
+                        Some(base_fee)
+                    } else {
+                        let fee_currency = cip64.tx().fee_currency;
+                        if let Some(fee_currency_context) =
                             celo_revm::global_context::get_fee_currency_context()
                         {
-                            global_ctx
-                                .celo_to_currency(Some(fee_currency), U256::from(base_fee))
+                            fee_currency_context
+                                .celo_to_currency(fee_currency, U256::from(base_fee))
                                 .ok()
                                 .and_then(|v| v.try_into().ok())
                         } else {
-                            // If no context available, just use the base fee
-                            Some(base_fee)
+                            // If no context available, return None
+                            None
                         }
-                    } else {
-                        Some(base_fee)
                     }
                 } else {
                     None
@@ -97,13 +82,5 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
 
     fn build_deposit_receipt(&self, inner: OpDepositReceipt) -> Self::Receipt {
         CeloReceiptEnvelope::Deposit(inner.with_bloom())
-    }
-}
-
-impl CeloReceiptBuilder for CeloAlloyReceiptBuilder {
-    type Receipt = CeloReceiptEnvelope;
-
-    fn set_fee_currency_context(&mut self, fee_currency_context: FeeCurrencyContext) {
-        self.fee_currency_context = Some(fee_currency_context);
     }
 }

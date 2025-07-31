@@ -1,8 +1,5 @@
 //! Global context for storing fee currency context across thread boundaries.
 
-#[cfg(not(feature = "std"))]
-use spin as _;
-
 use crate::common::fee_currency_context::FeeCurrencyContext;
 use core::sync::atomic::AtomicBool;
 use lazy_static::lazy_static;
