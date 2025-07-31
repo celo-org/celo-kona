@@ -3,10 +3,10 @@
 use crate::{
     CeloContext,
     common::fee_currency_context::FeeCurrencyContext,
+    common::global_fee_currency_context,
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
-    global_context,
     transaction::CeloTxTr,
 };
 use alloy_primitives::Address;
@@ -302,7 +302,7 @@ where
                     evm.ctx().chain().fee_currency_context = fee_currency_context.clone();
 
                     // Also set the global context for fallback access
-                    global_context::set_fee_currency_context(fee_currency_context);
+                    global_fee_currency_context::set_fee_currency_context(fee_currency_context);
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.

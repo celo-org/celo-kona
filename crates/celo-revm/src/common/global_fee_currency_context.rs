@@ -19,13 +19,13 @@ lazy_static! {
 pub fn set_fee_currency_context(context: FeeCurrencyContext) {
     #[cfg(feature = "std")]
     {
-        let mut global_context = FEE_CURRENCY_CONTEXT.write().unwrap();
-        *global_context = Some(context);
+        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
+        *global_fee_currency_context = Some(context);
     }
     #[cfg(not(feature = "std"))]
     {
-        let mut global_context = FEE_CURRENCY_CONTEXT.write();
-        *global_context = Some(context);
+        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write();
+        *global_fee_currency_context = Some(context);
     }
     CONTEXT_SET.store(true, core::sync::atomic::Ordering::Relaxed);
 }
@@ -38,13 +38,13 @@ pub fn get_fee_currency_context() -> Option<FeeCurrencyContext> {
 
     #[cfg(feature = "std")]
     {
-        let global_context = FEE_CURRENCY_CONTEXT.read().unwrap();
-        global_context.clone()
+        let global_fee_currency_context = FEE_CURRENCY_CONTEXT.read().unwrap();
+        global_fee_currency_context.clone()
     }
     #[cfg(not(feature = "std"))]
     {
-        let global_context = FEE_CURRENCY_CONTEXT.read();
-        global_context.clone()
+        let global_fee_currency_context = FEE_CURRENCY_CONTEXT.read();
+        global_fee_currency_context.clone()
     }
 }
 
@@ -52,13 +52,13 @@ pub fn get_fee_currency_context() -> Option<FeeCurrencyContext> {
 pub fn clear_fee_currency_context() {
     #[cfg(feature = "std")]
     {
-        let mut global_context = FEE_CURRENCY_CONTEXT.write().unwrap();
-        *global_context = None;
+        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
+        *global_fee_currency_context = None;
     }
     #[cfg(not(feature = "std"))]
     {
-        let mut global_context = FEE_CURRENCY_CONTEXT.write();
-        *global_context = None;
+        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write();
+        *global_fee_currency_context = None;
     }
     CONTEXT_SET.store(false, core::sync::atomic::Ordering::Relaxed);
 }

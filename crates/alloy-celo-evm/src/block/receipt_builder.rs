@@ -31,14 +31,13 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                         // Paid with Celo
                         Some(base_fee)
                     } else {
-                        celo_revm::global_context::get_fee_currency_context().and_then(
-                            |fee_currency_context| {
+                        celo_revm::common::global_fee_currency_context::get_fee_currency_context()
+                            .and_then(|fee_currency_context| {
                                 fee_currency_context
                                     .celo_to_currency(cip64.tx().fee_currency, U256::from(base_fee))
                                     .ok()
                                     .and_then(|v| v.try_into().ok())
-                            },
-                        )
+                            })
                     }
                 } else {
                     None
