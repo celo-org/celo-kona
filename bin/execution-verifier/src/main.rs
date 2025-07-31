@@ -39,7 +39,8 @@ pub struct ExecutionVerifierCommand {
     /// By default, the verbosity level is set to 3 (info level).
     #[arg(long, short, default_value = "3", action = ArgAction::Count)]
     pub v: u8,
-    /// The rpc connection to use, can be either an http or https URL or a file path to an IPC socket.
+    /// The rpc connection to use, can be either an http or https URL or a file path to an IPC
+    /// socket.
     #[arg(long)]
     pub l2_rpc: String,
     /// L2 inclusive starting block number to execute.
@@ -63,9 +64,7 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("start_block must be <= end_block"));
     }
     if cli.start_block == 0 {
-        return Err(anyhow::anyhow!(
-            "start_block must be > 0 (need parent block)"
-        ));
+        return Err(anyhow::anyhow!("start_block must be > 0 (need parent block)"));
     }
 
     init_tracing_subscriber(cli.v, None::<EnvFilter>)?;
@@ -91,22 +90,13 @@ async fn main() -> Result<()> {
                 ));
             }
             let ipc = IpcConnect::new(cli.l2_rpc);
-            ProviderBuilder::new()
-                .connect_ipc(ipc)
-                .await?
-                .root()
-                .clone()
+            ProviderBuilder::new().connect_ipc(ipc).await?.root().clone()
         }
     };
     let provider = Arc::new(provider);
 
-    let chain_id = provider
-        .get_chain_id()
-        .await
-        .expect("Failed to get chain ID");
-    let rollup_config = ROLLUP_CONFIGS
-        .get(&chain_id)
-        .expect("Rollup config not found");
+    let chain_id = provider.get_chain_id().await.expect("Failed to get chain ID");
+    let rollup_config = ROLLUP_CONFIGS.get(&chain_id).expect("Rollup config not found");
 
     let semaphore = Arc::new(Semaphore::new(cli.concurrency));
 
@@ -187,9 +177,7 @@ async fn main() -> Result<()> {
                 NoopTrieHinter,
                 parent_header,
             );
-            let outcome = executor
-                .build_block(payload_attrs)
-                .expect("Failed to execute block");
+            let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
 
             // Verify the result
             if outcome.header.inner() != &executing_header.inner {
@@ -238,10 +226,7 @@ async fn main() -> Result<()> {
     }
 
     println!("Total verification time: {:?}", elapsed);
-    println!(
-        "Average time per block: {:?}",
-        elapsed / total_blocks as u32
-    );
+    println!("Average time per block: {:?}", elapsed / total_blocks as u32);
 
     Ok(())
 }
