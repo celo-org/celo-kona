@@ -131,7 +131,7 @@
           "block_time": 1,
           "seq_window_size": 7200,
           "max_sequencer_drift": 600,
-          "GasPayingToken": "0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8",
+          "GasPayingToken": "0xE692fD8305e097b0e73f1b61aCA8b74Cd921443B",
           "hardfork_configuration": {
             "canyon_time": 0,
             "delta_time": 0,
@@ -199,7 +199,7 @@
             "DisputeGameFactoryProxy": "0x788ef5850c3a51d41f59Dc4327017EF8D754eD80",
             "FaultDisputeGame": "0x514088c8bD8dB7436858f21caCB628dbeF20a8F4",
             "Mips": "0x8F5a62ceb69c0D0674937DA29023b49BA279F164",
-            "PermissionedDisputeGame": "0x514088c8bD8dB7436858f21caCB628dbeF20a8F4",
+            "PermissionedDisputeGame": "0x50A9AE03001aD069a85538cD7fC9a2198DFCFBc7",
             "PreimageOracle": "0x3052f7e497870bE9aD7cd2C1fFC415c5Fb8ecFC3",
             "DataAvailabilityChallenge": null
           }
