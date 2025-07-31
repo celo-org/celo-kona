@@ -371,7 +371,6 @@ mod tests {
             logs_bloom: [0; 256].into(),
         };
 
-
         let receipt = CeloCip64ReceiptWithBloom::decode(&mut &data[..]).unwrap();
         assert_eq!(receipt, expected);
     }
