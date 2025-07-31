@@ -95,8 +95,8 @@ async fn main() -> Result<()> {
     };
     let provider = Arc::new(provider);
 
-    let chain_id = provider.get_chain_id().await.expect("Failed to get chain ID");
-    let rollup_config = ROLLUP_CONFIGS.get(&chain_id).expect("Rollup config not found");
+    let chain_id = provider.get_chain_id().await.map_err(|e| anyhow::anyhow!("Failed to get chain ID: {}", e))?;
+    let rollup_config = ROLLUP_CONFIGS.get(&chain_id).ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
 
     let semaphore = Arc::new(Semaphore::new(cli.concurrency));
 
@@ -118,16 +118,16 @@ async fn main() -> Result<()> {
             let parent_block = provider
                 .get_block_by_number((block_number - 1).into())
                 .await
-                .expect("Failed to get parent block")
-                .expect("Parent block not found");
+                .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
+                .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
             let parent_header = parent_block.header.inner.seal_slow();
 
             // Fetch executing block
             let executing_block = provider
                 .get_block_by_number(block_number.into())
                 .await
-                .expect("Failed to get executing block")
-                .expect("Executing block not found");
+                .map_err(|e| anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e))?
+                .ok_or_else(|| anyhow::anyhow!("Executing block {} not found", block_number))?;
 
             let encoded_executing_transactions = match executing_block.transactions {
                 BlockTransactions::Hashes(transactions) => {
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
                             .client()
                             .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
                             .await
-                            .expect("Failed to get raw transaction");
+                            .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e))?;
                         encoded_transactions.push(tx);
                     }
                     encoded_transactions
@@ -165,8 +165,9 @@ async fn main() -> Result<()> {
                         .then(|| {
                             executing_header.extra_data[1..]
                                 .try_into()
-                                .expect("Invalid header format for Holocene")
-                        }),
+                                .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))
+                        })
+                        .transpose()?,
                 },
             };
 
@@ -177,7 +178,7 @@ async fn main() -> Result<()> {
                 NoopTrieHinter,
                 parent_header,
             );
-            let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
+            let outcome = executor.build_block(payload_attrs).map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
 
             // Verify the result
             if outcome.header.inner() != &executing_header.inner {
