@@ -1,4 +1,3 @@
-# TODO: remove unnecessary dependencies
 [package]
 name = "celo-proof"
 description = "Celo Proof SDK"
@@ -19,56 +18,33 @@ celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
+celo-registry = { version = "0.1.0", path = "../registry" }
 
 # Kona
 kona-mpt.workspace = true
-kona-derive.workspace = true
-kona-driver.workspace = true
-kona-preimage.workspace = true
 kona-executor.workspace = true
-kona-protocol.workspace = true
-kona-registry.workspace = true
-kona-genesis = { workspace = true, features = ["serde"] }
+kona-proof.workspace = true
+kona-preimage.workspace = true
 
 # Alloy
-alloy-rlp.workspace = true
-alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-trie.workspace = true
-
-# Op Alloy
-op-alloy-consensus.workspace = true
-op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 
 # Execution
 alloy-evm.workspace = true
-alloy-op-evm.workspace = true
 op-revm.workspace = true
 
 # General
-lru.workspace = true
-spin.workspace = true
 serde.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
-thiserror.workspace = true
-lazy_static.workspace = true
-
-# KZG
-#ark-ff.workspace = true
-#ark-bls12-381.workspace = true
 
 # `std` feature dependencies
 tokio = { workspace = true, features = ["full"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-rstest.workspace = true
-rand.workspace = true
-#c-kzg.workspace = true
-#rayon.workspace = true
 
 [features]
 std = ["dep:tokio"]

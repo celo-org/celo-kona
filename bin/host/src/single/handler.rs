@@ -45,16 +45,7 @@ impl HintHandler for CeloSingleChainHintHandler {
     ) -> Result<()> {
         match hint.ty {
             ExtendedHintType::Original(ty) => {
-                Self::fetch_original_hint(
-                    Hint {
-                        ty,
-                        data: hint.data,
-                    },
-                    cfg,
-                    providers,
-                    kv,
-                )
-                .await
+                Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
             }
             ExtendedHintType::EigenDACert => {
                 fetch_eigenda_hint(
@@ -103,11 +94,8 @@ impl CeloSingleChainHintHandler {
                 ensure!(hint.data.len() == 32, "Invalid hint data length");
 
                 let hash: B256 = hint.data.as_ref().try_into()?;
-                let raw_header: Bytes = providers
-                    .l1
-                    .client()
-                    .request("debug_getRawHeader", [hash])
-                    .await?;
+                let raw_header: Bytes =
+                    providers.l1.client().request("debug_getRawHeader", [hash]).await?;
 
                 let mut kv_lock = kv.write().await;
                 kv_lock.set(PreimageKey::new_keccak256(*hash).into(), raw_header.into())?;
@@ -133,11 +121,8 @@ impl CeloSingleChainHintHandler {
                 ensure!(hint.data.len() == 32, "Invalid hint data length");
 
                 let hash: B256 = hint.data.as_ref().try_into()?;
-                let raw_receipts: Vec<Bytes> = providers
-                    .l1
-                    .client()
-                    .request("debug_getRawReceipts", [hash])
-                    .await?;
+                let raw_receipts: Vec<Bytes> =
+                    providers.l1.client().request("debug_getRawReceipts", [hash]).await?;
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
@@ -152,10 +137,7 @@ impl CeloSingleChainHintHandler {
                 let index = u64::from_be_bytes(index_data_bytes);
                 let timestamp = u64::from_be_bytes(timestamp_data_bytes);
 
-                let partial_block_ref = BlockInfo {
-                    timestamp,
-                    ..Default::default()
-                };
+                let partial_block_ref = BlockInfo { timestamp, ..Default::default() };
                 let indexed_hash = IndexedBlobHash { index, hash };
 
                 // Fetch the blob sidecar from the blob provider.
@@ -185,17 +167,12 @@ impl CeloSingleChainHintHandler {
                 blob_key[..48].copy_from_slice(sidecar.kzg_commitment.as_ref());
                 for i in 0..FIELD_ELEMENTS_PER_BLOB {
                     blob_key[48..].copy_from_slice(
-                        ROOTS_OF_UNITY[i as usize]
-                            .into_bigint()
-                            .to_bytes_be()
-                            .as_ref(),
+                        ROOTS_OF_UNITY[i as usize].into_bigint().to_bytes_be().as_ref(),
                     );
                     let blob_key_hash = keccak256(blob_key.as_ref());
 
-                    kv_lock.set(
-                        PreimageKey::new_keccak256(*blob_key_hash).into(),
-                        blob_key.into(),
-                    )?;
+                    kv_lock
+                        .set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
                     kv_lock.set(
                         PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
                         sidecar.blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
@@ -208,10 +185,7 @@ impl CeloSingleChainHintHandler {
                 blob_key[72..].copy_from_slice(FIELD_ELEMENTS_PER_BLOB.to_be_bytes().as_ref());
                 let blob_key_hash = keccak256(blob_key.as_ref());
 
-                kv_lock.set(
-                    PreimageKey::new_keccak256(*blob_key_hash).into(),
-                    blob_key.into(),
-                )?;
+                kv_lock.set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
                 kv_lock.set(
                     PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
                     sidecar.kzg_proof.to_vec(),
@@ -236,10 +210,7 @@ impl CeloSingleChainHintHandler {
                 );
 
                 let mut kv_lock = kv.write().await;
-                kv_lock.set(
-                    PreimageKey::new_keccak256(*input_hash).into(),
-                    hint.data.into(),
-                )?;
+                kv_lock.set(PreimageKey::new_keccak256(*input_hash).into(), hint.data.into())?;
                 kv_lock.set(
                     PreimageKey::new(*input_hash, PreimageKeyType::Precompile).into(),
                     result,
@@ -250,11 +221,8 @@ impl CeloSingleChainHintHandler {
 
                 // Fetch the raw header from the L2 chain provider.
                 let hash: B256 = hint.data.as_ref().try_into()?;
-                let raw_header: Bytes = providers
-                    .l2
-                    .client()
-                    .request("debug_getRawHeader", [hash])
-                    .await?;
+                let raw_header: Bytes =
+                    providers.l2.client().request("debug_getRawHeader", [hash]).await?;
 
                 // Acquire a lock on the key-value store and set the preimage.
                 let mut kv_lock = kv.write().await;
@@ -356,11 +324,7 @@ impl CeloSingleChainHintHandler {
                 );
 
                 // Fetch the preimage from the L2 chain provider.
-                let preimage: Bytes = providers
-                    .l2
-                    .client()
-                    .request("debug_dbGet", &[hash])
-                    .await?;
+                let preimage: Bytes = providers.l2.client().request("debug_dbGet", &[hash]).await?;
 
                 let mut kv_write_lock = kv.write().await;
                 kv_write_lock.set(PreimageKey::new_keccak256(*hash).into(), preimage.into())?;
@@ -379,15 +343,12 @@ impl CeloSingleChainHintHandler {
 
                 // Write the account proof nodes to the key-value store.
                 let mut kv_lock = kv.write().await;
-                proof_response
-                    .account_proof
-                    .into_iter()
-                    .try_for_each(|node| {
-                        let node_hash = keccak256(node.as_ref());
-                        let key = PreimageKey::new_keccak256(*node_hash);
-                        kv_lock.set(key.into(), node.into())?;
-                        Ok::<(), anyhow::Error>(())
-                    })?;
+                proof_response.account_proof.into_iter().try_for_each(|node| {
+                    let node_hash = keccak256(node.as_ref());
+                    let key = PreimageKey::new_keccak256(*node_hash);
+                    kv_lock.set(key.into(), node.into())?;
+                    Ok::<(), anyhow::Error>(())
+                })?;
             }
             HintType::L2AccountStorageProof => {
                 ensure!(hint.data.len() == 8 + 20 + 32, "Invalid hint data length");
@@ -405,15 +366,12 @@ impl CeloSingleChainHintHandler {
                 let mut kv_lock = kv.write().await;
 
                 // Write the account proof nodes to the key-value store.
-                proof_response
-                    .account_proof
-                    .into_iter()
-                    .try_for_each(|node| {
-                        let node_hash = keccak256(node.as_ref());
-                        let key = PreimageKey::new_keccak256(*node_hash);
-                        kv_lock.set(key.into(), node.into())?;
-                        Ok::<(), anyhow::Error>(())
-                    })?;
+                proof_response.account_proof.into_iter().try_for_each(|node| {
+                    let node_hash = keccak256(node.as_ref());
+                    let key = PreimageKey::new_keccak256(*node_hash);
+                    kv_lock.set(key.into(), node.into())?;
+                    Ok::<(), anyhow::Error>(())
+                })?;
 
                 // Write the storage proof nodes to the key-value store.
                 let storage_proof = proof_response.storage_proof.remove(0);

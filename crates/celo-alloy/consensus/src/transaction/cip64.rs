@@ -21,11 +21,7 @@ use core::mem;
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[doc(
-    alias = "Cip64Transaction",
-    alias = "TransactionCip64",
-    alias = "Cip64Tx"
-)]
+#[doc(alias = "Cip64Transaction", alias = "TransactionCip64", alias = "Cip64Tx")]
 pub struct TxCip64 {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
@@ -187,9 +183,7 @@ impl RlpEcdsaDecodableTx for TxCip64 {
                 } else if bytes.len() == 20 {
                     Some(Address::from_slice(&bytes))
                 } else {
-                    return Err(alloy_rlp::Error::Custom(
-                        "Invalid fee_currency address length",
-                    ));
+                    return Err(alloy_rlp::Error::Custom("Invalid fee_currency address length"));
                 }
             },
         })
@@ -351,11 +345,7 @@ impl From<TxCip64> for TransactionRequest {
             fee_currency: _,
         } = tx;
         Self {
-            to: if let TxKind::Call(to) = to {
-                Some(to.into())
-            } else {
-                None
-            },
+            to: if let TxKind::Call(to) = to { Some(to.into()) } else { None },
             max_fee_per_gas: Some(max_fee_per_gas),
             max_priority_fee_per_gas: Some(max_priority_fee_per_gas),
             gas: Some(gas_limit),
@@ -383,7 +373,7 @@ pub(crate) mod serde_bincode_compat {
     ///
     /// Intended to use with the [`serde_with::serde_as`] macro in the following way:
     /// ```rust
-    /// use celo_alloy_consensus::{serde_bincode_compat, TxCip64};
+    /// use celo_alloy_consensus::{TxCip64, serde_bincode_compat};
     /// use serde::{Deserialize, Serialize};
     /// use serde_with::serde_as;
     ///
@@ -585,11 +575,7 @@ mod tests {
 
         let signed_tx = tx.into_signed(sig);
         assert_eq!(*signed_tx.hash(), hash, "Expected same hash");
-        assert_eq!(
-            signed_tx.recover_signer().unwrap(),
-            signer,
-            "Recovering signer should pass."
-        );
+        assert_eq!(signed_tx.recover_signer().unwrap(), signer, "Recovering signer should pass.");
     }
 
     #[test]

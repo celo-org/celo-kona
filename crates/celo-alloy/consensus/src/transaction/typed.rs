@@ -8,7 +8,7 @@ use alloy_consensus::{
 use alloy_eips::{Encodable2718, eip2718::IsTyped2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxHash, TxKind, bytes::BufMut};
 use alloy_rlp::Encodable;
-use op_alloy_consensus::{OpTxType, TxDeposit};
+use op_alloy_consensus::TxDeposit;
 
 /// The TypedTransaction enum represents all Ethereum transaction request types, modified for Celo.
 ///
@@ -183,12 +183,12 @@ impl CeloTypedTransaction {
 impl Typed2718 for CeloTypedTransaction {
     fn ty(&self) -> u8 {
         match self {
-            Self::Legacy(_) => OpTxType::Legacy as u8,
-            Self::Eip2930(_) => OpTxType::Eip2930 as u8,
-            Self::Eip1559(_) => OpTxType::Eip1559 as u8,
-            Self::Eip7702(_) => OpTxType::Eip7702 as u8,
+            Self::Legacy(_) => CeloTxType::Legacy as u8,
+            Self::Eip2930(_) => CeloTxType::Eip2930 as u8,
+            Self::Eip1559(_) => CeloTxType::Eip1559 as u8,
+            Self::Eip7702(_) => CeloTxType::Eip7702 as u8,
             Self::Cip64(_) => CeloTxType::Cip64 as u8,
-            Self::Deposit(_) => OpTxType::Deposit as u8,
+            Self::Deposit(_) => CeloTxType::Deposit as u8,
         }
     }
 }
@@ -407,7 +407,8 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
             Self::Eip1559(tx) => tx.rlp_encoded_fields_length(),
             Self::Eip7702(tx) => tx.rlp_encoded_fields_length(),
             Self::Cip64(tx) => tx.rlp_encoded_fields_length(),
-            // Self::Deposit(tx) => tx.rlp_encoded_fields_length(), // TODO: cannot use this since the function is private
+            // Self::Deposit(tx) => tx.rlp_encoded_fields_length(), // TODO: cannot use this since
+            // the function is private
             Self::Deposit(tx) => {
                 tx.source_hash.length()
                     + tx.from.length()
@@ -428,7 +429,8 @@ impl RlpEcdsaEncodableTx for CeloTypedTransaction {
             Self::Eip1559(tx) => tx.rlp_encode_fields(out),
             Self::Eip7702(tx) => tx.rlp_encode_fields(out),
             Self::Cip64(tx) => tx.rlp_encode_fields(out),
-            // Self::Deposit(tx) => tx.rlp_encode_fields(out), // TODO: cannot use this since the function is private
+            // Self::Deposit(tx) => tx.rlp_encode_fields(out), // TODO: cannot use this since the
+            // function is private
             Self::Deposit(tx) => {
                 tx.source_hash.encode(out);
                 tx.from.encode(out);

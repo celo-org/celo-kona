@@ -16,9 +16,7 @@ pub struct CeloRollupConfig {
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for CeloRollupConfig {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self {
-            op_rollup_config: RollupConfig::arbitrary(u)?,
-        })
+        Ok(Self { op_rollup_config: RollupConfig::arbitrary(u)? })
     }
 }
 
@@ -110,10 +108,8 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
         let value = serde_json::Value::deserialize(deserializer)?;
 
         // Remove the cel2_time field if it exists
-        let mut json_obj = value
-            .as_object()
-            .ok_or_else(|| serde::de::Error::custom("expected object"))?
-            .clone();
+        let mut json_obj =
+            value.as_object().ok_or_else(|| serde::de::Error::custom("expected object"))?.clone();
 
         json_obj.remove("cel2_time");
 
@@ -152,46 +148,22 @@ mod tests {
         // By default, the spec ID should be BEDROCK.
         let mut config = CeloRollupConfig {
             op_rollup_config: RollupConfig {
-                hardforks: HardForkConfig {
-                    regolith_time: Some(10),
-                    ..Default::default()
-                },
+                hardforks: HardForkConfig { regolith_time: Some(10), ..Default::default() },
                 ..Default::default()
             },
         };
-        assert_eq!(
-            config.op_rollup_config.spec_id(0),
-            op_revm::OpSpecId::BEDROCK
-        );
-        assert_eq!(
-            config.op_rollup_config.spec_id(10),
-            op_revm::OpSpecId::REGOLITH
-        );
+        assert_eq!(config.op_rollup_config.spec_id(0), op_revm::OpSpecId::BEDROCK);
+        assert_eq!(config.op_rollup_config.spec_id(10), op_revm::OpSpecId::REGOLITH);
         config.op_rollup_config.hardforks.canyon_time = Some(20);
-        assert_eq!(
-            config.op_rollup_config.spec_id(20),
-            op_revm::OpSpecId::CANYON
-        );
+        assert_eq!(config.op_rollup_config.spec_id(20), op_revm::OpSpecId::CANYON);
         config.op_rollup_config.hardforks.ecotone_time = Some(30);
-        assert_eq!(
-            config.op_rollup_config.spec_id(30),
-            op_revm::OpSpecId::ECOTONE
-        );
+        assert_eq!(config.op_rollup_config.spec_id(30), op_revm::OpSpecId::ECOTONE);
         config.op_rollup_config.hardforks.fjord_time = Some(40);
-        assert_eq!(
-            config.op_rollup_config.spec_id(40),
-            op_revm::OpSpecId::FJORD
-        );
+        assert_eq!(config.op_rollup_config.spec_id(40), op_revm::OpSpecId::FJORD);
         config.op_rollup_config.hardforks.holocene_time = Some(50);
-        assert_eq!(
-            config.op_rollup_config.spec_id(50),
-            op_revm::OpSpecId::HOLOCENE
-        );
+        assert_eq!(config.op_rollup_config.spec_id(50), op_revm::OpSpecId::HOLOCENE);
         config.op_rollup_config.hardforks.isthmus_time = Some(60);
-        assert_eq!(
-            config.op_rollup_config.spec_id(60),
-            op_revm::OpSpecId::ISTHMUS
-        );
+        assert_eq!(config.op_rollup_config.spec_id(60), op_revm::OpSpecId::ISTHMUS);
     }
 
     #[test]
@@ -413,18 +385,12 @@ mod tests {
         let mut config = CeloRollupConfig {
             op_rollup_config: RollupConfig {
                 channel_timeout: 100,
-                hardforks: HardForkConfig {
-                    granite_time: Some(10),
-                    ..Default::default()
-                },
+                hardforks: HardForkConfig { granite_time: Some(10), ..Default::default() },
                 ..Default::default()
             },
         };
         assert_eq!(config.op_rollup_config.channel_timeout(0), 100);
-        assert_eq!(
-            config.op_rollup_config.channel_timeout(10),
-            GRANITE_CHANNEL_TIMEOUT
-        );
+        assert_eq!(config.op_rollup_config.channel_timeout(10), GRANITE_CHANNEL_TIMEOUT);
         config.op_rollup_config.hardforks.granite_time = None;
         assert_eq!(config.op_rollup_config.channel_timeout(10), 100);
     }
@@ -432,18 +398,12 @@ mod tests {
     #[test]
     fn test_max_sequencer_drift() {
         let mut config = CeloRollupConfig {
-            op_rollup_config: RollupConfig {
-                max_sequencer_drift: 100,
-                ..Default::default()
-            },
+            op_rollup_config: RollupConfig { max_sequencer_drift: 100, ..Default::default() },
         };
         assert_eq!(config.op_rollup_config.max_sequencer_drift(0), 100);
         config.op_rollup_config.hardforks.fjord_time = Some(10);
         assert_eq!(config.op_rollup_config.max_sequencer_drift(0), 100);
-        assert_eq!(
-            config.op_rollup_config.max_sequencer_drift(10),
-            FJORD_MAX_SEQUENCER_DRIFT
-        );
+        assert_eq!(config.op_rollup_config.max_sequencer_drift(10), FJORD_MAX_SEQUENCER_DRIFT);
     }
 
     #[test]
@@ -623,10 +583,7 @@ mod tests {
     fn test_compute_block_number_from_time() {
         let cfg = CeloRollupConfig {
             op_rollup_config: RollupConfig {
-                genesis: ChainGenesis {
-                    l2_time: 10,
-                    ..Default::default()
-                },
+                genesis: ChainGenesis { l2_time: 10, ..Default::default() },
                 block_time: 2,
                 ..Default::default()
             },

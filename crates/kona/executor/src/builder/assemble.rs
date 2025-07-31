@@ -22,8 +22,8 @@ where
     H: TrieHinter,
     Evm: EvmFactory,
 {
-    /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning the
-    /// computed [Header].
+    /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning
+    /// the computed [Header].
     pub(crate) fn seal_block(
         &mut self,
         attrs: &CeloPayloadAttributes,
@@ -41,10 +41,7 @@ where
             // SAFETY: The OP Stack protocol will never generate a payload attributes with an empty
             // transactions field. Panicking here is the desired behavior, as it indicates a severe
             // protocol violation.
-            op_attrs
-                .transactions
-                .as_ref()
-                .expect("Transactions must be non-empty"),
+            op_attrs.transactions.as_ref().expect("Transactions must be non-empty"),
             |tx, buf| buf.put_slice(tx.as_ref()),
         )
         .root();
@@ -82,11 +79,8 @@ where
             .unwrap_or_default();
 
         // The requests hash on Celo, if Isthmus is active, is always the empty SHA256 hash.
-        let requests_hash = self
-            .config
-            .op_rollup_config
-            .is_isthmus_active(timestamp)
-            .then_some(SHA256_EMPTY);
+        let requests_hash =
+            self.config.op_rollup_config.is_isthmus_active(timestamp).then_some(SHA256_EMPTY);
 
         // Construct the new header.
         let header = Header {
@@ -156,11 +150,7 @@ where
 
     /// Fetches the L2 to L1 message passer account from the cache or underlying trie.
     fn message_passer_account(&mut self, block_number: u64) -> Result<B256, TrieDBError> {
-        match self
-            .trie_db
-            .storage_roots()
-            .get(&Predeploys::L2_TO_L1_MESSAGE_PASSER)
-        {
+        match self.trie_db.storage_roots().get(&Predeploys::L2_TO_L1_MESSAGE_PASSER) {
             Some(storage_root) => Ok(storage_root.blind()),
             None => Ok(self
                 .trie_db
@@ -181,8 +171,8 @@ pub fn compute_receipts_root(
     // the receipt root calculation does not inclide the deposit nonce in the
     // receipt encoding. In the Regolith hardfork, we must strip the deposit nonce
     // from the receipt encoding to match the receipt root calculation.
-    if config.op_rollup_config.is_regolith_active(timestamp)
-        && !config.op_rollup_config.is_canyon_active(timestamp)
+    if config.op_rollup_config.is_regolith_active(timestamp) &&
+        !config.op_rollup_config.is_canyon_active(timestamp)
     {
         let receipts = receipts
             .iter()

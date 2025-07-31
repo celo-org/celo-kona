@@ -48,13 +48,7 @@ where
         evm_factory: Evm,
         inner: Option<CeloStatelessL2Builder<'a, P, H, Evm>>,
     ) -> Self {
-        Self {
-            rollup_config,
-            trie_provider,
-            trie_hinter,
-            evm_factory,
-            inner,
-        }
+        Self { rollup_config, trie_provider, trie_hinter, evm_factory, inner }
     }
 }
 

@@ -1,4 +1,5 @@
 set positional-arguments
+alias t := test
 alias la := lint-all
 alias l := lint-native
 alias lint := lint-native
@@ -15,6 +16,10 @@ default:
 # Test for the native target with all features.
 test:
   cargo nextest run --workspace --all-features {{exclude_members}}
+
+# Runs benchmarks
+benches:
+  cargo bench --no-run --workspace --features test-utils {{exclude_members}}
 
 # Lint the workspace for all available targets
 lint-all: lint-native lint-docs

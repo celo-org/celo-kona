@@ -6,7 +6,8 @@ use alloy_primitives::{U8, U64};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use derive_more::Display;
 
-/// Celo TransactionType flags as specified in EIPs 2718, 1559, 2930, and CIP 64 as well as the deposit transaction spec
+/// Celo TransactionType flags as specified in EIPs 2718, 1559, 2930, and CIP 64 as well as the
+/// deposit transaction spec
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, Eq, Default, PartialEq, PartialOrd, Ord, Hash, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -35,14 +36,8 @@ pub enum CeloTxType {
 
 impl CeloTxType {
     /// List of all variants.
-    pub const ALL: [Self; 6] = [
-        Self::Legacy,
-        Self::Eip2930,
-        Self::Eip1559,
-        Self::Eip7702,
-        Self::Cip64,
-        Self::Deposit,
-    ];
+    pub const ALL: [Self; 6] =
+        [Self::Legacy, Self::Eip2930, Self::Eip1559, Self::Eip7702, Self::Cip64, Self::Deposit];
 
     /// Returns `true` if the type is [`CeloTxType::Deposit`].
     pub const fn is_deposit(&self) -> bool {
