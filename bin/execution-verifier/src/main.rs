@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            println!("Successlly verified block {}", block_number);
+            println!("Successfully verified block {}", block_number);
             Ok(block_number)
         });
 
