@@ -116,7 +116,7 @@ impl FeeCurrencyContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBuilder, DefaultCelo, core_contracts::tests::make_celo_test_db};
+    use crate::{CeloBuilder, DefaultCelo, contracts::core_contracts::tests::make_celo_test_db};
     use alloy_primitives::{U256, address};
     use revm::Context;
     use revm_context::ContextTr;
