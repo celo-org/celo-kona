@@ -5,9 +5,6 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
-#[cfg(not(feature = "std"))]
-use spin as _;
-
 pub mod api;
 pub mod common;
 pub mod constants;
