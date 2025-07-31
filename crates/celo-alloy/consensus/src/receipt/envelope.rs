@@ -1,6 +1,9 @@
 //! Receipt envelope types for Celo.
 
-use crate::CeloTxType;
+use crate::{
+    CeloTxType,
+    receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom},
+};
 use alloy_consensus::{Eip658Value, Receipt, ReceiptWithBloom, TxReceipt};
 use alloy_eips::{
     Typed2718,
@@ -47,8 +50,7 @@ pub enum CeloReceiptEnvelope<T = Log> {
     ///
     /// [CIP-64]: https://github.com/celo-org/celo-proposals/blob/master/CIPs/cip-0064.md
     #[cfg_attr(feature = "serde", serde(rename = "0x7b", alias = "0x7B"))]
-    Cip64(ReceiptWithBloom<Receipt<T>>), /* TODO: replace with CeloCip64Receipt which includes
-                                          * baseFee */
+    Cip64(ReceiptWithBloom<CeloCip64Receipt<T>>),
     /// Receipt envelope with type flag 126, containing a [deposit] receipt.
     ///
     /// [deposit]: https://specs.optimism.io/protocol/deposits.html
@@ -65,6 +67,7 @@ impl CeloReceiptEnvelope<Log> {
         tx_type: CeloTxType,
         deposit_nonce: Option<u64>,
         deposit_receipt_version: Option<u64>,
+        base_fee: Option<u128>,
     ) -> Self {
         let logs = logs.into_iter().cloned().collect::<Vec<_>>();
         let logs_bloom = logs_bloom(&logs);
@@ -84,7 +87,11 @@ impl CeloReceiptEnvelope<Log> {
                 Self::Eip7702(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
             }
             CeloTxType::Cip64 => {
-                Self::Cip64(ReceiptWithBloom { receipt: inner_receipt, logs_bloom })
+                let inner = CeloCip64ReceiptWithBloom {
+                    receipt: CeloCip64Receipt { inner: inner_receipt, base_fee },
+                    logs_bloom,
+                };
+                Self::Cip64(inner)
             }
             CeloTxType::Deposit => {
                 let inner = OpDepositReceiptWithBloom {
@@ -157,6 +164,11 @@ impl<T> CeloReceiptEnvelope<T> {
         self.as_deposit_receipt().and_then(|r| r.deposit_receipt_version)
     }
 
+    /// Return the receipt's base fee if it is a cip64 receipt.
+    pub fn base_fee(&self) -> Option<u128> {
+        self.as_cip64_receipt().and_then(|r| r.base_fee)
+    }
+
     /// Returns the deposit receipt if it is a deposit receipt.
     pub const fn as_deposit_receipt_with_bloom(&self) -> Option<&OpDepositReceiptWithBloom<T>> {
         match self {
@@ -173,15 +185,30 @@ impl<T> CeloReceiptEnvelope<T> {
         }
     }
 
+    /// Returns the cip64 receipt if it is a cip64 receipt.
+    pub const fn as_cip64_receipt_with_bloom(&self) -> Option<&CeloCip64ReceiptWithBloom<T>> {
+        match self {
+            Self::Cip64(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Returns the cip64 receipt if it is a cip64 receipt.
+    pub const fn as_cip64_receipt(&self) -> Option<&CeloCip64Receipt<T>> {
+        match self {
+            Self::Cip64(t) => Some(&t.receipt),
+            _ => None,
+        }
+    }
+
     /// Return the inner receipt. Currently this is infallible, however, future
     /// receipt types may be added.
     pub const fn as_receipt(&self) -> Option<&Receipt<T>> {
         match self {
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t)
-            | Self::Cip64(t) => Some(&t.receipt),
+            Self::Legacy(t) | Self::Eip2930(t) | Self::Eip1559(t) | Self::Eip7702(t) => {
+                Some(&t.receipt)
+            }
+            Self::Cip64(t) => Some(&t.receipt.inner),
             Self::Deposit(t) => Some(&t.receipt.inner),
         }
     }
@@ -297,11 +324,10 @@ impl Encodable2718 for CeloReceiptEnvelope {
         }
         match self {
             Self::Deposit(t) => t.encode(out),
-            Self::Legacy(t)
-            | Self::Eip2930(t)
-            | Self::Eip1559(t)
-            | Self::Eip7702(t)
-            | Self::Cip64(t) => t.encode(out),
+            Self::Cip64(t) => t.encode(out),
+            Self::Legacy(t) | Self::Eip2930(t) | Self::Eip1559(t) | Self::Eip7702(t) => {
+                t.encode(out)
+            }
         }
     }
 }
@@ -332,11 +358,12 @@ where
     T: arbitrary::Arbitrary<'a>,
 {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        match u.int_in_range(0..=4)? {
+        match u.int_in_range(0..=5)? {
             0 => Ok(Self::Legacy(ReceiptWithBloom::arbitrary(u)?)),
             1 => Ok(Self::Eip2930(ReceiptWithBloom::arbitrary(u)?)),
             2 => Ok(Self::Eip1559(ReceiptWithBloom::arbitrary(u)?)),
             4 => Ok(Self::Eip7702(ReceiptWithBloom::arbitrary(u)?)),
+            5 => Ok(Self::Cip64(CeloCip64ReceiptWithBloom::arbitrary(u)?)),
             _ => Ok(Self::Deposit(OpDepositReceiptWithBloom::arbitrary(u)?)),
         }
     }
@@ -392,8 +419,15 @@ mod tests {
 
     #[test]
     fn legacy_receipt_from_parts() {
-        let receipt =
-            CeloReceiptEnvelope::from_parts(true, 100, vec![], CeloTxType::Legacy, None, None);
+        let receipt = CeloReceiptEnvelope::from_parts(
+            true,
+            100,
+            vec![],
+            CeloTxType::Legacy,
+            None,
+            None,
+            None,
+        );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);
@@ -402,12 +436,20 @@ mod tests {
 
     #[test]
     fn cip64_receipt_from_parts() {
-        let receipt =
-            CeloReceiptEnvelope::from_parts(true, 100, vec![], CeloTxType::Cip64, None, None);
+        let receipt = CeloReceiptEnvelope::from_parts(
+            true,
+            100,
+            vec![],
+            CeloTxType::Cip64,
+            None,
+            None,
+            Some(1_u128),
+        );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);
         assert_eq!(receipt.logs().len(), 0);
         assert_eq!(receipt.tx_type(), CeloTxType::Cip64);
+        assert_eq!(receipt.base_fee(), Some(1));
     }
 
     #[test]
@@ -419,6 +461,7 @@ mod tests {
             CeloTxType::Deposit,
             Some(1),
             Some(2),
+            None,
         );
         assert!(receipt.status());
         assert_eq!(receipt.cumulative_gas_used(), 100);

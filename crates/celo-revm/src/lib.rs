@@ -5,10 +5,13 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+// Silence unused dependency warning - spin is only used in no_std environments
+use spin as _;
+
 pub mod api;
 pub mod common;
 pub mod constants;
-pub mod core_contracts;
+pub mod contracts;
 pub mod evm;
 pub mod handler;
 pub mod precompiles;

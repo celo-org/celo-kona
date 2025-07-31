@@ -1,9 +1,15 @@
 //!Handler related to Celo chain
 
 use crate::{
-    CeloContext, common::fee_currency_context::FeeCurrencyContext, constants::get_addresses,
-    core_contracts::CoreContractError, evm::CeloEvm,
+    CeloContext,
+    common::fee_currency_context::FeeCurrencyContext,
+    common::global_fee_currency_context,
+    constants::get_addresses,
+    contracts::{core_contracts::CoreContractError, erc20},
+    evm::CeloEvm,
+    transaction::CeloTxTr,
 };
+use alloy_primitives::Address;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -21,12 +27,15 @@ use revm::{
         pre_execution::validate_account_nonce_and_code,
     },
     inspector::{InspectorFrame, InspectorHandler},
-    interpreter::{FrameInput, Gas, interpreter::EthInterpreter},
+    interpreter::{
+        FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
+        interpreter::EthInterpreter,
+    },
     primitives::{HashMap, U256, hardfork::SpecId},
     state::Account,
 };
 use revm_context::LocalContextTr;
-use std::{boxed::Box, string::ToString};
+use std::{boxed::Box, format, string::ToString};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -48,6 +57,199 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
+impl<ERROR, FRAME, DB, INSP> CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    FRAME: Frame<
+            Evm = CeloEvm<DB, INSP>,
+            Error = ERROR,
+            FrameResult = FrameResult,
+            FrameInit = FrameInput,
+        >,
+{
+    // For CIP-64 transactions, we need to credit the fee currency, which does everything
+    // in the same call:
+    // - refund
+    // - reward beneficiary
+    // - reward caller
+    // - pay for l1 cost
+    fn cip64_credit_fee_currency(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+        exec_result: &mut FrameResult,
+    ) -> Result<(), ERROR> {
+        let ctx = evm.ctx();
+        let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fee_currency = ctx.tx().fee_currency();
+        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
+        let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
+
+        if is_deposit || fees_in_celo || is_balance_check_disabled {
+            return Ok(());
+        }
+
+        // Extract all values first to avoid borrowing conflicts
+        let basefee = ctx.block().basefee() as u128;
+        let chain_id = ctx.cfg().chain_id();
+        let fee_handler = get_addresses(chain_id).fee_handler;
+        let mut fee_recipient = ctx.block().beneficiary();
+
+        // Not all fee currencies can handle a receiver being the zero address.
+        // In that case send the fee to the base fee recipient, which we know is non-zero.
+        if fee_recipient == Address::ZERO {
+            fee_recipient = fee_handler;
+        }
+        let caller = ctx.tx().caller();
+
+        // Convert costs to fee currency
+        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let base_fee_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, U256::from(basefee))
+            .map_err(|e| ERROR::from_string(e))?;
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
+
+        let tx_fee_tip_in_erc20 = U256::from(
+            tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
+        );
+
+        // Return balance of not spent gas.
+        let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
+            (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
+        ));
+
+        let base_tx_charge =
+            base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
+
+        erc20::credit_gas_fees(
+            evm,
+            fee_currency.unwrap(),
+            caller,
+            fee_recipient,
+            fee_handler,
+            refund_in_erc20,
+            tx_fee_tip_in_erc20,
+            base_tx_charge,
+        )
+        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn cip64_validate_erc20_and_debit_gas_fees(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+    ) -> Result<(), ERROR> {
+        let ctx = evm.ctx();
+        let tx = ctx.tx();
+        let fee_currency = tx.fee_currency();
+        let caller_addr = tx.caller();
+        let gas_limit = tx.gas_limit();
+        let basefee = ctx.block().basefee();
+
+        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+
+        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
+        // Check if the fee currency is registered
+        if fee_currency_context
+            .currency_exchange_rate(fee_currency)
+            .is_err()
+        {
+            return Err(ERROR::from_string(
+                "unregistered fee-currency address".to_string(),
+            ));
+        }
+
+        let base_fee_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, U256::from(basefee))
+            .map_err(|e| ERROR::from_string(e))?;
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+
+        // Get ERC20 balance using the erc20 module
+        let fee_currency_addr = fee_currency.unwrap();
+
+        let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
+            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+
+        let gas_cost = (gas_limit as u128)
+            .checked_mul(effective_gas_price)
+            .map(|gas_cost| U256::from(gas_cost))
+            .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+
+        if balance < gas_cost {
+            return Err(InvalidTransaction::LackOfFundForMaxFee {
+                fee: Box::new(gas_cost),
+                balance: Box::new(balance),
+            }
+            .into());
+        }
+
+        // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+        erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+            .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+
+        Ok(())
+    }
+
+    fn validate_celo_initial_tx_gas(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+    ) -> Result<InitialAndFloorGas, ERROR> {
+        // Extract needed values first to avoid borrowing conflicts
+        let ctx = evm.ctx();
+        let fee_currency = ctx.tx().fee_currency();
+        let gas_limit = ctx.tx().gas_limit();
+        let spec = ctx.cfg().spec();
+
+        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
+
+        if fee_currency.is_some() && fee_currency.unwrap() != Address::ZERO {
+            let intrinsic_gas_for_erc20 = ctx
+                .chain()
+                .fee_currency_context
+                .currency_intrinsic_gas_cost(fee_currency)
+                .map_err(|e| ERROR::from_string(e))?;
+            let intrinsic_gas_for_erc20_u64: u64 = intrinsic_gas_for_erc20.try_into().expect(
+                "Failed to convert intrinsic gas for erc20 to u64: value exceeds u64 range",
+            );
+            // Adding only in the initial gas, and not the floor because we never addapted the
+            // eip7623 to the cip64 (discussions being taken)
+            gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20_u64);
+        }
+
+        // Additional check to see if limit is big enough to cover initial gas.
+        if gas.initial_gas > gas_limit {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: gas.initial_gas,
+            }
+            .into());
+        }
+
+        // EIP-7623: Increase calldata cost
+        // floor gas should be less than gas limit.
+        if spec.into_eth_spec().is_enabled_in(SpecId::PRAGUE) && gas.floor_gas > gas_limit {
+            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                gas_floor: gas.floor_gas,
+                gas_limit,
+            }
+            .into());
+        };
+
+        Ok(gas)
+    }
+}
+
 impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
 where
     DB: Database,
@@ -64,6 +266,11 @@ where
     type Error = ERROR;
     type Frame = FRAME;
     type HaltReason = OpHaltReason;
+
+    fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
+        self.validate_env(evm)?;
+        self.validate_celo_initial_tx_gas(evm)
+    }
 
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Do not perform any extra validation for deposit transactions, they are pre-verified on
@@ -92,7 +299,10 @@ where
             // Update the chain with the new fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
-                    evm.ctx().chain().fee_currency_context = fee_currency_context;
+                    evm.ctx().chain().fee_currency_context = fee_currency_context.clone();
+
+                    // Also set the global context for fallback access
+                    global_fee_currency_context::set_fee_currency_context(fee_currency_context);
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -109,6 +319,8 @@ where
         let basefee = ctx.block().basefee() as u128;
         let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fee_currency = ctx.tx().fee_currency();
+        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
         let spec = ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
@@ -150,8 +362,12 @@ where
             }
         }
 
-        let (tx, journal) = ctx.tx_journal();
+        if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
+            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
+        }
 
+        // Now handle all account operations
+        let (tx, journal) = evm.ctx().tx_journal();
         let caller_account = journal.load_account_code(tx.caller())?.data;
 
         // If the transaction is a deposit with a `mint` value, add the mint value
@@ -176,30 +392,47 @@ where
             )?;
         }
 
-        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
-
-        // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
-        // Transfer will be done inside `*_inner` functions.
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
             // this is not consensus critical, and it is used in testing.
             caller_account.info.balance = caller_account.info.balance.max(tx.value());
-        } else if !is_deposit && max_balance_spending > caller_account.info.balance {
-            // skip max balance check for deposit transactions.
-            // this check for deposit was skipped previously in `validate_tx_against_state` function
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(max_balance_spending),
-                balance: Box::new(caller_account.info.balance),
+        } else if !is_deposit {
+            // Check balance for gas payment for regular transactions
+            if fees_in_celo {
+                // Regular transaction: check CELO balance for both value and gas
+                let max_balance_spending =
+                    tx.max_balance_spending()?.saturating_add(additional_cost);
+
+                if max_balance_spending > caller_account.info.balance {
+                    return Err(InvalidTransaction::LackOfFundForMaxFee {
+                        fee: Box::new(max_balance_spending),
+                        balance: Box::new(caller_account.info.balance),
+                    }
+                    .into());
+                }
+            } else {
+                // Check CELO balance for value transfer (value is always in CELO)
+                if tx.value() > caller_account.info.balance {
+                    return Err(ERROR::from_string(format!(
+                        "lack of funds ({}) for value payment ({})",
+                        caller_account.info.balance,
+                        tx.value()
+                    )));
+                }
             }
-            .into());
-        } else {
+        }
+
+        // Handle balance deduction for CELO gas fees
+        // Note: We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
+        // because it will be deducted later in the call
+        if !is_balance_check_disabled && fees_in_celo {
+            // Only deduct CELO for gas if not using fee currency
             let effective_balance_spending =
                 tx.effective_balance_spending(basefee, blob_price).expect(
                     "effective balance is always smaller than max balance so it can't overflow",
                 );
 
-            // subtracting max balance spending with value that is going to be deducted later in the
-            // call.
+            // subtracting max balance spending with value that is going to be deducted later in the call.
             let gas_balance_spending = effective_balance_spending - tx.value();
 
             // If the transaction is not a deposit transaction, subtract the L1 data fee from the
@@ -215,8 +448,10 @@ where
                 .saturating_sub(op_gas_balance_spending);
         }
 
-        // Touch account so we know it is changed.
-        caller_account.mark_touch();
+        if fees_in_celo || tx.value() > U256::ZERO {
+            // Touch account so we know it is changed.
+            caller_account.mark_touch();
+        }
         Ok(())
     }
 
@@ -290,10 +525,16 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <Self::Frame as Frame>::FrameResult,
     ) -> Result<(), Self::Error> {
-        self.mainnet.reimburse_caller(evm, exec_result)?;
+        // For CIP-64 transactions, we need to credit the fee currency all in the same
+        // place. We address that in the reward_beneficiary function.
+        if evm.ctx().tx().fee_currency().is_none() {
+            self.mainnet.reimburse_caller(evm, exec_result)?;
+        }
 
         let context = evm.ctx();
-        if context.tx().tx_type() != DEPOSIT_TRANSACTION_TYPE {
+        if context.tx().tx_type() != DEPOSIT_TRANSACTION_TYPE
+            && context.tx().fee_currency().is_none()
+        {
             let caller = context.tx().caller();
             let spec = context.cfg().spec();
             let operator_fee_refund = context
@@ -347,7 +588,7 @@ where
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
-        if !is_deposit {
+        if !is_deposit && evm.ctx().tx().fee_currency().is_none() {
             self.mainnet.reward_beneficiary(evm, exec_result)?;
             let basefee = evm.ctx().block().basefee() as u128;
 
@@ -369,7 +610,7 @@ where
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                 operator_fee_cost = l1_block_info.operator_fee_charge(
                     enveloped_tx,
-                    U256::from(exec_result.gas().spent() - exec_result.gas().refunded() as u64),
+                    U256::from(exec_result.gas().spent_sub_refunded()),
                 );
             }
             // Send the L1 cost of the transaction to the L1 Fee Vault.
@@ -381,9 +622,8 @@ where
             let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
             let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
             base_fee_vault_account.mark_touch();
-            base_fee_vault_account.info.balance += U256::from(basefee.saturating_mul(
-                (exec_result.gas().spent() - exec_result.gas().refunded() as u64) as u128,
-            ));
+            base_fee_vault_account.info.balance +=
+                U256::from(basefee.saturating_mul(exec_result.gas().spent_sub_refunded() as u128));
 
             // Send the operator fee of the transaction to the coinbase.
             let mut operator_fee_vault_account =
@@ -413,6 +653,28 @@ where
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
         Ok(result)
+    }
+
+    fn post_execution(
+        &self,
+        evm: &mut Self::Evm,
+        mut exec_result: FrameResult,
+        init_and_floor_gas: InitialAndFloorGas,
+        eip7702_gas_refund: i64,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Calculate final refund and add EIP-7702 refund to gas.
+        self.refund(evm, &mut exec_result, eip7702_gas_refund);
+        // Ensure gas floor is met and minimum floor gas is spent.
+        self.mainnet
+            .eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
+        // Return unused gas to caller
+        self.reimburse_caller(evm, &mut exec_result)?;
+        // Pay transaction fees to beneficiary
+        self.reward_beneficiary(evm, &mut exec_result)?;
+        // CIP-64: Credit the fee currency to the fee handler
+        self.cip64_credit_fee_currency(evm, &mut exec_result)?;
+        // Prepare transaction output
+        self.output(evm, exec_result)
     }
 
     fn catch_error(

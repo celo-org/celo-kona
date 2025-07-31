@@ -43,6 +43,7 @@ alloy-sol-types.workspace = true
 # misc
 auto_impl.workspace = true
 lazy_static = { workspace = true, features = ["spin_no_std"] }
+spin.workspace = true
 thiserror.workspace = true
 
 # Optional
