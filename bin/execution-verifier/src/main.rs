@@ -19,12 +19,17 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
+use futures::future::join_all;
+use futures::stream::StreamExt;
 use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::sync::Arc;
+use tokio::sync::oneshot;
+use tokio::time::{Duration, sleep};
 use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -59,7 +64,6 @@ pub struct ExecutionVerifierCommand {
 async fn main() -> Result<()> {
     let cli = ExecutionVerifierCommand::parse();
 
-    // Add after CLI parsing
     if cli.start_block > cli.end_block {
         return Err(anyhow::anyhow!("start_block must be <= end_block"));
     }
@@ -71,21 +75,13 @@ async fn main() -> Result<()> {
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
-        url if url.starts_with("http://") || url.starts_with("https://") => {
-            let url = cli.l2_rpc.parse::<Url>().unwrap_or_else(|_| {
-                panic!(
-                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
-                    cli.l2_rpc
-                )
-            });
-            let http = Http::<Client>::new(url);
-            RootProvider::new(RpcClient::new(http, false))
+        url if url.starts_with("ws://") || url.starts_with("wss://") => {
+            ProviderBuilder::new().connect(url).await?.root().clone()
         }
-
         file_path => {
             if !std::path::Path::new(file_path).exists() {
                 return Err(anyhow::anyhow!(
-                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                    "Invalid L2 RPC {}. Only WS/WSS URLs and ipc file paths are supported.",
                     cli.l2_rpc,
                 ));
             }
@@ -95,6 +91,9 @@ async fn main() -> Result<()> {
     };
 
     let provider = Arc::new(provider);
+    let mut handles = futures::stream::FuturesUnordered::new();
+
+    let cancel_token = CancellationToken::new();
 
     let chain_id = provider
         .get_chain_id()
@@ -104,17 +103,63 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
 
-    verify_block_range(
+    handles.push(tokio::spawn(verify_new_heads(
+        provider.clone(),
+        rollup_config.clone(),
+        cancel_token.clone(),
+    )));
+    handles.push(tokio::spawn(verify_block_range(
         cli.start_block,
         cli.end_block,
-        provider,
+        provider.clone(),
         rollup_config.clone(),
         cli.concurrency,
-    ).await?;
+        cancel_token.clone(),
+    )));
+
+    // Process results as they complete, cancel on first error
+    while let Some(result) = handles.next().await {
+        match result {
+            Ok(Err(e)) => {
+                // Cancel remaining tasks by dropping the stream
+                cancel_token.cancel();
+                futures::future::join_all(handles).await;
+                return Err(e);
+            }
+            Err(e) => {
+                cancel_token.cancel();
+                futures::future::join_all(handles).await;
+                return Err(anyhow::anyhow!("Task panicked: {}", e));
+            }
+            _ => {}
+        }
+    }
+    // futures::future::try_join_all(tasks).await?;
 
     Ok(())
 }
 
+async fn verify_new_heads(
+    provider: Arc<RootProvider<Ethereum>>,
+    rollup_config: celo_registry::CeloRollupConfig,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let subscription = provider.subscribe_blocks().await?;
+    let mut stream = subscription.into_stream();
+
+    while let Some(header) = stream.next().await {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        let result = verify_block(header.number, provider.as_ref(), &rollup_config).await;
+        match result {
+            Ok(_) => println!("Head block {} verified", header.number),
+            Err(e) => eprintln!("Head block {} verification failed: {}", header.number, e),
+        }
+    }
+
+    Ok(())
+}
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
@@ -147,7 +192,9 @@ async fn verify_block(
                     .client()
                     .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e)
+                    })?;
                 encoded_transactions.push(tx);
             }
             encoded_transactions
@@ -185,7 +232,9 @@ async fn verify_block(
         NoopTrieHinter,
         parent_header,
     );
-    let outcome = executor.build_block(payload_attrs).map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
+    let outcome = executor
+        .build_block(payload_attrs)
+        .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
@@ -206,38 +255,55 @@ async fn verify_block_range(
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: celo_registry::CeloRollupConfig,
     concurrency: usize,
+    cancel_token: CancellationToken,
 ) -> Result<()> {
-    let semaphore = Arc::new(Semaphore::new(concurrency));
+    let mut handles = futures::stream::FuturesUnordered::new();
+    let mut next_block = start_block;
+    let mut failed_blocks = 0;
     let start = Instant::now();
-    let mut tasks = Vec::new();
 
-    for block_number in start_block..=end_block {
-        let provider = Arc::clone(&provider);
-        let rollup_config = rollup_config.clone();
-        let semaphore = Arc::clone(&semaphore);
-
-        let task = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            verify_block(block_number, provider.as_ref(), &rollup_config).await
-        });
-
-        tasks.push(task);
+    // Spawn initial batch
+    for _ in 0..concurrency {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        // let provider = provider.clone();
+        if next_block <= end_block {
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let task = tokio::spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config).await
+            });
+            handles.push(task);
+            next_block += 1;
+        }
     }
 
-    // Wait for all tasks to complete and count results
-    let mut failed_blocks = 0;
-
-    for task in tasks {
-        match task.await {
-            Ok(Ok(_)) => (),
+    // Process results and spawn new tasks continuously
+    while let Some(result) = handles.next().await {
+        match result {
+            Ok(Ok(_)) => println!("Block verified"),
             Ok(Err(e)) => {
                 failed_blocks += 1;
-                eprintln!("Block verification failed: {}", e);
+                eprintln!("Block failed: {}", e);
             }
             Err(e) => {
-                failed_blocks += 1;
-                eprintln!("Task panicked: {}", e);
+                if !e.is_cancelled() {
+                    failed_blocks += 1;
+                    eprintln!("Task panicked: {}", e);
+                }
             }
+        }
+
+        // Spawn next task if available
+        if next_block <= end_block && !cancel_token.is_cancelled() {
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let task = tokio::spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config).await
+            });
+            handles.push(task);
+            next_block += 1;
         }
     }
 
@@ -260,7 +326,6 @@ async fn verify_block_range(
 
     Ok(())
 }
-
 /// A trie provider for the L2 execution layer.
 #[derive(Debug)]
 pub struct Trie<'a> {

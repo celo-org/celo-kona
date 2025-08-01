@@ -730,9 +730,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-ws"
-version = "1.0.9"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0c6f9b37cd8d44aab959613966cc9d4d7a9b429c575cec43b3e5b46ea109a79"
+checksum = "f5dbaa6851875d59c8803088f4b6ec72eaeddf7667547ae8995c1a19fbca6303"
 dependencies = [
  "alloy-pubsub",
  "alloy-transport",
@@ -2473,17 +2473,20 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-http",
  "alloy-transport-ipc",
+ "alloy-transport-ws",
  "anyhow",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
  "celo-registry",
  "clap",
+ "futures",
  "kona-cli",
  "kona-executor",
  "kona-mpt",
  "op-alloy-rpc-types-engine",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing-subscriber 0.3.19",
  "url",
 ]
