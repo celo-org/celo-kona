@@ -44,6 +44,7 @@ alloy-sol-types.workspace = true
 auto_impl.workspace = true
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 thiserror.workspace = true
+tracing.workspace = true
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }

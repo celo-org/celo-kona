@@ -17,6 +17,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
+use tracing::info;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -68,6 +69,7 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
+/// Call a core contract function and return the result. It is read-only, not modifying the state.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
@@ -77,16 +79,17 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
-
+    
     let call_result = evm.transact_system_call(address, calldata);
-
-    // Restore tx and revert changes made during the call
+    
+    // Restore the original transaction context
     evm.ctx().set_tx(prev_tx);
-    evm.ctx().journal().checkpoint_revert(checkpoint);
+    
+    // Note: We don't commit the state changes from the system call,
+    // so they are automatically discarded. The ResultAndState contains
+    // the changes but we only use the result, not the state.
 
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),

@@ -1833,6 +1833,7 @@ dependencies = [
  "rstest",
  "serde",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
