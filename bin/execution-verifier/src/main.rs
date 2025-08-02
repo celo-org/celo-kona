@@ -86,8 +86,9 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
-    // This filter shows all logs from this code but only logs at warn and higher from celo_executor.
-    let filter = EnvFilter::new("trace").add_directive("celo_executor=warn".parse().unwrap());
+    // This filter shows all logs from this code but doesn't show logs from the block builder, since
+    // it is very verbose.
+    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
     init_tracing_subscriber(cli.v, Some(filter))?;
 
     // Check if l2_rpc is a URL or a file path
