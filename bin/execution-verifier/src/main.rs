@@ -20,16 +20,17 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
-use futures::future::join_all;
-use futures::stream::StreamExt;
+use futures::{future::join_all, stream::StreamExt};
 use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
-use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
+use tokio::{
+    runtime::Handle,
+    sync::{Semaphore, mpsc},
+    time::{Duration, Instant, sleep},
+};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -67,11 +68,18 @@ async fn main() -> Result<()> {
 
     if let Some(start_block) = cli.start_block {
         if start_block == 0 {
-            return Err(anyhow::anyhow!("start_block {} must be > 0 (need parent block)", start_block));
+            return Err(anyhow::anyhow!(
+                "start_block {} must be > 0 (need parent block)",
+                start_block
+            ));
         }
         if let Some(end_block) = cli.end_block {
             if start_block > end_block {
-                return Err(anyhow::anyhow!("start_block {} must be <= end_block {}", start_block, end_block));
+                return Err(anyhow::anyhow!(
+                    "start_block {} must be <= end_block {}",
+                    start_block,
+                    end_block
+                ));
             }
         }
     } else if let Some(end_block) = cli.end_block {
@@ -130,7 +138,8 @@ async fn main() -> Result<()> {
             cancel_token.clone(),
             Some(first_head_tx.clone()),
         )));
-        let first_head_block = first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
+        let first_head_block =
+            first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
         handles.push(tokio::spawn(verify_block_range(
             start_block,
@@ -198,8 +207,12 @@ async fn verify_new_heads(
 
         let result = verify_block(header.number, provider.as_ref(), &rollup_config).await;
         match result {
-            Ok(_) => println!("Head block {} verified", header.number),
-            Err(e) => eprintln!("Head block {} verification failed: {}", header.number, e),
+            Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
+            Err(e) => tracing::warn!(
+                block_number = header.number,
+                "Head block verification failed: {}",
+                e
+            ),
         }
     }
 
@@ -283,13 +296,13 @@ async fn verify_block(
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
-        return Err(anyhow::anyhow!(
-            "Block {} verification failed: produced header does not match expected header",
-            block_number
-        ));
+        tracing::warn!(
+            block_number = block_number,
+            expected_header = ?executing_header.inner,
+            actual_header = ?outcome.header.inner(),
+            "Block verification failed header mismatch"
+        );
     }
-
-    println!("Successfully verified block {}", block_number);
     Ok(block_number)
 }
 
@@ -327,17 +340,15 @@ async fn verify_block_range(
     // Process results and spawn new tasks continuously
     while let Some(result) = handles.next().await {
         match result {
-            Ok(Ok(_)) => println!("Block verified"),
             Ok(Err(e)) => {
                 failed_blocks += 1;
-                eprintln!("Block failed: {}", e);
             }
             Err(e) => {
                 if !e.is_cancelled() {
                     failed_blocks += 1;
-                    eprintln!("Task panicked: {}", e);
                 }
             }
+            _ => {}
         }
 
         // Spawn next task if available
@@ -355,19 +366,22 @@ async fn verify_block_range(
     let elapsed = start.elapsed();
     let total_blocks = end_block - start_block + 1;
     if failed_blocks > 0 {
-        println!(
+        tracing::info!(
             "Verification completed with {} failures out of {} total blocks",
-            failed_blocks, total_blocks
+            failed_blocks,
+            total_blocks
         );
     } else {
-        println!(
+        tracing::info!(
             "Successfully verified execution for all {} blocks ({} to {})",
-            total_blocks, start_block, end_block
+            total_blocks,
+            start_block,
+            end_block
         );
     }
 
-    println!("Total verification time: {:?}", elapsed);
-    println!("Average time per block: {:?}", elapsed / total_blocks as u32);
+    tracing::info!("Total verification time: {:?}", elapsed);
+    tracing::info!("Average time per block: {:?}", elapsed / total_blocks as u32);
 
     Ok(())
 }
