@@ -568,7 +568,7 @@ impl Metrics {
         tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
         tracing::info!("Avg time per successful block: {:?}", self.average_successful_block_processing_time());
         tracing::info!("Avg time per failed block: {:?}", self.average_failed_block_processing_time());
-        tracing::info!("Avg time per amortized block: {:?}", self.average_amortized_successful_block_processing_time());
+        tracing::info!("Avg amortized time per block: {:?}", self.average_amortized_successful_block_processing_time());
         tracing::info!("Total blocks: {}", self.processed_blocks);
         tracing::info!("Failed blocks: {}", self.failed_blocks);
     }
