@@ -18,7 +18,7 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
-use futures::{stream::StreamExt};
+use futures::stream::StreamExt;
 use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::{
     runtime::Handle,
-    sync::{mpsc},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
             rollup_config.clone(),
             cli.concurrency,
             cancel_token.clone(),
-            metrics.clone(),   
+            metrics.clone(),
         )));
     } else if let Some(start_block) = cli.start_block {
         // Used to communicate the first head block so that we can set the end of the block range.
@@ -504,8 +504,8 @@ impl Metrics {
         if self.processed_blocks == 0 {
             return Duration::new(0, 0);
         }
-        (self.successful_processing_time + self.failed_processing_time)
-            / self.processed_blocks as u32
+        (self.successful_processing_time + self.failed_processing_time) /
+            self.processed_blocks as u32
     }
     fn average_successful_block_processing_time(&self) -> Duration {
         let successful_blocks = self.processed_blocks - self.failed_blocks;
@@ -529,9 +529,18 @@ impl Metrics {
     }
     fn display_metrics(&self) {
         tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
-        tracing::info!("Avg time per successful block: {:?}", self.average_successful_block_processing_time());
-        tracing::info!("Avg time per failed block: {:?}", self.average_failed_block_processing_time());
-        tracing::info!("Avg amortized time per block: {:?}", self.average_amortized_successful_block_processing_time());
+        tracing::info!(
+            "Avg time per successful block: {:?}",
+            self.average_successful_block_processing_time()
+        );
+        tracing::info!(
+            "Avg time per failed block: {:?}",
+            self.average_failed_block_processing_time()
+        );
+        tracing::info!(
+            "Avg amortized time per block: {:?}",
+            self.average_amortized_successful_block_processing_time()
+        );
         tracing::info!("Total blocks: {}", self.processed_blocks);
         tracing::info!("Failed blocks: {}", self.failed_blocks);
     }
