@@ -27,7 +27,7 @@ use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::sync::Arc;
-use tokio::sync::{mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
             rollup_config.clone(),
             subscription,
             cancel_token.clone(),
-            first_head_tx,
+            Some(first_head_tx.clone()),
         )));
         let first_head_block = first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
@@ -141,13 +141,12 @@ async fn main() -> Result<()> {
             cancel_token.clone(),
         )));
     } else {
-        let (first_head_tx,  _) = mpsc::channel(1);
-        handles.push(tokio ::spawn(verify_new_heads(
+        handles.push(tokio::spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
             subscription,
             cancel_token.clone(),
-            first_head_tx,
+            None,
         )));
     };
 
@@ -178,9 +177,9 @@ async fn verify_new_heads(
     rollup_config: celo_registry::CeloRollupConfig,
     subscription: Subscription<Header>,
     cancel_token: CancellationToken,
-    first_head_tx: mpsc::Sender<u64>,
+    first_head_tx: Option<mpsc::Sender<u64>>,
 ) -> Result<()> {
-    let mut sent = false;
+    let mut first_block = true;
 
     let mut stream = subscription.into_stream();
 
@@ -190,9 +189,11 @@ async fn verify_new_heads(
         }
         let num = header.number;
 
-        if !sent {
-            first_head_tx.clone().send(num).await?;
-            sent = true;
+        if first_block {
+            if let Some(first_head_tx) = &first_head_tx {
+                first_head_tx.send(num).await?;
+            }
+            first_block = false;
         }
 
         let result = verify_block(header.number, provider.as_ref(), &rollup_config).await;
