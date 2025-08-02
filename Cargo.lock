@@ -2486,6 +2486,7 @@ dependencies = [
  "kona-executor",
  "kona-mpt",
  "op-alloy-rpc-types-engine",
+ "parking_lot",
  "thiserror",
  "tokio",
  "tokio-util",

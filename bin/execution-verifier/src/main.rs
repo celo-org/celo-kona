@@ -25,6 +25,7 @@ use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::{
     runtime::Handle,
@@ -34,7 +35,6 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 use url::Url;
-
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -122,6 +122,7 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
 
+    let metrics = Arc::new(Mutex::new(Metrics::new()));
     if let (Some(start_block), Some(end_block)) = (cli.start_block, cli.end_block) {
         handles.push(tokio::spawn(verify_block_range(
             start_block,
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
             rollup_config.clone(),
             cli.concurrency,
             cancel_token.clone(),
+            metrics.clone(),   
         )));
     } else if let Some(start_block) = cli.start_block {
         // Used to communicate the first head block so that we can set the end of the block range.
@@ -140,6 +142,7 @@ async fn main() -> Result<()> {
             subscription,
             cancel_token.clone(),
             Some(first_head_tx.clone()),
+            metrics.clone(),
         )));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
@@ -151,6 +154,7 @@ async fn main() -> Result<()> {
             rollup_config.clone(),
             cli.concurrency,
             cancel_token.clone(),
+            metrics.clone(),
         )));
     } else {
         handles.push(tokio::spawn(verify_new_heads(
@@ -159,6 +163,7 @@ async fn main() -> Result<()> {
             subscription,
             cancel_token.clone(),
             None,
+            metrics.clone(),
         )));
     };
 
@@ -181,6 +186,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    metrics.lock().display_metrics();
+
     Ok(())
 }
 
@@ -190,6 +197,7 @@ async fn verify_new_heads(
     subscription: Subscription<Header>,
     cancel_token: CancellationToken,
     first_head_tx: Option<mpsc::Sender<u64>>,
+    metrics: Arc<Mutex<Metrics>>,
 ) -> Result<()> {
     let mut first_block = true;
 
@@ -208,7 +216,8 @@ async fn verify_new_heads(
             first_block = false;
         }
 
-        let result = verify_block(header.number, provider.as_ref(), &rollup_config).await;
+        let result =
+            verify_block(header.number, provider.as_ref(), &rollup_config, metrics.clone()).await;
         match result {
             Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
             Err(e) => tracing::warn!(
@@ -226,7 +235,9 @@ async fn verify_block(
     block_number: u64,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
+    metrics: Arc<Mutex<Metrics>>,
 ) -> Result<u64> {
+    let start = Instant::now();
     // Create trie for this task
     let trie = Trie::new(provider);
 
@@ -299,12 +310,15 @@ async fn verify_block(
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
+        metrics.lock().failed_block(start.elapsed());
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header.inner,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
+    } else {
+        metrics.lock().successful_block(start.elapsed());
     }
     Ok(block_number)
 }
@@ -317,6 +331,7 @@ async fn verify_block_range(
     rollup_config: celo_registry::CeloRollupConfig,
     concurrency: usize,
     cancel_token: CancellationToken,
+    metrics: Arc<Mutex<Metrics>>,
 ) -> Result<()> {
     let mut handles = futures::stream::FuturesUnordered::new();
     let mut next_block = start_block;
@@ -332,8 +347,9 @@ async fn verify_block_range(
         if next_block <= end_block {
             let rollup_config = rollup_config.clone();
             let provider = provider.clone();
+            let metrics = metrics.clone();
             let task = tokio::spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config).await
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
             });
             handles.push(task);
             next_block += 1;
@@ -358,33 +374,34 @@ async fn verify_block_range(
         if next_block <= end_block && !cancel_token.is_cancelled() {
             let rollup_config = rollup_config.clone();
             let provider = provider.clone();
+            let metrics = metrics.clone();
             let task = tokio::spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config).await
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
             });
             handles.push(task);
             next_block += 1;
         }
     }
 
-    let elapsed = start.elapsed();
-    let total_blocks = end_block - start_block + 1;
-    if failed_blocks > 0 {
-        tracing::info!(
-            "Verification completed with {} failures out of {} total blocks",
-            failed_blocks,
-            total_blocks
-        );
-    } else {
-        tracing::info!(
-            "Successfully verified execution for all {} blocks ({} to {})",
-            total_blocks,
-            start_block,
-            end_block
-        );
-    }
+    // let elapsed = start.elapsed();
+    // let total_blocks = end_block - start_block + 1;
+    // if failed_blocks > 0 {
+    //     tracing::info!(
+    //         "Verification completed with {} failures out of {} total blocks",
+    //         failed_blocks,
+    //         total_blocks
+    //     );
+    // } else {
+    //     tracing::info!(
+    //         "Successfully verified execution for all {} blocks ({} to {})",
+    //         total_blocks,
+    //         start_block,
+    //         end_block
+    //     );
+    // }
 
-    tracing::info!("Total verification time: {:?}", elapsed);
-    tracing::info!("Average time per block: {:?}", elapsed / total_blocks as u32);
+    // tracing::info!("Total verification time: {:?}", elapsed);
+    // tracing::info!("Average time per block: {:?}", elapsed / total_blocks as u32);
 
     Ok(())
 }
@@ -491,4 +508,58 @@ pub enum TrieError {
     /// Failed to write back to the key-value store.
     #[error("Failed to write back to key value store")]
     KVStore,
+}
+
+struct Metrics {
+    processed_blocks: u64,
+    failed_blocks: u64,
+    successful_processing_time: Duration,
+    failed_processing_time: Duration,
+}
+
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            processed_blocks: 0,
+            failed_blocks: 0,
+            successful_processing_time: Duration::new(0, 0),
+            failed_processing_time: Duration::new(0, 0),
+        }
+    }
+
+    fn successful_block(&mut self, duration: Duration) {
+        self.processed_blocks += 1;
+        self.successful_processing_time += duration;
+    }
+    fn failed_block(&mut self, duration: Duration) {
+        self.failed_blocks += 1;
+        self.failed_processing_time += duration;
+    }
+    fn average_block_processing_time(&self) -> Duration {
+        if self.processed_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        (self.successful_processing_time + self.failed_processing_time)
+            / self.processed_blocks as u32
+    }
+    fn average_successful_block_processing_time(&self) -> Duration {
+        let successful_blocks = self.processed_blocks - self.failed_blocks;
+        if successful_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        self.successful_processing_time / successful_blocks as u32
+    }
+    fn average_failed_block_processing_time(&self) -> Duration {
+        if self.failed_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        self.failed_processing_time / self.failed_blocks as u32
+    }
+    fn display_metrics(&self) {
+        tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
+        tracing::info!("Avg time per successful block: {:?}", self.average_successful_block_processing_time());
+        tracing::info!("Avg time per failed block: {:?}", self.average_failed_block_processing_time());
+        tracing::info!("Total blocks: {}", self.processed_blocks);
+        tracing::info!("Failed blocks: {}", self.failed_blocks);
+    }
 }
