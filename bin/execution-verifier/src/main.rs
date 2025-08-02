@@ -10,17 +10,15 @@ use alloy_provider::{
 };
 use alloy_pubsub::Subscription;
 use alloy_rlp::Decodable;
-use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Header;
-use alloy_transport_http::{Client, Http};
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
-use futures::{future::join_all, stream::StreamExt};
+use futures::{stream::StreamExt};
 use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
@@ -29,12 +27,11 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::{
     runtime::Handle,
-    sync::{Semaphore, mpsc},
-    time::{Duration, Instant, sleep},
+    sync::{mpsc},
+    time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -335,8 +332,6 @@ async fn verify_block_range(
 ) -> Result<()> {
     let mut handles = futures::stream::FuturesUnordered::new();
     let mut next_block = start_block;
-    let mut failed_blocks = 0;
-    let start = Instant::now();
 
     // Spawn initial batch
     for _ in 0..concurrency {
@@ -357,19 +352,7 @@ async fn verify_block_range(
     }
 
     // Process results and spawn new tasks continuously
-    while let Some(result) = handles.next().await {
-        match result {
-            Ok(Err(e)) => {
-                failed_blocks += 1;
-            }
-            Err(e) => {
-                if !e.is_cancelled() {
-                    failed_blocks += 1;
-                }
-            }
-            _ => {}
-        }
-
+    while handles.next().await.is_some() {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
             let rollup_config = rollup_config.clone();
@@ -382,26 +365,6 @@ async fn verify_block_range(
             next_block += 1;
         }
     }
-
-    // let elapsed = start.elapsed();
-    // let total_blocks = end_block - start_block + 1;
-    // if failed_blocks > 0 {
-    //     tracing::info!(
-    //         "Verification completed with {} failures out of {} total blocks",
-    //         failed_blocks,
-    //         total_blocks
-    //     );
-    // } else {
-    //     tracing::info!(
-    //         "Successfully verified execution for all {} blocks ({} to {})",
-    //         total_blocks,
-    //         start_block,
-    //         end_block
-    //     );
-    // }
-
-    // tracing::info!("Total verification time: {:?}", elapsed);
-    // tracing::info!("Average time per block: {:?}", elapsed / total_blocks as u32);
 
     Ok(())
 }
