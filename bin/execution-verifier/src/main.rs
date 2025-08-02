@@ -511,6 +511,7 @@ pub enum TrieError {
 }
 
 struct Metrics {
+    init_time: Instant,
     processed_blocks: u64,
     failed_blocks: u64,
     successful_processing_time: Duration,
@@ -520,6 +521,7 @@ struct Metrics {
 impl Metrics {
     fn new() -> Self {
         Self {
+            init_time: Instant::now(),
             processed_blocks: 0,
             failed_blocks: 0,
             successful_processing_time: Duration::new(0, 0),
@@ -549,6 +551,13 @@ impl Metrics {
         }
         self.successful_processing_time / successful_blocks as u32
     }
+    fn average_amortized_successful_block_processing_time(&self) -> Duration {
+        let successful_blocks = self.processed_blocks - self.failed_blocks;
+        if successful_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        Instant::now().duration_since(self.init_time) / successful_blocks as u32
+    }
     fn average_failed_block_processing_time(&self) -> Duration {
         if self.failed_blocks == 0 {
             return Duration::new(0, 0);
@@ -559,6 +568,7 @@ impl Metrics {
         tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
         tracing::info!("Avg time per successful block: {:?}", self.average_successful_block_processing_time());
         tracing::info!("Avg time per failed block: {:?}", self.average_failed_block_processing_time());
+        tracing::info!("Avg time per amortized block: {:?}", self.average_amortized_successful_block_processing_time());
         tracing::info!("Total blocks: {}", self.processed_blocks);
         tracing::info!("Failed blocks: {}", self.failed_blocks);
     }
