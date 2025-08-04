@@ -1833,6 +1833,7 @@ dependencies = [
  "revm-handler",
  "rstest",
  "serde",
+ "spin 0.10.0",
  "thiserror",
 ]
 
