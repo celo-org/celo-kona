@@ -3,31 +3,35 @@
 //! This binary provides execution verification functionality for the Celo Kona project.
 
 use alloy_celo_evm::CeloEvmFactory;
-use alloy_consensus::Header;
 use alloy_network::Ethereum;
 use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{
     Provider, ProviderBuilder, RootProvider, network::primitives::BlockTransactions,
 };
+use alloy_pubsub::Subscription;
 use alloy_rlp::Decodable;
-use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_engine::PayloadAttributes;
-use alloy_transport_http::{Client, Http};
+use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
+use futures::stream::StreamExt;
 use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use parking_lot::Mutex;
 use std::sync::Arc;
-use tokio::{runtime::Handle, sync::Semaphore, time::Instant};
+use tokio::{
+    runtime::Handle,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
-use url::Url;
-
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -45,10 +49,10 @@ pub struct ExecutionVerifierCommand {
     pub l2_rpc: String,
     /// L2 inclusive starting block number to execute.
     #[arg(long)]
-    pub start_block: u64,
+    pub start_block: Option<u64>,
     /// L2 inclusive ending block number to execute.
     #[arg(long)]
-    pub end_block: u64,
+    pub end_block: Option<u64>,
     /// Number of concurrent tasks to run.
     #[arg(long, default_value = "25")]
     pub concurrency: usize,
@@ -59,33 +63,40 @@ pub struct ExecutionVerifierCommand {
 async fn main() -> Result<()> {
     let cli = ExecutionVerifierCommand::parse();
 
-    // Add after CLI parsing
-    if cli.start_block > cli.end_block {
-        return Err(anyhow::anyhow!("start_block must be <= end_block"));
-    }
-    if cli.start_block == 0 {
-        return Err(anyhow::anyhow!("start_block must be > 0 (need parent block)"));
+    if let Some(start_block) = cli.start_block {
+        if start_block == 0 {
+            return Err(anyhow::anyhow!(
+                "start_block {} must be > 0 (need parent block)",
+                start_block
+            ));
+        }
+        if let Some(end_block) = cli.end_block {
+            if start_block > end_block {
+                return Err(anyhow::anyhow!(
+                    "start_block {} must be <= end_block {}",
+                    start_block,
+                    end_block
+                ));
+            }
+        }
+    } else if let Some(end_block) = cli.end_block {
+        return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
-    init_tracing_subscriber(cli.v, None::<EnvFilter>)?;
+    // This filter shows all logs from this code but doesn't show logs from the block builder, since
+    // it is very verbose.
+    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    init_tracing_subscriber(cli.v, Some(filter))?;
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
-        url if url.starts_with("http://") || url.starts_with("https://") => {
-            let url = cli.l2_rpc.parse::<Url>().unwrap_or_else(|_| {
-                panic!(
-                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
-                    cli.l2_rpc
-                )
-            });
-            let http = Http::<Client>::new(url);
-            RootProvider::new(RpcClient::new(http, false))
+        url if url.starts_with("ws://") || url.starts_with("wss://") => {
+            ProviderBuilder::new().connect(url).await?.root().clone()
         }
-
         file_path => {
             if !std::path::Path::new(file_path).exists() {
                 return Err(anyhow::anyhow!(
-                    "Invalid L2 RPC {}. Only HTTP/HTTPS URLs and file paths are supported.",
+                    "Invalid L2 RPC {}. Only WS/WSS URLs and ipc file paths are supported.",
                     cli.l2_rpc,
                 ));
             }
@@ -93,7 +104,12 @@ async fn main() -> Result<()> {
             ProviderBuilder::new().connect_ipc(ipc).await?.root().clone()
         }
     };
+
     let provider = Arc::new(provider);
+    let mut handles = futures::stream::FuturesUnordered::new();
+
+    let cancel_token = CancellationToken::new();
+    let subscription = provider.subscribe_blocks().await?;
 
     let chain_id = provider
         .get_chain_id()
@@ -103,148 +119,255 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
 
-    let semaphore = Arc::new(Semaphore::new(cli.concurrency));
+    let metrics = Arc::new(Mutex::new(Metrics::new()));
+    if let (Some(start_block), Some(end_block)) = (cli.start_block, cli.end_block) {
+        handles.push(tokio::spawn(verify_block_range(
+            start_block,
+            end_block,
+            provider.clone(),
+            rollup_config.clone(),
+            cli.concurrency,
+            cancel_token.clone(),
+            metrics.clone(),
+        )));
+    } else if let Some(start_block) = cli.start_block {
+        // Used to communicate the first head block so that we can set the end of the block range.
+        let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
+        handles.push(tokio::spawn(verify_new_heads(
+            provider.clone(),
+            rollup_config.clone(),
+            subscription,
+            cancel_token.clone(),
+            Some(first_head_tx.clone()),
+            metrics.clone(),
+        )));
+        let first_head_block =
+            first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
+        let end = first_head_block - 1;
+        handles.push(tokio::spawn(verify_block_range(
+            start_block,
+            end,
+            provider.clone(),
+            rollup_config.clone(),
+            cli.concurrency - 1,
+            cancel_token.clone(),
+            metrics.clone(),
+        )));
+    } else {
+        handles.push(tokio::spawn(verify_new_heads(
+            provider.clone(),
+            rollup_config.clone(),
+            subscription,
+            cancel_token.clone(),
+            None,
+            metrics.clone(),
+        )));
+    };
 
-    let start = Instant::now();
-    let mut tasks = Vec::new();
-
-    for block_number in cli.start_block..=cli.end_block {
-        let provider = Arc::clone(&provider);
-        let rollup_config = rollup_config.clone();
-        let semaphore = Arc::clone(&semaphore);
-
-        let task = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-
-            // Create trie for this task
-            let trie = Trie::new(provider.as_ref());
-
-            // Fetch parent block
-            let parent_block = provider
-                .get_block_by_number((block_number - 1).into())
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e)
-                })?
-                .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
-            let parent_header = parent_block.header.inner.seal_slow();
-
-            // Fetch executing block
-            let executing_block = provider
-                .get_block_by_number(block_number.into())
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e)
-                })?
-                .ok_or_else(|| anyhow::anyhow!("Executing block {} not found", block_number))?;
-
-            let encoded_executing_transactions = match executing_block.transactions {
-                BlockTransactions::Hashes(transactions) => {
-                    let mut encoded_transactions = Vec::with_capacity(transactions.len());
-                    for tx_hash in transactions {
-                        let tx = provider
-                            .client()
-                            .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
-                            .await
-                            .map_err(|e| {
-                                anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e)
-                            })?;
-                        encoded_transactions.push(tx);
-                    }
-                    encoded_transactions
-                }
-                _ => panic!("Only BlockTransactions::Hashes are supported."),
-            };
-
-            let executing_header = executing_block.header.clone();
-
-            let payload_attrs = CeloPayloadAttributes {
-                op_payload_attributes: OpPayloadAttributes {
-                    payload_attributes: PayloadAttributes {
-                        timestamp: executing_header.timestamp,
-                        parent_beacon_block_root: executing_header.parent_beacon_block_root,
-                        prev_randao: executing_header.mix_hash,
-                        withdrawals: Default::default(),
-                        suggested_fee_recipient: executing_header.beneficiary,
-                    },
-                    gas_limit: Some(executing_header.gas_limit),
-                    transactions: Some(encoded_executing_transactions),
-                    no_tx_pool: None,
-                    eip_1559_params: rollup_config
-                        .op_rollup_config
-                        .is_holocene_active(executing_header.timestamp)
-                        .then(|| {
-                            executing_header.extra_data[1..]
-                                .try_into()
-                                .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))
-                        })
-                        .transpose()?,
-                },
-            };
-
-            let mut executor = CeloStatelessL2Builder::new(
-                &rollup_config,
-                CeloEvmFactory::default(),
-                &trie,
-                NoopTrieHinter,
-                parent_header,
-            );
-            let outcome = executor
-                .build_block(payload_attrs)
-                .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
-
-            // Verify the result
-            if outcome.header.inner() != &executing_header.inner {
-                return Err(anyhow::anyhow!(
-                    "Block {} verification failed: produced header does not match expected header",
-                    block_number
-                ));
-            }
-
-            println!("Successfully verified block {}", block_number);
-            Ok(block_number)
-        });
-
-        tasks.push(task);
-    }
-
-    // Wait for all tasks to complete and count results
-    let mut failed_blocks = 0;
-
-    for task in tasks {
-        match task.await {
-            Ok(Ok(_)) => (),
+    // Process results as they complete, cancel on first error
+    while let Some(result) = handles.next().await {
+        match result {
             Ok(Err(e)) => {
-                failed_blocks += 1;
-                eprintln!("Block verification failed: {}", e);
+                // Cancel any outstanding tasks, and wait for all tasks to finish
+                cancel_token.cancel();
+                futures::future::join_all(handles).await;
+                return Err(e);
             }
             Err(e) => {
-                failed_blocks += 1;
-                eprintln!("Task panicked: {}", e);
+                // Cancel any outstanding tasks, and wait for all tasks to finish
+                cancel_token.cancel();
+                futures::future::join_all(handles).await;
+                return Err(anyhow::anyhow!("Task panicked: {}", e));
             }
+            _ => {}
         }
     }
 
-    let elapsed = start.elapsed();
-    let total_blocks = cli.end_block - cli.start_block + 1;
-    if failed_blocks > 0 {
-        println!(
-            "Verification completed with {} failures out of {} total blocks",
-            failed_blocks, total_blocks
-        );
-    } else {
-        println!(
-            "Successfully verified execution for all {} blocks ({} to {})",
-            total_blocks, cli.start_block, cli.end_block
-        );
-    }
-
-    println!("Total verification time: {:?}", elapsed);
-    println!("Average time per block: {:?}", elapsed / total_blocks as u32);
+    metrics.lock().display_metrics();
 
     Ok(())
 }
 
+async fn verify_new_heads(
+    provider: Arc<RootProvider<Ethereum>>,
+    rollup_config: celo_registry::CeloRollupConfig,
+    subscription: Subscription<Header>,
+    cancel_token: CancellationToken,
+    first_head_tx: Option<mpsc::Sender<u64>>,
+    metrics: Arc<Mutex<Metrics>>,
+) -> Result<()> {
+    let mut first_block = true;
+
+    let mut stream = subscription.into_stream();
+
+    while let Some(header) = stream.next().await {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        let num = header.number;
+
+        if first_block {
+            if let Some(first_head_tx) = &first_head_tx {
+                first_head_tx.send(num).await?;
+            }
+            first_block = false;
+        }
+
+        let result =
+            verify_block(header.number, provider.as_ref(), &rollup_config, metrics.clone()).await;
+        match result {
+            Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
+            Err(e) => tracing::warn!(
+                block_number = header.number,
+                "Head block verification failed: {}",
+                e
+            ),
+        }
+    }
+
+    Ok(())
+}
+/// Verifies execution for a single block
+async fn verify_block(
+    block_number: u64,
+    provider: &RootProvider<Ethereum>,
+    rollup_config: &celo_registry::CeloRollupConfig,
+    metrics: Arc<Mutex<Metrics>>,
+) -> Result<u64> {
+    let start = Instant::now();
+    // Create trie for this task
+    let trie = Trie::new(provider);
+
+    // Fetch parent block
+    let parent_block = provider
+        .get_block_by_number((block_number - 1).into())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
+        .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+    let parent_header = parent_block.header.inner.seal_slow();
+
+    // Fetch executing block
+    let executing_block = provider
+        .get_block_by_number(block_number.into())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e))?
+        .ok_or_else(|| anyhow::anyhow!("Executing block {} not found", block_number))?;
+
+    let encoded_executing_transactions = match executing_block.transactions {
+        BlockTransactions::Hashes(transactions) => {
+            let mut encoded_transactions = Vec::with_capacity(transactions.len());
+            for tx_hash in transactions {
+                let tx = provider
+                    .client()
+                    .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e)
+                    })?;
+                encoded_transactions.push(tx);
+            }
+            encoded_transactions
+        }
+        _ => panic!("Only BlockTransactions::Hashes are supported."),
+    };
+
+    let executing_header = executing_block.header.clone();
+
+    let payload_attrs = CeloPayloadAttributes {
+        op_payload_attributes: OpPayloadAttributes {
+            payload_attributes: PayloadAttributes {
+                timestamp: executing_header.timestamp,
+                parent_beacon_block_root: executing_header.parent_beacon_block_root,
+                prev_randao: executing_header.mix_hash,
+                withdrawals: Default::default(),
+                suggested_fee_recipient: executing_header.beneficiary,
+            },
+            gas_limit: Some(executing_header.gas_limit),
+            transactions: Some(encoded_executing_transactions),
+            no_tx_pool: None,
+            eip_1559_params: rollup_config
+                .op_rollup_config
+                .is_holocene_active(executing_header.timestamp)
+                .then(|| executing_header.extra_data[1..].try_into())
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
+        },
+    };
+
+    let mut executor = CeloStatelessL2Builder::new(
+        rollup_config,
+        CeloEvmFactory::default(),
+        &trie,
+        NoopTrieHinter,
+        parent_header,
+    );
+    let outcome = executor
+        .build_block(payload_attrs)
+        .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
+
+    // Verify the result
+    if outcome.header.inner() != &executing_header.inner {
+        metrics.lock().failed_block(start.elapsed());
+        tracing::warn!(
+            block_number = block_number,
+            expected_header = ?executing_header.inner,
+            actual_header = ?outcome.header.inner(),
+            "Block verification failed header mismatch"
+        );
+    } else {
+        metrics.lock().successful_block(start.elapsed());
+    }
+    Ok(block_number)
+}
+
+/// Verifies execution for a range of blocks concurrently
+async fn verify_block_range(
+    start_block: u64,
+    end_block: u64,
+    provider: Arc<RootProvider<Ethereum>>,
+    rollup_config: celo_registry::CeloRollupConfig,
+    concurrency: usize,
+    cancel_token: CancellationToken,
+    metrics: Arc<Mutex<Metrics>>,
+) -> Result<()> {
+    let mut handles = futures::stream::FuturesUnordered::new();
+    let mut next_block = start_block;
+
+    // Spawn initial batch
+    for _ in 0..concurrency {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+        // let provider = provider.clone();
+        if next_block <= end_block {
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let metrics = metrics.clone();
+            let task = tokio::spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
+            });
+            handles.push(task);
+            next_block += 1;
+        }
+    }
+
+    // Process results and spawn new tasks continuously
+    while handles.next().await.is_some() {
+        // Spawn next task if available
+        if next_block <= end_block && !cancel_token.is_cancelled() {
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let metrics = metrics.clone();
+            let task = tokio::spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
+            });
+            handles.push(task);
+            next_block += 1;
+        }
+    }
+
+    Ok(())
+}
 /// A trie provider for the L2 execution layer.
 #[derive(Debug)]
 pub struct Trie<'a> {
@@ -317,7 +440,7 @@ impl TrieDBProvider for &Trie<'_> {
         Ok(preimage)
     }
 
-    fn header_by_hash(&self, hash: B256) -> Result<Header, Self::Error> {
+    fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
         let encoded_header: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
                 let preimage: Bytes = self
@@ -332,7 +455,7 @@ impl TrieDBProvider for &Trie<'_> {
         })?;
 
         // Decode the Header.
-        Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
+        alloy_consensus::Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
     }
 }
 
@@ -348,4 +471,77 @@ pub enum TrieError {
     /// Failed to write back to the key-value store.
     #[error("Failed to write back to key value store")]
     KVStore,
+}
+
+struct Metrics {
+    init_time: Instant,
+    processed_blocks: u64,
+    failed_blocks: u64,
+    successful_processing_time: Duration,
+    failed_processing_time: Duration,
+}
+
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            init_time: Instant::now(),
+            processed_blocks: 0,
+            failed_blocks: 0,
+            successful_processing_time: Duration::new(0, 0),
+            failed_processing_time: Duration::new(0, 0),
+        }
+    }
+
+    fn successful_block(&mut self, duration: Duration) {
+        self.processed_blocks += 1;
+        self.successful_processing_time += duration;
+    }
+    fn failed_block(&mut self, duration: Duration) {
+        self.failed_blocks += 1;
+        self.failed_processing_time += duration;
+    }
+    fn average_block_processing_time(&self) -> Duration {
+        if self.processed_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        (self.successful_processing_time + self.failed_processing_time) /
+            self.processed_blocks as u32
+    }
+    fn average_successful_block_processing_time(&self) -> Duration {
+        let successful_blocks = self.processed_blocks - self.failed_blocks;
+        if successful_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        self.successful_processing_time / successful_blocks as u32
+    }
+    fn average_amortized_successful_block_processing_time(&self) -> Duration {
+        let successful_blocks = self.processed_blocks - self.failed_blocks;
+        if successful_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        Instant::now().duration_since(self.init_time) / successful_blocks as u32
+    }
+    fn average_failed_block_processing_time(&self) -> Duration {
+        if self.failed_blocks == 0 {
+            return Duration::new(0, 0);
+        }
+        self.failed_processing_time / self.failed_blocks as u32
+    }
+    fn display_metrics(&self) {
+        tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
+        tracing::info!(
+            "Avg time per successful block: {:?}",
+            self.average_successful_block_processing_time()
+        );
+        tracing::info!(
+            "Avg time per failed block: {:?}",
+            self.average_failed_block_processing_time()
+        );
+        tracing::info!(
+            "Avg amortized time per block: {:?}",
+            self.average_amortized_successful_block_processing_time()
+        );
+        tracing::info!("Total blocks: {}", self.processed_blocks);
+        tracing::info!("Failed blocks: {}", self.failed_blocks);
+    }
 }
