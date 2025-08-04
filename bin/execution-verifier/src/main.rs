@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
             end,
             provider.clone(),
             rollup_config.clone(),
-            cli.concurrency,
+            cli.concurrency - 1,
             cancel_token.clone(),
             metrics.clone(),
         )));
