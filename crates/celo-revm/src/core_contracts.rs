@@ -77,16 +77,13 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
     let call_result = evm.transact_system_call(address, calldata);
 
-    // Restore tx and revert changes made during the call
+    // Restore tx
     evm.ctx().set_tx(prev_tx);
-    evm.ctx().journal().checkpoint_revert(checkpoint);
 
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
