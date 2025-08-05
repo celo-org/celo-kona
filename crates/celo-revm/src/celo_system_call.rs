@@ -18,7 +18,7 @@ pub const CELO_SYSTEM_ADDRESS: Address = address!("0x000000000000000000000000000
 ///
 /// The caller is set to be [`CELO_SYSTEM_ADDRESS`].
 ///
-/// It is used inside [`CeloSystemCallEvm`] and [`SystemCallCommitEvm`] traits to prepare EVM for system call execution.
+/// It is used inside [`CeloSystemCallEvm`] and [`CeloSystemCallCommitEvm`] traits to prepare EVM for system call execution.
 pub trait CeloSystemCallTx {
     /// Creates new transaction for system call.
     fn new_system_tx(data: Bytes, system_contract_address: Address) -> Self;
@@ -43,7 +43,7 @@ impl CeloSystemCallTx for TxEnv {
 pub trait CeloSystemCallEvm: ExecuteEvm {
     /// System call is a special transaction call that is used to call a system contract.
     ///
-    /// Transaction fields are reset and set in [`SystemCallTx`] and data and target are set to
+    /// Transaction fields are reset and set in [`CeloSystemCallTx`] and data and target are set to
     /// given values.
     ///
     /// Block values are taken into account and will determent how system call will be executed.
