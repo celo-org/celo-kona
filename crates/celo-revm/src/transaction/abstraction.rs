@@ -1,10 +1,10 @@
 use auto_impl::auto_impl;
 use celo_alloy_consensus::CeloTxType;
 use op_revm::{OpTransaction, transaction::OpTxTr};
+use crate::celo_system_call::CeloSystemCallTx;
 use revm::{
     context::TxEnv,
     context_interface::transaction::Transaction,
-    handler::SystemCallTx,
     primitives::{Address, B256, Bytes, TxKind, U256},
 };
 
@@ -43,7 +43,7 @@ impl Default for CeloTransaction<TxEnv> {
     }
 }
 
-impl<TX: Transaction + SystemCallTx> SystemCallTx for CeloTransaction<TX> {
+impl<TX: Transaction + CeloSystemCallTx> CeloSystemCallTx for CeloTransaction<TX> {
     fn new_system_tx(data: Bytes, system_contract_address: Address) -> Self {
         CeloTransaction::new(OpTransaction::new(TX::new_system_tx(
             data,

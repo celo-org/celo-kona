@@ -3,11 +3,12 @@ use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
+use crate::celo_system_call::CeloSystemCallEvm;
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
     Database,
     context_interface::ContextTr,
-    handler::{EvmTr, SystemCallEvm},
+    handler::EvmTr,
     inspector::Inspector,
 };
 use revm_context::{Cfg, ContextSetters};
