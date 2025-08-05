@@ -2,10 +2,10 @@ use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use op_revm::OpTransactionError;
 use revm::{
     ExecuteCommitEvm, ExecuteEvm, Inspector,
-    context::{ContextTr, Database, result::EVMError, TxEnv},
-    handler::{EthFrame, Handler, EvmTr},
+    context::{ContextTr, Database, TxEnv, result::EVMError},
+    handler::{EthFrame, EvmTr, Handler},
     interpreter::interpreter::EthInterpreter,
-    primitives::{address, Address, Bytes, TxKind},
+    primitives::{Address, Bytes, TxKind, address},
 };
 
 /// Type alias for the error type of the CeloEvm.
