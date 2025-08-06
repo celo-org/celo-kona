@@ -64,6 +64,7 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
+/// Call a core contract function and return the result.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
@@ -73,30 +74,12 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
-    let call_result = mutable_call(evm, address, calldata);
-
-    // Revert changes made during the call
-    evm.ctx().journal().checkpoint_revert(checkpoint);
-
-    call_result
-}
-
-pub fn mutable_call<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
-    address: Address,
-    calldata: Bytes,
-) -> Result<Bytes, CoreContractError>
-where
-    DB: Database,
-    INSP: Inspector<CeloContext<DB>>,
-{
+    // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
     let call_result = evm.transact_system_call(address, calldata);
 
-    // Restore tx
+    // Restore the original transaction context
     evm.ctx().set_tx(prev_tx);
 
     let exec_result = match call_result {
