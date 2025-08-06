@@ -70,7 +70,7 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    core_contracts::mutable_call(evm, fee_currency_address, calldata)?;
+    core_contracts::call(evm, fee_currency_address, calldata)?;
     Ok(())
 }
 
@@ -104,7 +104,7 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    core_contracts::mutable_call(evm, fee_currency_address, calldata)?;
+    core_contracts::call(evm, fee_currency_address, calldata)?;
     Ok(())
 }
 
