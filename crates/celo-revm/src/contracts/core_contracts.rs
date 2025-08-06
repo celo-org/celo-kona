@@ -9,6 +9,7 @@ use revm::{
     context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
+    state::EvmState,
 };
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
@@ -73,7 +74,7 @@ pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
-) -> Result<Bytes, CoreContractError>
+) -> Result<(Bytes, EvmState), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -88,15 +89,15 @@ where
 
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
-        Ok(o) => o.result,
+        Ok(o) => o,
     };
 
     // Check success
-    match exec_result {
+    match exec_result.result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
             ..
-        } => Ok(bytes),
+        } => Ok((bytes, exec_result.state)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
@@ -119,7 +120,7 @@ where
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
-    let output_bytes = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
+    let (output_bytes, _) = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
 
     if output_bytes.is_empty() {
         return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
@@ -148,7 +149,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let output_bytes = call(
+        let (output_bytes, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
@@ -185,7 +186,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let output_bytes = call(
+        let (output_bytes, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
