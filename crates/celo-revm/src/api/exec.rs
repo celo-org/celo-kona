@@ -1,5 +1,8 @@
+use crate::api::celo_system_tx::CeloSystemCallTx;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
+use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpTransactionError};
+use revm::SystemCallEvm;
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context_interface::{
@@ -90,5 +93,28 @@ where
             self.ctx().db().commit(r.state);
             r.result
         })
+    }
+}
+
+impl<DB, INSP> SystemCallEvm for CeloEvm<DB, INSP>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+{
+    fn transact_system_call(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> Self::Output {
+        self.set_tx(<CeloContext<DB> as ContextTr>::Tx::new_system_tx(
+            data,
+            system_contract_address,
+        ));
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+        >::new();
+        h.run_system_call(self)
     }
 }

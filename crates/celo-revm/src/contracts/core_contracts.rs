@@ -1,11 +1,15 @@
-use crate::celo_system_call::CeloSystemCallEvm;
 use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use revm::{Database, context_interface::ContextTr, handler::EvmTr, inspector::Inspector};
+use revm::{
+    Database,
+    context_interface::ContextTr,
+    handler::{EvmTr, SystemCallEvm},
+    inspector::Inspector,
+};
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
 use std::{

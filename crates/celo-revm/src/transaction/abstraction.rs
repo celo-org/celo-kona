@@ -1,4 +1,4 @@
-use crate::celo_system_call::CeloSystemCallTx;
+use crate::api::celo_system_tx::CeloSystemCallTx;
 use auto_impl::auto_impl;
 use celo_alloy_consensus::CeloTxType;
 use op_revm::{OpTransaction, transaction::OpTxTr};

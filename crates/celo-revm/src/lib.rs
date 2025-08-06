@@ -9,7 +9,6 @@ extern crate alloc as std;
 use spin as _;
 
 pub mod api;
-pub mod celo_system_call;
 pub mod common;
 pub mod constants;
 pub mod contracts;
