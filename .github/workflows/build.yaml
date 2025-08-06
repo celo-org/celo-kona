@@ -1,0 +1,65 @@
+name: Build Docker images
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY_URL: us-west1-docker.pkg.dev/devopsre/dev-images/${{ github.event.repository.name }}
+
+jobs:
+  build:
+    name: Build celo-kona image
+    runs-on:
+      - self-hosted
+      - org
+      - 8-cpu
+
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta execution-verifier
+        id: meta-execution-verifier
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_URL }}/celo-kona
+          tags: |
+            type=semver,pattern={{version}}
+            type=edge
+            type=sha
+
+      - name: Login at GCP Artifact Registry
+        uses: celo-org/reusable-workflows/.github/actions/auth-gcp-artifact-registry@v2.0
+        with:
+          workload-id-provider: "projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos"
+          service-account: "celo-kona-gh@devopsre.iam.gserviceaccount.com"
+          docker-gcp-registries: us-west1-docker.pkg.dev
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta-execution-verifier.outputs.tags }}
+          labels: ${{ steps.meta-execution-verifier.outputs.labels }}
+          platforms: |
+            linux/amd64
+            linux/arm64
+          cache-from: type=registry,ref=${{ env.REGISTRY_URL }}/celo-kona-buildcache:buildcache
+          cache-to: type=registry,mode=max,ref=${{ env.REGISTRY_URL }}/celo-kona-buildcache:buildcache
