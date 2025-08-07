@@ -31,7 +31,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                         // Paid with Celo
                         Some(base_fee)
                     } else {
-                        celo_revm::common::global_cip_64_context::get_fee_currency_context()
+                        celo_revm::common::global_fee_currency_context::get_fee_currency_context()
                             .and_then(|fee_currency_context| {
                                 fee_currency_context
                                     .celo_to_currency(cip64.tx().fee_currency, U256::from(base_fee))

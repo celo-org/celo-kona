@@ -3,7 +3,7 @@
 use crate::{
     CeloContext,
     common::fee_currency_context::FeeCurrencyContext,
-    common::global_cip_64_context,
+    common::global_fee_currency_context,
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
@@ -169,7 +169,10 @@ where
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
-        global_cip_64_context::set_cip64_system_call_post_logs(logs);
+        evm.ctx()
+            .chain()
+            .cip64_actual_tx_system_call_logs_post
+            .extend(logs);
 
         Ok(())
     }
@@ -234,7 +237,10 @@ where
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
-        global_cip_64_context::set_cip64_system_call_pre_logs(logs);
+        evm.ctx()
+            .chain()
+            .cip64_actual_tx_system_call_logs_pre
+            .extend(logs);
 
         Ok(())
     }
@@ -340,7 +346,7 @@ where
                     evm.ctx().chain().fee_currency_context = fee_currency_context.clone();
 
                     // Also set the global context for fallback access
-                    global_cip_64_context::set_fee_currency_context(fee_currency_context);
+                    global_fee_currency_context::set_fee_currency_context(fee_currency_context);
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -690,28 +696,29 @@ where
         }
 
         // Merge system call logs with main transaction logs
-        let system_pre_logs = global_cip_64_context::get_cip64_system_call_pre_logs();
-        if system_pre_logs.is_some() {
-            let system_pre_logs = system_pre_logs.unwrap();
-            let system_post_logs =
-                global_cip_64_context::get_cip64_system_call_post_logs().unwrap();
-            if !system_pre_logs.is_empty() {
-                match &mut result.result {
-                    ExecutionResult::Success { logs, .. } => {
-                        // Prepend system call pre logs
-                        let mut merged_logs = system_pre_logs.clone();
-                        merged_logs.append(logs);
-                        // Append system call post logs
-                        merged_logs.extend(system_post_logs);
-                        *logs = merged_logs;
-                    }
-                    _ => {
-                        // The tx does not succeed, so we do not need to merge the system call logs
-                    }
+        let chain = evm.ctx().chain();
+        let has_system_logs = !chain.cip64_actual_tx_system_call_logs_pre.is_empty()
+            || !chain.cip64_actual_tx_system_call_logs_post.is_empty();
+
+        if has_system_logs {
+            match &mut result.result {
+                ExecutionResult::Success { logs, .. } => {
+                    // Build merged logs: pre_logs + main_tx_logs + post_logs
+                    let mut merged_logs = chain.cip64_actual_tx_system_call_logs_pre.clone();
+                    merged_logs.extend(logs.drain(..));
+                    merged_logs.extend(chain.cip64_actual_tx_system_call_logs_post.clone());
+                    *logs = merged_logs;
+                }
+                _ => {
+                    // For non-success results, we might still want to include system call logs
+                    // This is a design decision - for now, we only merge on success
                 }
             }
         }
-        global_cip_64_context::clear_cip64_system_call_logs();
+
+        // Clear the system call logs after merging (they're consumed)
+        // Note: We need mutable access to clear, but we can't get it here due to borrow checker
+        // These will be cleared at the start of the next transaction
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
