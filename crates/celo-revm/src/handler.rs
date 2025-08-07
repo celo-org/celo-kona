@@ -3,7 +3,7 @@
 use crate::{
     CeloContext,
     common::fee_currency_context::FeeCurrencyContext,
-    common::global_fee_currency_context,
+    common::global_cip_64_context,
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
@@ -154,7 +154,7 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
 
-        let state = erc20::credit_gas_fees(
+        let (state, logs) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -168,6 +168,8 @@ where
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
+        // Collect logs from the system call to be included in the final receipt
+        global_cip_64_context::set_cip64_system_call_post_logs(logs);
 
         Ok(())
     }
@@ -226,11 +228,13 @@ where
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
         // The state changes from this call will be part of the transaction execution
-        let state = erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+        let (state, logs) = erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
             .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
+        // Collect logs from the system call to be included in the final receipt
+        global_cip_64_context::set_cip64_system_call_pre_logs(logs);
 
         Ok(())
     }
@@ -336,7 +340,7 @@ where
                     evm.ctx().chain().fee_currency_context = fee_currency_context.clone();
 
                     // Also set the global context for fallback access
-                    global_fee_currency_context::set_fee_currency_context(fee_currency_context);
+                    global_cip_64_context::set_fee_currency_context(fee_currency_context);
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -674,7 +678,7 @@ where
         result: <Self::Frame as Frame>::FrameResult,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let result = self.mainnet.output(evm, result)?;
-        let result = result.map_haltreason(OpHaltReason::Base);
+        let mut result = result.map_haltreason(OpHaltReason::Base);
         if result.result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
@@ -684,6 +688,31 @@ where
                 return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
             }
         }
+
+        // Merge system call logs with main transaction logs
+        let system_pre_logs = global_cip_64_context::get_cip64_system_call_pre_logs();
+        if system_pre_logs.is_some() {
+            let system_pre_logs = system_pre_logs.unwrap();
+            let system_post_logs =
+                global_cip_64_context::get_cip64_system_call_post_logs().unwrap();
+            if !system_pre_logs.is_empty() {
+                match &mut result.result {
+                    ExecutionResult::Success { logs, .. } => {
+                        // Prepend system call pre logs
+                        let mut merged_logs = system_pre_logs.clone();
+                        merged_logs.append(logs);
+                        // Append system call post logs
+                        merged_logs.extend(system_post_logs);
+                        *logs = merged_logs;
+                    }
+                    _ => {
+                        // The tx does not succeed, so we do not need to merge the system call logs
+                    }
+                }
+            }
+        }
+        global_cip_64_context::clear_cip64_system_call_logs();
+
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
         Ok(result)

@@ -5,9 +5,10 @@ use crate::{CeloContext, evm::CeloEvm};
 use alloy_sol_types::{SolCall, sol};
 use revm::{
     Database, Inspector,
-    primitives::{Address, U256},
+    primitives::{Address, Log, U256},
     state::EvmState,
 };
+use std::vec::Vec;
 
 // Define the ERC20 interface for fee currencies with Celo-specific extensions
 sol! {
@@ -48,7 +49,7 @@ where
         .into();
 
     // Use the existing call function from core_contracts
-    let (output_bytes, _) = core_contracts::call(evm, token_address, calldata)?;
+    let (output_bytes, _, _) = core_contracts::call(evm, token_address, calldata)?;
 
     // Decode the balance
     IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output_bytes)
@@ -61,7 +62,7 @@ pub fn debit_gas_fees<DB, INSP>(
     fee_currency_address: Address,
     from: Address,
     value: U256,
-) -> Result<EvmState, CoreContractError>
+) -> Result<(EvmState, Vec<Log>), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -71,8 +72,8 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    let (_, state) = core_contracts::call(evm, fee_currency_address, calldata)?;
-    Ok(state)
+    let (_, state, logs) = core_contracts::call(evm, fee_currency_address, calldata)?;
+    Ok((state, logs))
 }
 
 /// Call creditGasFees to distribute gas fees
@@ -86,7 +87,7 @@ pub fn credit_gas_fees<DB, INSP>(
     refund: U256,
     tip_tx_fee: U256,
     base_tx_fee: U256,
-) -> Result<EvmState, CoreContractError>
+) -> Result<(EvmState, Vec<Log>), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -105,8 +106,8 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    let (_, state) = core_contracts::call(evm, fee_currency_address, calldata)?;
-    Ok(state)
+    let (_, state, logs) = core_contracts::call(evm, fee_currency_address, calldata)?;
+    Ok((state, logs))
 }
 
 #[cfg(test)]
