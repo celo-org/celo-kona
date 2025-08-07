@@ -78,9 +78,6 @@ where
         for (address, account) in state {
             let mut loaded_account = evm.ctx().journal().load_account(address)?;
 
-            // Check if account is touched before applying changes
-            let is_touched = account.is_touched();
-
             // Apply the account changes to the loaded account
             loaded_account.data.info.balance = account.info.balance;
             loaded_account.data.info.nonce = account.info.nonce;
@@ -92,10 +89,9 @@ where
                 loaded_account.data.storage.insert(*key, value.clone());
             }
 
-            // Mark the account as touched if it was touched in the state
-            if is_touched {
-                loaded_account.mark_touch();
-            }
+            // Always mark the account as touched since we've modified its state
+            // This ensures it will be included in the final transaction state
+            loaded_account.mark_touch();
         }
         Ok(())
     }
