@@ -710,15 +710,14 @@ where
                     *logs = merged_logs;
                 }
                 _ => {
-                    // For non-success results, we might still want to include system call logs
-                    // This is a design decision - for now, we only merge on success
+                    // Errors don't have logs to merge
                 }
             }
         }
 
-        // Clear the system call logs after merging (they're consumed)
-        // Note: We need mutable access to clear, but we can't get it here due to borrow checker
-        // These will be cleared at the start of the next transaction
+        // Clear the system call logs after merging
+        chain.cip64_actual_tx_system_call_logs_pre.clear();
+        chain.cip64_actual_tx_system_call_logs_post.clear();
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
