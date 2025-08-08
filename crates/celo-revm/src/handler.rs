@@ -705,7 +705,7 @@ where
                 ExecutionResult::Success { logs, .. } => {
                     // Build merged logs: pre_logs + main_tx_logs + post_logs
                     let mut merged_logs = chain.cip64_actual_tx_system_call_logs_pre.clone();
-                    merged_logs.extend(logs.drain(..));
+                    merged_logs.append(logs);
                     merged_logs.extend(chain.cip64_actual_tx_system_call_logs_post.clone());
                     *logs = merged_logs;
                 }
