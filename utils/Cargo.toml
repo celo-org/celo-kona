@@ -1,0 +1,30 @@
+[package]
+name = "celo-kona-utils"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+# TODO: remove the bloat further, if applicable
+
+# general
+anyhow.workspace = true
+# async-trait.workspace = true
+# futures.workspace = true
+# metrics.workspace = true
+# metrics-exporter-prometheus.workspace = true
+# metrics-process.workspace = true
+# strum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+
+# logging and telemetry
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-stdout.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
