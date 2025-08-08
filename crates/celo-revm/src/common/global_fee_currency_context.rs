@@ -12,39 +12,39 @@ use spin::RwLock;
 
 lazy_static! {
     static ref FEE_CURRENCY_CONTEXT: RwLock<Option<FeeCurrencyContext>> = RwLock::new(None);
-    static ref CONTEXT_SET: AtomicBool = AtomicBool::new(false);
+    static ref FEE_CURRENCY_CONTEXT_SET: AtomicBool = AtomicBool::new(false);
 }
 
 /// Sets the global fee currency context.
 pub fn set_fee_currency_context(context: FeeCurrencyContext) {
     #[cfg(feature = "std")]
     {
-        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
-        *global_fee_currency_context = Some(context);
+        let mut fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
+        *fee_currency_context = Some(context);
     }
     #[cfg(not(feature = "std"))]
     {
-        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write();
-        *global_fee_currency_context = Some(context);
+        let mut fee_currency_context = FEE_CURRENCY_CONTEXT.write();
+        *fee_currency_context = Some(context);
     }
-    CONTEXT_SET.store(true, core::sync::atomic::Ordering::Relaxed);
+    FEE_CURRENCY_CONTEXT_SET.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Gets a copy of the global fee currency context if it has been set.
 pub fn get_fee_currency_context() -> Option<FeeCurrencyContext> {
-    if !CONTEXT_SET.load(core::sync::atomic::Ordering::Relaxed) {
+    if !FEE_CURRENCY_CONTEXT_SET.load(core::sync::atomic::Ordering::Relaxed) {
         return None;
     }
 
     #[cfg(feature = "std")]
     {
-        let global_fee_currency_context = FEE_CURRENCY_CONTEXT.read().unwrap();
-        global_fee_currency_context.clone()
+        let fee_currency_context = FEE_CURRENCY_CONTEXT.read().unwrap();
+        fee_currency_context.clone()
     }
     #[cfg(not(feature = "std"))]
     {
-        let global_fee_currency_context = FEE_CURRENCY_CONTEXT.read();
-        global_fee_currency_context.clone()
+        let fee_currency_context = FEE_CURRENCY_CONTEXT.read();
+        fee_currency_context.clone()
     }
 }
 
@@ -52,13 +52,13 @@ pub fn get_fee_currency_context() -> Option<FeeCurrencyContext> {
 pub fn clear_fee_currency_context() {
     #[cfg(feature = "std")]
     {
-        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
-        *global_fee_currency_context = None;
+        let mut fee_currency_context = FEE_CURRENCY_CONTEXT.write().unwrap();
+        *fee_currency_context = None;
     }
     #[cfg(not(feature = "std"))]
     {
-        let mut global_fee_currency_context = FEE_CURRENCY_CONTEXT.write();
-        *global_fee_currency_context = None;
+        let mut fee_currency_context = FEE_CURRENCY_CONTEXT.write();
+        *fee_currency_context = None;
     }
-    CONTEXT_SET.store(false, core::sync::atomic::Ordering::Relaxed);
+    FEE_CURRENCY_CONTEXT_SET.store(false, core::sync::atomic::Ordering::Relaxed);
 }

@@ -32,7 +32,7 @@ use revm::{
         interpreter::EthInterpreter,
     },
     primitives::{HashMap, U256, hardfork::SpecId},
-    state::Account,
+    state::{Account, EvmState},
 };
 use revm_context::LocalContextTr;
 use std::{boxed::Box, format, string::ToString};
@@ -69,6 +69,33 @@ where
             FrameInit = FrameInput,
         >,
 {
+    /// Apply state changes from an EvmState to the current execution journal.
+    fn apply_state_to_journal(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+        state: EvmState,
+    ) -> Result<(), ERROR> {
+        for (address, account) in state {
+            let mut loaded_account = evm.ctx().journal().load_account(address)?;
+
+            // Apply the account changes to the loaded account
+            loaded_account.data.info.balance = account.info.balance;
+            loaded_account.data.info.nonce = account.info.nonce;
+            loaded_account.data.info.code_hash = account.info.code_hash;
+            loaded_account.data.info.code = account.info.code;
+
+            // Apply storage changes (iterate by reference to avoid moving)
+            for (key, value) in &account.storage {
+                loaded_account.data.storage.insert(*key, value.clone());
+            }
+
+            // Always mark the account as touched since we've modified its state
+            // This ensures it will be included in the final transaction state
+            loaded_account.mark_touch();
+        }
+        Ok(())
+    }
+
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
     // in the same call:
     // - refund
@@ -127,7 +154,7 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
 
-        erc20::credit_gas_fees(
+        let (state, logs) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -138,6 +165,14 @@ where
             base_tx_charge,
         )
         .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
+
+        // Apply the state changes from the system call to the current execution context
+        self.apply_state_to_journal(evm, state)?;
+        // Collect logs from the system call to be included in the final receipt
+        evm.ctx()
+            .chain()
+            .cip64_actual_tx_system_call_logs_post
+            .extend(logs);
 
         Ok(())
     }
@@ -195,8 +230,17 @@ where
         }
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+        // The state changes from this call will be part of the transaction execution
+        let (state, logs) = erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
             .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+
+        // Apply the state changes from the system call to the current execution context
+        self.apply_state_to_journal(evm, state)?;
+        // Collect logs from the system call to be included in the final receipt
+        evm.ctx()
+            .chain()
+            .cip64_actual_tx_system_call_logs_pre
+            .extend(logs);
 
         Ok(())
     }
@@ -640,7 +684,7 @@ where
         result: <Self::Frame as Frame>::FrameResult,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let result = self.mainnet.output(evm, result)?;
-        let result = result.map_haltreason(OpHaltReason::Base);
+        let mut result = result.map_haltreason(OpHaltReason::Base);
         if result.result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
@@ -650,6 +694,31 @@ where
                 return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
             }
         }
+
+        // Merge system call logs with main transaction logs
+        let chain = evm.ctx().chain();
+        let has_system_logs = !chain.cip64_actual_tx_system_call_logs_pre.is_empty()
+            || !chain.cip64_actual_tx_system_call_logs_post.is_empty();
+
+        if has_system_logs {
+            match &mut result.result {
+                ExecutionResult::Success { logs, .. } => {
+                    // Build merged logs: pre_logs + main_tx_logs + post_logs
+                    let mut merged_logs = chain.cip64_actual_tx_system_call_logs_pre.clone();
+                    merged_logs.extend(logs.clone());
+                    merged_logs.extend(chain.cip64_actual_tx_system_call_logs_post.clone());
+                    *logs = merged_logs;
+                }
+                _ => {
+                    // Errors don't have logs to merge
+                }
+            }
+        }
+
+        // Clear the system call logs after merging
+        chain.cip64_actual_tx_system_call_logs_pre.clear();
+        chain.cip64_actual_tx_system_call_logs_post.clear();
+
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
         Ok(result)
