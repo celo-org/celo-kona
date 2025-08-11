@@ -20,7 +20,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow.workspace = true
 clap.workspace = true
 url.workspace = true
-kona-cli.workspace = true
 futures = "0.3.31"
 tracing-subscriber.workspace = true
 alloy-rpc-types-engine.workspace = true
