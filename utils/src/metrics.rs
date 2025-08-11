@@ -1,9 +1,11 @@
 use opentelemetry_otlp::MetricExporter;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
-use opentelemetry_sdk::resource::Resource;
+use opentelemetry_sdk::{
+    metrics::{PeriodicReader, SdkMeterProvider},
+    resource::Resource,
+};
 
 pub fn build_meter_provider(resource: Resource) -> SdkMeterProvider {
-    let provider = match MetricExporter::builder().with_tonic().build() {
+    match MetricExporter::builder().with_tonic().build() {
         Ok(otlp_exporter) => {
             // OTLP gRPC exporter path
             let reader = PeriodicReader::builder(otlp_exporter).build();
@@ -16,6 +18,5 @@ pub fn build_meter_provider(resource: Resource) -> SdkMeterProvider {
             let reader = PeriodicReader::builder(stdout_exporter).build();
             SdkMeterProvider::builder().with_reader(reader).with_resource(resource).build()
         }
-    };
-    provider
+    }
 }

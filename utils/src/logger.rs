@@ -1,7 +1,6 @@
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::LogExporter;
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -30,7 +29,7 @@ pub fn init_tracing(
 
     let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
     let otel_layer = if let Some(resource) = otel_resource {
-        let provider = match LogExporter::builder().with_tonic().build() {
+        match LogExporter::builder().with_tonic().build() {
             Ok(otlp_exporter) => {
                 // OTLP gRPC exporter path
                 Some(
@@ -44,8 +43,7 @@ pub fn init_tracing(
                 eprintln!("Failed to build OTLP log exporter: {err}");
                 None
             }
-        };
-        provider
+        }
     } else {
         None
     };
