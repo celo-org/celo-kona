@@ -6,7 +6,7 @@ use alloy_primitives::{
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
     Database,
-    context_interface::ContextTr,
+    context_interface::{ContextTr, JournalTr},
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
     primitives::Log,
@@ -70,12 +70,85 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
+/// Apply state changes from an EvmState to the current execution journal.
+pub fn apply_state_to_journal<DB, INSP>(
+    evm: &mut CeloEvm<DB, INSP>,
+    state: EvmState,
+) -> Result<(), DB::Error>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+{
+    for (address, account) in state {
+        let mut loaded_account = evm.ctx().journal().load_account(address)?;
+
+        // Apply the account changes to the loaded account
+        loaded_account.data.info.balance = account.info.balance;
+        loaded_account.data.info.nonce = account.info.nonce;
+        loaded_account.data.info.code_hash = account.info.code_hash;
+        loaded_account.data.info.code = account.info.code;
+
+        // Apply storage changes (iterate by reference to avoid moving)
+        for (key, value) in &account.storage {
+            loaded_account.data.storage.insert(*key, value.clone());
+        }
+
+        // Always mark the account as touched since we've modified its state
+        // This ensures it will be included in the final transaction state
+        loaded_account.mark_touch();
+    }
+    Ok(())
+}
+
 /// Call a core contract function and return the result.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
-) -> Result<(Bytes, EvmState, Vec<Log>), CoreContractError>
+) -> Result<Bytes, CoreContractError>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+{
+    // Preserve the tx set in the evm before the call to restore it afterwards
+    let prev_tx = evm.ctx().tx().clone();
+
+    let call_result = evm.transact_system_call(address, calldata);
+
+    // Restore the original transaction context
+    evm.ctx().set_tx(prev_tx);
+
+    let exec_result = match call_result {
+        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+        Ok(o) => o,
+    };
+
+    // Check success
+    match exec_result.result {
+        ExecutionResult::Success {
+            output: Output::Call(bytes),
+            ..
+        } => Ok(bytes),
+        ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
+            "halt: {:?}",
+            reason
+        ))),
+        ExecutionResult::Revert { output, .. } => Err(CoreContractError::ExecutionFailed(format!(
+            "revert: {}",
+            get_revert_message(output)
+        ))),
+        _ => Err(CoreContractError::ExecutionFailed(
+            "unexpected result".into(),
+        )),
+    }
+}
+
+/// Call a core contract function and apply state changes to the journal.
+pub fn mutable_call<DB, INSP>(
+    evm: &mut CeloEvm<DB, INSP>,
+    address: Address,
+    calldata: Bytes,
+) -> Result<(Bytes, Vec<Log>), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -99,7 +172,12 @@ where
             output: Output::Call(bytes),
             logs,
             ..
-        } => Ok((bytes, exec_result.state, logs)),
+        } => {
+            apply_state_to_journal(evm, exec_result.state)
+                .map_err(|e| CoreContractError::Evm(e.to_string()))?;
+
+            Ok((bytes, logs))
+        }
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
@@ -122,7 +200,7 @@ where
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
-    let (output_bytes, _, _) = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
+    let output_bytes = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
 
     if output_bytes.is_empty() {
         return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
@@ -151,7 +229,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _) = call(
+        let output_bytes = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
@@ -188,7 +266,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _) = call(
+        let output_bytes = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),

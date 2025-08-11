@@ -32,7 +32,7 @@ use revm::{
         interpreter::EthInterpreter,
     },
     primitives::{HashMap, U256, hardfork::SpecId},
-    state::{Account, EvmState},
+    state::Account,
 };
 use revm_context::LocalContextTr;
 use std::{boxed::Box, format, string::ToString};
@@ -69,33 +69,6 @@ where
             FrameInit = FrameInput,
         >,
 {
-    /// Apply state changes from an EvmState to the current execution journal.
-    fn apply_state_to_journal(
-        &self,
-        evm: &mut CeloEvm<DB, INSP>,
-        state: EvmState,
-    ) -> Result<(), ERROR> {
-        for (address, account) in state {
-            let mut loaded_account = evm.ctx().journal().load_account(address)?;
-
-            // Apply the account changes to the loaded account
-            loaded_account.data.info.balance = account.info.balance;
-            loaded_account.data.info.nonce = account.info.nonce;
-            loaded_account.data.info.code_hash = account.info.code_hash;
-            loaded_account.data.info.code = account.info.code;
-
-            // Apply storage changes (iterate by reference to avoid moving)
-            for (key, value) in &account.storage {
-                loaded_account.data.storage.insert(*key, value.clone());
-            }
-
-            // Always mark the account as touched since we've modified its state
-            // This ensures it will be included in the final transaction state
-            loaded_account.mark_touch();
-        }
-        Ok(())
-    }
-
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
     // in the same call:
     // - refund
@@ -154,7 +127,7 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
 
-        let (state, logs) = erc20::credit_gas_fees(
+        let logs = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -166,8 +139,6 @@ where
         )
         .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
 
-        // Apply the state changes from the system call to the current execution context
-        self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
         evm.ctx()
             .chain()
@@ -230,12 +201,10 @@ where
         }
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        // The state changes from this call will be part of the transaction execution
-        let (state, logs) = erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
+        // The state changes from this call will be applied to the journal by mutable_call
+        let logs = erc20::debit_gas_fees(evm, fee_currency_addr, caller_addr, gas_cost)
             .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
 
-        // Apply the state changes from the system call to the current execution context
-        self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
         evm.ctx()
             .chain()
