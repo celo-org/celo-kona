@@ -1,5 +1,7 @@
-use opentelemetry::metrics::{Counter, Histogram};
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram},
+};
 
 use tokio::time::Duration;
 

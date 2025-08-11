@@ -131,9 +131,9 @@ async fn main() -> Result<()> {
 
         // setup metrics
         let meter = build_meter_provider(otel_resource.clone());
-        global::set_meter_provider(meter.clone());
+        global::set_meter_provider(meter);
 
-        otel_resource_logging = Some(otel_resource.clone());
+        otel_resource_logging = Some(otel_resource);
         // TODO: teardown of the resources
     }
 
