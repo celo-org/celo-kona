@@ -103,9 +103,9 @@ where
             ..
         } => {
             if gas_limit.is_some() && gas_used > gas_limit.unwrap() {
-                return Err(CoreContractError::ExecutionFailed(format!(
-                    "revert: gas limit exceeded"
-                )));
+                return Err(CoreContractError::ExecutionFailed(
+                    "revert: gas limit exceeded".to_string(),
+                ));
             }
             Ok((bytes, exec_result.state, logs, gas_used))
         }

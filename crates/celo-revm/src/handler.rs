@@ -353,12 +353,9 @@ where
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
                 .map_err(|e| ERROR::from_string(e))?;
-            let intrinsic_gas_for_erc20_u64: u64 = intrinsic_gas_for_erc20.try_into().expect(
-                "Failed to convert intrinsic gas for erc20 to u64: value exceeds u64 range",
-            );
             // Adding only in the initial gas, and not the floor because we never addapted the
             // eip7623 to the cip64 (discussions being taken)
-            gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20_u64);
+            gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20);
         }
 
         // Additional check to see if limit is big enough to cover initial gas.
