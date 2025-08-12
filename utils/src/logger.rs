@@ -7,7 +7,8 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 pub fn init_tracing(
     verbosity_level: u8,
     env_filter: Option<impl Into<EnvFilter>>,
-    otel_resource: Option<Resource>,
+    otel_resource: Resource,
+    export_telemetry: bool,
 ) {
     let level = match verbosity_level {
         1 => Level::ERROR,
@@ -28,39 +29,25 @@ pub fn init_tracing(
         .add_directive("opentelemetry=info".parse().unwrap());
 
     let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
-    let otel_layer = if let Some(resource) = otel_resource {
-        match LogExporter::builder().with_tonic().build() {
-            Ok(otlp_exporter) => {
-                // OTLP gRPC exporter path
-                Some(
-                    SdkLoggerProvider::builder()
-                        .with_resource(resource)
-                        .with_simple_exporter(otlp_exporter)
-                        .build(),
-                )
-            }
+
+    let otel_layer = match export_telemetry {
+        true => match LogExporter::builder().with_tonic().build() {
+            Ok(otlp_exporter) => SdkLoggerProvider::builder()
+                .with_resource(otel_resource)
+                .with_simple_exporter(otlp_exporter)
+                .build(),
             Err(err) => {
                 eprintln!("Failed to build OTLP log exporter: {err}");
-                None
+                SdkLoggerProvider::builder().with_resource(otel_resource).build()
             }
-        }
-    } else {
-        None
+        },
+        false => SdkLoggerProvider::builder().build(),
     };
 
-    // This might be duplicate code, but reducing duplication here means
-    // dealing with getting the traits right
-    match otel_layer {
-        Some(ol) => {
-            let otel_bridge_layer = OpenTelemetryTracingBridge::new(&ol);
-            tracing_subscriber::Registry::default()
-                .with(filter)
-                .with(fmt_layer)
-                .with(otel_bridge_layer)
-                .init();
-        }
-        None => {
-            tracing_subscriber::Registry::default().with(filter).with(fmt_layer).init();
-        }
-    }
+    let otel_bridge_layer = OpenTelemetryTracingBridge::new(&otel_layer);
+    tracing_subscriber::Registry::default()
+        .with(filter)
+        .with(fmt_layer)
+        .with(otel_bridge_layer)
+        .init();
 }

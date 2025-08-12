@@ -83,9 +83,8 @@ pub struct ExecutionVerifierCommand {
     pub telemetry: bool,
 }
 
-/// The execution verifier command
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     let cli = ExecutionVerifierCommand::parse();
 
     if let Some(start_block) = cli.start_block {
@@ -108,6 +107,30 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
+    if cli.telemetry {
+        tracing::info!("OTLP export for tracing and metrics enabled");
+    }
+
+    // Construct the OTel resources.
+    // If cli.telemetry is false this will not use any OTLP exporters
+    let otel_resource = build_resource();
+
+    // set up the metrics
+    // If cli.telemetry is false this will not use any OTLP exporters
+    global::set_meter_provider(build_meter_provider(otel_resource.clone(), cli.telemetry));
+
+    // This filter shows all logs from this code but doesn't show logs from the block builder,
+    // since it is very verbose.
+    // set up the logs
+    // If cli.telemetry is false this will not use any OTLP exporters
+    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry);
+
+    let cancel_token = CancellationToken::new();
+    run(cli, cancel_token).await
+}
+
+async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> anyhow::Result<()> {
     // Use the stored starting block or the CLI-provided one, but only
     // if a persistence-file option is given
     let start_block = match cli.state_file {
@@ -122,28 +145,6 @@ async fn main() -> Result<()> {
             })
             .or(cli.start_block),
     };
-
-    // if this is None, the tracing will not try to
-    // construct the OTel log-exporter
-    let mut otel_resource_logging = None;
-    if cli.telemetry {
-        let otel_resource = build_resource();
-
-        // setup metrics
-        let meter = build_meter_provider(otel_resource.clone());
-        global::set_meter_provider(meter);
-
-        otel_resource_logging = Some(otel_resource);
-        // TODO: teardown of the resources
-    }
-
-    // This filter shows all logs from this code but doesn't show logs from the block builder, since
-    // it is very verbose.
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
-    init_tracing(cli.v, Some(filter), otel_resource_logging);
-    if cli.telemetry {
-        tracing::info!("OTel tracing and metrics enabled");
-    }
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
@@ -166,7 +167,6 @@ async fn main() -> Result<()> {
 
     let mut handles = JoinSet::new();
 
-    let cancel_token = CancellationToken::new();
     let subscription = provider.subscribe_blocks().await?;
 
     let chain_id = provider
@@ -269,8 +269,6 @@ async fn main() -> Result<()> {
     }
 
     verified_block_store_task.abort();
-
-    // metrics.lock().display_metrics();
     Ok(())
 }
 

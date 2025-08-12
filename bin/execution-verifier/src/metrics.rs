@@ -13,9 +13,6 @@ pub(crate) struct Metrics {
 
 impl Metrics {
     pub(crate) fn new() -> Self {
-        // TODO: the meter needs to be initialized,
-        // otherwise this is probably a noop.
-        // is it possible to recognize that here?
         let meter = global::meter("execution-verifier");
         Self {
             successful_verification: meter
