@@ -17,14 +17,14 @@ use std::{format, string::String};
 #[derive(Debug, Clone, Default)]
 pub struct FeeCurrencyContext {
     exchange_rates: HashMap<Address, (U256, U256)>,
-    intrinsic_gas: HashMap<Address, U256>,
+    intrinsic_gas: HashMap<Address, u64>,
     pub updated_at_block: Option<u64>,
 }
 
 impl FeeCurrencyContext {
     pub fn new(
         exchange_rates: HashMap<Address, (U256, U256)>,
-        intrinsic_gas: HashMap<Address, U256>,
+        intrinsic_gas: HashMap<Address, u64>,
         updated_at_block: Option<u64>,
     ) -> Self {
         Self {
@@ -53,9 +53,9 @@ impl FeeCurrencyContext {
         ))
     }
 
-    pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<U256, String> {
+    pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<u64, String> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
-            return Ok(U256::ZERO);
+            return Ok(0);
         }
 
         let currency_addr = currency.unwrap();
@@ -63,6 +63,18 @@ impl FeeCurrencyContext {
             Some(gas_cost) => Ok(*gas_cost),
             None => Err(format!("fee currency not registered: {}", currency_addr)),
         }
+    }
+
+    pub fn max_allowed_currency_intrinsic_gas_cost(
+        &self,
+        currency: Option<Address>,
+    ) -> Result<u64, String> {
+        // Allow the contract to overshoot 2 times the deducted intrinsic gas
+        // during execution.
+        // If the feeCurrency is None, then the max allowed intrinsic gas cost
+        // is 0 (i.e. not allowed) for a fee-currency specific EVM call within the STF.
+        self.currency_intrinsic_gas_cost(currency)
+            .map(|cost| cost.saturating_mul(3))
     }
 
     pub fn currency_exchange_rate(
@@ -138,7 +150,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111"
             )))
             .unwrap();
-        assert_eq!(intrinsic_gas_cost, U256::from(50000));
+        assert_eq!(intrinsic_gas_cost, 50000);
 
         // Verify that updated_at_block is set to the current block number
         assert_eq!(

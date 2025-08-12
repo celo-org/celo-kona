@@ -1835,6 +1835,7 @@ dependencies = [
  "serde",
  "spin 0.10.0",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

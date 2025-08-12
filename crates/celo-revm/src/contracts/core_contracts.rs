@@ -75,7 +75,8 @@ pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
-) -> Result<(Bytes, EvmState, Vec<Log>), CoreContractError>
+    gas_limit: Option<u64>,
+) -> Result<(Bytes, EvmState, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -98,8 +99,16 @@ where
         ExecutionResult::Success {
             output: Output::Call(bytes),
             logs,
+            gas_used,
             ..
-        } => Ok((bytes, exec_result.state, logs)),
+        } => {
+            if gas_limit.is_some() && gas_used > gas_limit.unwrap() {
+                return Err(CoreContractError::ExecutionFailed(format!(
+                    "revert: gas limit exceeded"
+                )));
+            }
+            Ok((bytes, exec_result.state, logs, gas_used))
+        }
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
@@ -122,7 +131,12 @@ where
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
-    let (output_bytes, _, _) = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
+    let (output_bytes, _, _, _) = call(
+        evm,
+        fee_curr_dir,
+        getCurrenciesCall {}.abi_encode().into(),
+        None,
+    )?;
 
     if output_bytes.is_empty() {
         return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
@@ -151,10 +165,11 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _) = call(
+        let (output_bytes, _, _, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
+            None,
         )?;
 
         // Decode the output
@@ -179,7 +194,7 @@ where
 pub fn get_intrinsic_gas<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
-) -> Result<HashMap<Address, U256>, CoreContractError>
+) -> Result<HashMap<Address, u64>, CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -188,10 +203,11 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _) = call(
+        let (output_bytes, _, _, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
+            None,
         )?;
 
         // Decode the output
@@ -207,7 +223,13 @@ where
             }
         };
 
-        _ = intrinsic_gas.insert(*token, curr_conf.intrinsicGas);
+        _ = intrinsic_gas.insert(
+            *token,
+            curr_conf
+                .intrinsicGas
+                .try_into()
+                .expect("Failed to convert U256 to u64: value exceeds u64 range"),
+        );
     }
 
     Ok(intrinsic_gas)
@@ -365,7 +387,7 @@ pub(crate) mod tests {
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
             address!("0x1111111111111111111111111111111111111111"),
-            U256::from(50000),
+            50000,
         );
         assert_eq!(intrinsic_gas, expected);
     }

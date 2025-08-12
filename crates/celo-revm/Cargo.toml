@@ -45,6 +45,7 @@ auto_impl.workspace = true
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 spin.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
@@ -59,6 +60,7 @@ default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
 std = [
     "serde?/std",
     "revm/std",
+    "tracing/std",
 ]
 hashbrown = ["revm/hashbrown"]
 serde = [
