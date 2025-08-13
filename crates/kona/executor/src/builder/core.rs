@@ -100,14 +100,27 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+        let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+
+        // Update the receipt builder to include the fee currency context. We couldn't do this
+        // earlier because we need an EVM to populate the fee currency context.
+        let fee_currency_context = evm.create_fee_currency_context().unwrap_or_default();
+        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(fee_currency_context);
+        let factory = OpBlockExecutorFactory::<
+            CeloAlloyReceiptBuilder,
+            CeloRollupConfig,
+            CeloEvmFactory,
+        >::new(
+            updated_receipt_builder, self.config.clone(), *self.factory.evm_factory()
+        );
+
         let ctx = OpBlockExecutionCtx {
             parent_hash,
             parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };
-        let executor = self.factory.create_executor(evm, ctx);
+        let executor = factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
         let transactions = attrs

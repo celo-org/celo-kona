@@ -6,13 +6,24 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
+use celo_revm::common::fee_currency_context::FeeCurrencyContext;
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct CeloAlloyReceiptBuilder;
+pub struct CeloAlloyReceiptBuilder {
+    /// The fee currency context for calculating ERC20 base fees
+    pub fee_currency_context: FeeCurrencyContext,
+}
+
+impl CeloAlloyReceiptBuilder {
+    /// Creates a new receipt builder with the given fee currency context
+    pub const fn new(fee_currency_context: FeeCurrencyContext) -> Self {
+        Self { fee_currency_context }
+    }
+}
 
 impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
     type Transaction = CeloTxEnvelope;
@@ -31,13 +42,11 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                         // Paid with Celo
                         Some(base_fee)
                     } else {
-                        celo_revm::common::global_fee_currency_context::get_fee_currency_context()
-                            .and_then(|fee_currency_context| {
-                                fee_currency_context
-                                    .celo_to_currency(cip64.tx().fee_currency, U256::from(base_fee))
-                                    .ok()
-                                    .and_then(|v| v.try_into().ok())
-                            })
+                        // Use the fee_currency_context to convert the base fee
+                        self.fee_currency_context
+                            .celo_to_currency(cip64.tx().fee_currency, U256::from(base_fee))
+                            .ok()
+                            .and_then(|v| v.try_into().ok())
                     }
                 } else {
                     None
