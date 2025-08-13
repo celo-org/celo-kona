@@ -14,8 +14,8 @@ impl VerifiedBlockTracker {
     ///
     /// # Arguments
     ///
-    /// * `start_block` - The starting block number for verification. If `None`,
-    ///   it will be set to the first block that gets added.
+    /// * `start_block` - The starting block number for verification. If `None`, it will be set to
+    ///   the first block that gets added.
     pub(crate) const fn new(start_block: Option<u64>) -> Self {
         Self { start_block, highest_verified_block: None, verified_blocks: Vec::new() }
     }

@@ -574,8 +574,8 @@ impl Metrics {
         if self.processed_blocks == 0 {
             return Duration::new(0, 0);
         }
-        (self.successful_processing_time + self.failed_processing_time)
-            / self.processed_blocks as u32
+        (self.successful_processing_time + self.failed_processing_time) /
+            self.processed_blocks as u32
     }
     fn average_successful_block_processing_time(&self) -> Duration {
         let successful_blocks = self.processed_blocks - self.failed_blocks;
