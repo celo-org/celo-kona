@@ -65,6 +65,18 @@ impl<TX: Transaction + CeloSystemCallTx> CeloSystemCallTx for CeloTransaction<TX
             system_contract_address,
         )))
     }
+
+    fn new_system_tx_with_gas_limit(
+        data: Bytes,
+        system_contract_address: Address,
+        gas_limit: u64,
+    ) -> Self {
+        CeloTransaction::new(OpTransaction::new(TX::new_system_tx_with_gas_limit(
+            data,
+            system_contract_address,
+            gas_limit,
+        )))
+    }
 }
 
 impl<T: Transaction> Transaction for CeloTransaction<T> {

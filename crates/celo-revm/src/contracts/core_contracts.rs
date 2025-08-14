@@ -1,4 +1,4 @@
-use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, CeloSystemCallEvmExt, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
@@ -84,7 +84,11 @@ where
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
-    let call_result = evm.transact_system_call(address, calldata);
+    let call_result = if let Some(limit) = gas_limit {
+        evm.transact_system_call_with_gas_limit(address, calldata, limit)
+    } else {
+        evm.transact_system_call(address, calldata)
+    };
 
     // Restore the original transaction context
     evm.ctx().set_tx(prev_tx);
@@ -101,14 +105,7 @@ where
             logs,
             gas_used,
             ..
-        } => {
-            if gas_limit.is_some_and(|limit| gas_used > limit) {
-                return Err(CoreContractError::ExecutionFailed(
-                    "revert: gas limit exceeded".to_string(),
-                ));
-            }
-            Ok((bytes, exec_result.state, logs, gas_used))
-        }
+        } => Ok((bytes, exec_result.state, logs, gas_used)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
