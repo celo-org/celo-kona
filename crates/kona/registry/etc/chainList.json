@@ -16,7 +16,7 @@
       "type": "L2",
       "chain": "holesky"
     },
-    "gasPayingToken": "0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8",
+    "gasPayingToken": "0xE692fD8305e097b0e73f1b61aCA8b74Cd921443B",
     "faultProofs": {
       "status": "permissioned"
     }
