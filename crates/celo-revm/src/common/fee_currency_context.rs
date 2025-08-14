@@ -1,6 +1,8 @@
 use crate::{
     CeloContext, CeloEvm,
-    core_contracts::{CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas},
+    contracts::core_contracts::{
+        CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas,
+    },
 };
 use alloy_primitives::map::HashMap;
 use revm::{
@@ -114,7 +116,7 @@ impl FeeCurrencyContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBuilder, DefaultCelo, core_contracts::tests::make_celo_test_db};
+    use crate::{CeloBuilder, DefaultCelo, contracts::core_contracts::tests::make_celo_test_db};
     use alloy_primitives::{U256, address};
     use revm::Context;
     use revm_context::ContextTr;

@@ -1,0 +1,50 @@
+[package]
+name = "execution-verifier"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+exclude.workspace = true
+
+[dependencies]
+kona-executor.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow.workspace = true
+clap.workspace = true
+url.workspace = true
+kona-cli.workspace = true
+futures = "0.3.31"
+# tracing.workspace = true
+tracing-subscriber.workspace = true
+alloy-rpc-types-engine.workspace = true
+celo-alloy-rpc-types-engine.workspace = true
+op-alloy-rpc-types-engine.workspace = true
+alloy-provider = { workspace = true, features = ["ipc"] }
+alloy-rpc-client.workspace = true
+alloy-transport.workspace = true
+alloy-transport-ws = "1.0.23"
+tokio-util = "0.7.15"
+alloy-pubsub = "1.0.23"
+alloy-rpc-types-eth = {workspace = true}
+alloy-transport-http.workspace = true
+alloy-transport-ipc = "1.0.23"
+alloy-network.workspace = true
+celo-executor = { workspace = true, features = ["test-utils"] }
+celo-registry = { version = "0.1.0", path = "../../crates/kona/registry" }
+alloy-primitives.workspace = true
+alloy-celo-evm.workspace = true
+kona-mpt.workspace = true
+thiserror.workspace = true
+alloy-rlp.workspace = true
+alloy-consensus.workspace = true
+tracing.workspace = true
+parking_lot = "0.12.4"
+
+
+[lints]
+workspace = true

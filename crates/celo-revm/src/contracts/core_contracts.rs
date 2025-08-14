@@ -9,6 +9,8 @@ use revm::{
     context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
+    primitives::Log,
+    state::EvmState,
 };
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
@@ -68,37 +70,36 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
+/// Call a core contract function and return the result.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
-) -> Result<Bytes, CoreContractError>
+) -> Result<(Bytes, EvmState, Vec<Log>), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Create checkpoint to revert changes after the call
-    let checkpoint = evm.ctx().journal().checkpoint();
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
     let call_result = evm.transact_system_call(address, calldata);
 
-    // Restore tx and revert changes made during the call
+    // Restore the original transaction context
     evm.ctx().set_tx(prev_tx);
-    evm.ctx().journal().checkpoint_revert(checkpoint);
 
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
-        Ok(o) => o.result,
+        Ok(o) => o,
     };
 
     // Check success
-    match exec_result {
+    match exec_result.result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
+            logs,
             ..
-        } => Ok(bytes),
+        } => Ok((bytes, exec_result.state, logs)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
@@ -121,7 +122,7 @@ where
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
-    let output_bytes = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
+    let (output_bytes, _, _) = call(evm, fee_curr_dir, getCurrenciesCall {}.abi_encode().into())?;
 
     if output_bytes.is_empty() {
         return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
@@ -150,7 +151,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let output_bytes = call(
+        let (output_bytes, _, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
@@ -187,7 +188,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let output_bytes = call(
+        let (output_bytes, _, _) = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
