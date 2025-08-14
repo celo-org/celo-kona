@@ -37,8 +37,6 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
-const FILE_PATH: &str = "./highest_verified_block.txt";
-
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -63,6 +61,11 @@ pub struct ExecutionVerifierCommand {
     /// Number of concurrent tasks to run.
     #[arg(long, default_value = "25")]
     pub concurrency: usize,
+    /// File that persists the highest verified block number.
+    /// If this exists already, the persisted number will be
+    /// read and overwrite the start-block option
+    #[arg(long)]
+    pub state_file: Option<String>,
 }
 
 /// The execution verifier command
@@ -90,8 +93,12 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
-    // Use the stored starting block or the CLI-provided one
-    let start_block = read_verified_block().or(cli.start_block);
+    // Use the stored starting block or the CLI-provided one, but only
+    // if a persistence-file option is given
+    let start_block = match cli.state_file {
+        None => cli.start_block,
+        Some(ref f) => read_verified_block(&f).or(cli.start_block),
+    };
 
     // This filter shows all logs from this code but doesn't show logs from the block builder, since
     // it is very verbose.
@@ -145,7 +152,7 @@ async fn main() -> Result<()> {
                 }
                 _ = interval.tick() => {
                     let tracker = tracker_handle.clone();
-                    if let Err(e) = store_verified_block(tracker).await {
+                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
                         eprintln!("Error storing verified block: {}", e);
                     }
                 }
@@ -421,20 +428,26 @@ async fn verify_block_range(
     Ok(())
 }
 
-async fn store_verified_block(tracker: Arc<Mutex<VerifiedBlockTracker>>) -> Result<()> {
+async fn persist_verified_block(
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    file_path: Option<&String>,
+) -> Result<()> {
     let mut tracker = tracker.lock();
     tracker.update_highest_verified_block();
 
     if let Some(highest_block) = tracker.highest_verified_block() {
-        return std::fs::write(FILE_PATH, format!("{highest_block}")).map_err(|e| {
-            anyhow::anyhow!("Failed to write highest verified block to {}: {}", FILE_PATH, e)
-        });
+        tracing::info!("Current highest verified block: {:?}", highest_block);
+        if let Some(f) = file_path {
+            return std::fs::write(f, format!("{highest_block}")).map_err(|e| {
+                anyhow::anyhow!("Failed to write highest verified block to {}: {}", f, e)
+            });
+        }
     }
     Ok(())
 }
 
-fn read_verified_block() -> Option<u64> {
-    let content = std::fs::read_to_string(FILE_PATH).ok()?;
+fn read_verified_block(file_path: &String) -> Option<u64> {
+    let content = std::fs::read_to_string(file_path).ok()?;
     content.trim().parse().ok()
 }
 
