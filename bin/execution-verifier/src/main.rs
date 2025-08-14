@@ -97,7 +97,15 @@ async fn main() -> Result<()> {
     // if a persistence-file option is given
     let start_block = match cli.state_file {
         None => cli.start_block,
-        Some(ref f) => read_verified_block(&f).or(cli.start_block),
+        Some(ref f) => read_verified_block(f)
+            .inspect(|verified_block| {
+                tracing::info!(
+                    persisted_block_number = verified_block,
+                    start_block_number = cli.start_block,
+                    "Found persisted highest verified block number, overwriting `start-block` argument"
+                );
+            })
+            .or(cli.start_block),
     };
 
     // This filter shows all logs from this code but doesn't show logs from the block builder, since
