@@ -37,7 +37,7 @@ use revm::{
 };
 use revm_context::LocalContextTr;
 use std::{boxed::Box, format, string::ToString};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -146,12 +146,12 @@ where
     ) -> Result<u64, ERROR> {
         let fee_currency_context = &evm.ctx().chain().fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
-            .max_allowed_currency_intrinsic_gas_cost(fee_currency)
+            .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?
             .saturating_sub(
                 evm.ctx()
                     .chain()
-                    .actual_cip64_tx_info
+                    .cip64_tx_side_effects
                     .actual_intrinsic_gas_used,
             );
         Ok(max_allowed_gas_cost)
@@ -228,12 +228,12 @@ where
         // Collect logs from the system call to be included in the final receipt
         evm.ctx()
             .chain()
-            .actual_cip64_tx_info
+            .cip64_tx_side_effects
             .logs_post
             .extend(logs);
         evm.ctx()
             .chain()
-            .actual_cip64_tx_info
+            .cip64_tx_side_effects
             .actual_intrinsic_gas_used += gas_used;
         self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
         Ok(())
@@ -247,7 +247,7 @@ where
         let gas_cost = evm
             .ctx()
             .chain()
-            .actual_cip64_tx_info
+            .cip64_tx_side_effects
             .actual_intrinsic_gas_used;
         let intrinsic_gas_cost = evm
             .ctx()
@@ -255,13 +255,23 @@ where
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| ERROR::from_string(e))?;
+
         if gas_cost > intrinsic_gas_cost {
-            warn!(
-                target: "celo_handler",
-                "gas cost exceeds intrinsic gas cost: {:} > {:}",
-                gas_cost,
-                intrinsic_gas_cost
-            );
+            if gas_cost > intrinsic_gas_cost * 2 {
+                info!(
+                    target: "celo_handler",
+                    "Gas usage for debit+credit exceeds intrinsic gas: {:} > {:}",
+                    gas_cost,
+                    intrinsic_gas_cost
+                );
+            } else {
+                warn!(
+                    target: "celo_handler",
+                    "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2.: {:} > {:}",
+                    gas_cost,
+                    intrinsic_gas_cost
+                );
+            }
         }
         Ok(())
     }
@@ -326,10 +336,10 @@ where
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
-        evm.ctx().chain().actual_cip64_tx_info.logs_pre.extend(logs);
+        evm.ctx().chain().cip64_tx_side_effects.logs_pre.extend(logs);
         evm.ctx()
             .chain()
-            .actual_cip64_tx_info
+            .cip64_tx_side_effects
             .actual_intrinsic_gas_used = gas_used;
 
         Ok(())
@@ -789,16 +799,16 @@ where
 
         // Merge system call logs with main transaction logs
         let chain = evm.ctx().chain();
-        let has_system_logs = !chain.actual_cip64_tx_info.logs_pre.is_empty()
-            || !chain.actual_cip64_tx_info.logs_post.is_empty();
+        let has_system_logs = !chain.cip64_tx_side_effects.logs_pre.is_empty()
+            || !chain.cip64_tx_side_effects.logs_post.is_empty();
 
         if has_system_logs {
             match &mut result.result {
                 ExecutionResult::Success { logs, .. } => {
                     // Build merged logs: pre_logs + main_tx_logs + post_logs
-                    let mut merged_logs = chain.actual_cip64_tx_info.logs_pre.clone();
+                    let mut merged_logs = chain.cip64_tx_side_effects.logs_pre.clone();
                     merged_logs.extend(logs.clone());
-                    merged_logs.extend(chain.actual_cip64_tx_info.logs_post.clone());
+                    merged_logs.extend(chain.cip64_tx_side_effects.logs_post.clone());
                     *logs = merged_logs;
                 }
                 _ => {
@@ -808,9 +818,9 @@ where
         }
 
         // Clear the system call logs after merging
-        chain.actual_cip64_tx_info.logs_pre.clear();
-        chain.actual_cip64_tx_info.logs_post.clear();
-        chain.actual_cip64_tx_info.actual_intrinsic_gas_used = 0;
+        chain.cip64_tx_side_effects.logs_pre.clear();
+        chain.cip64_tx_side_effects.logs_post.clear();
+        chain.cip64_tx_side_effects.actual_intrinsic_gas_used = 0;
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 

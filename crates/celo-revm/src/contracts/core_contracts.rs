@@ -102,7 +102,7 @@ where
             gas_used,
             ..
         } => {
-            if gas_limit.is_some() && gas_used > gas_limit.unwrap() {
+            if gas_limit.is_some_and(|limit| gas_used > limit) {
                 return Err(CoreContractError::ExecutionFailed(
                     "revert: gas limit exceeded".to_string(),
                 ));
@@ -337,7 +337,7 @@ pub(crate) mod tests {
         db.insert_account_storage(
             get_addresses(0).fee_currency_directory,
             struct_start_slot + U256::from(1),
-            U256::from(50000),
+            U256::from(50_000),
         )
         .unwrap();
 
@@ -387,7 +387,7 @@ pub(crate) mod tests {
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
             address!("0x1111111111111111111111111111111111111111"),
-            50000,
+            50_000,
         );
         assert_eq!(intrinsic_gas, expected);
     }

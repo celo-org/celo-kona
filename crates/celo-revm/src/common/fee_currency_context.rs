@@ -54,7 +54,7 @@ impl FeeCurrencyContext {
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<u64, String> {
-        if currency.is_none() || currency.unwrap() == Address::ZERO {
+        if currency.is_none_or(|currency| currency == Address::ZERO) {
             return Ok(0);
         }
 
@@ -65,15 +65,15 @@ impl FeeCurrencyContext {
         }
     }
 
+    // Allow the contract to overshoot 2 times the deducted intrinsic gas
+    // during execution.
+    // If the feeCurrency is None, then the max allowed intrinsic gas cost
+    // is 0 (i.e. not allowed) for a fee-currency specific EVM call within the STF.
     pub fn max_allowed_currency_intrinsic_gas_cost(
         &self,
-        currency: Option<Address>,
+        currency: Address,
     ) -> Result<u64, String> {
-        // Allow the contract to overshoot 2 times the deducted intrinsic gas
-        // during execution.
-        // If the feeCurrency is None, then the max allowed intrinsic gas cost
-        // is 0 (i.e. not allowed) for a fee-currency specific EVM call within the STF.
-        self.currency_intrinsic_gas_cost(currency)
+        self.currency_intrinsic_gas_cost(Some(currency))
             .map(|cost| cost.saturating_mul(3))
     }
 
@@ -150,7 +150,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111"
             )))
             .unwrap();
-        assert_eq!(intrinsic_gas_cost, 50000);
+        assert_eq!(intrinsic_gas_cost, 50_000);
 
         // Verify that updated_at_block is set to the current block number
         assert_eq!(
