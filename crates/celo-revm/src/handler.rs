@@ -11,6 +11,7 @@ use crate::{
 };
 use alloy_primitives::Address;
 use celo_alloy_consensus::CeloTxType;
+use core::ops::Sub;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -208,8 +209,13 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
 
-        let max_allowed_gas_cost =
-            self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
+        let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?.sub(
+            evm.ctx()
+                .chain()
+                .cip64_tx_side_effects
+                .actual_intrinsic_gas_used,
+        );
+
         let (state, logs, gas_used) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
@@ -301,13 +307,13 @@ where
 
         let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
-        
+
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
-        
+
         let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-        .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
-    
+            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+
         let gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
             .map(|gas_cost| U256::from(gas_cost))
@@ -336,7 +342,11 @@ where
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
-        evm.ctx().chain().cip64_tx_side_effects.logs_pre.extend(logs);
+        evm.ctx()
+            .chain()
+            .cip64_tx_side_effects
+            .logs_pre
+            .extend(logs);
         evm.ctx()
             .chain()
             .cip64_tx_side_effects
