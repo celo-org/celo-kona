@@ -35,7 +35,7 @@ use revm::{
     state::{Account, EvmState},
 };
 use revm_context::{ContextSetters, LocalContextTr};
-use std::{boxed::Box, format, string::ToString};
+use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
@@ -343,7 +343,7 @@ where
         tx.cip64_tx_info = Some(Cip64Info {
             actual_intrinsic_gas_used: gas_used,
             logs_pre: logs,
-            logs_post: vec![],
+            logs_post: Vec::new(),
         });
         evm.ctx().set_tx(tx);
 
