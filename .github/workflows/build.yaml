@@ -1,0 +1,46 @@
+name: Build Docker images
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build celo-kona image
+    runs-on:
+      - self-hosted
+      - org
+      - 8-cpu
+
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Login at GCP Artifact Registry
+        uses: celo-org/reusable-workflows/.github/actions/auth-gcp-artifact-registry@v2.0
+        with:
+          workload-id-provider: "projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos"
+          service-account: "celo-kona-gh@devopsre.iam.gserviceaccount.com"
+          docker-gcp-registries: us-west1-docker.pkg.dev
+
+      - name: Build, push and scan the container
+        # TODO: pin to release 3.0.0 once approved and tagged
+        uses: celo-org/reusable-workflows/.github/actions/build-container@ezdac/use-docker-metadata-action
+        with:
+          platforms: linux/amd64
+          registry: us-west1-docker.pkg.dev/devopsre/dev-images
+          app-name: ${{ github.event.repository.name }}
+          context: .
+          dockerfile: Dockerfile
+          push: "true"
