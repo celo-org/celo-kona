@@ -150,6 +150,7 @@ where
                 deposit: Default::default(),
             },
             fee_currency: None,
+            cip64_tx_info: None,
         };
 
         let mut gas_limit = tx.op_tx.base.gas_limit;

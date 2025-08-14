@@ -2,16 +2,14 @@
 
 use crate::{
     CeloContext,
-    common::fee_currency_context::FeeCurrencyContext,
-    common::global_fee_currency_context,
+    common::{fee_currency_context::FeeCurrencyContext, global_fee_currency_context},
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
-    transaction::CeloTxTr,
+    transaction::{CeloTxTr, abstraction::Cip64Info},
 };
 use alloy_primitives::Address;
 use celo_alloy_consensus::CeloTxType;
-use core::ops::Sub;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -36,7 +34,7 @@ use revm::{
     primitives::{HashMap, U256, hardfork::SpecId},
     state::{Account, EvmState},
 };
-use revm_context::LocalContextTr;
+use revm_context::{ContextSetters, LocalContextTr};
 use std::{boxed::Box, format, string::ToString};
 use tracing::{info, warn};
 
@@ -122,7 +120,7 @@ where
         Ok(())
     }
 
-    fn cip64_get_base_fee(
+    fn cip64_get_base_fee_in_erc20(
         &self,
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
@@ -148,13 +146,7 @@ where
         let fee_currency_context = &evm.ctx().chain().fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
-            .map_err(|e| ERROR::from_string(e))?
-            .saturating_sub(
-                evm.ctx()
-                    .chain()
-                    .cip64_tx_side_effects
-                    .actual_intrinsic_gas_used,
-            );
+            .map_err(|e| ERROR::from_string(e))?;
         Ok(max_allowed_gas_cost)
     }
 
@@ -193,7 +185,7 @@ where
         let caller = ctx.tx().caller();
 
         // Convert costs to fee currency
-        let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, basefee)?;
+        let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
         let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20);
 
@@ -209,12 +201,16 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
 
-        let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?.sub(
-            evm.ctx()
-                .chain()
-                .cip64_tx_side_effects
-                .actual_intrinsic_gas_used,
-        );
+        let max_allowed_gas_cost = self
+            .cip64_max_allowed_gas_cost(evm, fee_currency)?
+            .saturating_sub(
+                evm.ctx()
+                    .tx()
+                    .cip64_tx_info
+                    .as_ref()
+                    .unwrap()
+                    .actual_intrinsic_gas_used,
+            );
 
         let (state, logs, gas_used) = erc20::credit_gas_fees(
             evm,
@@ -232,15 +228,14 @@ where
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
-        evm.ctx()
-            .chain()
-            .cip64_tx_side_effects
-            .logs_post
-            .extend(logs);
-        evm.ctx()
-            .chain()
-            .cip64_tx_side_effects
-            .actual_intrinsic_gas_used += gas_used;
+        let mut tx = evm.ctx().tx().clone();
+        let old_cip64_tx_info = tx.cip64_tx_info.as_ref().unwrap();
+        tx.cip64_tx_info = Some(Cip64Info {
+            actual_intrinsic_gas_used: old_cip64_tx_info.actual_intrinsic_gas_used + gas_used,
+            logs_pre: old_cip64_tx_info.logs_pre.clone(),
+            logs_post: logs,
+        });
+        evm.ctx().set_tx(tx);
         self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
         Ok(())
     }
@@ -252,8 +247,10 @@ where
     ) -> Result<(), ERROR> {
         let gas_cost = evm
             .ctx()
-            .chain()
-            .cip64_tx_side_effects
+            .tx()
+            .cip64_tx_info
+            .as_ref()
+            .unwrap()
             .actual_intrinsic_gas_used;
         let intrinsic_gas_cost = evm
             .ctx()
@@ -305,7 +302,7 @@ where
             ));
         }
 
-        let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, basefee)?;
+        let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
 
         // Get ERC20 balance using the erc20 module
@@ -341,16 +338,14 @@ where
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
-        // Collect logs from the system call to be included in the final receipt
-        evm.ctx()
-            .chain()
-            .cip64_tx_side_effects
-            .logs_pre
-            .extend(logs);
-        evm.ctx()
-            .chain()
-            .cip64_tx_side_effects
-            .actual_intrinsic_gas_used = gas_used;
+        // Store CIP64 transaction information by modifying the transaction
+        let mut tx = evm.ctx().tx().clone();
+        tx.cip64_tx_info = Some(Cip64Info {
+            actual_intrinsic_gas_used: gas_used,
+            logs_pre: logs,
+            logs_post: vec![],
+        });
+        evm.ctx().set_tx(tx);
 
         Ok(())
     }
@@ -454,7 +449,8 @@ where
                     return Err(InvalidTransaction::InvalidChainId.into());
                 }
 
-                let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, base_fee)?;
+                let base_fee_in_erc20 =
+                    self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?;
                 validate_priority_fee_tx(max_fee, max_priority_fee, Some(base_fee_in_erc20))?;
             }
             _ => {
@@ -808,17 +804,15 @@ where
         }
 
         // Merge system call logs with main transaction logs
-        let chain = evm.ctx().chain();
-        let has_system_logs = !chain.cip64_tx_side_effects.logs_pre.is_empty()
-            || !chain.cip64_tx_side_effects.logs_post.is_empty();
-
-        if has_system_logs {
+        let cip64_tx_info = evm.ctx().tx().cip64_tx_info.clone();
+        if cip64_tx_info.is_some() {
+            let cip64_tx_info = cip64_tx_info.unwrap();
             match &mut result.result {
                 ExecutionResult::Success { logs, .. } => {
                     // Build merged logs: pre_logs + main_tx_logs + post_logs
-                    let mut merged_logs = chain.cip64_tx_side_effects.logs_pre.clone();
+                    let mut merged_logs = cip64_tx_info.logs_pre.clone();
                     merged_logs.extend(logs.clone());
-                    merged_logs.extend(chain.cip64_tx_side_effects.logs_post.clone());
+                    merged_logs.extend(cip64_tx_info.logs_post.clone());
                     *logs = merged_logs;
                 }
                 _ => {
@@ -826,11 +820,6 @@ where
                 }
             }
         }
-
-        // Clear the system call logs after merging
-        chain.cip64_tx_side_effects.logs_pre.clear();
-        chain.cip64_tx_side_effects.logs_post.clear();
-        chain.cip64_tx_side_effects.actual_intrinsic_gas_used = 0;
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
