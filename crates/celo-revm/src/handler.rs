@@ -11,7 +11,6 @@ use crate::{
 };
 use alloy_primitives::Address;
 use celo_alloy_consensus::CeloTxType;
-use core::cmp;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -26,7 +25,7 @@ use revm::{
     },
     handler::{
         EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
-        pre_execution::validate_account_nonce_and_code,
+        pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
     inspector::{InspectorFrame, InspectorHandler},
     interpreter::{
@@ -376,18 +375,9 @@ where
                 if Some(evm.ctx().cfg().chain_id()) != evm.ctx().tx().chain_id() {
                     return Err(InvalidTransaction::InvalidChainId.into());
                 }
-                if max_priority_fee > max_fee {
-                    // Or gas_max_fee for eip1559
-                    return Err(InvalidTransaction::PriorityFeeGreaterThanMaxFee.into());
-                }
 
                 let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, base_fee)?;
-                // Check minimal cost against basefee
-                let effective_gas_price =
-                    cmp::min(max_fee, base_fee_in_erc20.saturating_add(max_priority_fee));
-                if effective_gas_price < base_fee as u128 {
-                    return Err(InvalidTransaction::GasPriceLessThanBasefee.into());
-                }
+                validate_priority_fee_tx(max_fee, max_priority_fee, Some(base_fee_in_erc20))?;
             }
             _ => {
                 // Other tx types will be handled by the mainnet handler
