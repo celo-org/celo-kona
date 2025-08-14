@@ -28,6 +28,7 @@ use std::sync::Arc;
 use tokio::{
     runtime::Handle,
     sync::mpsc,
+    task::JoinSet,
     time::{Duration, Instant, interval},
 };
 use tokio_util::sync::CancellationToken;
@@ -115,7 +116,8 @@ async fn main() -> Result<()> {
     };
 
     let provider = Arc::new(provider);
-    let mut handles = futures::stream::FuturesUnordered::new();
+
+    let mut handles = JoinSet::new();
 
     let cancel_token = CancellationToken::new();
     let subscription = provider.subscribe_blocks().await?;
@@ -153,7 +155,7 @@ async fn main() -> Result<()> {
 
     let metrics = Arc::new(Mutex::new(Metrics::new()));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
-        handles.push(tokio::spawn(verify_block_range(
+        handles.spawn(verify_block_range(
             start_block,
             end_block,
             provider.clone(),
@@ -162,11 +164,11 @@ async fn main() -> Result<()> {
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
-        )));
+        ));
     } else if let Some(start_block) = start_block {
         // Used to communicate the first head block so that we can set the end of the block range.
         let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
-        handles.push(tokio::spawn(verify_new_heads(
+        handles.spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
             subscription,
@@ -174,11 +176,11 @@ async fn main() -> Result<()> {
             Some(first_head_tx.clone()),
             metrics.clone(),
             tracker.clone(),
-        )));
+        ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
-        handles.push(tokio::spawn(verify_block_range(
+        handles.spawn(verify_block_range(
             start_block,
             end,
             provider.clone(),
@@ -187,9 +189,9 @@ async fn main() -> Result<()> {
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
-        )));
+        ));
     } else {
-        handles.push(tokio::spawn(verify_new_heads(
+        handles.spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
             subscription,
@@ -197,22 +199,22 @@ async fn main() -> Result<()> {
             None,
             metrics.clone(),
             tracker.clone(),
-        )));
+        ));
     };
 
     // Process results as they complete, cancel on first error
-    while let Some(result) = handles.next().await {
+    while let Some(result) = handles.join_next().await {
         match result {
             Ok(Err(e)) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
-                futures::future::join_all(handles).await;
+                handles.join_all().await;
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
-                futures::future::join_all(handles).await;
+                handles.join_all().await;
                 return Err(anyhow::anyhow!("Task panicked: {}", e));
             }
             _ => {}
@@ -380,7 +382,7 @@ async fn verify_block_range(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
-    let mut handles = futures::stream::FuturesUnordered::new();
+    let mut handles = JoinSet::new();
     let mut next_block = start_block;
 
     // Spawn initial batch
@@ -394,26 +396,24 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            let task = tokio::spawn(async move {
+            handles.spawn(async move {
                 verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
             });
-            handles.push(task);
             next_block += 1;
         }
     }
 
     // Process results and spawn new tasks continuously
-    while handles.next().await.is_some() {
+    while handles.join_next().await.is_some() {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
             let rollup_config = rollup_config.clone();
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            let task = tokio::spawn(async move {
+            handles.spawn(async move {
                 verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
             });
-            handles.push(task);
             next_block += 1;
         }
     }
