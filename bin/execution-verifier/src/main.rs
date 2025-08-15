@@ -24,7 +24,10 @@ use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::{
     runtime::Handle,
     sync::mpsc,
@@ -67,7 +70,7 @@ pub struct ExecutionVerifierCommand {
     /// If this exists already, the persisted number will be
     /// read and overwrite the start-block option
     #[arg(long)]
-    pub state_file: Option<String>,
+    pub state_file: Option<PathBuf>,
 }
 
 /// The execution verifier command
@@ -438,9 +441,9 @@ async fn verify_block_range(
     Ok(())
 }
 
-async fn persist_verified_block(
+async fn persist_verified_block<P: AsRef<Path>>(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
-    file_path: Option<&String>,
+    file_path: Option<P>,
 ) -> Result<()> {
     let mut tracker = tracker.lock();
     tracker.update_highest_verified_block();
@@ -448,15 +451,19 @@ async fn persist_verified_block(
     if let Some(highest_block) = tracker.highest_verified_block() {
         tracing::info!("Current highest verified block: {:?}", highest_block);
         if let Some(f) = file_path {
-            return std::fs::write(f, format!("{highest_block}")).map_err(|e| {
-                anyhow::anyhow!("Failed to write highest verified block to {}: {}", f, e)
+            return std::fs::write(&f, format!("{highest_block}")).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to write highest verified block to {}: {}",
+                    f.as_ref().display(),
+                    e
+                )
             });
         }
     }
     Ok(())
 }
 
-fn read_verified_block(file_path: &String) -> Option<u64> {
+fn read_verified_block<P: AsRef<Path>>(file_path: P) -> Option<u64> {
     let content = std::fs::read_to_string(file_path).ok()?;
     content.trim().parse().ok()
 }
