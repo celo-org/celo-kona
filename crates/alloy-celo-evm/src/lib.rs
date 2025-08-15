@@ -50,6 +50,19 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     pub const fn inspector_mut(&mut self) -> &mut I {
         &mut self.inner.0.0.inspector
     }
+
+    /// Creates a FeeCurrencyContext from the current EVM state.
+    pub fn create_fee_currency_context(
+        &mut self,
+    ) -> Result<
+        celo_revm::common::FeeCurrencyContext,
+        celo_revm::contracts::core_contracts::CoreContractError,
+    >
+    where
+        I: Inspector<CeloContext<DB>>,
+    {
+        celo_revm::common::FeeCurrencyContext::new_from_evm(&mut self.inner)
+    }
 }
 
 impl<DB: Database, I> CeloEvm<DB, I> {
