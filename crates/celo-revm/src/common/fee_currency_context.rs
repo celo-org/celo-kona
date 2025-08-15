@@ -65,10 +65,10 @@ impl FeeCurrencyContext {
         }
     }
 
-    // Allow the contract to overshoot 2 times the deducted intrinsic gas
-    // during execution.
-    // If the feeCurrency is None, then the max allowed intrinsic gas cost
-    // is 0 (i.e. not allowed) for a fee-currency specific EVM call within the STF.
+    /// Allow the contract to overshoot 2 times the deducted intrinsic gas
+    /// during execution.
+    /// If the feeCurrency is None, then the max allowed intrinsic gas cost
+    /// is 0 (i.e. not allowed) for a fee-currency specific EVM call within the STF.
     pub fn max_allowed_currency_intrinsic_gas_cost(
         &self,
         currency: Address,
