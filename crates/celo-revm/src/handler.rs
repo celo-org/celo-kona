@@ -9,6 +9,7 @@ use crate::{
     transaction::CeloTxTr,
 };
 use alloy_primitives::Address;
+use celo_alloy_consensus::CeloTxType;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
     constants::{L1_FEE_RECIPIENT, OPERATOR_FEE_RECIPIENT},
@@ -23,7 +24,7 @@ use revm::{
     },
     handler::{
         EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
-        pre_execution::validate_account_nonce_and_code,
+        pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
     inspector::{InspectorFrame, InspectorHandler},
     interpreter::{
@@ -68,6 +69,27 @@ where
             FrameInit = FrameInput,
         >,
 {
+    fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
+        let current_block = evm.ctx().block().number();
+        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
+            // Update the chain with the new fee currency context
+            match FeeCurrencyContext::new_from_evm(evm) {
+                Ok(fee_currency_context) => {
+                    evm.ctx().chain().fee_currency_context = fee_currency_context;
+                }
+                Err(CoreContractError::CoreContractMissing(_)) => {
+                    // If core contracts are missing, we are probably in a non-celo test env.
+                    // TODO: log a debug message here.
+                }
+                Err(e) => {
+                    return Err(ERROR::from_string(e.to_string()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Apply state changes from an EvmState to the current execution journal.
     fn apply_state_to_journal(
         &self,
@@ -95,6 +117,24 @@ where
         Ok(())
     }
 
+    fn cip64_get_base_fee(
+        &self,
+        evm: &mut CeloEvm<DB, INSP>,
+        fee_currency: Option<Address>,
+        basefee: u64,
+    ) -> Result<u128, ERROR> {
+        // Convert costs to fee currency
+        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let base_fee_in_erc20 = fee_currency_context
+            .celo_to_currency(fee_currency, U256::from(basefee))
+            .map_err(|e| ERROR::from_string(e))?;
+        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .try_into()
+            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+        Ok(base_fee_in_erc20_u128)
+    }
+
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
     // in the same call:
     // - refund
@@ -117,7 +157,7 @@ where
         }
 
         // Extract all values first to avoid borrowing conflicts
-        let basefee = ctx.block().basefee() as u128;
+        let basefee = ctx.block().basefee();
         let chain_id = ctx.cfg().chain_id();
         let fee_handler = get_addresses(chain_id).fee_handler;
         let mut fee_recipient = ctx.block().beneficiary();
@@ -130,16 +170,11 @@ where
         let caller = ctx.tx().caller();
 
         // Convert costs to fee currency
-        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
-        let base_fee_in_erc20 = fee_currency_context
-            .celo_to_currency(fee_currency, U256::from(basefee))
-            .map_err(|e| ERROR::from_string(e))?;
-        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
-            .try_into()
-            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
-        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
-        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20_u128);
+        let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, basefee)?;
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
+        let tip_gas_price = effective_gas_price
+            .checked_sub(base_fee_in_erc20)
+            .expect("tip_gas_price is positive because the effective_gas_price was validated before to be greater or equal than the base_fee_in_erc20");
 
         let tx_fee_tip_in_erc20 = U256::from(
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
@@ -151,7 +186,7 @@ where
         ));
 
         let base_tx_charge =
-            base_fee_in_erc20.saturating_mul(U256::from(exec_result.gas().spent_sub_refunded()));
+            base_fee_in_erc20.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
 
         let (state, logs) = erc20::credit_gas_fees(
             evm,
@@ -161,7 +196,7 @@ where
             fee_handler,
             refund_in_erc20,
             tx_fee_tip_in_erc20,
-            base_tx_charge,
+            U256::from(base_tx_charge),
         )
         .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
 
@@ -200,14 +235,8 @@ where
             ));
         }
 
-        let base_fee_in_erc20 = fee_currency_context
-            .celo_to_currency(fee_currency, U256::from(basefee))
-            .map_err(|e| ERROR::from_string(e))?;
-        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
-            .try_into()
-            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
-        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20_u128);
+        let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, basefee)?;
+        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
 
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
@@ -256,7 +285,7 @@ where
 
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
-        if fee_currency.is_some() && fee_currency.unwrap() != Address::ZERO {
+        if fee_currency.is_some_and(|fc| fc != Address::ZERO) {
             let intrinsic_gas_for_erc20 = ctx
                 .chain()
                 .fee_currency_context
@@ -316,19 +345,42 @@ where
     }
 
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        self.load_fee_currency_context(evm)?;
         // Do not perform any extra validation for deposit transactions, they are pre-verified on
         // L1.
-        let ctx = evm.ctx();
-        let tx = ctx.tx();
-        let tx_type = tx.tx_type();
-        if tx_type == DEPOSIT_TRANSACTION_TYPE {
-            // Do not allow for a system transaction to be processed if Regolith is enabled.
-            if tx.is_system_transaction()
-                && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH)
-            {
-                return Err(OpTransactionError::DepositSystemTxPostRegolith.into());
+
+        let tx_type = evm.ctx().tx().tx_type();
+
+        match CeloTxType::try_from(tx_type).map_err(|e| ERROR::from_string(e.to_string()))? {
+            CeloTxType::Deposit => {
+                let is_system_transaction = evm.ctx().tx().is_system_transaction();
+                // Do not allow for a system transaction to be processed if Regolith is enabled.
+                if is_system_transaction && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH)
+                {
+                    return Err(OpTransactionError::DepositSystemTxPostRegolith.into());
+                }
+                return Ok(());
             }
-            return Ok(());
+            CeloTxType::Cip64 => {
+                let max_fee = evm.ctx().tx().max_fee_per_gas();
+                let max_priority_fee = evm
+                    .ctx()
+                    .tx()
+                    .max_priority_fee_per_gas()
+                    .unwrap_or_default();
+                let base_fee = evm.ctx().block().basefee();
+                let fee_currency = evm.ctx().tx().fee_currency();
+
+                if Some(evm.ctx().cfg().chain_id()) != evm.ctx().tx().chain_id() {
+                    return Err(InvalidTransaction::InvalidChainId.into());
+                }
+
+                let base_fee_in_erc20 = self.cip64_get_base_fee(evm, fee_currency, base_fee)?;
+                validate_priority_fee_tx(max_fee, max_priority_fee, Some(base_fee_in_erc20))?;
+            }
+            _ => {
+                // Other tx types will be handled by the mainnet handler
+            }
         }
         self.mainnet.validate_env(evm)
     }
@@ -337,22 +389,7 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        let current_block = evm.ctx().block().number();
-        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
-            // Update the chain with the new fee currency context
-            match FeeCurrencyContext::new_from_evm(evm) {
-                Ok(fee_currency_context) => {
-                    evm.ctx().chain().fee_currency_context = fee_currency_context;
-                }
-                Err(CoreContractError::CoreContractMissing(_)) => {
-                    // If core contracts are missing, we are probably in a non-celo test env.
-                    // TODO: log a debug message here.
-                }
-                Err(e) => {
-                    return Err(ERROR::from_string(e.to_string()));
-                }
-            }
-        }
+        self.load_fee_currency_context(evm)?;
 
         let ctx = evm.ctx();
 
