@@ -37,6 +37,8 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
+const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -151,7 +153,7 @@ async fn main() -> Result<()> {
     let tracker_handle = tracker.clone();
     let cancel_token_clone = cancel_token.clone();
     let verified_block_store_task = tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(60));
+        let mut interval = interval(PERSISTANCE_INTERVAL);
 
         loop {
             tokio::select! {
