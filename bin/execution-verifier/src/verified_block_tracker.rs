@@ -139,11 +139,17 @@ mod tests {
         tracker.update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
 
+        // verify `update_highest_verified_block` is idempotent
+        tracker.update_highest_verified_block();
+        assert_eq!(tracker.highest_verified_block(), Some(3));
+
         let mut tracker = VerifiedBlockTracker::new(None);
         tracker.add_verified_block(3);
         tracker.add_verified_block(1);
         tracker.add_verified_block(2);
         tracker.add_verified_block(5);
+        tracker.update_highest_verified_block();
+        assert_eq!(tracker.highest_verified_block(), Some(3));
         tracker.update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
     }
