@@ -5,8 +5,9 @@ use op_revm::{OpTransaction, transaction::OpTxTr};
 use revm::{
     context::TxEnv,
     context_interface::transaction::Transaction,
-    primitives::{Address, B256, Bytes, TxKind, U256},
+    primitives::{Address, B256, Bytes, Log, TxKind, U256},
 };
+use std::vec::Vec;
 
 #[auto_impl(&, &mut, Box, Arc)]
 pub trait CeloTxTr: OpTxTr {
@@ -18,11 +19,23 @@ pub trait CeloTxTr: OpTxTr {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Cip64Info {
+    // Variable to accumulate the real intrinsic gas used for cip64 tx debit and credit evm calls
+    // The protocol allows a 2x overshoot of the intrinsic gas cost
+    pub actual_intrinsic_gas_used: u64,
+    /// Logs from system calls (debit/credit) that need to be merged into the final receipt
+    pub logs_pre: Vec<Log>,
+    pub logs_post: Vec<Log>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CeloTransaction<T: Transaction> {
     pub op_tx: OpTransaction<T>,
     pub fee_currency: Option<Address>,
+    pub cip64_tx_info: Option<Cip64Info>,
 }
 
 impl<T: Transaction> CeloTransaction<T> {
@@ -30,6 +43,7 @@ impl<T: Transaction> CeloTransaction<T> {
         Self {
             op_tx,
             fee_currency: None,
+            cip64_tx_info: None,
         }
     }
 }
@@ -39,6 +53,7 @@ impl Default for CeloTransaction<TxEnv> {
         Self {
             op_tx: OpTransaction::default(),
             fee_currency: None,
+            cip64_tx_info: None,
         }
     }
 }
@@ -48,6 +63,18 @@ impl<TX: Transaction + CeloSystemCallTx> CeloSystemCallTx for CeloTransaction<TX
         CeloTransaction::new(OpTransaction::new(TX::new_system_tx(
             data,
             system_contract_address,
+        )))
+    }
+
+    fn new_system_tx_with_gas_limit(
+        data: Bytes,
+        system_contract_address: Address,
+        gas_limit: u64,
+    ) -> Self {
+        CeloTransaction::new(OpTransaction::new(TX::new_system_tx_with_gas_limit(
+            data,
+            system_contract_address,
+            gas_limit,
         )))
     }
 }
@@ -176,6 +203,7 @@ mod tests {
                 deposit: DepositTransactionParts::default(),
             },
             fee_currency: Some(Address::with_last_byte(1)),
+            cip64_tx_info: None,
         };
         // Verify transaction type
         assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);

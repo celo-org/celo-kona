@@ -118,3 +118,41 @@ where
         h.run_system_call(self)
     }
 }
+
+/// Extension trait for Celo system calls with custom gas limit
+pub trait CeloSystemCallEvmExt: SystemCallEvm {
+    /// Execute a system call with a custom gas limit
+    fn transact_system_call_with_gas_limit(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+        gas_limit: u64,
+    ) -> Self::Output;
+}
+
+impl<DB, INSP> CeloSystemCallEvmExt for CeloEvm<DB, INSP>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+{
+    fn transact_system_call_with_gas_limit(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+        gas_limit: u64,
+    ) -> Self::Output {
+        self.set_tx(
+            <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
+                data,
+                system_contract_address,
+                gas_limit,
+            ),
+        );
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+        >::new();
+        h.run_system_call(self)
+    }
+}

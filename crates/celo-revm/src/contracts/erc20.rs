@@ -49,7 +49,7 @@ where
         .into();
 
     // Use the existing call function from core_contracts
-    let (output_bytes, _, _) = core_contracts::call(evm, token_address, calldata)?;
+    let (output_bytes, _, _, _) = core_contracts::call(evm, token_address, calldata, None)?;
 
     // Decode the balance
     IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output_bytes)
@@ -62,7 +62,8 @@ pub fn debit_gas_fees<DB, INSP>(
     fee_currency_address: Address,
     from: Address,
     value: U256,
-) -> Result<(EvmState, Vec<Log>), CoreContractError>
+    gas_limit: u64,
+) -> Result<(EvmState, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -72,8 +73,9 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    let (_, state, logs) = core_contracts::call(evm, fee_currency_address, calldata)?;
-    Ok((state, logs))
+    let (_, state, logs, gas_used) =
+        core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
+    Ok((state, logs, gas_used))
 }
 
 /// Call creditGasFees to distribute gas fees
@@ -87,7 +89,8 @@ pub fn credit_gas_fees<DB, INSP>(
     refund: U256,
     tip_tx_fee: U256,
     base_tx_fee: U256,
-) -> Result<(EvmState, Vec<Log>), CoreContractError>
+    gas_limit: u64,
+) -> Result<(EvmState, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -106,8 +109,9 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    let (_, state, logs) = core_contracts::call(evm, fee_currency_address, calldata)?;
-    Ok((state, logs))
+    let (_, state, logs, gas_used) =
+        core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
+    Ok((state, logs, gas_used))
 }
 
 #[cfg(test)]

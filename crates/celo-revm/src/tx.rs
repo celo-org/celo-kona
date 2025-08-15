@@ -97,6 +97,7 @@ impl FromTxWithEncoded<CeloTxEnvelope> for CeloTransaction<TxEnv> {
                 deposit,
             },
             fee_currency,
+            cip64_tx_info: None,
         }
     }
 }
