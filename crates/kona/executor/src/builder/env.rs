@@ -4,7 +4,7 @@ use super::CeloStatelessL2Builder;
 use crate::{constants::CELO_EIP_1559_BASE_FEE_FLOOR, util::decode_holocene_eip_1559_params};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
-use alloy_evm::{EvmEnv, EvmFactory};
+use alloy_evm::EvmEnv;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_revm::constants::CELO_MAX_CODE_SIZE;
@@ -16,11 +16,10 @@ use revm::{
     context_interface::block::BlobExcessGasAndPrice,
 };
 
-impl<P, H, Evm> CeloStatelessL2Builder<'_, P, H, Evm>
+impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
     P: TrieDBProvider,
     H: TrieHinter,
-    Evm: EvmFactory,
 {
     /// Returns the active [`EvmEnv`] for the executor.
     pub(crate) fn evm_env(

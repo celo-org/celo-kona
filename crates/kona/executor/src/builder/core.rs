@@ -2,29 +2,27 @@
 //! execution.
 
 use alloc::{string::ToString, vec::Vec};
-use alloy_celo_evm::block::CeloAlloyReceiptBuilder;
+use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
-    EvmFactory, FromRecoveredTx, FromTxWithEncoded,
+    EvmFactory,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
-use celo_alloy_consensus::{CeloReceiptEnvelope, CeloTxEnvelope};
+use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
-use op_revm::OpSpecId;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
 #[derive(Debug)]
-pub struct CeloStatelessL2Builder<'a, P, H, Evm>
+pub struct CeloStatelessL2Builder<'a, P, H>
 where
     P: TrieDBProvider,
     H: TrieHinter,
-    Evm: EvmFactory,
 {
     /// The [CeloRollupConfig].
     pub(crate) config: &'a CeloRollupConfig,
@@ -33,20 +31,19 @@ where
     #[allow(rustdoc::broken_intra_doc_links)]
     /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block
     /// building routines.
-    pub(crate) factory: OpBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig, Evm>,
+    pub(crate) factory:
+        OpBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig, CeloEvmFactory>,
 }
 
-impl<'a, P, H, Evm> CeloStatelessL2Builder<'a, P, H, Evm>
+impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
 where
     P: TrieDBProvider,
     H: TrieHinter,
-    Evm: EvmFactory<Spec = OpSpecId> + 'static,
-    <Evm as EvmFactory>::Tx: FromTxWithEncoded<CeloTxEnvelope> + FromRecoveredTx<CeloTxEnvelope>,
 {
     /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
         config: &'a CeloRollupConfig,
-        evm_factory: Evm,
+        evm_factory: CeloEvmFactory,
         provider: P,
         hinter: H,
         parent_header: Sealed<Header>,
@@ -103,14 +100,27 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+        let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+
+        // Update the receipt builder to include the fee currency context. We couldn't do this
+        // earlier because we need an EVM to populate the fee currency context.
+        let fee_currency_context = evm.create_fee_currency_context().unwrap_or_default();
+        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(fee_currency_context);
+        let factory = OpBlockExecutorFactory::<
+            CeloAlloyReceiptBuilder,
+            CeloRollupConfig,
+            CeloEvmFactory,
+        >::new(
+            updated_receipt_builder, self.config.clone(), *self.factory.evm_factory()
+        );
+
         let ctx = OpBlockExecutionCtx {
             parent_hash,
             parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };
-        let executor = self.factory.create_executor(evm, ctx);
+        let executor = factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
         let transactions = attrs

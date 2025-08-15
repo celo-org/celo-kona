@@ -2,25 +2,21 @@
 
 use alloc::boxed::Box;
 use alloy_consensus::{Header, Sealed};
-use alloy_evm::{EvmFactory, FromRecoveredTx, FromTxWithEncoded};
 use alloy_primitives::B256;
 use async_trait::async_trait;
-use celo_alloy_consensus::CeloTxEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
-use celo_executor::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
+use celo_executor::{CeloBlockBuildingOutcome, CeloEvmFactory, CeloStatelessL2Builder};
 use celo_genesis::CeloRollupConfig;
 use kona_executor::TrieDBProvider;
 use kona_mpt::TrieHinter;
-use op_revm::OpSpecId;
 
 /// An executor wrapper type.
 #[derive(Debug)]
-pub struct CeloExecutor<'a, P, H, Evm>
+pub struct CeloExecutor<'a, P, H>
 where
     P: TrieDBProvider + Send + Sync + Clone,
     H: TrieHinter + Send + Sync + Clone,
-    Evm: EvmFactory + Send + Sync + Clone,
 {
     /// The rollup config for the executor.
     rollup_config: &'a CeloRollupConfig,
@@ -29,36 +25,33 @@ where
     /// The trie hinter for the executor.
     trie_hinter: H,
     /// The evm factory for the executor.
-    evm_factory: Evm,
+    evm_factory: CeloEvmFactory,
     /// The executor.
-    inner: Option<CeloStatelessL2Builder<'a, P, H, Evm>>,
+    inner: Option<CeloStatelessL2Builder<'a, P, H>>,
 }
 
-impl<'a, P, H, Evm> CeloExecutor<'a, P, H, Evm>
+impl<'a, P, H> CeloExecutor<'a, P, H>
 where
     P: TrieDBProvider + Send + Sync + Clone,
     H: TrieHinter + Send + Sync + Clone,
-    Evm: EvmFactory + Send + Sync + Clone,
 {
     /// Creates a new executor.
     pub const fn new(
         rollup_config: &'a CeloRollupConfig,
         trie_provider: P,
         trie_hinter: H,
-        evm_factory: Evm,
-        inner: Option<CeloStatelessL2Builder<'a, P, H, Evm>>,
+        evm_factory: CeloEvmFactory,
+        inner: Option<CeloStatelessL2Builder<'a, P, H>>,
     ) -> Self {
         Self { rollup_config, trie_provider, trie_hinter, evm_factory, inner }
     }
 }
 
 #[async_trait]
-impl<P, H, Evm> CeloExecutorTr for CeloExecutor<'_, P, H, Evm>
+impl<P, H> CeloExecutorTr for CeloExecutor<'_, P, H>
 where
     P: TrieDBProvider + Send + Sync + Clone,
     H: TrieHinter + Send + Sync + Clone,
-    Evm: EvmFactory<Spec = OpSpecId> + Send + Sync + Clone + 'static,
-    <Evm as EvmFactory>::Tx: FromTxWithEncoded<CeloTxEnvelope> + FromRecoveredTx<CeloTxEnvelope>,
 {
     type Error = kona_executor::ExecutorError;
 
@@ -75,7 +68,7 @@ where
     fn update_safe_head(&mut self, header: Sealed<Header>) {
         self.inner = Some(CeloStatelessL2Builder::new(
             self.rollup_config,
-            self.evm_factory.clone(),
+            self.evm_factory,
             self.trie_provider.clone(),
             self.trie_hinter.clone(),
             header,

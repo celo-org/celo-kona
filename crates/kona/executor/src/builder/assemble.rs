@@ -5,7 +5,7 @@ use crate::{constants::SHA256_EMPTY, util::encode_holocene_eip_1559_params};
 use alloc::vec::Vec;
 use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, Sealed};
 use alloy_eips::Encodable2718;
-use alloy_evm::{EvmFactory, block::BlockExecutionResult};
+use alloy_evm::block::BlockExecutionResult;
 use alloy_primitives::{B256, Sealable, U256, logs_bloom};
 use alloy_trie::EMPTY_ROOT_HASH;
 use celo_alloy_consensus::CeloReceiptEnvelope;
@@ -16,11 +16,10 @@ use kona_mpt::{TrieHinter, ordered_trie_with_encoder};
 use kona_protocol::{OutputRoot, Predeploys};
 use revm::{context::BlockEnv, database::BundleState};
 
-impl<P, H, Evm> CeloStatelessL2Builder<'_, P, H, Evm>
+impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
     P: TrieDBProvider,
     H: TrieHinter,
-    Evm: EvmFactory,
 {
     /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning
     /// the computed [Header].
