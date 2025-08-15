@@ -24,14 +24,24 @@ use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::{
     runtime::Handle,
     sync::mpsc,
-    time::{Duration, Instant},
+    task::JoinSet,
+    time::{Duration, Instant, interval},
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
+
+mod verified_block_tracker;
+use verified_block_tracker::VerifiedBlockTracker;
+
+const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -56,6 +66,11 @@ pub struct ExecutionVerifierCommand {
     /// Number of concurrent tasks to run.
     #[arg(long, default_value = "25")]
     pub concurrency: usize,
+    /// File that persists the highest verified block number.
+    /// If this exists already, the persisted number will be
+    /// read and overwrite the start-block option
+    #[arg(long)]
+    pub state_file: Option<PathBuf>,
 }
 
 /// The execution verifier command
@@ -83,6 +98,21 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
+    // Use the stored starting block or the CLI-provided one, but only
+    // if a persistence-file option is given
+    let start_block = match cli.state_file {
+        None => cli.start_block,
+        Some(ref f) => read_verified_block(f)
+            .inspect(|verified_block| {
+                tracing::info!(
+                    persisted_block_number = verified_block,
+                    start_block_number = cli.start_block,
+                    "Found persisted highest verified block number, overwriting `start-block` argument"
+                );
+            })
+            .or(cli.start_block),
+    };
+
     // This filter shows all logs from this code but doesn't show logs from the block builder, since
     // it is very verbose.
     let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
@@ -106,7 +136,8 @@ async fn main() -> Result<()> {
     };
 
     let provider = Arc::new(provider);
-    let mut handles = futures::stream::FuturesUnordered::new();
+
+    let mut handles = JoinSet::new();
 
     let cancel_token = CancellationToken::new();
     let subscription = provider.subscribe_blocks().await?;
@@ -119,9 +150,32 @@ async fn main() -> Result<()> {
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
 
+    let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
+
+    // Spawn the repeating task in the background
+    let tracker_handle = tracker.clone();
+    let cancel_token_clone = cancel_token.clone();
+    let verified_block_store_task = tokio::spawn(async move {
+        let mut interval = interval(PERSISTANCE_INTERVAL);
+
+        loop {
+            tokio::select! {
+                _ = cancel_token_clone.cancelled() => {
+                    break;
+                }
+                _ = interval.tick() => {
+                    let tracker = tracker_handle.clone();
+                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
+                        eprintln!("Error storing verified block: {}", e);
+                    }
+                }
+            }
+        }
+    });
+
     let metrics = Arc::new(Mutex::new(Metrics::new()));
-    if let (Some(start_block), Some(end_block)) = (cli.start_block, cli.end_block) {
-        handles.push(tokio::spawn(verify_block_range(
+    if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
+        handles.spawn(verify_block_range(
             start_block,
             end_block,
             provider.clone(),
@@ -129,22 +183,24 @@ async fn main() -> Result<()> {
             cli.concurrency,
             cancel_token.clone(),
             metrics.clone(),
-        )));
-    } else if let Some(start_block) = cli.start_block {
+            tracker.clone(),
+        ));
+    } else if let Some(start_block) = start_block {
         // Used to communicate the first head block so that we can set the end of the block range.
         let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
-        handles.push(tokio::spawn(verify_new_heads(
+        handles.spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
             subscription,
             cancel_token.clone(),
             Some(first_head_tx.clone()),
             metrics.clone(),
-        )));
+            tracker.clone(),
+        ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
-        handles.push(tokio::spawn(verify_block_range(
+        handles.spawn(verify_block_range(
             start_block,
             end,
             provider.clone(),
@@ -152,36 +208,40 @@ async fn main() -> Result<()> {
             cli.concurrency - 1,
             cancel_token.clone(),
             metrics.clone(),
-        )));
+            tracker.clone(),
+        ));
     } else {
-        handles.push(tokio::spawn(verify_new_heads(
+        handles.spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
             subscription,
             cancel_token.clone(),
             None,
             metrics.clone(),
-        )));
+            tracker.clone(),
+        ));
     };
 
     // Process results as they complete, cancel on first error
-    while let Some(result) = handles.next().await {
+    while let Some(result) = handles.join_next().await {
         match result {
             Ok(Err(e)) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
-                futures::future::join_all(handles).await;
+                handles.join_all().await;
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
-                futures::future::join_all(handles).await;
+                handles.join_all().await;
                 return Err(anyhow::anyhow!("Task panicked: {}", e));
             }
             _ => {}
         }
     }
+
+    verified_block_store_task.abort();
 
     metrics.lock().display_metrics();
 
@@ -195,6 +255,7 @@ async fn verify_new_heads(
     cancel_token: CancellationToken,
     first_head_tx: Option<mpsc::Sender<u64>>,
     metrics: Arc<Mutex<Metrics>>,
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
     let mut first_block = true;
 
@@ -213,8 +274,14 @@ async fn verify_new_heads(
             first_block = false;
         }
 
-        let result =
-            verify_block(header.number, provider.as_ref(), &rollup_config, metrics.clone()).await;
+        let result = verify_block(
+            header.number,
+            provider.as_ref(),
+            &rollup_config,
+            metrics.clone(),
+            tracker.clone(),
+        )
+        .await;
         match result {
             Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
             Err(e) => tracing::warn!(
@@ -227,12 +294,14 @@ async fn verify_new_heads(
 
     Ok(())
 }
+
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
     let start = Instant::now();
     // Create trie for this task
@@ -315,12 +384,14 @@ async fn verify_block(
             "Block verification failed header mismatch"
         );
     } else {
+        tracker.lock().add_verified_block(block_number);
         metrics.lock().successful_block(start.elapsed());
     }
     Ok(block_number)
 }
 
 /// Verifies execution for a range of blocks concurrently
+#[allow(clippy::too_many_arguments)]
 async fn verify_block_range(
     start_block: u64,
     end_block: u64,
@@ -329,8 +400,9 @@ async fn verify_block_range(
     concurrency: usize,
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
-    let mut handles = futures::stream::FuturesUnordered::new();
+    let mut handles = JoinSet::new();
     let mut next_block = start_block;
 
     // Spawn initial batch
@@ -343,31 +415,73 @@ async fn verify_block_range(
             let rollup_config = rollup_config.clone();
             let provider = provider.clone();
             let metrics = metrics.clone();
-            let task = tokio::spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
+            let tracker = tracker.clone();
+            handles.spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
             });
-            handles.push(task);
             next_block += 1;
         }
     }
 
     // Process results and spawn new tasks continuously
-    while handles.next().await.is_some() {
+    while handles.join_next().await.is_some() {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
             let rollup_config = rollup_config.clone();
             let provider = provider.clone();
             let metrics = metrics.clone();
-            let task = tokio::spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics).await
+            let tracker = tracker.clone();
+            handles.spawn(async move {
+                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
             });
-            handles.push(task);
             next_block += 1;
         }
     }
 
     Ok(())
 }
+
+async fn persist_verified_block<P: AsRef<Path>>(
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    file_path: Option<P>,
+) -> Result<()> {
+    let mut tracker = tracker.lock();
+    tracker.update_highest_verified_block();
+
+    if let Some(highest_block) = tracker.highest_verified_block() {
+        tracing::info!("Current highest verified block: {:?}", highest_block);
+        if let Some(f) = file_path {
+            let path = f.as_ref();
+            let temp_path = path.with_extension("tmp");
+
+            // Write to temporary file first
+            std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to write highest verified block to temp file {}: {}",
+                    temp_path.display(),
+                    e
+                )
+            })?;
+
+            // Atomically rename to final file
+            return std::fs::rename(&temp_path, path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to rename temp file {} to {}: {}",
+                    temp_path.display(),
+                    path.display(),
+                    e
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+fn read_verified_block<P: AsRef<Path>>(file_path: P) -> Option<u64> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    content.trim().parse().ok()
+}
+
 /// A trie provider for the L2 execution layer.
 #[derive(Debug)]
 pub struct Trie<'a> {
