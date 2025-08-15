@@ -451,10 +451,24 @@ async fn persist_verified_block<P: AsRef<Path>>(
     if let Some(highest_block) = tracker.highest_verified_block() {
         tracing::info!("Current highest verified block: {:?}", highest_block);
         if let Some(f) = file_path {
-            return std::fs::write(&f, format!("{highest_block}")).map_err(|e| {
+            let path = f.as_ref();
+            let temp_path = path.with_extension("tmp");
+
+            // Write to temporary file first
+            std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
                 anyhow::anyhow!(
-                    "Failed to write highest verified block to {}: {}",
-                    f.as_ref().display(),
+                    "Failed to write highest verified block to temp file {}: {}",
+                    temp_path.display(),
+                    e
+                )
+            })?;
+
+            // Atomically rename to final file
+            return std::fs::rename(&temp_path, path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to rename temp file {} to {}: {}",
+                    temp_path.display(),
+                    path.display(),
                     e
                 )
             });
