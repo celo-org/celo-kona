@@ -2,7 +2,7 @@
 
 use crate::{
     CeloContext,
-    common::{fee_currency_context::FeeCurrencyContext, global_fee_currency_context},
+    common::fee_currency_context::FeeCurrencyContext,
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
@@ -76,10 +76,7 @@ where
             // Update the chain with the new fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
-                    evm.ctx().chain().fee_currency_context = fee_currency_context.clone();
-
-                    // Also set the global context for fallback access
-                    global_fee_currency_context::set_fee_currency_context(fee_currency_context);
+                    evm.ctx().chain().fee_currency_context = fee_currency_context;
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -90,6 +87,7 @@ where
                 }
             }
         }
+
         Ok(())
     }
 
@@ -187,7 +185,9 @@ where
         // Convert costs to fee currency
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
-        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20);
+        let tip_gas_price = effective_gas_price
+            .checked_sub(base_fee_in_erc20)
+            .expect("tip_gas_price is positive because the effective_gas_price was validated before to be greater or equal than the base_fee_in_erc20");
 
         let tx_fee_tip_in_erc20 = U256::from(
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
