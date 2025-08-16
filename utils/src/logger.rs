@@ -39,7 +39,7 @@ pub fn init_tracing(
         true => match LogExporter::builder().with_tonic().build() {
             Ok(otlp_exporter) => SdkLoggerProvider::builder()
                 .with_resource(otel_resource)
-                .with_simple_exporter(otlp_exporter)
+                .with_batch_exporter(otlp_exporter)
                 .build(),
             Err(err) => {
                 eprintln!("Failed to build OTLP log exporter: {err}");
