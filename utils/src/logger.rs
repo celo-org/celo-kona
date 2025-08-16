@@ -33,7 +33,7 @@ pub fn init_tracing(
         filter = filter.add_directive("opentelemetry=info".parse().unwrap());
     }
 
-    let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true).with_target(true);
 
     let otel_layer = match export_telemetry {
         true => match LogExporter::builder().with_tonic().build() {
