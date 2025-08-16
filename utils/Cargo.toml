@@ -1,0 +1,21 @@
+[package]
+name = "celo-kona-utils"
+version = "0.1.0"
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+
+# general
+tokio.workspace = true
+tracing.workspace = true
+
+
+# logging and telemetry
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-stdout.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-appender-tracing.workspace = true
