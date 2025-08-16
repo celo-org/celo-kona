@@ -22,11 +22,16 @@ pub fn init_tracing(
     //     tracing::subscriber::set_global_default(tracing_subscriber::fmt().finish());
     //     return;
     // }
-    let filter = env_filter
+    let mut filter = env_filter
         .map(|e| e.into())
         .unwrap_or(EnvFilter::from_default_env())
-        .add_directive(level.into())
-        .add_directive("opentelemetry=info".parse().unwrap());
+        .add_directive(level.into());
+
+    if verbosity_level > 3 {
+        filter = filter.add_directive("opentelemetry=debug".parse().unwrap());
+    } else {
+        filter = filter.add_directive("opentelemetry=info".parse().unwrap());
+    }
 
     let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
 
