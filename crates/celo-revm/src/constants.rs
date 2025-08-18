@@ -7,6 +7,7 @@ pub const CELO_MAX_CODE_SIZE: usize = 0x10000;
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_ALFAJORES_CHAIN_ID: u64 = 44787;
 pub const CELO_BAKLAVA_CHAIN_ID: u64 = 62320;
+pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 
 pub struct CeloAddresses {
     pub celo_token: Address,
@@ -43,6 +44,15 @@ lazy_static! {
                 celo_token: address!("0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8"),
                 fee_handler: address!("0xeed0A69c51079114C280f7b936C79e24bD94013e"),
                 fee_currency_directory: address!("0xD59E1599F45e42Eb356202B2C714D6C7b734C034"),
+            },
+        );
+
+        m.insert(
+            CELO_SEPOLIA_CHAIN_ID,
+            CeloAddresses {
+                celo_token: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
+                fee_handler: address!("0xcD437749E43A154C07F3553504c68fBfD56B8778"),
+                fee_currency_directory: address!("0x9212Fb72ae65367A7c887eC4Ad9bE310BAC611BF"),
             },
         );
 
