@@ -454,7 +454,8 @@ where
                 validate_priority_fee_tx(max_fee, max_priority_fee, Some(base_fee_in_erc20))?;
             }
             _ => {
-                // Other tx types will be handled by the mainnet handler
+                // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
+                // where not only those transactions are validated, but also the block specifics.
             }
         }
         self.mainnet.validate_env(evm)
