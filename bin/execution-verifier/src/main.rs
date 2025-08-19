@@ -145,6 +145,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             .or(cli.start_block),
     };
 
+    tracing::info!(start_block_number = start_block, "Using start-block");
+
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
@@ -199,7 +201,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         }
     });
 
-    let metrics = Arc::new(Mutex::new(Metrics::new()));
+    let metrics = Arc::new(Mutex::new(Metrics::new(Some(tracker.clone()))));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
         handles.spawn(verify_block_range(
             start_block,
@@ -399,16 +401,16 @@ async fn verify_block(
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
-        metrics.lock().failed_block(start.elapsed());
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header.inner,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
+        metrics.lock().block_verification_completed(false, start.elapsed());
     } else {
         tracker.lock().add_verified_block(block_number);
-        metrics.lock().successful_block(start.elapsed());
+        metrics.lock().block_verification_completed(true, start.elapsed());
     }
     Ok(block_number)
 }
