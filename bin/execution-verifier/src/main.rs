@@ -40,6 +40,7 @@ use tokio::{
     task::JoinSet,
     time::{Duration, Instant, interval},
 };
+
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -47,6 +48,12 @@ mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// the version string injected by Cargo at compile time
+pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// the packag name string injected by Cargo at compile time
+pub const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
@@ -108,8 +115,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Construct the OTel resources.
-    // If cli.telemetry is false this will not use any OTLP exporters
-    let otel_resource = build_resource();
+    let otel_resource = build_resource(PKG_NAME.to_string(), PKG_VERSION.to_string());
 
     // set up the metrics
     // If cli.telemetry is false this will not use any OTLP exporters
