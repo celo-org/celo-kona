@@ -415,9 +415,9 @@ async fn verify_block(
         );
         metrics.lock().block_verification_completed(false, start.elapsed());
     } else {
-        tracker.lock().add_verified_block(block_number);
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
+    tracker.lock().add_verified_block(block_number);
     Ok(block_number)
 }
 
