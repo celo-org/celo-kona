@@ -95,6 +95,7 @@ impl OpHardforks for CeloRollupConfig {
                 .interop_time
                 .map(ForkCondition::Timestamp)
                 .unwrap_or(ForkCondition::Never),
+            _ => ForkCondition::Block(0), // FIX ME: REMOVE HERE
         }
     }
 }
