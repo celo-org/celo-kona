@@ -416,6 +416,7 @@ async fn verify_block(
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
     tracker.lock().add_verified_block(block_number);
+    println!("block {} verified in {:?}", block_number, start.elapsed());
     Ok(block_number)
 }
 
