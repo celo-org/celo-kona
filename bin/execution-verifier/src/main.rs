@@ -10,10 +10,8 @@ use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{
     Provider, ProviderBuilder, RootProvider, network::primitives::BlockTransactions,
 };
-use alloy_pubsub::Subscription;
 use alloy_rlp::Decodable;
 use alloy_rpc_types_engine::PayloadAttributes;
-use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
@@ -21,7 +19,6 @@ use celo_executor::CeloStatelessL2Builder;
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
-use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use metrics::Metrics;
@@ -34,7 +31,6 @@ use std::{
 };
 use tokio::{
     runtime::Handle,
-    sync::mpsc,
     task::JoinSet,
     time::{Duration, Instant, interval},
 };
@@ -172,7 +168,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     let mut handles = JoinSet::new();
 
-    let subscription = provider.subscribe_blocks().await?;
+    let _subscription = provider.subscribe_blocks().await?;
 
     let chain_id = provider
         .get_chain_id()
@@ -219,8 +215,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         ));
     }
     // } else if let Some(start_block) = start_block {
-    //     // Used to communicate the first head block so that we can set the end of the block range.
-    //     let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
+    //     // Used to communicate the first head block so that we can set the end of the block
+    // range.     let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
     //     handles.spawn(verify_new_heads(
     //         provider.clone(),
     //         rollup_config.clone(),
@@ -328,23 +324,13 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
-    trie: &Trie<'_>,
+    builder: &mut CeloStatelessL2Builder<'_, &Trie<'_>, NoopTrieHinter>,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
     let start = Instant::now();
-
-    // Fetch parent block
-    let parent_block = provider
-        .get_block_by_number((block_number - 1).into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
-        .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
-    let parent_header = parent_block.header.inner.seal_slow();
-
-    let pb = start.elapsed();
 
     let executing_start = Instant::now();
     // Fetch executing block
@@ -401,14 +387,7 @@ async fn verify_block(
     let pa = payload_attrs_start.elapsed();
 
     let executor_start = Instant::now();
-    let mut executor = CeloStatelessL2Builder::new(
-        rollup_config,
-        CeloEvmFactory::default(),
-        trie,
-        NoopTrieHinter,
-        parent_header,
-    );
-    let outcome = executor
+    let outcome = builder
         .build_block(payload_attrs)
         .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
 
@@ -427,7 +406,15 @@ async fn verify_block(
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
     tracker.lock().add_verified_block(block_number);
-    println!("block {} verified in {:?}, parent block {:?}, executing block {:?}, txs {:?}, payload attrs {:?}, executor {:?}", block_number, start.elapsed(), pb, eb, t, pa, ex);
+    println!(
+        "block {} verified in {:?}, executing block {:?}, txs {:?}, payload attrs {:?}, executor {:?}",
+        block_number,
+        start.elapsed(),
+        eb,
+        t,
+        pa,
+        ex
+    );
     Ok(block_number)
 }
 
@@ -438,7 +425,7 @@ async fn verify_block_range(
     end_block: u64,
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: celo_registry::CeloRollupConfig,
-    concurrency: usize,
+    _concurrency: usize,
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
@@ -446,9 +433,26 @@ async fn verify_block_range(
     // Create trie for this batch
     let trie = Trie::new(provider.as_ref());
 
+    // Get the initial parent block (one before start_block) to initialize the builder
+    let initial_parent_block = provider
+        .get_block_by_number((start_block - 1).into())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to get initial parent block {}: {}", start_block - 1, e)
+        })?
+        .ok_or_else(|| anyhow::anyhow!("Initial parent block {} not found", start_block - 1))?;
+    let initial_parent_header = initial_parent_block.header.inner.seal_slow();
+
+    // Create the builder once for the entire range
+    let mut builder = CeloStatelessL2Builder::new(
+        &rollup_config,
+        CeloEvmFactory::default(),
+        &trie,
+        NoopTrieHinter,
+        initial_parent_header,
+    );
+
     for next_block in start_block..end_block {
-        // Spawn initial batch
-        // for _ in 0..concurrency {
         if cancel_token.is_cancelled() {
             break;
         }
@@ -456,7 +460,8 @@ async fn verify_block_range(
         let provider = provider.clone();
         let metrics = metrics.clone();
         let tracker = tracker.clone();
-        verify_block(next_block, &trie,provider.as_ref(), &rollup_config, metrics, tracker).await?;
+        verify_block(next_block, &mut builder, provider.as_ref(), &rollup_config, metrics, tracker)
+            .await?;
     }
 
     Ok(())
