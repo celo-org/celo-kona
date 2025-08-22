@@ -217,42 +217,43 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             metrics.clone(),
             tracker.clone(),
         ));
-    } else if let Some(start_block) = start_block {
-        // Used to communicate the first head block so that we can set the end of the block range.
-        let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
-        handles.spawn(verify_new_heads(
-            provider.clone(),
-            rollup_config.clone(),
-            subscription,
-            cancel_token.clone(),
-            Some(first_head_tx.clone()),
-            metrics.clone(),
-            tracker.clone(),
-        ));
-        let first_head_block =
-            first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
-        let end = first_head_block - 1;
-        handles.spawn(verify_block_range(
-            start_block,
-            end,
-            provider.clone(),
-            rollup_config.clone(),
-            cli.concurrency - 1,
-            cancel_token.clone(),
-            metrics.clone(),
-            tracker.clone(),
-        ));
-    } else {
-        handles.spawn(verify_new_heads(
-            provider.clone(),
-            rollup_config.clone(),
-            subscription,
-            cancel_token.clone(),
-            None,
-            metrics.clone(),
-            tracker.clone(),
-        ));
-    };
+    }
+    // } else if let Some(start_block) = start_block {
+    //     // Used to communicate the first head block so that we can set the end of the block range.
+    //     let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
+    //     handles.spawn(verify_new_heads(
+    //         provider.clone(),
+    //         rollup_config.clone(),
+    //         subscription,
+    //         cancel_token.clone(),
+    //         Some(first_head_tx.clone()),
+    //         metrics.clone(),
+    //         tracker.clone(),
+    //     ));
+    //     let first_head_block =
+    //         first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
+    //     let end = first_head_block - 1;
+    //     handles.spawn(verify_block_range(
+    //         start_block,
+    //         end,
+    //         provider.clone(),
+    //         rollup_config.clone(),
+    //         cli.concurrency - 1,
+    //         cancel_token.clone(),
+    //         metrics.clone(),
+    //         tracker.clone(),
+    //     ));
+    // } else {
+    //     handles.spawn(verify_new_heads(
+    //         provider.clone(),
+    //         rollup_config.clone(),
+    //         subscription,
+    //         cancel_token.clone(),
+    //         None,
+    //         metrics.clone(),
+    //         tracker.clone(),
+    //     ));
+    // };
 
     // Process results as they complete, cancel on first error
     while let Some(result) = handles.join_next().await {
@@ -277,64 +278,63 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     Ok(())
 }
 
-async fn verify_new_heads(
-    provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
-    subscription: Subscription<Header>,
-    cancel_token: CancellationToken,
-    first_head_tx: Option<mpsc::Sender<u64>>,
-    metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
-) -> Result<()> {
-    let mut first_block = true;
+// async fn verify_new_heads(
+//     provider: Arc<RootProvider<Ethereum>>,
+//     rollup_config: celo_registry::CeloRollupConfig,
+//     subscription: Subscription<Header>,
+//     cancel_token: CancellationToken,
+//     first_head_tx: Option<mpsc::Sender<u64>>,
+//     metrics: Arc<Mutex<Metrics>>,
+//     tracker: Arc<Mutex<VerifiedBlockTracker>>,
+// ) -> Result<()> {
+//     let mut first_block = true;
 
-    let mut stream = subscription.into_stream();
+//     let mut stream = subscription.into_stream();
 
-    while let Some(header) = stream.next().await {
-        if cancel_token.is_cancelled() {
-            break;
-        }
-        let num = header.number;
+//     while let Some(header) = stream.next().await {
+//         if cancel_token.is_cancelled() {
+//             break;
+//         }
+//         let num = header.number;
 
-        if first_block {
-            if let Some(first_head_tx) = &first_head_tx {
-                first_head_tx.send(num).await?;
-            }
-            first_block = false;
-        }
+//         if first_block {
+//             if let Some(first_head_tx) = &first_head_tx {
+//                 first_head_tx.send(num).await?;
+//             }
+//             first_block = false;
+//         }
 
-        let result = verify_block(
-            header.number,
-            provider.as_ref(),
-            &rollup_config,
-            metrics.clone(),
-            tracker.clone(),
-        )
-        .await;
-        match result {
-            Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
-            Err(e) => tracing::warn!(
-                block_number = header.number,
-                "Head block verification failed: {}",
-                e
-            ),
-        }
-    }
+//         let result = verify_block(
+//             header.number,
+//             provider.as_ref(),
+//             &rollup_config,
+//             metrics.clone(),
+//             tracker.clone(),
+//         )
+//         .await;
+//         match result {
+//             Ok(_) => tracing::info!(block_number = header.number, "Head block verified"),
+//             Err(e) => tracing::warn!(
+//                 block_number = header.number,
+//                 "Head block verification failed: {}",
+//                 e
+//             ),
+//         }
+//     }
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
+    trie: &Trie<'_>,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
     let start = Instant::now();
-    // Create trie for this task
-    let trie = Trie::new(provider);
 
     // Fetch parent block
     let parent_block = provider
@@ -395,7 +395,7 @@ async fn verify_block(
     let mut executor = CeloStatelessL2Builder::new(
         rollup_config,
         CeloEvmFactory::default(),
-        &trie,
+        trie,
         NoopTrieHinter,
         parent_header,
     );
@@ -431,40 +431,20 @@ async fn verify_block_range(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
-    let mut handles = JoinSet::new();
-    let mut next_block = start_block;
+    // Create trie for this batch
+    let trie = Trie::new(provider.as_ref());
 
-    // Spawn initial batch
-    for _ in 0..concurrency {
+    for next_block in start_block..end_block {
+        // Spawn initial batch
+        // for _ in 0..concurrency {
         if cancel_token.is_cancelled() {
             break;
         }
-        // let provider = provider.clone();
-        if next_block <= end_block {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
-            next_block += 1;
-        }
-    }
-
-    // Process results and spawn new tasks continuously
-    while handles.join_next().await.is_some() {
-        // Spawn next task if available
-        if next_block <= end_block && !cancel_token.is_cancelled() {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
-            next_block += 1;
-        }
+        let rollup_config = rollup_config.clone();
+        let provider = provider.clone();
+        let metrics = metrics.clone();
+        let tracker = tracker.clone();
+        verify_block(next_block, &trie,provider.as_ref(), &rollup_config, metrics, tracker).await?;
     }
 
     Ok(())
