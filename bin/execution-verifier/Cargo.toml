@@ -12,14 +12,15 @@ categories.workspace = true
 exclude.workspace = true
 
 [dependencies]
+# local
+celo-otel.workspace = true
+
 kona-executor.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow.workspace = true
 clap.workspace = true
 url.workspace = true
-kona-cli.workspace = true
 futures = "0.3.31"
-# tracing.workspace = true
 tracing-subscriber.workspace = true
 alloy-rpc-types-engine.workspace = true
 celo-alloy-rpc-types-engine.workspace = true
@@ -42,8 +43,13 @@ kona-mpt.workspace = true
 thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
-tracing.workspace = true
 parking_lot = "0.12.4"
+
+# tracing and telemetry
+tracing.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+
 
 
 [lints]

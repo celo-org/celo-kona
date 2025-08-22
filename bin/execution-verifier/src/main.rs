@@ -2,6 +2,8 @@
 //!
 //! This binary provides execution verification functionality for the Celo Kona project.
 
+mod metrics;
+
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_network::Ethereum;
 use alloy_primitives::{B256, Bytes, Sealable};
@@ -16,13 +18,15 @@ use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
+use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
 use futures::stream::StreamExt;
-use kona_cli::init_tracing_subscriber;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use metrics::Metrics;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
@@ -34,6 +38,7 @@ use tokio::{
     task::JoinSet,
     time::{Duration, Instant, interval},
 };
+
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -41,6 +46,12 @@ mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// the version string injected by Cargo at compile time
+pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// the packag name string injected by Cargo at compile time
+pub const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// The execution verifier command
 #[derive(Parser, Debug, Clone)]
@@ -71,11 +82,14 @@ pub struct ExecutionVerifierCommand {
     /// read and overwrite the start-block option
     #[arg(long)]
     pub state_file: Option<PathBuf>,
+    /// enable otel metrics and log exports, if true then all the OTEL_
+    /// env-vars can be used as per the standard
+    #[arg(long, default_value_t = false)]
+    pub telemetry: bool,
 }
 
-/// The execution verifier command
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     let cli = ExecutionVerifierCommand::parse();
 
     if let Some(start_block) = cli.start_block {
@@ -98,6 +112,28 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
     }
 
+    // Construct the OTel resources.
+    let otel_resource = build_resource(PKG_NAME.to_string(), PKG_VERSION.to_string());
+
+    // set up the metrics
+    // If cli.telemetry is false this will not use any OTLP exporters
+    global::set_meter_provider(build_meter_provider(otel_resource.clone(), cli.telemetry));
+
+    // This filter shows all logs from this code but doesn't show logs from the block builder,
+    // since it is very verbose.
+    // set up the logs
+    // If cli.telemetry is false this will not use any OTLP exporters
+    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
+
+    if cli.telemetry {
+        tracing::info!("OTLP export for tracing and metrics enabled");
+    }
+    let cancel_token = CancellationToken::new();
+    run(cli, cancel_token).await
+}
+
+async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> anyhow::Result<()> {
     // Use the stored starting block or the CLI-provided one, but only
     // if a persistence-file option is given
     let start_block = match cli.state_file {
@@ -113,10 +149,7 @@ async fn main() -> Result<()> {
             .or(cli.start_block),
     };
 
-    // This filter shows all logs from this code but doesn't show logs from the block builder, since
-    // it is very verbose.
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
-    init_tracing_subscriber(cli.v, Some(filter))?;
+    tracing::info!(start_block_number = start_block, "Using start-block");
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
@@ -139,7 +172,6 @@ async fn main() -> Result<()> {
 
     let mut handles = JoinSet::new();
 
-    let cancel_token = CancellationToken::new();
     let subscription = provider.subscribe_blocks().await?;
 
     let chain_id = provider
@@ -173,7 +205,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let metrics = Arc::new(Mutex::new(Metrics::new()));
+    let metrics = Arc::new(Mutex::new(Metrics::new(Some(tracker.clone()))));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
         handles.spawn(verify_block_range(
             start_block,
@@ -242,9 +274,6 @@ async fn main() -> Result<()> {
     }
 
     verified_block_store_task.abort();
-
-    metrics.lock().display_metrics();
-
     Ok(())
 }
 
@@ -376,17 +405,17 @@ async fn verify_block(
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
-        metrics.lock().failed_block(start.elapsed());
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header.inner,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
+        metrics.lock().block_verification_completed(false, start.elapsed());
     } else {
-        tracker.lock().add_verified_block(block_number);
-        metrics.lock().successful_block(start.elapsed());
+        metrics.lock().block_verification_completed(true, start.elapsed());
     }
+    tracker.lock().add_verified_block(block_number);
     Ok(block_number)
 }
 
@@ -585,77 +614,4 @@ pub enum TrieError {
     /// Failed to write back to the key-value store.
     #[error("Failed to write back to key value store")]
     KVStore,
-}
-
-struct Metrics {
-    init_time: Instant,
-    processed_blocks: u64,
-    failed_blocks: u64,
-    successful_processing_time: Duration,
-    failed_processing_time: Duration,
-}
-
-impl Metrics {
-    fn new() -> Self {
-        Self {
-            init_time: Instant::now(),
-            processed_blocks: 0,
-            failed_blocks: 0,
-            successful_processing_time: Duration::new(0, 0),
-            failed_processing_time: Duration::new(0, 0),
-        }
-    }
-
-    fn successful_block(&mut self, duration: Duration) {
-        self.processed_blocks += 1;
-        self.successful_processing_time += duration;
-    }
-    fn failed_block(&mut self, duration: Duration) {
-        self.failed_blocks += 1;
-        self.failed_processing_time += duration;
-    }
-    fn average_block_processing_time(&self) -> Duration {
-        if self.processed_blocks == 0 {
-            return Duration::new(0, 0);
-        }
-        (self.successful_processing_time + self.failed_processing_time) /
-            self.processed_blocks as u32
-    }
-    fn average_successful_block_processing_time(&self) -> Duration {
-        let successful_blocks = self.processed_blocks - self.failed_blocks;
-        if successful_blocks == 0 {
-            return Duration::new(0, 0);
-        }
-        self.successful_processing_time / successful_blocks as u32
-    }
-    fn average_amortized_successful_block_processing_time(&self) -> Duration {
-        let successful_blocks = self.processed_blocks - self.failed_blocks;
-        if successful_blocks == 0 {
-            return Duration::new(0, 0);
-        }
-        Instant::now().duration_since(self.init_time) / successful_blocks as u32
-    }
-    fn average_failed_block_processing_time(&self) -> Duration {
-        if self.failed_blocks == 0 {
-            return Duration::new(0, 0);
-        }
-        self.failed_processing_time / self.failed_blocks as u32
-    }
-    fn display_metrics(&self) {
-        tracing::info!("Avg time per block: {:?}", self.average_block_processing_time());
-        tracing::info!(
-            "Avg time per successful block: {:?}",
-            self.average_successful_block_processing_time()
-        );
-        tracing::info!(
-            "Avg time per failed block: {:?}",
-            self.average_failed_block_processing_time()
-        );
-        tracing::info!(
-            "Avg amortized time per block: {:?}",
-            self.average_amortized_successful_block_processing_time()
-        );
-        tracing::info!("Total blocks: {}", self.processed_blocks);
-        tracing::info!("Failed blocks: {}", self.failed_blocks);
-    }
 }
