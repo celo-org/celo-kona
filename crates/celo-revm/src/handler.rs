@@ -31,10 +31,11 @@ use revm::{
         FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
         interpreter::EthInterpreter,
     },
-    primitives::{HashMap, U256, hardfork::SpecId},
+    primitives::{B256, HashMap, Log, LogData, U256, hardfork::SpecId},
     state::{Account, EvmState},
 };
 use revm_context::{ContextSetters, LocalContextTr};
+use revm_context_interface::result::{Output, SuccessReason};
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
@@ -816,8 +817,40 @@ where
                     merged_logs.extend(cip64_tx_info.logs_post.clone());
                     *logs = merged_logs;
                 }
+                ExecutionResult::Revert { output, gas_used } => {
+                    // For CIP-64 transactions that revert, we need to include debit/credit logs
+                    // Convert to Success with logs, but preserve the revert output
+                    let mut merged_logs = cip64_tx_info.logs_pre.clone();
+                    // No main transaction logs for reverted transactions
+                    merged_logs.extend(cip64_tx_info.logs_post.clone());
+
+                    // Add a special marker log to indicate this is actually a reverted transaction
+                    // This log uses a special address that the receipt builder can recognize
+                    // Address: 0xFFFF...FFFF (all F's) indicates a CIP-64 revert marker
+                    let mut topics = Vec::new();
+                    topics.push(B256::from_slice(&[0xFF; 32])); // Topic indicating CIP-64 revert
+                    let revert_marker_log = Log {
+                        address: Address::from([0xFF; 20]), // Special marker address
+                        data: LogData::new(
+                            topics,
+                            output.clone(), // Include the revert data in the log
+                        )
+                        .unwrap(),
+                    };
+                    merged_logs.push(revert_marker_log);
+
+                    // We use a Success result with the revert output preserved
+                    // The receipt builder will check for the marker log
+                    result.result = ExecutionResult::Success {
+                        reason: SuccessReason::Return, // Use Return to indicate contract execution completed
+                        gas_used: *gas_used,
+                        gas_refunded: 0,
+                        logs: merged_logs,
+                        output: Output::Call(output.clone()), // Preserve the revert data
+                    };
+                }
                 _ => {
-                    // Errors don't have logs to merge
+                    // Other errors (Halt) don't have logs to merge
                 }
             }
         }

@@ -52,11 +52,31 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                     None
                 };
 
+                // For CIP-64 transactions, we need to check if the transaction actuallyreverted
+                // First check the success status before consuming the result
+                let base_is_success = ctx.result.is_success();
+                let mut logs = ctx.result.into_logs();
+
+                // We look for the last log for the special marker at address 0xFFFF...FFFF
+                let mut reverted_by_marker_log = false;
+                let marker_address = alloy_primitives::Address::from([0xFF; 20]);
+
+                if let Some(last_log) = logs.last() {
+                    if last_log.address == marker_address {
+                        reverted_by_marker_log = true;
+                        // Remove the marker log from the receipt
+                        logs.pop();
+                    }
+                }
+
+                // Actual status
+                let status = base_is_success && !reverted_by_marker_log;
+
                 let receipt = CeloCip64Receipt {
                     inner: alloy_consensus::Receipt {
-                        status: Eip658Value::Eip658(ctx.result.is_success()),
+                        status: Eip658Value::Eip658(status),
                         cumulative_gas_used: ctx.cumulative_gas_used,
-                        logs: ctx.result.into_logs(),
+                        logs,
                     },
                     base_fee: base_fee_in_erc20,
                 };
