@@ -344,13 +344,18 @@ async fn verify_block(
         .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
     let parent_header = parent_block.header.inner.seal_slow();
 
+    let pb = start.elapsed();
+
+    let executing_start = Instant::now();
     // Fetch executing block
     let executing_block = provider
         .get_block_by_number(block_number.into())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e))?
         .ok_or_else(|| anyhow::anyhow!("Executing block {} not found", block_number))?;
+    let eb = executing_start.elapsed();
 
+    let txs_start = Instant::now();
     let encoded_executing_transactions = match executing_block.transactions {
         BlockTransactions::Hashes(transactions) => {
             let mut encoded_transactions = Vec::with_capacity(transactions.len());
@@ -368,7 +373,9 @@ async fn verify_block(
         }
         _ => panic!("Only BlockTransactions::Hashes are supported."),
     };
+    let t = txs_start.elapsed();
 
+    let payload_attrs_start = Instant::now();
     let executing_header = executing_block.header.clone();
 
     let payload_attrs = CeloPayloadAttributes {
@@ -391,7 +398,9 @@ async fn verify_block(
                 .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
         },
     };
+    let pa = payload_attrs_start.elapsed();
 
+    let executor_start = Instant::now();
     let mut executor = CeloStatelessL2Builder::new(
         rollup_config,
         CeloEvmFactory::default(),
@@ -402,6 +411,8 @@ async fn verify_block(
     let outcome = executor
         .build_block(payload_attrs)
         .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
+
+    let ex = executor_start.elapsed();
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
@@ -416,7 +427,7 @@ async fn verify_block(
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
     tracker.lock().add_verified_block(block_number);
-    println!("block {} verified in {:?}", block_number, start.elapsed());
+    println!("block {} verified in {:?}, parent block {:?}, executing block {:?}, txs {:?}, payload attrs {:?}, executor {:?}", block_number, start.elapsed(), pb, eb, t, pa, ex);
     Ok(block_number)
 }
 
