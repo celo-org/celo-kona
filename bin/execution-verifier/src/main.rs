@@ -18,9 +18,7 @@ use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
-use celo_kona_utils::{
-    logger::init_tracing, metrics::build_meter_provider, resource::build_resource,
-};
+use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
 use futures::stream::StreamExt;

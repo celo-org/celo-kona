@@ -18,9 +18,9 @@ members = [
   "crates/alloy-celo-evm",
   "crates/celo-alloy/*",
   "crates/celo-revm",
+  "crates/celo-otel",
   "crates/kona/*",
   "examples/*",
-  "utils",
 ]
 default-members = [
   "bin/host",
@@ -80,7 +80,7 @@ celo-proof = { version = "0.1.0", path = "crates/kona/proof", default-features =
 celo-protocol = { version = "0.1.0", path = "crates/kona/protocol", default-features = false }
 celo-genesis = { version = "0.1.0", path = "crates/kona/genesis", default-features = false }
 celo-revm = { version = "0.1.0", path = "crates/celo-revm", default-features = false }
-celo-kona-utils = { version = "0.1.0", path = "utils", default-features = false }
+celo-otel = { version = "0.1.0", path = "crates/celo-otel", default-features = false }
 
 # Binaries
 kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }

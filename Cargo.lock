@@ -1746,7 +1746,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "celo-kona-utils"
+name = "celo-otel"
 version = "0.1.0"
 dependencies = [
  "opentelemetry",
@@ -2498,7 +2498,7 @@ dependencies = [
  "anyhow",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
- "celo-kona-utils",
+ "celo-otel",
  "celo-registry",
  "clap",
  "futures",

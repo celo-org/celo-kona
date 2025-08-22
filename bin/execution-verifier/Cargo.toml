@@ -13,7 +13,7 @@ exclude.workspace = true
 
 [dependencies]
 # local
-celo-kona-utils.workspace = true
+celo-otel.workspace = true
 
 kona-executor.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
