@@ -8,6 +8,7 @@ edition.workspace = true
 
 
 # general
+anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true

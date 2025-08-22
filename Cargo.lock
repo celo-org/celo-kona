@@ -1749,6 +1749,7 @@ dependencies = [
 name = "celo-otel"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",

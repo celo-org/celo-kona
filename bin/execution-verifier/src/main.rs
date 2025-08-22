@@ -124,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
     // set up the logs
     // If cli.telemetry is false this will not use any OTLP exporters
     let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
-    init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry);
+    init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
 
     if cli.telemetry {
         tracing::info!("OTLP export for tracing and metrics enabled");

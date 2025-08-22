@@ -1,3 +1,4 @@
+use anyhow::{Result, ensure};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
@@ -9,7 +10,10 @@ pub fn init_tracing(
     env_filter: Option<impl Into<EnvFilter>>,
     otel_resource: Resource,
     export_telemetry: bool,
-) {
+) -> Result<()> {
+    if verbosity_level == 0 {
+        ensure!(verbosity_level > 0, "verbosity_level must be greater than 0");
+    }
     let level = match verbosity_level {
         1 => Level::ERROR,
         2 => Level::WARN,
@@ -17,11 +21,6 @@ pub fn init_tracing(
         4 => Level::DEBUG,
         _ => Level::TRACE,
     };
-    // TODO: edge-case, the u8 is 0 because it wasn't passed from cli.v
-    // if verbosity_level == 0 {
-    //     tracing::subscriber::set_global_default(tracing_subscriber::fmt().finish());
-    //     return;
-    // }
     let mut filter = env_filter
         .map(|e| e.into())
         .unwrap_or(EnvFilter::from_default_env())
@@ -55,4 +54,5 @@ pub fn init_tracing(
         .with(fmt_layer)
         .with(otel_bridge_layer)
         .init();
+    Ok(())
 }
