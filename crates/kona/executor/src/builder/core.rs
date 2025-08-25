@@ -105,7 +105,8 @@ where
         // Update the receipt builder to include the fee currency context. We couldn't do this
         // earlier because we need an EVM to populate the fee currency context.
         let fee_currency_context = evm.create_fee_currency_context().unwrap_or_default();
-        debug!("\n\n\n!!!!!created fee currency context: {:?}\n\n\n", fee_currency_context);
+        // XXX: Here is empty
+        info!("\n\n\n!!!!!created fee currency context: {:?}\n\n\n", fee_currency_context);
         let updated_receipt_builder = CeloAlloyReceiptBuilder::new(fee_currency_context);
         let factory = OpBlockExecutorFactory::<
             CeloAlloyReceiptBuilder,

@@ -11,6 +11,7 @@ use revm::{
     handler::EvmTr,
     primitives::{Address, U256},
 };
+use tracing::info;
 
 use std::{format, string::String};
 
@@ -42,10 +43,18 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
+        info!("calling new_from_evm, evm={:?}", evm);
         let currencies = &get_currencies(evm)?;
+        info!("calling new_from_evm, currencies={:?}", currencies);
         let exchange_rates = get_exchange_rates(evm, currencies)?;
+        info!("calling new_from_evm, exchange_rates={:?}", exchange_rates);
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
+        info!("calling new_from_evm, intrinsic_gas={:?}", intrinsic_gas);
         let current_block_number = evm.ctx().block().number;
+        info!(
+            "calling new_from_evm, current_block_number={:?}",
+            current_block_number
+        );
         Ok(FeeCurrencyContext::new(
             exchange_rates,
             intrinsic_gas,

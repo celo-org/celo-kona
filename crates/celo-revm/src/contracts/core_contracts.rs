@@ -19,6 +19,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
+use tracing::info;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -168,11 +169,21 @@ where
             getExchangeRateCall { token: *token }.abi_encode().into(),
             None,
         )?;
+        info!(
+            "getting rate, token={:?}, raw output_bytes={:?}",
+            token, output_bytes
+        );
 
         // Decode the output
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
             Err(e) => {
+                info!(
+                    "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
+                    hex::encode(token),
+                    hex::encode(output_bytes.clone()),
+                    e
+                );
                 return Err(CoreContractError::ExecutionFailed(format!(
                     "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
                     hex::encode(token),
@@ -181,6 +192,10 @@ where
                 )));
             }
         };
+        info!(
+            "got rate, token={:?}, rate: {:?}/{:?}",
+            token, rate.numerator, rate.denominator
+        );
 
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
