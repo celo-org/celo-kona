@@ -110,10 +110,16 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.exchange_rates.get(&currency_addr) {
             Some(rate) => Ok(amount.saturating_mul(rate.0) / rate.1),
-            None => Err(format!(
-                "fee currency not registered 3 : {}, rates = {:?}",
-                currency_addr, self.exchange_rates
-            )),
+            None => {
+                panic!(
+                    "fee currency not registered 3 : {}, rates = {:?}",
+                    currency_addr, self.exchange_rates
+                );
+                // Err(format!(
+                //     "fee currency not registered 3 : {}, rates = {:?}",
+                //     currency_addr, self.exchange_rates
+                // ))
+            }
         }
     }
 
