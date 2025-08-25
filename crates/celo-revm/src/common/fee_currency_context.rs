@@ -43,16 +43,19 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
-        info!("calling new_from_evm");
+        info!("calling new_from_evm 1");
         let currencies = &get_currencies(evm)?;
-        info!("calling new_from_evm, currencies={:?}", currencies);
+        info!("calling new_from_evm 2, currencies={:?}", currencies);
         let exchange_rates = get_exchange_rates(evm, currencies)?;
-        info!("calling new_from_evm, exchange_rates={:?}", exchange_rates);
+        info!(
+            "calling new_from_evm 3, exchange_rates={:?}",
+            exchange_rates
+        );
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
-        info!("calling new_from_evm, intrinsic_gas={:?}", intrinsic_gas);
+        info!("calling new_from_evm 4, intrinsic_gas={:?}", intrinsic_gas);
         let current_block_number = evm.ctx().block().number;
         info!(
-            "calling new_from_evm, current_block_number={:?}",
+            "calling new_from_evm 5, current_block_number={:?}",
             current_block_number
         );
         Ok(FeeCurrencyContext::new(
