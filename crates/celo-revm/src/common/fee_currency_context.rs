@@ -43,7 +43,7 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
-        info!("calling new_from_evm, evm={:?}", evm);
+        info!("calling new_from_evm");
         let currencies = &get_currencies(evm)?;
         info!("calling new_from_evm, currencies={:?}", currencies);
         let exchange_rates = get_exchange_rates(evm, currencies)?;
