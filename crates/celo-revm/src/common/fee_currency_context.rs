@@ -61,7 +61,10 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.intrinsic_gas.get(&currency_addr) {
             Some(gas_cost) => Ok(*gas_cost),
-            None => Err(format!("fee currency not registered: {}", currency_addr)),
+            None => Err(format!(
+                "fee currency not registered 1: {}, instrinstic_gas={:?}",
+                currency_addr, self.intrinsic_gas
+            )),
         }
     }
 
@@ -88,7 +91,10 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.exchange_rates.get(&currency_addr) {
             Some(exchange_rate) => Ok(*exchange_rate),
-            None => Err(format!("fee currency not registered: {}", currency_addr)),
+            None => Err(format!(
+                "fee currency not registered 2: {}, rates = {:?}",
+                currency_addr, self.exchange_rates
+            )),
         }
     }
 
@@ -104,7 +110,10 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.exchange_rates.get(&currency_addr) {
             Some(rate) => Ok(amount.saturating_mul(rate.0) / rate.1),
-            None => Err(format!("fee currency not registered: {}", currency_addr)),
+            None => Err(format!(
+                "fee currency not registered 3 : {}, rates = {:?}",
+                currency_addr, self.exchange_rates
+            )),
         }
     }
 
@@ -120,7 +129,10 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.exchange_rates.get(&currency_addr) {
             Some(rate) => Ok(amount.saturating_mul(rate.1) / rate.0),
-            None => Err(format!("fee currency not registered: {}", currency_addr)),
+            None => Err(format!(
+                "fee currency not registered 4: {}, rates = {:?}",
+                currency_addr, self.exchange_rates
+            )),
         }
     }
 }
