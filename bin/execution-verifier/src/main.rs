@@ -82,6 +82,11 @@ pub struct ExecutionVerifierCommand {
     /// env-vars can be used as per the standard
     #[arg(long, default_value_t = false)]
     pub telemetry: bool,
+    /// Reuse the same trie/builder instance across all blocks in a range.
+    /// When enabled, trie caches are preserved between blocks for better performance.
+    /// When disabled, a fresh trie/builder is created for each block.
+    #[arg(long, default_value_t = true)]
+    pub reuse_trie: bool,
 }
 
 #[tokio::main]
@@ -119,7 +124,9 @@ async fn main() -> anyhow::Result<()> {
     // since it is very verbose.
     // set up the logs
     // If cli.telemetry is false this will not use any OTLP exporters
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap()).add_directive("celo_handler=off".parse().unwrap());
+    let filter = EnvFilter::new("trace")
+        .add_directive("block_builder=off".parse().unwrap())
+        .add_directive("celo_handler=off".parse().unwrap());
     init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
 
     if cli.telemetry {
@@ -212,6 +219,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
+            cli.reuse_trie,
         ));
     }
     // } else if let Some(start_block) = start_block {
@@ -324,7 +332,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
-    builder: &mut CeloStatelessL2Builder<'_, &Trie<'_>, NoopTrieHinter>,
+    builder: Option<&mut CeloStatelessL2Builder<'_, &Trie<'_>, NoopTrieHinter>>,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
@@ -387,9 +395,39 @@ async fn verify_block(
     let pa = payload_attrs_start.elapsed();
 
     let executor_start = Instant::now();
-    let outcome = builder
-        .build_block(payload_attrs)
-        .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
+    let outcome = match builder {
+        Some(builder) => {
+            // Reuse existing builder
+            builder
+                .build_block(payload_attrs)
+                .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?
+        }
+        None => {
+            // Create fresh builder for this block
+            let trie = Trie::new(provider);
+
+            // Fetch parent block for fresh builder
+            let parent_block = provider
+                .get_block_by_number((block_number - 1).into())
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e)
+                })?
+                .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+            let parent_header = parent_block.header.inner.seal_slow();
+
+            let mut fresh_builder = CeloStatelessL2Builder::new(
+                rollup_config,
+                CeloEvmFactory::default(),
+                &trie,
+                NoopTrieHinter,
+                parent_header,
+            );
+            fresh_builder
+                .build_block(payload_attrs)
+                .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?
+        }
+    };
 
     let ex = executor_start.elapsed();
 
@@ -435,39 +473,62 @@ async fn verify_block_range(
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    reuse_trie: bool,
 ) -> Result<()> {
-    // Create trie for this batch
-    let trie = Trie::new(provider.as_ref());
+    if reuse_trie {
+        // Reuse trie mode: Create builder once and reuse across all blocks
+        let trie = Trie::new(provider.as_ref());
 
-    // Get the initial parent block (one before start_block) to initialize the builder
-    let initial_parent_block = provider
-        .get_block_by_number((start_block - 1).into())
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("Failed to get initial parent block {}: {}", start_block - 1, e)
-        })?
-        .ok_or_else(|| anyhow::anyhow!("Initial parent block {} not found", start_block - 1))?;
-    let initial_parent_header = initial_parent_block.header.inner.seal_slow();
+        // Get the initial parent block (one before start_block) to initialize the builder
+        let initial_parent_block = provider
+            .get_block_by_number((start_block - 1).into())
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to get initial parent block {}: {}", start_block - 1, e)
+            })?
+            .ok_or_else(|| anyhow::anyhow!("Initial parent block {} not found", start_block - 1))?;
+        let initial_parent_header = initial_parent_block.header.inner.seal_slow();
 
-    // Create the builder once for the entire range
-    let mut builder = CeloStatelessL2Builder::new(
-        &rollup_config,
-        CeloEvmFactory::default(),
-        &trie,
-        NoopTrieHinter,
-        initial_parent_header,
-    );
+        // Create the builder once for the entire range
+        let mut builder = CeloStatelessL2Builder::new(
+            &rollup_config,
+            CeloEvmFactory::default(),
+            &trie,
+            NoopTrieHinter,
+            initial_parent_header,
+        );
 
-    for next_block in start_block..end_block {
-        if cancel_token.is_cancelled() {
-            break;
-        }
-        let rollup_config = rollup_config.clone();
-        let provider = provider.clone();
-        let metrics = metrics.clone();
-        let tracker = tracker.clone();
-        verify_block(next_block, &mut builder, provider.as_ref(), &rollup_config, metrics, tracker)
+        for next_block in start_block..end_block {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let metrics = metrics.clone();
+            let tracker = tracker.clone();
+            verify_block(
+                next_block,
+                Some(&mut builder),
+                provider.as_ref(),
+                &rollup_config,
+                metrics,
+                tracker,
+            )
             .await?;
+        }
+    } else {
+        // Fresh trie mode: Create new builder for each block
+        for next_block in start_block..end_block {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            let rollup_config = rollup_config.clone();
+            let provider = provider.clone();
+            let metrics = metrics.clone();
+            let tracker = tracker.clone();
+            verify_block(next_block, None, provider.as_ref(), &rollup_config, metrics, tracker)
+                .await?;
+        }
     }
 
     Ok(())
