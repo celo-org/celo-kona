@@ -7,7 +7,6 @@ use alloy_primitives::{Address, B256, Bytes};
 use alloy_rlp::Decodable;
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
-use celo_genesis::CeloRollupConfig;
 use celo_protocol::{
     CeloBatchValidationProvider, CeloL2BlockInfo, CeloL2ChainProvider, to_system_config,
 };
@@ -21,7 +20,7 @@ use spin::RwLock;
 
 /// The oracle-backed L2 chain provider for the client program.
 #[derive(Debug, Clone)]
-pub struct OracleL2ChainProvider<T: CommsClient> {
+pub struct CeloOracleL2ChainProvider<T: CommsClient> {
     /// The L2 safe head block hash.
     l2_head: B256,
     /// The rollup configuration.
@@ -34,8 +33,8 @@ pub struct OracleL2ChainProvider<T: CommsClient> {
     chain_id: Option<u64>,
 }
 
-impl<T: CommsClient> OracleL2ChainProvider<T> {
-    /// Creates a new [OracleL2ChainProvider] with the given boot information and oracle client.
+impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
+    /// Creates a new [CeloOracleL2ChainProvider] with the given boot information and oracle client.
     pub const fn new(l2_head: B256, rollup_config: Arc<RollupConfig>, oracle: Arc<T>) -> Self {
         Self { l2_head, rollup_config, oracle, cursor: None, chain_id: None }
     }
@@ -59,7 +58,7 @@ impl<T: CommsClient> OracleL2ChainProvider<T> {
     }
 }
 
-impl<T: CommsClient> OracleL2ChainProvider<T> {
+impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
     /// Returns a [Header] corresponding to the given L2 block number, by walking back from the
     /// L2 safe head.
     async fn header_by_number(&mut self, block_number: u64) -> Result<Header, OracleProviderError> {
@@ -100,7 +99,7 @@ impl<T: CommsClient> OracleL2ChainProvider<T> {
 }
 
 #[async_trait]
-impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     async fn l2_block_info_by_number(
@@ -162,26 +161,26 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for OracleL2Chain
 }
 
 #[async_trait]
-impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     async fn system_config_by_number(
         &mut self,
         number: u64,
-        rollup_config: Arc<CeloRollupConfig>,
+        rollup_config: Arc<RollupConfig>,
     ) -> Result<SystemConfig, <Self as CeloL2ChainProvider>::Error> {
-        info!("OracleL2ChainProvider system_config_by_number 1 number={}", number);
+        info!("CeloOracleL2ChainProvider system_config_by_number 1 number={}", number);
         // Get the block at the given number.
         // XXX: Error here
         let block = self.block_by_number(number).await?;
-        info!("OracleL2ChainProvider system_config_by_number 2 block={:?}", block);
+        info!("CeloOracleL2ChainProvider system_config_by_number 2 block={:?}", block);
         // Construct the system config from the payload.
         to_system_config(&block, rollup_config.as_ref())
             .map_err(OracleProviderError::OpBlockConversion)
     }
 }
 
-impl<T: CommsClient> TrieProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient> TrieProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, OracleProviderError> {
@@ -201,7 +200,7 @@ impl<T: CommsClient> TrieProvider for OracleL2ChainProvider<T> {
     }
 }
 
-impl<T: CommsClient> TrieDBProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient> TrieDBProvider for CeloOracleL2ChainProvider<T> {
     fn bytecode_by_hash(&self, hash: B256) -> Result<Bytes, OracleProviderError> {
         // Fetch the bytecode preimage from the caching oracle.
         block_on(async move {
@@ -233,7 +232,7 @@ impl<T: CommsClient> TrieDBProvider for OracleL2ChainProvider<T> {
     }
 }
 
-impl<T: CommsClient> TrieHinter for OracleL2ChainProvider<T> {
+impl<T: CommsClient> TrieHinter for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     fn hint_trie_node(&self, hash: B256) -> Result<(), Self::Error> {

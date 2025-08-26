@@ -2,4 +2,4 @@
 //! pipeline.
 
 mod providers;
-pub use providers::{CeloBatchValidationProviderDerive, CeloL2ChainProvider};
+pub use providers::{CeloBatchValidationProviderDerive, CeloChainProvider, CeloL2ChainProvider};

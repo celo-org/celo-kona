@@ -1,2 +1,2 @@
 mod traits;
-pub use traits::{CeloBatchValidationProviderDerive, CeloL2ChainProvider};
+pub use traits::{CeloBatchValidationProviderDerive, CeloChainProvider, CeloL2ChainProvider};

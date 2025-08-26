@@ -3,27 +3,26 @@
 use alloy_consensus::{Transaction, Typed2718};
 use alloy_primitives::B256;
 use celo_alloy_consensus::CeloBlock;
-use celo_genesis::CeloRollupConfig;
-use kona_genesis::SystemConfig;
+use kona_genesis::{RollupConfig, SystemConfig};
 use kona_protocol::{
     L1BlockInfoBedrock, L1BlockInfoEcotone, L1BlockInfoIsthmus, L1BlockInfoTx,
     OpBlockConversionError,
 };
 
+/// TODO: Simplify
 /// Converts the [OpBlock] to a partial [SystemConfig].
 pub fn to_system_config(
     block: &CeloBlock,
-    celo_rollup_config: &CeloRollupConfig,
+    op_rollup_config: &RollupConfig,
 ) -> Result<SystemConfig, OpBlockConversionError> {
-    if block.header.number == celo_rollup_config.op_rollup_config.genesis.l2.number {
-        if block.header.hash_slow() != celo_rollup_config.op_rollup_config.genesis.l2.hash {
+    if block.header.number == op_rollup_config.genesis.l2.number {
+        if block.header.hash_slow() != op_rollup_config.genesis.l2.hash {
             return Err(OpBlockConversionError::InvalidGenesisHash(
-                celo_rollup_config.op_rollup_config.genesis.l2.hash,
+                op_rollup_config.genesis.l2.hash,
                 block.header.hash_slow(),
             ));
         }
-        return celo_rollup_config
-            .op_rollup_config
+        return op_rollup_config
             .genesis
             .system_config
             .ok_or(OpBlockConversionError::MissingSystemConfigGenesis);
@@ -69,7 +68,7 @@ pub fn to_system_config(
     };
 
     // After holocene's activation, the EIP-1559 parameters are stored in the block header's nonce.
-    if celo_rollup_config.op_rollup_config.is_holocene_active(block.header.timestamp) {
+    if op_rollup_config.is_holocene_active(block.header.timestamp) {
         let eip1559_params = &block.header.extra_data;
 
         if eip1559_params.len() != 9 {
@@ -91,7 +90,7 @@ pub fn to_system_config(
         ));
     }
 
-    if celo_rollup_config.op_rollup_config.is_isthmus_active(block.header.timestamp) {
+    if op_rollup_config.is_isthmus_active(block.header.timestamp) {
         cfg.operator_fee_scalar = Some(l1_info.operator_fee_scalar());
         cfg.operator_fee_constant = Some(l1_info.operator_fee_constant());
     }
