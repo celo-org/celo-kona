@@ -1,14 +1,13 @@
 //! Contains the concrete implementation of the [ChainProvider] trait for the proof.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use alloy_consensus::{Header, Receipt, ReceiptEnvelope, TxEnvelope};
+use alloy_consensus::{Header, Receipt, ReceiptEnvelope};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::B256;
 use alloy_rlp::Decodable;
 use async_trait::async_trait;
 use celo_alloy_consensus::CeloTxEnvelope;
 use celo_protocol::CeloChainProvider;
-use kona_derive::traits::ChainProvider;
 use kona_mpt::{OrderedListWalker, TrieNode, TrieProvider};
 use kona_preimage::{CommsClient, PreimageKey, PreimageKeyType};
 use kona_proof::{HintType, block_on, errors::OracleProviderError};
