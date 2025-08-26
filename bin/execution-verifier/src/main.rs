@@ -597,8 +597,14 @@ impl TrieDBProvider for &Trie<'_> {
             })
         })?;
 
+        info!("decoding header {:?}", encoded_header.clone());
+
         // Decode the Header.
-        alloy_consensus::Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
+        let res = alloy_consensus::Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
+
+        info!("decoded header {:?}", res.iter().clone());
+
+        res
     }
 }
 
