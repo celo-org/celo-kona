@@ -5,6 +5,7 @@ use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
+    Evm,
     EvmFactory,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
@@ -14,7 +15,8 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
-use revm::database::{State, states::bundle_state::BundleRetention};
+use revm::{database::{states::bundle_state::BundleRetention, State}};
+use revm_trace::TxInspector;
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
@@ -100,7 +102,12 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+        warn!(target: "build_block", "Creating new evm with spec: {:?}", evm_env.cfg_env.spec);
+
+        let tx_inspector = TxInspector::default();
+        info!(target: "build_block", "Created TxInspector for transaction tracing");
+        let mut evm = self.factory.evm_factory().create_evm_with_inspector(&mut state, evm_env.clone(), tx_inspector);
+        warn!(target: "build_block", "After new evm with inspector");
 
         // Update the receipt builder to include the fee currency context and CIP-64 storage.
         // We couldn't do this earlier because we need an EVM to populate the fee currency context.
@@ -116,20 +123,43 @@ where
             updated_receipt_builder, self.config.clone(), *self.factory.evm_factory()
         );
 
+        // Step 3. Execute the block containing the transactions within the payload attributes.
+        let transactions = attrs
+            .recovered_transactions_with_encoded()
+            .collect::<Result<Vec<_>, RecoveryError>>()
+            .map_err(ExecutorError::Recovery)?;
+        info!(target: "build_block", "Executing block with {} transactions using TxInspector", transactions.len());
+        
+        // Execute each transaction individually to access traces
+        for (i, tx) in transactions.iter().enumerate() {
+            info!(target: "tx_trace", "Executing transaction {}/{}", i + 1, transactions.len());
+            let tx_result = evm.transact(tx.clone());
+            
+            match tx_result {
+                Ok(_) => {
+                    info!(target: "tx_trace", "Transaction {} completed successfully", i + 1);
+                }
+                Err(e) => {
+                    warn!(target: "tx_trace", "Transaction {} failed: {:?}", i + 1, e);
+                }
+            }
+        }
+        
+        // Print traces from the inspector
+        print_tx_inspector(evm.inspector());
+        
+        // Now create a new EVM without inspector for the actual block execution
+        let clean_evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
         let ctx = OpBlockExecutionCtx {
             parent_hash,
             parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };
-        let executor = factory.create_executor(evm, ctx);
-
-        // Step 3. Execute the block containing the transactions within the payload attributes.
-        let transactions = attrs
-            .recovered_transactions_with_encoded()
-            .collect::<Result<Vec<_>, RecoveryError>>()
-            .map_err(ExecutorError::Recovery)?;
+        let executor = factory.create_executor(clean_evm, ctx);
         let ex_result = executor.execute_block(transactions.iter())?;
+        
+        info!(target: "build_block", "Block execution completed. TxInspector captured {} receipts with call traces.", ex_result.receipts.len());
 
         info!(
             target: "block_builder",
@@ -159,6 +189,14 @@ where
     }
 }
 
+fn print_tx_inspector(tx_inspector: &TxInspector) {
+    let traces = tx_inspector.get_traces();
+    for (i, trace) in traces.iter().enumerate() {
+        info!(target: "build_block", "  Trace {}: from={:?} to={:?} value={} status={:?}", 
+            i, trace.from, trace.to, trace.value, trace.status);
+        info!(target: "build_block", "Trace: {:?}", serde_json::to_string_pretty(&trace));
+    }
+}
 /// The outcome of a block building operation, returning the sealed block [`Header`] and the
 /// [`BlockExecutionResult`].
 #[derive(Debug, Clone)]

@@ -38,6 +38,8 @@ op-alloy-rpc-types-engine = { workspace = true, features = ["serde", "k256"] }
 # revm
 op-revm.workspace = true
 revm.workspace = true
+revm-inspector.workspace = true
+revm-trace.workspace = true
 
 # alloy-evm
 alloy-evm.workspace = true

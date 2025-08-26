@@ -3,6 +3,7 @@
 use crate::CeloStatelessL2Builder;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
+// use alloy_eips::BlockId;
 use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
@@ -20,6 +21,7 @@ use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -115,6 +117,13 @@ impl ExecutorTestFixtureCreator {
             .await
             .expect("Failed to get parent block")
             .expect("Block not found");
+        // let executing_receipts = self
+        //     .op_executor_test_fixture_creator
+        //     .provider
+        //     .get_block_receipts(BlockId::Number(self.op_executor_test_fixture_creator.
+        // block_number.into()))     .await
+        //     .expect("Failed to get block receipts")
+        //     .expect("Block receipts not found");
         let parent_block = self
             .op_executor_test_fixture_creator
             .provider
@@ -125,6 +134,12 @@ impl ExecutorTestFixtureCreator {
 
         let executing_header = executing_block.header;
         let parent_header = parent_block.header.inner.seal_slow();
+
+        // Store transaction hashes for later debug tracing
+        let transaction_hashes_for_debug = match &executing_block.transactions {
+            BlockTransactions::Hashes(hashes) => hashes.clone(),
+            _ => vec![],
+        };
 
         let encoded_executing_transactions = match executing_block.transactions {
             BlockTransactions::Hashes(transactions) => {
@@ -143,6 +158,9 @@ impl ExecutorTestFixtureCreator {
             }
             _ => panic!("Only BlockTransactions::Hashes are supported."),
         };
+
+        // Store a copy for later use in outcome traces
+        let encoded_transactions_for_outcome = encoded_executing_transactions.clone();
 
         let payload_attrs = CeloPayloadAttributes {
             op_payload_attributes: OpPayloadAttributes {
@@ -178,6 +196,9 @@ impl ExecutorTestFixtureCreator {
             executing_payload: payload_attrs.clone(),
         };
 
+        // Store provider reference before moving self
+        let provider = self.op_executor_test_fixture_creator.provider.clone();
+
         let mut executor = CeloStatelessL2Builder::new(
             rollup_config,
             CeloEvmFactory::default(),
@@ -186,6 +207,39 @@ impl ExecutorTestFixtureCreator {
             parent_header,
         );
         let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
+
+        println!("Outcome receipts: ");
+        outcome.execution_result.receipts.iter().for_each(|r| {
+            println!("receipt: {:?}", r);
+        });
+        
+        // // Get debug traces for outcome block transactions
+        // println!("\n=== Outcome Block Traces (Local Execution) ===");
+        
+        // // The outcome contains the execution result with receipts
+        // // Since we executed locally, we can't use debug_traceTransaction RPC for these
+        // // Instead, we'll output the execution data we have from the outcome
+        // for (idx, receipt) in outcome.execution_result.receipts.iter().enumerate() {
+        //     println!("\n--- Outcome Transaction {} ---", idx);
+            
+        //     // Display the original transaction if we have it
+        //     if idx < encoded_transactions_for_outcome.len() {
+        //         println!("Original encoded transaction: {}", encoded_transactions_for_outcome[idx]);
+        //     }
+            
+        //     // Display the receipt in a formatted way
+        //     println!("Receipt: {:#?}", receipt);
+            
+        //     // Gas used for this specific transaction (if available from cumulative gas)
+        //     println!("Gas used: {}", outcome.execution_result.gas_used);
+        // }
+        
+        // println!("\n--- End of all transaction traces ---\n");
+
+        // // println!("Executing receipts: ");
+        // // executing_receipts.iter().for_each(|r| {
+        // //     println!("receipt: {:?}", r);
+        // // });
 
         assert_eq!(
             outcome.header.inner(),

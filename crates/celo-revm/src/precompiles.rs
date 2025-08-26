@@ -12,6 +12,7 @@ use revm::{
     primitives::Address,
 };
 use std::{boxed::Box, string::String};
+use tracing::warn;
 
 // Celo precompile provider
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ impl CeloPrecompiles {
     /// Create a new precompile provider with the given OpSpec.
     #[inline]
     pub fn new_with_spec(spec: OpSpecId) -> Self {
+        warn!(target: "precompiles", "Creating new precompile provider with spec: {:?}", spec);
         Self {
             op_precompiles: OpPrecompiles::new_with_spec(spec),
         }
@@ -62,6 +64,8 @@ where
         let op_iter =
             <OpPrecompiles as PrecompileProvider<CTX>>::warm_addresses(&self.op_precompiles);
         let transfer_iter = iter::once(TRANSFER_ADDRESS);
+        warn!(target: "op precompiles", "Warm addresses: {:?}", &self.op_precompiles);
+        warn!(target: "precompiles", "Warm addresses: {:?}", TRANSFER_ADDRESS);
         Box::new(op_iter.chain(transfer_iter))
     }
 
@@ -74,7 +78,7 @@ where
 
 impl Default for CeloPrecompiles {
     fn default() -> Self {
-        Self::new_with_spec(OpSpecId::ISTHMUS)
+        Self::new_with_spec(OpSpecId::FJORD)
     }
 }
 
