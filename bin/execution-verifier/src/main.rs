@@ -395,13 +395,19 @@ async fn verify_block(
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
-        tracing::warn!(
+        tracing::error!(
             block_number = block_number,
             expected_header = ?executing_header.inner,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
         metrics.lock().block_verification_completed(false, start.elapsed());
+        return Err(anyhow::anyhow!(
+            "Block verification failed: header mismatch for block {}, expected {:?}, actual {:?}",
+            block_number,
+            executing_header.inner,
+            outcome.header.inner()
+        ));
     } else {
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
