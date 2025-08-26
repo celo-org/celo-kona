@@ -26,6 +26,7 @@ use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -337,6 +338,7 @@ async fn verify_block(
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    verification_times: &mut VecDeque<Duration>,
 ) -> Result<u64> {
     let start = Instant::now();
 
@@ -459,6 +461,26 @@ async fn verify_block(
         pa,
         ex
     );
+
+    // Track verification times for averaging
+    verification_times.push_back(start.elapsed());
+
+    // Keep only last 50 times
+    if verification_times.len() > 50 {
+        verification_times.pop_front();
+    }
+
+    // Display average every 10 blocks
+    if block_number % 10 == 0 && verification_times.len() >= 2 {
+        let avg_time =
+            verification_times.iter().sum::<Duration>() / verification_times.len() as u32;
+        println!(
+            "Average verification time over last {} blocks: {:?}",
+            verification_times.len(),
+            avg_time
+        );
+    }
+
     Ok(block_number)
 }
 
@@ -475,6 +497,9 @@ async fn verify_block_range(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
     reuse_trie: bool,
 ) -> Result<()> {
+    // Create VecDeque for tracking verification times
+    let mut verification_times = VecDeque::new();
+
     if reuse_trie {
         // Reuse trie mode: Create builder once and reuse across all blocks
         let trie = Trie::new(provider.as_ref());
@@ -513,6 +538,7 @@ async fn verify_block_range(
                 &rollup_config,
                 metrics,
                 tracker,
+                &mut verification_times,
             )
             .await?;
         }
@@ -526,8 +552,16 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            verify_block(next_block, None, provider.as_ref(), &rollup_config, metrics, tracker)
-                .await?;
+            verify_block(
+                next_block,
+                None,
+                provider.as_ref(),
+                &rollup_config,
+                metrics,
+                tracker,
+                &mut verification_times,
+            )
+            .await?;
         }
     }
 
