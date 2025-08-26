@@ -86,7 +86,7 @@ pub struct ExecutionVerifierCommand {
     /// Reuse the same trie/builder instance across all blocks in a range.
     /// When enabled, trie caches are preserved between blocks for better performance.
     /// When disabled, a fresh trie/builder is created for each block.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_value_t = true)]
     pub reuse_trie: bool,
 }
 
