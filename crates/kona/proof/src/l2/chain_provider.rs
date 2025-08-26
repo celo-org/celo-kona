@@ -6,15 +6,17 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rlp::Decodable;
 use async_trait::async_trait;
-use kona_derive::traits::L2ChainProvider;
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
+use celo_genesis::CeloRollupConfig;
+use celo_protocol::{
+    CeloBatchValidationProvider, CeloL2BlockInfo, CeloL2ChainProvider, to_system_config,
+};
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
 use kona_genesis::{RollupConfig, SystemConfig};
 use kona_mpt::{OrderedListWalker, TrieHinter, TrieNode, TrieProvider};
 use kona_preimage::{CommsClient, PreimageKey, PreimageKeyType};
 use kona_proof::{HintType, block_on, eip_2935_history_lookup, errors::OracleProviderError};
-use kona_protocol::{BatchValidationProvider, L2BlockInfo, to_system_config};
-use op_alloy_consensus::{OpBlock, OpTxEnvelope};
 use spin::RwLock;
 
 /// The oracle-backed L2 chain provider for the client program.
@@ -98,19 +100,22 @@ impl<T: CommsClient> OracleL2ChainProvider<T> {
 }
 
 #[async_trait]
-impl<T: CommsClient + Send + Sync> BatchValidationProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for OracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
-    async fn l2_block_info_by_number(&mut self, number: u64) -> Result<L2BlockInfo, Self::Error> {
+    async fn l2_block_info_by_number(
+        &mut self,
+        number: u64,
+    ) -> Result<CeloL2BlockInfo, Self::Error> {
         // Get the block at the given number.
         let block = self.block_by_number(number).await?;
 
         // Construct the system config from the payload.
-        L2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
+        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             .map_err(OracleProviderError::BlockInfo)
     }
 
-    async fn block_by_number(&mut self, number: u64) -> Result<OpBlock, Self::Error> {
+    async fn block_by_number(&mut self, number: u64) -> Result<CeloBlock, Self::Error> {
         info!("Celo::block_by_number 1 number={}", number);
         // Fetch the header for the given block number.
         let header @ Header { transactions_root, timestamp, .. } =
@@ -134,13 +139,13 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for OracleL2ChainProv
         let transactions = trie_walker
             .into_iter()
             .map(|(_, rlp)| {
-                let res = OpTxEnvelope::decode_2718(&mut rlp.as_ref())?;
+                let res = CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?;
                 Ok(res)
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
         info!("Celo::block_by_number 6 transactions={:?}", transactions);
-        let optimism_block = OpBlock {
+        let optimism_block = CeloBlock {
             header,
             body: BlockBody {
                 transactions,
@@ -157,14 +162,14 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for OracleL2ChainProv
 }
 
 #[async_trait]
-impl<T: CommsClient + Send + Sync> L2ChainProvider for OracleL2ChainProvider<T> {
+impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for OracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     async fn system_config_by_number(
         &mut self,
         number: u64,
-        rollup_config: Arc<RollupConfig>,
-    ) -> Result<SystemConfig, <Self as L2ChainProvider>::Error> {
+        rollup_config: Arc<CeloRollupConfig>,
+    ) -> Result<SystemConfig, <Self as CeloL2ChainProvider>::Error> {
         info!("OracleL2ChainProvider system_config_by_number 1 number={}", number);
         // Get the block at the given number.
         // XXX: Error here
