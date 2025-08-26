@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     // since it is very verbose.
     // set up the logs
     // If cli.telemetry is false this will not use any OTLP exporters
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap()).add_directive("celo_handler=off".parse().unwrap());
     init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
 
     if cli.telemetry {
