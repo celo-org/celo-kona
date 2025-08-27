@@ -1,7 +1,7 @@
 //! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during
 //! execution.
 
-use alloc::{string::ToString, vec::Vec};
+use alloc::{string::{String, ToString}, vec::Vec};
 use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
@@ -17,25 +17,69 @@ use kona_mpt::TrieHinter;
 use revm::database::{State, states::bundle_state::BundleRetention};
 use revm::{Inspector};
 use revm::interpreter::{Interpreter, InterpreterTypes};
-use alloy_primitives::Log;
+use alloy_primitives::{Log, Address, U256, Bytes};
 
-/// A simple real-time tracing inspector that prints basic execution information
+/// A call frame tracking gas usage and call details similar to trace2.json format
+#[derive(Debug, Clone)]
+struct CallFrame {
+    from: Address,
+    to: Address,
+    call_type: String,
+    gas: U256,
+    gas_used: U256,
+    input: Bytes,
+    output: Bytes,
+    value: U256,
+    depth: usize,
+}
+
+/// A real-time tracing inspector that displays gas costs like trace2.json format
 #[derive(Default, Debug)]
 pub struct RealTimeTracingInspector {
     call_depth: usize,
+    call_stack: Vec<CallFrame>,
 }
 
 impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspector {
     fn call(
         &mut self,
-        _context: &mut CTX,
+        context: &mut CTX,
         inputs: &mut revm::interpreter::CallInputs,
     ) -> Option<revm::interpreter::CallOutcome> {
+        let call_type = match inputs.scheme {
+            revm::interpreter::CallScheme::Call => "CALL",
+            revm::interpreter::CallScheme::CallCode => "CALLCODE", 
+            revm::interpreter::CallScheme::DelegateCall => "DELEGATECALL",
+            revm::interpreter::CallScheme::StaticCall => "STATICCALL",
+            revm::interpreter::CallScheme::ExtCall => "EXTCALL",
+            revm::interpreter::CallScheme::ExtStaticCall => "EXTSTATICCALL",
+            revm::interpreter::CallScheme::ExtDelegateCall => "EXTDELEGATECALL",
+        };
+
+        let frame = CallFrame {
+            from: inputs.caller,
+            to: inputs.target_address,
+            call_type: call_type.to_string(),
+            gas: U256::from(inputs.gas_limit),
+            gas_used: U256::ZERO, // Will be set in call_end
+            input: Bytes::new(), // We'll extract this differently
+            output: Bytes::new(),
+            value: inputs.transfer_value().unwrap_or(U256::ZERO),
+            depth: self.call_depth,
+        };
+
         let indent = "  ".repeat(self.call_depth);
-        println!("{}→ CALL to {:?}", indent, inputs.target_address);
-        println!("{}  Gas limit: {}", indent, inputs.gas_limit);
-        println!("{}  Input: {} bytes", indent, inputs.input.len());
-        
+        println!("{}→ {} to 0x{:x}", indent, call_type, inputs.target_address);
+        println!("{}  from: 0x{:x}", indent, inputs.caller);
+        println!("{}  gas: 0x{:x} ({})", indent, inputs.gas_limit, inputs.gas_limit);
+        println!("{}  input: {} bytes", indent, inputs.input.len());
+        if let Some(value) = inputs.transfer_value() {
+            if value > U256::ZERO {
+                println!("{}  value: 0x{:x}", indent, value);
+            }
+        }
+
+        self.call_stack.push(frame);
         self.call_depth += 1;
         None // Let execution continue normally
     }
@@ -43,14 +87,25 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspec
     fn call_end(
         &mut self,
         _context: &mut CTX,
-        inputs: &revm::interpreter::CallInputs,
+        _inputs: &revm::interpreter::CallInputs,
         outcome: &mut revm::interpreter::CallOutcome,
     ) {
         self.call_depth = self.call_depth.saturating_sub(1);
-        let indent = "  ".repeat(self.call_depth);
         
-        println!("{}← CALL_END to {:?}", indent, inputs.target_address);
-        println!("{}  Outcome: {:?}", indent, outcome.result);
+        if let Some(mut frame) = self.call_stack.pop() {
+            // Use actual gas consumed without artificial adjustments
+            // Both traces should report the same correct gas values
+            let gas_spent = U256::from(outcome.result.gas.spent());
+            
+            frame.gas_used = gas_spent;
+            frame.output = outcome.result.output.clone();
+
+            let indent = "  ".repeat(self.call_depth);
+            println!("{}← {} END", indent, frame.call_type);
+            println!("{}  gasUsed: 0x{:x} ({})", indent, gas_spent, gas_spent);
+            println!("{}  output: {} bytes ({})", indent, frame.output.len(), frame.output);
+            println!("{}  result: {:?}", indent, outcome.result.result);
+        }
     }
 
     fn log(
@@ -60,8 +115,9 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspec
         log: Log,
     ) {
         let indent = "  ".repeat(self.call_depth);
-        println!("{}📝 LOG from {:?}", indent, log.address);
-        println!("{}   Data: {} bytes", indent, log.data.data.len());
+        println!("{}📝 LOG from 0x{:x}", indent, log.address);
+        println!("{}   topics: {}", indent, log.data.topics().len());
+        println!("{}   data: {} bytes ({})", indent, log.data.data.len(), log.data.data);
     }
 }
 
