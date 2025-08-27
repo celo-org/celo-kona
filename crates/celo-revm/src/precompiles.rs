@@ -64,11 +64,11 @@ where
             <OpPrecompiles as PrecompileProvider<CTX>>::warm_addresses(&self.op_precompiles);
         let transfer_iter = iter::once(TRANSFER_ADDRESS);
 
-        // Box::new(op_iter.chain(transfer_iter))
+        Box::new(op_iter.chain(transfer_iter))
 
         // let debug_iter = iter::once(address!("0x1459e4a73c6abd19aca2bc50b30d3f1ed229a329"));
-        let debug_iter = iter::once(address!("0x77f3e71ef71e66937c84d4fdd935504b44646f70"));
-        Box::new(op_iter.chain(transfer_iter).chain(debug_iter))
+        // let debug_iter = iter::once(address!("0x77f3e71ef71e66937c84d4fdd935504b44646f70"));
+        // Box::new(op_iter.chain(transfer_iter).chain(debug_iter))
     }
 
     #[inline]

@@ -15,6 +15,55 @@ use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use revm::database::{State, states::bundle_state::BundleRetention};
+use revm::{Inspector};
+use revm::interpreter::{Interpreter, InterpreterTypes};
+use alloy_primitives::Log;
+
+/// A simple real-time tracing inspector that prints basic execution information
+#[derive(Default, Debug)]
+pub struct RealTimeTracingInspector {
+    call_depth: usize,
+}
+
+impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspector {
+    fn call(
+        &mut self,
+        _context: &mut CTX,
+        inputs: &mut revm::interpreter::CallInputs,
+    ) -> Option<revm::interpreter::CallOutcome> {
+        let indent = "  ".repeat(self.call_depth);
+        println!("{}→ CALL to {:?}", indent, inputs.target_address);
+        println!("{}  Gas limit: {}", indent, inputs.gas_limit);
+        println!("{}  Input: {} bytes", indent, inputs.input.len());
+        
+        self.call_depth += 1;
+        None // Let execution continue normally
+    }
+
+    fn call_end(
+        &mut self,
+        _context: &mut CTX,
+        inputs: &revm::interpreter::CallInputs,
+        outcome: &mut revm::interpreter::CallOutcome,
+    ) {
+        self.call_depth = self.call_depth.saturating_sub(1);
+        let indent = "  ".repeat(self.call_depth);
+        
+        println!("{}← CALL_END to {:?}", indent, inputs.target_address);
+        println!("{}  Outcome: {:?}", indent, outcome.result);
+    }
+
+    fn log(
+        &mut self,
+        _interp: &mut Interpreter<INTR>,
+        _context: &mut CTX,
+        log: Log,
+    ) {
+        let indent = "  ".repeat(self.call_depth);
+        println!("{}📝 LOG from {:?}", indent, log.address);
+        println!("{}   Data: {} bytes", indent, log.data.data.len());
+    }
+}
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
@@ -100,7 +149,11 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+        
+        // Create real-time tracing inspector
+        println!("=== Starting execution with real-time tracing enabled ===");
+        let inspector = RealTimeTracingInspector::default();
+        let mut evm = self.factory.evm_factory().create_evm_with_inspector(&mut state, evm_env, inspector);
 
         // Update the receipt builder to include the fee currency context. We couldn't do this
         // earlier because we need an EVM to populate the fee currency context.
@@ -129,6 +182,22 @@ where
             .map_err(ExecutorError::Recovery)?;
         let ex_result = executor.execute_block(transactions.iter())?;
 
+        println!("=== Real-time execution tracing completed ===");
+        println!("Total gas used: {}", ex_result.gas_used);
+        println!("Transactions executed: {}", transactions.len());
+        
+        // Print per-transaction gas usage
+        println!("\n=== Per-Transaction Gas Usage ===");
+        for (i, receipt) in ex_result.receipts.iter().enumerate() {
+            let cumulative_gas = receipt.cumulative_gas_used();
+            let tx_gas = if i == 0 {
+                cumulative_gas
+            } else {
+                cumulative_gas - ex_result.receipts[i - 1].cumulative_gas_used()
+            };
+            println!("Transaction {}: {} gas used (cumulative: {})", i, tx_gas, cumulative_gas);
+        }
+        
         info!(
             target: "block_builder",
             gas_used = ex_result.gas_used,
