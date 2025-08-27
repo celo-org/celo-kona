@@ -12,9 +12,8 @@ pub mod executor;
 pub mod boot;
 pub use boot::CeloBootInfo;
 
-pub mod l1;
-
 pub mod l2;
+pub use l2::CeloOracleL2ChainProvider;
 
 pub mod sync;
 pub use sync::new_oracle_pipeline_cursor;

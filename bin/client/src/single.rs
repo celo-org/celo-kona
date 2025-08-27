@@ -6,7 +6,9 @@ use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{CeloBootInfo, executor::CeloExecutor};
+use celo_proof::{
+    CeloBootInfo, executor::CeloExecutor, l2::CeloOracleL2ChainProvider, new_oracle_pipeline_cursor,
+};
 use core::fmt::Debug;
 use hokulea_eigenda::{EigenDABlobSource, EigenDADataSource};
 use hokulea_proof::eigenda_provider::OracleEigenDAProvider;
@@ -19,7 +21,6 @@ use kona_proof::{
     errors::OracleProviderError,
     l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
     l2::OracleL2ChainProvider,
-    sync::new_oracle_pipeline_cursor,
 };
 use tracing::{error, info};
 
@@ -52,6 +53,8 @@ where
     let mut l1_provider = OracleL1ChainProvider::new(boot.op_boot_info.l1_head, oracle.clone());
     let mut l2_provider =
         OracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
+    let mut celo_l2_provider =
+        CeloOracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
     let beacon = OracleBlobProvider::new(oracle.clone());
 
     // Fetch the safe head's block header.
@@ -93,7 +96,7 @@ where
         rollup_config.as_ref(),
         safe_head,
         &mut l1_provider,
-        &mut l2_provider,
+        &mut celo_l2_provider,
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());

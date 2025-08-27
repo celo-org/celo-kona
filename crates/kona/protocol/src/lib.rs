@@ -10,8 +10,5 @@ pub use block::CeloL2BlockInfo;
 mod batch;
 pub use batch::CeloBatchValidationProvider;
 
-mod derive;
-pub use derive::{CeloBatchValidationProviderDerive, CeloChainProvider, CeloL2ChainProvider};
-
 mod protocol;
 pub use protocol::to_system_config;

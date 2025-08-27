@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
-use celo_protocol::{CeloBatchValidationProvider, CeloL2BlockInfo};
+use celo_protocol::CeloBatchValidationProvider;
 use core::fmt::Debug;
 use kona_derive::traits::ChainProvider;
 use kona_driver::{PipelineCursor, TipCursor};
@@ -24,8 +24,7 @@ where
     OracleProviderError:
         From<<L1 as ChainProvider>::Error> + From<<L2 as CeloBatchValidationProvider>::Error>,
 {
-    let CeloL2BlockInfo { op_l2_block_info: safe_head_info } =
-        l2_chain_provider.l2_block_info_by_number(safe_header.number).await?;
+    let safe_head_info = l2_chain_provider.l2_block_info_by_number(safe_header.number).await?;
     let l1_origin = chain_provider.block_info_by_number(safe_head_info.l1_origin.number).await?;
 
     // Walk back the starting L1 block by `channel_timeout` to ensure that the full channel is

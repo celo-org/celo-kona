@@ -92,6 +92,7 @@ kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2
 kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }
 kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }
 kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }
+kona-hardforks = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }
 
 # Providers
 kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.0.2", default-features = false }
@@ -223,3 +224,4 @@ kona-preimage        = { git = "https://github.com/Kourin1996/kona", rev = "3b9b
 kona-std-fpvm-proc   = { git = "https://github.com/Kourin1996/kona", rev = "3b9be583" }
 kona-cli             = { git = "https://github.com/Kourin1996/kona", rev = "3b9be583" }
 kona-serde           = { git = "https://github.com/Kourin1996/kona", rev = "3b9be583" }
+kona-hardforks       = { git = "https://github.com/Kourin1996/kona", rev = "3b9be583" }

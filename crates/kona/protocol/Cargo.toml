@@ -24,6 +24,7 @@ celo-genesis.workspace = true
 kona-genesis.workspace = true
 kona-protocol.workspace = true
 kona-derive.workspace = true
+kona-hardforks.workspace = true
 
 # OP Alloy
 op-alloy-consensus.workspace = true
@@ -59,6 +60,8 @@ alloy-serde = { workspace = true, optional = true }
 spin = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["fmt"], optional = true }
 
+tracing.workspace = true
+
 [dev-dependencies]
 kona-protocol = { workspace = true, features = ["test-utils"] }
 brotli = { workspace = true, features = ["std"] }
@@ -70,6 +73,7 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 alloy-primitives = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus.workspace = true
 alloy-rpc-types-eth.workspace = true
+tokio = { workspace = true, features = ["full"] }
 
 [features]
 default = []
