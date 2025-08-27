@@ -44,6 +44,9 @@ use verified_block_tracker::VerifiedBlockTracker;
 
 use pprof::ProfilerGuardBuilder;
 
+use pprof::protos::Message;
+use std::io::Write;
+
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// the version string injected by Cargo at compile time
@@ -576,6 +579,17 @@ async fn verify_block_range(
     if let Ok(report) = guard.report().build() {
         let file = std::fs::File::create("flamegraph.svg").unwrap();
         report.flamegraph(file).unwrap();
+
+        println!("wrote flamegraph.svg");
+
+        let mut file = std::fs::File::create("profile.pb").unwrap();
+        let profile = report.pprof().unwrap();
+
+        let mut content = Vec::new();
+        profile.write_to_vec(&mut content).unwrap();
+        file.write_all(&content).unwrap();
+        // profile.write_to(&mut file).unwrap();
+        println!("wrote profile.pb");
     }
 
     Ok(())

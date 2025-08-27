@@ -44,7 +44,7 @@ thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 parking_lot = "0.12.4"
-pprof = { version = "0.15.0", features = ["flamegraph"] }
+pprof = { version = "0.15.0", features = ["flamegraph", "protobuf", "protobuf-codec"] }
 # tracing and telemetry
 tracing.workspace = true
 opentelemetry.workspace = true
