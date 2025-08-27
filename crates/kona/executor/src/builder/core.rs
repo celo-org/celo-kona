@@ -1,7 +1,10 @@
 //! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during
 //! execution.
 
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
@@ -9,15 +12,17 @@ use alloy_evm::{
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
+use alloy_primitives::{Address, Bytes, Log, U256};
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
-use revm::database::{State, states::bundle_state::BundleRetention};
-use revm::{Inspector};
-use revm::interpreter::{Interpreter, InterpreterTypes};
-use alloy_primitives::{Log, Address, U256, Bytes};
+use revm::{
+    Inspector,
+    database::{State, states::bundle_state::BundleRetention},
+    interpreter::{Interpreter, InterpreterTypes},
+};
 
 /// A call frame tracking gas usage and call details similar to trace2.json format
 #[derive(Debug, Clone)]
@@ -48,7 +53,7 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspec
     ) -> Option<revm::interpreter::CallOutcome> {
         let call_type = match inputs.scheme {
             revm::interpreter::CallScheme::Call => "CALL",
-            revm::interpreter::CallScheme::CallCode => "CALLCODE", 
+            revm::interpreter::CallScheme::CallCode => "CALLCODE",
             revm::interpreter::CallScheme::DelegateCall => "DELEGATECALL",
             revm::interpreter::CallScheme::StaticCall => "STATICCALL",
             revm::interpreter::CallScheme::ExtCall => "EXTCALL",
@@ -62,7 +67,7 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspec
             call_type: call_type.to_string(),
             gas: U256::from(inputs.gas_limit),
             gas_used: U256::ZERO, // Will be set in call_end
-            input: Bytes::new(), // We'll extract this differently
+            input: Bytes::new(),  // We'll extract this differently
             output: Bytes::new(),
             value: inputs.transfer_value().unwrap_or(U256::ZERO),
             depth: self.call_depth,
@@ -91,29 +96,26 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for RealTimeTracingInspec
         outcome: &mut revm::interpreter::CallOutcome,
     ) {
         self.call_depth = self.call_depth.saturating_sub(1);
-        
+
         if let Some(mut frame) = self.call_stack.pop() {
             // Use actual gas consumed without artificial adjustments
             // Both traces should report the same correct gas values
             let gas_spent = U256::from(outcome.result.gas.spent());
-            
+
             frame.gas_used = gas_spent;
             frame.output = outcome.result.output.clone();
 
             let indent = "  ".repeat(self.call_depth);
             println!("{}← {} END", indent, frame.call_type);
             println!("{}  gasUsed: 0x{:x} ({})", indent, gas_spent, gas_spent);
+            println!("{}  gasRefunded: 0x{:x} ({})", indent, outcome.result.gas.refunded(), outcome.result.gas.refunded());
+            println!("{}  gasSpentSubRefunded: 0x{:x} ({})", indent, outcome.result.gas.spent() - outcome.result.gas.refunded() as u64, outcome.result.gas.spent() - outcome.result.gas.refunded() as u64);
             println!("{}  output: {} bytes ({})", indent, frame.output.len(), frame.output);
             println!("{}  result: {:?}", indent, outcome.result.result);
         }
     }
 
-    fn log(
-        &mut self,
-        _interp: &mut Interpreter<INTR>,
-        _context: &mut CTX,
-        log: Log,
-    ) {
+    fn log(&mut self, _interp: &mut Interpreter<INTR>, _context: &mut CTX, log: Log) {
         let indent = "  ".repeat(self.call_depth);
         println!("{}📝 LOG from 0x{:x}", indent, log.address);
         println!("{}   topics: {}", indent, log.data.topics().len());
@@ -205,11 +207,12 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        
+
         // Create real-time tracing inspector
         println!("=== Starting execution with real-time tracing enabled ===");
         let inspector = RealTimeTracingInspector::default();
-        let mut evm = self.factory.evm_factory().create_evm_with_inspector(&mut state, evm_env, inspector);
+        let mut evm =
+            self.factory.evm_factory().create_evm_with_inspector(&mut state, evm_env, inspector);
 
         // Update the receipt builder to include the fee currency context. We couldn't do this
         // earlier because we need an EVM to populate the fee currency context.
@@ -241,7 +244,7 @@ where
         println!("=== Real-time execution tracing completed ===");
         println!("Total gas used: {}", ex_result.gas_used);
         println!("Transactions executed: {}", transactions.len());
-        
+
         // Print per-transaction gas usage
         println!("\n=== Per-Transaction Gas Usage ===");
         for (i, receipt) in ex_result.receipts.iter().enumerate() {
@@ -253,7 +256,7 @@ where
             };
             println!("Transaction {}: {} gas used (cumulative: {})", i, tx_gas, cumulative_gas);
         }
-        
+
         info!(
             target: "block_builder",
             gas_used = ex_result.gas_used,

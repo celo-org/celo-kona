@@ -784,7 +784,16 @@ where
             operator_fee_vault_account.mark_touch();
             operator_fee_vault_account.data.info.balance += operator_fee_cost;
 
-            // println!(">>> exec gas: {:?}", exec_result.gas().spent());
+            println!(">>> DEBUG HANDLER: gas().spent()={}, gas().refunded()={}, gas().spent_sub_refunded()={}", 
+                exec_result.gas().spent(), 
+                exec_result.gas().refunded(), 
+                exec_result.gas().spent_sub_refunded()
+            );
+            println!(">>> DEBUG HANDLER: Raw gas breakdown - spent: {}, refunded: {}, limit: {}", 
+                exec_result.gas().spent(), 
+                exec_result.gas().refunded(),
+                exec_result.gas().limit()
+            );
         }
         Ok(())
     }
