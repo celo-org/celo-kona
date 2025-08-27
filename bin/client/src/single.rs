@@ -7,7 +7,8 @@ use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{
-    CeloBootInfo, executor::CeloExecutor, l2::CeloOracleL2ChainProvider, new_oracle_pipeline_cursor,
+    CeloBootInfo, CeloOraclePipeline, executor::CeloExecutor, l2::CeloOracleL2ChainProvider,
+    new_oracle_pipeline_cursor,
 };
 use core::fmt::Debug;
 use hokulea_eigenda::{EigenDABlobSource, EigenDADataSource};
@@ -109,13 +110,13 @@ where
     let eigenda_blob_source = EigenDABlobSource::new(eigenda_blob_provider);
     let da_provider = EigenDADataSource::new(eth_data_source, eigenda_blob_source);
 
-    let pipeline = OraclePipeline::new(
+    let pipeline = CeloOraclePipeline::new(
         rollup_config.clone(),
         cursor.clone(),
         oracle.clone(),
         da_provider,
         l1_provider.clone(),
-        l2_provider.clone(),
+        celo_l2_provider.clone(),
     )
     .await?;
     let executor = CeloExecutor::new(

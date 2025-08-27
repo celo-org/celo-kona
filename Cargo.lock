@@ -1766,22 +1766,34 @@ name = "celo-proof"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
  "async-trait",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-driver",
  "celo-executor",
  "celo-genesis",
+ "celo-protocol",
  "celo-registry",
+ "kona-derive",
+ "kona-driver",
  "kona-executor",
+ "kona-genesis",
+ "kona-hardforks",
  "kona-mpt",
  "kona-preimage",
  "kona-proof",
+ "kona-protocol",
+ "op-alloy-consensus",
+ "op-alloy-rpc-types-engine",
  "op-revm",
  "serde",
  "serde_json",
+ "spin 0.10.0",
  "tokio",
  "tracing",
 ]
@@ -1798,11 +1810,16 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-serde",
  "arbitrary",
+ "async-trait",
  "brotli",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types",
+ "celo-genesis",
  "derive_more",
+ "kona-derive",
  "kona-genesis",
+ "kona-hardforks",
+ "kona-proof",
  "kona-protocol",
  "miniz_oxide",
  "op-alloy-consensus",
@@ -1812,6 +1829,8 @@ dependencies = [
  "serde_json",
  "spin 0.10.0",
  "thiserror",
+ "tokio",
+ "tracing",
  "tracing-subscriber 0.3.19",
  "unsigned-varint",
 ]
@@ -3449,7 +3468,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "anyhow",
  "clap",
@@ -3462,7 +3481,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3501,7 +3520,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3521,7 +3540,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -3542,7 +3561,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3579,7 +3598,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3599,7 +3618,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -3610,7 +3629,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3658,7 +3677,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3679,7 +3698,7 @@ dependencies = [
 [[package]]
 name = "kona-mpt"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -3691,7 +3710,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -3703,7 +3722,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3739,7 +3758,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3771,7 +3790,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -3802,7 +3821,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3831,7 +3850,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.3.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-chains",
  "alloy-op-hardforks",
@@ -3846,7 +3865,7 @@ dependencies = [
 [[package]]
 name = "kona-serde"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -3856,7 +3875,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -3869,7 +3888,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/Kourin1996/kona?rev=149460c#149460cb59842ba2fd778ba4e5af26da38842f73"
+source = "git+https://github.com/Kourin1996/kona?rev=3b9be583#3b9be5834e75828ae83867dd7d2ad2684f93dc4b"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",

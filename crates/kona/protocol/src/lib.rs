@@ -8,7 +8,16 @@ mod block;
 pub use block::CeloL2BlockInfo;
 
 mod batch;
-pub use batch::CeloBatchValidationProvider;
+pub use batch::{
+    CeloBatch, CeloBatchValidationProvider, CeloBatchWithInclusionBlock, CeloSpanBatch,
+};
+
+mod derive;
+pub use derive::{
+    CeloAttributesQueueStage, CeloBatchProvider, CeloBatchProviderStage, CeloBatchQueue,
+    CeloBatchStream, CeloBatchStreamStage, CeloBatchValidationProviderDerive, CeloBatchValidator,
+    CeloDerivationPipeline, CeloL2ChainProvider, CeloNextBatchProvider, CeloPipelineBuilder,
+};
 
 mod protocol;
 pub use protocol::to_system_config;
