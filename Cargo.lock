@@ -101,15 +101,16 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad451f9a70c341d951bca4e811d74dbe1e193897acd17e9dbac1353698cc430b"
+checksum = "88bf8bac84bad62b19c047ceb71af26052155b924800d1f2eb7da99022799878"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-serde",
- "alloy-trie",
+ "alloy-trie 0.9.1",
+ "alloy-tx-macros",
  "arbitrary",
  "auto_impl",
  "c-kzg",
@@ -126,9 +127,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus-any"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142daffb15d5be1a2b20d2cd540edbcef03037b55d4ff69dc06beb4d06286dba"
+checksum = "2a407a490f71974184069adabd8e7b614c5306410356d53fd6d2ab3f01b5c1e7"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -185,9 +186,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3056872f6da48046913e76edb5ddced272861f6032f09461aea1a2497be5ae5d"
+checksum = "ccab489a99806d6586118b4712506e56c2888cdf4798f29b401511bc3af13475"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -293,9 +294,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network-primitives"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7162ff7be8649c0c391f4e248d1273e85c62076703a1f3ec7daf76b283d886d"
+checksum = "5d090a0ca79509160da70edddf7f7144a1eab1f45c2c9bf53695b6971b6ff890"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -545,9 +546,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-eth"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcaf7dff0fdd756a714d58014f4f8354a1706ebf9fa2cf73431e0aeec3c9431e"
+checksum = "4fd99ffe19288d462eed07f73a8960869c692b172ee74a6a57b53052cf798979"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -561,14 +562,29 @@ dependencies = [
  "itertools 0.14.0",
  "serde",
  "serde_json",
+ "serde_with",
+ "thiserror",
+]
+
+[[package]]
+name = "alloy-rpc-types-trace"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b01b6f25467fbbfb3569a035f7d9a68f461e6306e677172026a785d6876c3e5"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-serde",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
 [[package]]
 name = "alloy-serde"
-version = "1.0.9"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "730e8f2edf2fc224cabd1c25d090e1655fa6137b2e409f92e5eec735903f1507"
+checksum = "93cb27da33b618fe729ab6b053275e754fbb31782caa83dfd11219d7e2e8ebf1"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
@@ -754,16 +770,44 @@ checksum = "983d99aa81f586cef9dae38443245e585840fcf0fc58b09aee0b1f27aed1d500"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
+ "arrayvec",
+ "derive_more",
+ "nybbles 0.3.4",
+ "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "alloy-trie"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3412d52bb97c6c6cc27ccc28d4e6e8cf605469101193b50b0bd5813b1f990b5"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "arbitrary",
  "arrayvec",
  "derive_arbitrary",
  "derive_more",
- "nybbles",
+ "nybbles 0.4.3",
  "proptest",
  "proptest-derive",
  "serde",
  "smallvec",
  "tracing",
+]
+
+[[package]]
+name = "alloy-tx-macros"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20401796a1205414da724f63cc4e7713d674576ee923469f07c29ccc6d382ba2"
+dependencies = [
+ "alloy-primitives",
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.103",
 ]
 
 [[package]]
@@ -1662,8 +1706,9 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-client",
  "alloy-rpc-types-engine",
+ "alloy-rpc-types-trace",
  "alloy-transport-http",
- "alloy-trie",
+ "alloy-trie 0.8.1",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
@@ -1679,6 +1724,7 @@ dependencies = [
  "op-revm",
  "rand 0.9.1",
  "revm",
+ "revm-inspectors",
  "rocksdb",
  "rstest",
  "serde",
@@ -2191,9 +2237,9 @@ dependencies = [
 
 [[package]]
 name = "derive-where"
-version = "1.4.0"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e73f2692d4bd3cac41dca28934a39894200c9fabf49586d77d0e5954af1d7902"
+checksum = "ef941ded77d15ca19b40374869ac6000af1c9f2a4c0f3d4c70926287e6364a8f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3556,7 +3602,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-transport",
  "alloy-transport-http",
- "alloy-trie",
+ "alloy-trie 0.8.1",
  "kona-genesis",
  "kona-mpt",
  "kona-protocol",
@@ -3683,7 +3729,7 @@ source = "git+https://github.com/op-rs/kona?tag=kona-client%2Fv1.0.2#62a4ff9c0e6
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "alloy-trie",
+ "alloy-trie 0.8.1",
  "op-alloy-rpc-types-engine",
  "thiserror",
 ]
@@ -3711,7 +3757,7 @@ dependencies = [
  "alloy-op-evm",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-trie",
+ "alloy-trie 0.8.1",
  "ark-bls12-381",
  "ark-ff 0.5.0",
  "async-trait",
@@ -4320,10 +4366,21 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8983bb634df7248924ee0c4c3a749609b5abcb082c28fffe3254b3eb3602b307"
 dependencies = [
+ "const-hex",
+ "smallvec",
+]
+
+[[package]]
+name = "nybbles"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63cb50036b1ad148038105af40aaa70ff24d8a14fbc44ae5c914e1348533d12e"
+dependencies = [
  "alloy-rlp",
  "arbitrary",
- "const-hex",
+ "cfg-if",
  "proptest",
+ "ruint",
  "serde",
  "smallvec",
 ]
@@ -5475,6 +5532,24 @@ dependencies = [
  "revm-state",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "revm-inspectors"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48db62c066383dfc2e9636c31999265d48c19fc47652a85f9b3071c2e7512158"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-rpc-types-trace",
+ "alloy-sol-types",
+ "anstyle",
+ "colorchoice",
+ "revm",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

@@ -783,6 +783,8 @@ where
                 evm.ctx().journal().load_account(OPERATOR_FEE_RECIPIENT)?;
             operator_fee_vault_account.mark_touch();
             operator_fee_vault_account.data.info.balance += operator_fee_cost;
+
+            // println!(">>> exec gas: {:?}", exec_result.gas().spent());
         }
         Ok(())
     }

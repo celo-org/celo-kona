@@ -42,6 +42,7 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
+        return Ok(Self::default());
         let currencies = &get_currencies(evm)?;
         let exchange_rates = get_exchange_rates(evm, currencies)?;
         let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;

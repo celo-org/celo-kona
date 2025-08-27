@@ -81,6 +81,7 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
+    panic!("call");
     // Preserve the tx set in the evm before the call to restore it afterwards
     let prev_tx = evm.ctx().tx().clone();
 
