@@ -42,6 +42,8 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
+use pprof::ProfilerGuardBuilder;
+
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// the version string injected by Cargo at compile time
@@ -497,6 +499,12 @@ async fn verify_block_range(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
     reuse_trie: bool,
 ) -> Result<()> {
+    // 100 Hz wall-clock profiling
+    let guard = ProfilerGuardBuilder::default()
+        .frequency(100) // samples per second
+        .blocklist(&["libc", "libgcc"]) // optional: reduce noise
+        .build()
+        .unwrap();
     // Create VecDeque for tracking verification times
     let mut verification_times = VecDeque::new();
 
@@ -563,6 +571,11 @@ async fn verify_block_range(
             )
             .await?;
         }
+    }
+
+    if let Ok(report) = guard.report().build() {
+        let file = std::fs::File::create("flamegraph.svg").unwrap();
+        report.flamegraph(file).unwrap();
     }
 
     Ok(())
