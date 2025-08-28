@@ -1815,6 +1815,7 @@ dependencies = [
  "kona-derive",
  "kona-genesis",
  "kona-hardforks",
+ "kona-proof",
  "kona-protocol",
  "miniz_oxide",
  "op-alloy-consensus",

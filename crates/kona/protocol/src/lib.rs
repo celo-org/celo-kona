@@ -12,8 +12,8 @@ pub use batch::{
 
 mod derive;
 pub use derive::{
-    CeloBatchValidationProviderDerive, CeloL2ChainProvider, CeloNextBatchProvider,
-    CeloStatefulAttributesBuilder,
+    CeloBatchProvider, CeloBatchQueue, CeloBatchStream, CeloBatchValidationProviderDerive,
+    CeloBatchValidator, CeloL2ChainProvider, CeloNextBatchProvider, CeloStatefulAttributesBuilder,
 };
 
 mod block;
