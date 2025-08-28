@@ -235,7 +235,6 @@ where
             actual_intrinsic_gas_used: old_cip64_tx_info.actual_intrinsic_gas_used + gas_used,
             logs_pre: old_cip64_tx_info.logs_pre.clone(),
             logs_post: logs,
-            reverted: old_cip64_tx_info.reverted,
         });
         evm.ctx().set_tx(tx);
         self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
@@ -346,7 +345,6 @@ where
             actual_intrinsic_gas_used: gas_used,
             logs_pre: logs,
             logs_post: Vec::new(),
-            reverted: false,
         });
         evm.ctx().set_tx(tx);
 
@@ -796,7 +794,7 @@ where
         result: <Self::Frame as Frame>::FrameResult,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let result = self.mainnet.output(evm, result)?;
-        let mut result = result.map_haltreason(OpHaltReason::Base);
+        let result = result.map_haltreason(OpHaltReason::Base);
         if result.result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
@@ -807,48 +805,11 @@ where
             }
         }
 
-        // Merge system call logs with main transaction logs
-        let cip64_tx_info = evm.ctx().tx().cip64_tx_info.clone();
-        if cip64_tx_info.is_some() {
-            let cip64_tx_info = cip64_tx_info.unwrap();
-            match &mut result.result {
-                ExecutionResult::Success { logs, .. } => {
-                    // Build merged logs: pre_logs + main_tx_logs + post_logs
-                    let mut merged_logs = cip64_tx_info.logs_pre.clone();
-                    merged_logs.extend(logs.clone());
-                    merged_logs.extend(cip64_tx_info.logs_post.clone());
-                    *logs = merged_logs;
-                }
-                ExecutionResult::Revert { output, gas_used } => {
-                    // For CIP-64 transactions that revert, we need to include debit/credit logs
-                    // and store the revert information in the transaction context
-                    let mut merged_logs = cip64_tx_info.logs_pre.clone();
-                    // No main transaction logs for reverted transactions
-                    merged_logs.extend(cip64_tx_info.logs_post.clone());
-
-                    // Update the transaction context with revert information
-                    // This will be accessible to the receipt builder through shared storage
-                    let mut tx = evm.ctx().tx().clone();
-                    if let Some(ref mut cip64_info) = tx.cip64_tx_info {
-                        cip64_info.reverted = true;
-                    }
-                    evm.ctx().set_tx(tx);
-
-                    // We use a Success result to include the system call logs
-                    // The actual revert status will be determined by the receipt builder
-                    result.result = ExecutionResult::Success {
-                        reason: SuccessReason::Return,
-                        gas_used: *gas_used,
-                        gas_refunded: 0,
-                        logs: merged_logs,
-                        output: Output::Call(output.clone()),
-                    };
-                }
-                _ => {
-                    // Other errors (Halt) don't have logs to merge
-                }
-            }
-        }
+        // CIP64 NOTE:
+        // The ResultAndState class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs), 
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 

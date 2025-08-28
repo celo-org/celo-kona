@@ -7,7 +7,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, keccak256, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, common::Cip64Storage};
 use core::{
@@ -132,7 +132,6 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // Get a transaction identifier for storage - use a combination of caller and nonce  
-        use alloy_primitives::keccak256;
         let tx_identifier = keccak256([tx.op_tx.base.caller.as_slice(), &tx.op_tx.base.nonce.to_be_bytes()].concat());
 
         let result = if self.inspect {
@@ -142,6 +141,10 @@ where
             self.inner.transact(tx)
         };
         
+        // CIP64 NOTE:
+        // Extract and store the cip64 info to a shared storage to be able to add the credit/debit logs
+        // when building the receipt in the receipts_builder (alloy-celo-evm)
+
         // After execution, extract the UPDATED CIP-64 info from the context
         // The handler modifies this during execution to set the reverted flag
         if let Some(cip64_info) = self.inner.0.0.ctx.tx.cip64_tx_info.clone() {

@@ -76,8 +76,8 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
 
                 // For CIP-64 transactions, we need to check if the transaction actually reverted
                 // First check the success status before consuming the result
-                let mut success = ctx.result.is_success();
-                let logs = ctx.result.into_logs();
+                let success = ctx.result.is_success();
+                let mut logs = ctx.result.into_logs();
 
                 // Get transaction identifier and check stored CIP-64 execution info
                 use alloy_primitives::keccak256;
@@ -89,9 +89,10 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 };
                 let cip64_info = self.cip64_storage.get_cip64_info(&tx_identifier);
                 if let Some(cip64_info) = cip64_info {
-                    if cip64_info.reverted {
-                        success = false;
-                    }
+                    let mut merged_logs = cip64_info.logs_pre.clone();
+                    merged_logs.extend(logs.clone());
+                    merged_logs.extend(cip64_info.logs_post.clone());
+                    logs = merged_logs;
                 }
 
                 let receipt = CeloCip64Receipt {
