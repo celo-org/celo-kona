@@ -6,7 +6,7 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::{fee_currency_context::FeeCurrencyContext, Cip64Storage};
+use celo_revm::common::{Cip64Storage, fee_currency_context::FeeCurrencyContext};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
@@ -22,19 +22,16 @@ pub struct CeloAlloyReceiptBuilder {
 
 impl CeloAlloyReceiptBuilder {
     /// Creates a new receipt builder with the given fee currency context and CIP-64 storage
-    pub fn new(fee_currency_context: FeeCurrencyContext, cip64_storage: Cip64Storage) -> Self {
-        Self { 
-            fee_currency_context,
-            cip64_storage,
-        }
+    pub const fn new(
+        fee_currency_context: FeeCurrencyContext,
+        cip64_storage: Cip64Storage,
+    ) -> Self {
+        Self { fee_currency_context, cip64_storage }
     }
 
     /// Creates a new receipt builder with the given fee currency context (legacy constructor)
     pub fn new_with_context(fee_currency_context: FeeCurrencyContext) -> Self {
-        Self { 
-            fee_currency_context,
-            cip64_storage: Cip64Storage::new(),
-        }
+        Self { fee_currency_context, cip64_storage: Cip64Storage::new() }
     }
 }
 
@@ -82,7 +79,13 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 // Get transaction identifier and check stored CIP-64 execution info
                 use alloy_primitives::keccak256;
                 let tx_identifier = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
-                    keccak256([cip64.recover_signer().ok().unwrap_or_default().as_slice(), &cip64.tx().nonce.to_be_bytes()].concat())
+                    keccak256(
+                        [
+                            cip64.recover_signer().ok().unwrap_or_default().as_slice(),
+                            &cip64.tx().nonce.to_be_bytes(),
+                        ]
+                        .concat(),
+                    )
                 } else {
                     // For non-CIP64 transactions, we don't need storage lookup
                     [0u8; 32].into()
@@ -91,7 +94,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 if let Some(cip64_info) = cip64_info {
                     let mut merged_logs = cip64_info.logs_pre.clone();
                     merged_logs.extend(logs.clone());
-                    merged_logs.extend(cip64_info.logs_post.clone());
+                    merged_logs.extend(cip64_info.logs_post);
                     logs = merged_logs;
                 }
 

@@ -35,7 +35,6 @@ use revm::{
     state::{Account, EvmState},
 };
 use revm_context::{ContextSetters, LocalContextTr};
-use revm_context_interface::result::{Output, SuccessReason};
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
@@ -808,7 +807,7 @@ where
         // CIP64 NOTE:
         // The ResultAndState class does not allow logs to be passed in for revert results.
         // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
-        // So, instead of modifying only the success results here (to contain those logs), 
+        // So, instead of modifying only the success results here (to contain those logs),
         // both cases are handled in the receipts_builder (alloy-celo-evm)
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();

@@ -7,9 +7,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
-use alloy_primitives::{Address, Bytes, keccak256, TxKind, U256};
+use alloy_primitives::{Address, Bytes, TxKind, U256, keccak256};
 use celo_alloy_consensus::CeloTxType;
-use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, common::Cip64Storage};
+use celo_revm::{
+    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, common::Cip64Storage,
+};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -69,11 +71,6 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     pub const fn cip64_storage(&self) -> &Cip64Storage {
         &self.cip64_storage
     }
-
-    /// Provides a mutable reference to the CIP-64 storage.
-    pub fn cip64_storage_mut(&mut self) -> &mut Cip64Storage {
-        &mut self.cip64_storage
-    }
 }
 
 impl<DB: Database, I> CeloEvm<DB, I> {
@@ -82,11 +79,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
     pub fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
-        Self { 
-            inner: evm, 
-            inspect,
-            cip64_storage: Cip64Storage::new(),
-        }
+        Self { inner: evm, inspect, cip64_storage: Cip64Storage::new() }
     }
 }
 
@@ -131,8 +124,10 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Get a transaction identifier for storage - use a combination of caller and nonce  
-        let tx_identifier = keccak256([tx.op_tx.base.caller.as_slice(), &tx.op_tx.base.nonce.to_be_bytes()].concat());
+        // Get a transaction identifier for storage - use a combination of caller and nonce
+        let tx_identifier = keccak256(
+            [tx.op_tx.base.caller.as_slice(), &tx.op_tx.base.nonce.to_be_bytes()].concat(),
+        );
 
         let result = if self.inspect {
             self.inner.set_tx(tx);
@@ -140,17 +135,17 @@ where
         } else {
             self.inner.transact(tx)
         };
-        
+
         // CIP64 NOTE:
-        // Extract and store the cip64 info to a shared storage to be able to add the credit/debit logs
-        // when building the receipt in the receipts_builder (alloy-celo-evm)
+        // Extract and store the cip64 info to a shared storage to be able to add the credit/debit
+        // logs when building the receipt in the receipts_builder (alloy-celo-evm)
 
         // After execution, extract the UPDATED CIP-64 info from the context
         // The handler modifies this during execution to set the reverted flag
         if let Some(cip64_info) = self.inner.0.0.ctx.tx.cip64_tx_info.clone() {
             self.cip64_storage.store_cip64_info(tx_identifier, cip64_info);
         }
-        
+
         result
     }
 
