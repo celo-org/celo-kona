@@ -23,7 +23,7 @@ impl CeloBatchWithInclusionBlock {
         cfg: &RollupConfig,
         l1_blocks: &[BlockInfo],
         l2_safe_head: L2BlockInfo,
-        fetcher: &mut BF,
+        fetcher: BF,
     ) -> BatchValidity {
         match &self.batch {
             CeloBatch::Single(single_batch) => {

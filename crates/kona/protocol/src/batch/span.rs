@@ -79,7 +79,7 @@ impl CeloSpanBatch {
         l1_blocks: &[BlockInfo],
         l2_safe_head: L2BlockInfo,
         inclusion_block: &BlockInfo,
-        fetcher: &mut BV,
+        fetcher: BV,
     ) -> BatchValidity {
         self.inner
             .check_batch(
@@ -99,7 +99,7 @@ impl CeloSpanBatch {
         l1_origins: &[BlockInfo],
         l2_safe_head: L2BlockInfo,
         inclusion_block: &BlockInfo,
-        fetcher: &mut BF,
+        fetcher: BF,
     ) -> (BatchValidity, Option<L2BlockInfo>) {
         self.inner
             .check_batch_prefix(

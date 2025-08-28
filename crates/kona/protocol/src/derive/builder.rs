@@ -25,7 +25,7 @@ pub struct CeloPipelineBuilder<B, P, T, D>
 where
     B: AttributesBuilder + Send + Debug,
     P: ChainProvider + Send + Sync + Debug,
-    T: CeloL2ChainProvider + Clone + Send + Sync + Debug,
+    T: CeloL2ChainProvider + Send + Sync + Debug,
     D: DataAvailabilityProvider + Send + Sync + Debug,
 {
     l2_chain_provider: Option<T>,
@@ -40,7 +40,7 @@ impl<B, P, T, D> Default for CeloPipelineBuilder<B, P, T, D>
 where
     B: AttributesBuilder + Send + Debug,
     P: ChainProvider + Send + Sync + Debug,
-    T: CeloL2ChainProvider + Clone + Send + Sync + Debug,
+    T: CeloL2ChainProvider + Send + Sync + Debug,
     D: DataAvailabilityProvider + Send + Sync + Debug,
 {
     fn default() -> Self {

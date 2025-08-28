@@ -14,19 +14,20 @@ use op_alloy_consensus::OpBlock;
 ///
 /// NOTE: When converting blocks, the adapter automatically filters out Celo-specific transaction
 /// types that are not supported in the Optimism protocol
-#[derive(Debug)]
-pub struct CeloBatchValidationProviderAdapter<'a, T: CeloBatchValidationProvider>(pub &'a mut T);
+#[derive(Debug, Clone)]
+pub struct CeloBatchValidationProviderAdapter<T: CeloBatchValidationProvider>(pub T);
 
 #[async_trait]
-impl<'a, T: CeloBatchValidationProvider + Send> BatchValidationProvider
-    for CeloBatchValidationProviderAdapter<'a, T>
+impl<T> BatchValidationProvider for CeloBatchValidationProviderAdapter<T>
+where
+    T: CeloBatchValidationProvider + Send,
 {
     /// The error type is the same as the underlying provider
     type Error = T::Error;
 
     /// Fetches L2 block info by converting CeloL2BlockInfo to L2BlockInfo.
     async fn l2_block_info_by_number(&mut self, number: u64) -> Result<L2BlockInfo, Self::Error> {
-        self.0.l2_block_info_by_number(number).await.map(|info| info)
+        self.0.l2_block_info_by_number(number).await
     }
 
     /// Fetches block by converting CeloBlock to OpBlock.

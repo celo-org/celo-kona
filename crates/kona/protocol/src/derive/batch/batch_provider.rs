@@ -97,7 +97,7 @@ where
 impl<P, F> OriginAdvancer for CeloBatchProvider<P, F>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Send + Debug,
-    F: CeloL2ChainProvider + Clone + Send + Debug,
+    F: CeloL2ChainProvider + Send + Clone + Debug,
 {
     async fn advance_origin(&mut self) -> PipelineResult<()> {
         self.attempt_update()?;

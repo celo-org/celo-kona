@@ -174,7 +174,6 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
 impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
-    // TODO:
     async fn system_config_by_number(
         &mut self,
         number: u64,

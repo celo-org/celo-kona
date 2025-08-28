@@ -17,6 +17,3 @@ pub use l2::CeloOracleL2ChainProvider;
 
 mod pipeline;
 pub use pipeline::CeloOraclePipeline;
-
-mod sync;
-pub use sync::new_oracle_pipeline_cursor;

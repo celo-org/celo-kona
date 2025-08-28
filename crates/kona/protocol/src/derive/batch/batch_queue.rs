@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 pub struct CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Send + Clone + Debug,
 {
     /// The rollup config.
     pub(crate) cfg: Arc<RollupConfig>,
@@ -62,7 +62,7 @@ where
 impl<P, BF> CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Send + Clone + Debug,
 {
     /// Creates a new [BatchQueue] stage.
     #[allow(clippy::missing_const_for_fn)]
@@ -133,7 +133,7 @@ where
         for i in 0..self.batches.len() {
             let batch = &self.batches[i];
             let validity =
-                batch.check_batch(&self.cfg, &self.l1_blocks, parent, &mut self.fetcher).await;
+                batch.check_batch(&self.cfg, &self.l1_blocks, parent, self.fetcher.clone()).await;
             match validity {
                 BatchValidity::Future => {
                     // Drop Future batches post-holocene.
@@ -245,7 +245,7 @@ where
         let data = CeloBatchWithInclusionBlock { inclusion_block: origin, batch };
         // If we drop the batch, validation logs the drop reason with WARN level.
         let validity =
-            data.check_batch(&self.cfg, &self.l1_blocks, parent, &mut self.fetcher).await;
+            data.check_batch(&self.cfg, &self.l1_blocks, parent, self.fetcher.clone()).await;
         // Post-Holocene, future batches are dropped due to prevent gaps.
         let drop = validity.is_drop() ||
             (self.cfg.is_holocene_active(origin.timestamp) && validity.is_future());
@@ -265,7 +265,7 @@ where
 impl<P, BF> OriginAdvancer for CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Send + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Clone + Send + Debug,
 {
     async fn advance_origin(&mut self) -> PipelineResult<()> {
         self.prev.advance_origin().await
@@ -276,7 +276,7 @@ where
 impl<P, BF> AttributesProvider for CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Send + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Clone + Send + Debug,
 {
     /// Returns the next valid batch upon the given safe head.
     /// Also returns the boolean that indicates if the batch is the last block in the batch.
@@ -423,7 +423,7 @@ where
 impl<P, BF> OriginProvider for CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Clone + Send + Debug,
 {
     fn origin(&self) -> Option<BlockInfo> {
         self.prev.origin()
@@ -434,7 +434,7 @@ where
 impl<P, BF> SignalReceiver for CeloBatchQueue<P, BF>
 where
     P: CeloNextBatchProvider + OriginAdvancer + OriginProvider + SignalReceiver + Send + Debug,
-    BF: CeloL2ChainProvider + Send + Debug,
+    BF: CeloL2ChainProvider + Clone + Send + Debug,
 {
     async fn signal(&mut self, signal: Signal) -> PipelineResult<()> {
         match signal {
