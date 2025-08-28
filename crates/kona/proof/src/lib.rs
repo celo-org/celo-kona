@@ -14,3 +14,6 @@ pub use boot::CeloBootInfo;
 
 mod l2;
 pub use l2::CeloOracleL2ChainProvider;
+
+mod pipeline;
+pub use pipeline::CeloOraclePipeline;

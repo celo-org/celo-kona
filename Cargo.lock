@@ -1778,6 +1778,7 @@ dependencies = [
  "celo-genesis",
  "celo-protocol",
  "celo-registry",
+ "kona-derive",
  "kona-driver",
  "kona-executor",
  "kona-genesis",
