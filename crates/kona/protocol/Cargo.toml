@@ -22,6 +22,7 @@ celo-alloy-rpc-types.workspace = true
 # Kona
 kona-genesis.workspace = true
 kona-protocol.workspace = true
+kona-derive.workspace = true
 
 # OP Alloy
 op-alloy-consensus.workspace = true
@@ -40,6 +41,8 @@ rand = { workspace = true, features = ["small_rng"] }
 thiserror.workspace = true
 unsigned-varint.workspace = true
 derive_more = { workspace = true, features = ["display"] }
+async-trait.workspace = true
+tracing.workspace = true
 
 # Compression
 brotli.workspace = true
