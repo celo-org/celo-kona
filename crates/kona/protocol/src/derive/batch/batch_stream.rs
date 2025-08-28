@@ -20,7 +20,7 @@ use kona_protocol::{
 use op_alloy_consensus::OpBlock;
 use tracing::{error, trace};
 
-/// Not need?
+/// TODO: Delete
 /// [BatchStream] stage in the derivation pipeline.
 #[derive(Debug)]
 pub struct CeloBatchStream<P, BF>

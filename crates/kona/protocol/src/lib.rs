@@ -6,16 +6,14 @@ extern crate alloc;
 
 mod batch;
 pub use batch::{
-    CeloBatch, CeloBatchValidationProvider, CeloBatchValidationProviderAdapter,
-    CeloBatchWithInclusionBlock, CeloSpanBatch,
+    CeloBatch, CeloBatchValidationProvider, CeloBatchWithInclusionBlock, CeloL2ChainAdapter,
+    CeloSpanBatch,
 };
 
 mod derive;
 pub use derive::{
-    CeloAttributesQueueStage, CeloBatchProvider, CeloBatchProviderStage, CeloBatchQueue,
-    CeloBatchStream, CeloBatchStreamStage, CeloBatchValidationProviderDerive, CeloBatchValidator,
-    CeloDerivationPipeline, CeloL2ChainProvider, CeloNextBatchProvider, CeloPipelineBuilder,
-    CeloStatefulAttributesBuilder,
+    CeloBatchStream, CeloBatchValidationProviderDerive, CeloBatchValidator, CeloDerivationPipeline,
+    CeloL2ChainProvider, CeloNextBatchProvider, CeloStatefulAttributesBuilder,
 };
 
 mod block;

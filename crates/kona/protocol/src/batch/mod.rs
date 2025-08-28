@@ -1,5 +1,5 @@
 mod adapter;
-pub use adapter::CeloBatchValidationProviderAdapter;
+pub use adapter::CeloL2ChainAdapter;
 
 mod batch;
 pub use batch::CeloBatch;

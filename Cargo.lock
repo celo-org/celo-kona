@@ -1616,6 +1616,7 @@ dependencies = [
  "celo-driver",
  "celo-genesis",
  "celo-proof",
+ "celo-protocol",
  "cfg-if",
  "hokulea-eigenda",
  "hokulea-proof",

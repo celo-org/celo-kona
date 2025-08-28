@@ -181,6 +181,8 @@ impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for CeloOracleL2ChainProv
     ) -> Result<SystemConfig, <Self as CeloL2ChainProvider>::Error> {
         let block = self.block_by_number(number).await?;
         // Construct the system config from the payload.
+        // `CeloBlock`` can be safely converted to `OpBlock`` here
+        // since `to_system_config`` depends solely on the block header (and not on transactions)
         to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
             .map_err(OracleProviderError::OpBlockConversion)
     }

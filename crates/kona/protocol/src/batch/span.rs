@@ -1,9 +1,10 @@
 use core::ops::{Deref, DerefMut};
 
-use crate::{CeloBatchValidationProvider, CeloBatchValidationProviderAdapter};
+use crate::{CeloBatchValidationProvider, CeloL2ChainAdapter};
 use alloc::vec::Vec;
 use alloy_primitives::FixedBytes;
 use kona_genesis::RollupConfig;
+use kona_proof::errors::OracleProviderError;
 use kona_protocol::{
     BatchValidity, BlockInfo, L2BlockInfo, RawSpanBatch, SingleBatch, SpanBatch, SpanBatchElement,
     SpanBatchError,
@@ -73,41 +74,49 @@ impl CeloSpanBatch {
     }
 
     /// Checks if the span batch is valid.
-    pub async fn check_batch<BV: CeloBatchValidationProvider + Send>(
+    pub async fn check_batch<BV>(
         &self,
         cfg: &RollupConfig,
         l1_blocks: &[BlockInfo],
         l2_safe_head: L2BlockInfo,
         inclusion_block: &BlockInfo,
         fetcher: BV,
-    ) -> BatchValidity {
+    ) -> BatchValidity
+    where
+        BV: CeloBatchValidationProvider + Send,
+        OracleProviderError: From<<BV as CeloBatchValidationProvider>::Error>,
+    {
         self.inner
             .check_batch(
                 cfg,
                 l1_blocks,
                 l2_safe_head,
                 inclusion_block,
-                &mut CeloBatchValidationProviderAdapter(fetcher),
+                &mut CeloL2ChainAdapter(fetcher),
             )
             .await
     }
 
     /// Checks the validity of the batch's prefix.
-    pub async fn check_batch_prefix<BF: CeloBatchValidationProvider + Send>(
+    pub async fn check_batch_prefix<BF>(
         &self,
         cfg: &RollupConfig,
         l1_origins: &[BlockInfo],
         l2_safe_head: L2BlockInfo,
         inclusion_block: &BlockInfo,
         fetcher: BF,
-    ) -> (BatchValidity, Option<L2BlockInfo>) {
+    ) -> (BatchValidity, Option<L2BlockInfo>)
+    where
+        BF: CeloBatchValidationProvider + Send,
+        OracleProviderError: From<<BF as CeloBatchValidationProvider>::Error>,
+    {
         self.inner
             .check_batch_prefix(
                 cfg,
                 l1_origins,
                 l2_safe_head,
                 inclusion_block,
-                &mut CeloBatchValidationProviderAdapter(fetcher),
+                &mut CeloL2ChainAdapter(fetcher),
             )
             .await
     }

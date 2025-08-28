@@ -18,8 +18,8 @@ use kona_protocol::{
     DEPOSIT_EVENT_ABI_HASH, L1BlockInfoTx, L2BlockInfo, Predeploys, decode_deposit,
 };
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use tracing::info;
 
+/// TODO: Remove
 /// A stateful implementation of the [CeloStatefulAttributesBuilder].
 /// TODO: Not need?
 #[derive(Debug)]
@@ -61,12 +61,10 @@ where
         let l1_header;
         let deposit_transactions: Vec<Bytes>;
 
-        // ERROR below
         let mut sys_config = self
             .config_fetcher
             .system_config_by_number(l2_parent.block_info.number, self.rollup_cfg.clone())
             .await
-            .inspect_err(|e| info!("!!!! system_config_by_number return error: {}", e))
             .map_err(Into::into)?;
 
         // If the L1 origin changed in this block, then we are in the first block of the epoch.
