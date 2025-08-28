@@ -11,7 +11,10 @@ pub use batch::{
 };
 
 mod derive;
-pub use derive::{CeloBatchValidationProviderDerive, CeloL2ChainProvider, CeloNextBatchProvider};
+pub use derive::{
+    CeloBatchValidationProviderDerive, CeloL2ChainProvider, CeloNextBatchProvider,
+    CeloStatefulAttributesBuilder,
+};
 
 mod block;
 pub use block::CeloL2BlockInfo;

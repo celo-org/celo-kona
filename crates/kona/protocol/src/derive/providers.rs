@@ -7,6 +7,7 @@ use kona_derive::errors::PipelineErrorKind;
 use kona_genesis::{RollupConfig, SystemConfig};
 
 /// Describes the functionality of a data source that fetches safe blocks.
+/// TODO: Not need?
 #[async_trait]
 pub trait CeloL2ChainProvider: CeloBatchValidationProviderDerive {
     /// The error type for the [L2ChainProvider].
