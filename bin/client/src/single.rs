@@ -6,7 +6,10 @@ use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{CeloBootInfo, executor::CeloExecutor};
+use celo_proof::{
+    CeloBootInfo, CeloOracleL2ChainProvider, CeloOraclePipeline, executor::CeloExecutor,
+    new_oracle_pipeline_cursor,
+};
 use core::fmt::Debug;
 use hokulea_eigenda::{EigenDABlobSource, EigenDADataSource};
 use hokulea_proof::eigenda_provider::OracleEigenDAProvider;
@@ -17,9 +20,8 @@ use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleCl
 use kona_proof::{
     CachingOracle, HintType,
     errors::OracleProviderError,
-    l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
+    l1::{OracleBlobProvider, OracleL1ChainProvider},
     l2::OracleL2ChainProvider,
-    sync::new_oracle_pipeline_cursor,
 };
 use tracing::{error, info};
 
@@ -52,6 +54,8 @@ where
     let mut l1_provider = OracleL1ChainProvider::new(boot.op_boot_info.l1_head, oracle.clone());
     let mut l2_provider =
         OracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
+    let mut celo_l2_provider =
+        CeloOracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
     let beacon = OracleBlobProvider::new(oracle.clone());
 
     // Fetch the safe head's block header.
@@ -93,7 +97,7 @@ where
         rollup_config.as_ref(),
         safe_head,
         &mut l1_provider,
-        &mut l2_provider,
+        &mut celo_l2_provider,
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());
@@ -106,13 +110,13 @@ where
     let eigenda_blob_source = EigenDABlobSource::new(eigenda_blob_provider);
     let da_provider = EigenDADataSource::new(eth_data_source, eigenda_blob_source);
 
-    let pipeline = OraclePipeline::new(
+    let pipeline = CeloOraclePipeline::new(
         rollup_config.clone(),
         cursor.clone(),
         oracle.clone(),
         da_provider,
         l1_provider.clone(),
-        l2_provider.clone(),
+        celo_l2_provider.clone(),
     )
     .await?;
     let executor = CeloExecutor::new(
