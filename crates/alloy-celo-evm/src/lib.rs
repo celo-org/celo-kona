@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
-use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo};
+use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, common::Cip64Storage};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -33,6 +33,7 @@ pub mod block;
 pub struct CeloEvm<DB: Database, I> {
     inner: celo_revm::CeloEvm<DB, I>,
     inspect: bool,
+    cip64_storage: Cip64Storage,
 }
 
 impl<DB: Database, I> CeloEvm<DB, I> {
@@ -63,6 +64,16 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     {
         celo_revm::common::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
+
+    /// Provides a reference to the CIP-64 storage.
+    pub const fn cip64_storage(&self) -> &Cip64Storage {
+        &self.cip64_storage
+    }
+
+    /// Provides a mutable reference to the CIP-64 storage.
+    pub fn cip64_storage_mut(&mut self) -> &mut Cip64Storage {
+        &mut self.cip64_storage
+    }
 }
 
 impl<DB: Database, I> CeloEvm<DB, I> {
@@ -70,8 +81,12 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
-    pub const fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
-        Self { inner: evm, inspect }
+    pub fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
+        Self { 
+            inner: evm, 
+            inspect,
+            cip64_storage: Cip64Storage::new(),
+        }
     }
 }
 
@@ -116,12 +131,24 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect {
+        // Get a transaction identifier for storage - use a combination of caller and nonce  
+        use alloy_primitives::keccak256;
+        let tx_identifier = keccak256([tx.op_tx.base.caller.as_slice(), &tx.op_tx.base.nonce.to_be_bytes()].concat());
+
+        let result = if self.inspect {
             self.inner.set_tx(tx);
             self.inner.inspect_replay()
         } else {
             self.inner.transact(tx)
+        };
+        
+        // After execution, extract the UPDATED CIP-64 info from the context
+        // The handler modifies this during execution to set the reverted flag
+        if let Some(cip64_info) = self.inner.0.0.ctx.tx.cip64_tx_info.clone() {
+            self.cip64_storage.store_cip64_info(tx_identifier, cip64_info);
         }
+        
+        result
     }
 
     fn transact_system_call(
@@ -259,6 +286,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(NoOpInspector {})
                 .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: false,
+            cip64_storage: Cip64Storage::new(),
         }
     }
 
@@ -277,6 +305,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(inspector)
                 .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: true,
+            cip64_storage: Cip64Storage::new(),
         }
     }
 }

@@ -31,7 +31,7 @@ use revm::{
         FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
         interpreter::EthInterpreter,
     },
-    primitives::{B256, HashMap, Log, LogData, U256, hardfork::SpecId},
+    primitives::{HashMap, U256, hardfork::SpecId},
     state::{Account, EvmState},
 };
 use revm_context::{ContextSetters, LocalContextTr};
@@ -235,6 +235,7 @@ where
             actual_intrinsic_gas_used: old_cip64_tx_info.actual_intrinsic_gas_used + gas_used,
             logs_pre: old_cip64_tx_info.logs_pre.clone(),
             logs_post: logs,
+            reverted: old_cip64_tx_info.reverted,
         });
         evm.ctx().set_tx(tx);
         self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
@@ -345,6 +346,7 @@ where
             actual_intrinsic_gas_used: gas_used,
             logs_pre: logs,
             logs_post: Vec::new(),
+            reverted: false,
         });
         evm.ctx().set_tx(tx);
 
@@ -819,34 +821,27 @@ where
                 }
                 ExecutionResult::Revert { output, gas_used } => {
                     // For CIP-64 transactions that revert, we need to include debit/credit logs
-                    // Convert to Success with logs, but preserve the revert output
+                    // and store the revert information in the transaction context
                     let mut merged_logs = cip64_tx_info.logs_pre.clone();
                     // No main transaction logs for reverted transactions
                     merged_logs.extend(cip64_tx_info.logs_post.clone());
 
-                    // Add a special marker log to indicate this is actually a reverted transaction
-                    // This log uses a special address that the receipt builder can recognize
-                    // Address: 0xFFFF...FFFF (all F's) indicates a CIP-64 revert marker
-                    let mut topics = Vec::new();
-                    topics.push(B256::from_slice(&[0xFF; 32])); // Topic indicating CIP-64 revert
-                    let revert_marker_log = Log {
-                        address: Address::from([0xFF; 20]), // Special marker address
-                        data: LogData::new(
-                            topics,
-                            output.clone(), // Include the revert data in the log
-                        )
-                        .unwrap(),
-                    };
-                    merged_logs.push(revert_marker_log);
+                    // Update the transaction context with revert information
+                    // This will be accessible to the receipt builder through shared storage
+                    let mut tx = evm.ctx().tx().clone();
+                    if let Some(ref mut cip64_info) = tx.cip64_tx_info {
+                        cip64_info.reverted = true;
+                    }
+                    evm.ctx().set_tx(tx);
 
-                    // We use a Success result with the revert output preserved
-                    // The receipt builder will check for the marker log
+                    // We use a Success result to include the system call logs
+                    // The actual revert status will be determined by the receipt builder
                     result.result = ExecutionResult::Success {
-                        reason: SuccessReason::Return, // Use Return to indicate contract execution completed
+                        reason: SuccessReason::Return,
                         gas_used: *gas_used,
                         gas_refunded: 0,
                         logs: merged_logs,
-                        output: Output::Call(output.clone()), // Preserve the revert data
+                        output: Output::Call(output.clone()),
                     };
                 }
                 _ => {

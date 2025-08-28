@@ -102,10 +102,11 @@ where
             .build();
         let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
 
-        // Update the receipt builder to include the fee currency context. We couldn't do this
-        // earlier because we need an EVM to populate the fee currency context.
+        // Update the receipt builder to include the fee currency context and CIP-64 storage. 
+        // We couldn't do this earlier because we need an EVM to populate the fee currency context.
         let fee_currency_context = evm.create_fee_currency_context().unwrap_or_default();
-        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(fee_currency_context);
+        let cip64_storage = evm.cip64_storage().clone();
+        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(fee_currency_context, cip64_storage);
         let factory = OpBlockExecutorFactory::<
             CeloAlloyReceiptBuilder,
             CeloRollupConfig,

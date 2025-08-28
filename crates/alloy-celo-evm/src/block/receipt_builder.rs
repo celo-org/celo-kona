@@ -6,22 +6,44 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::fee_currency_context::FeeCurrencyContext;
+use celo_revm::common::{fee_currency_context::FeeCurrencyContext, Cip64Storage};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
 /// Receipt builder operating on celo-alloy types.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CeloAlloyReceiptBuilder {
     /// The fee currency context for calculating ERC20 base fees
     pub fee_currency_context: FeeCurrencyContext,
+    /// Storage for CIP-64 transaction execution results
+    pub cip64_storage: Cip64Storage,
 }
 
 impl CeloAlloyReceiptBuilder {
-    /// Creates a new receipt builder with the given fee currency context
-    pub const fn new(fee_currency_context: FeeCurrencyContext) -> Self {
-        Self { fee_currency_context }
+    /// Creates a new receipt builder with the given fee currency context and CIP-64 storage
+    pub fn new(fee_currency_context: FeeCurrencyContext, cip64_storage: Cip64Storage) -> Self {
+        Self { 
+            fee_currency_context,
+            cip64_storage,
+        }
+    }
+
+    /// Creates a new receipt builder with the given fee currency context (legacy constructor)
+    pub fn new_with_context(fee_currency_context: FeeCurrencyContext) -> Self {
+        Self { 
+            fee_currency_context,
+            cip64_storage: Cip64Storage::new(),
+        }
+    }
+}
+
+impl Default for CeloAlloyReceiptBuilder {
+    fn default() -> Self {
+        Self {
+            fee_currency_context: FeeCurrencyContext::default(),
+            cip64_storage: Cip64Storage::new(),
+        }
     }
 }
 
@@ -52,29 +74,29 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                     None
                 };
 
-                // For CIP-64 transactions, we need to check if the transaction actuallyreverted
+                // For CIP-64 transactions, we need to check if the transaction actually reverted
                 // First check the success status before consuming the result
-                let base_is_success = ctx.result.is_success();
-                let mut logs = ctx.result.into_logs();
+                let mut success = ctx.result.is_success();
+                let logs = ctx.result.into_logs();
 
-                // We look for the last log for the special marker at address 0xFFFF...FFFF
-                let mut reverted_by_marker_log = false;
-                let marker_address = alloy_primitives::Address::from([0xFF; 20]);
-
-                if let Some(last_log) = logs.last() {
-                    if last_log.address == marker_address {
-                        reverted_by_marker_log = true;
-                        // Remove the marker log from the receipt
-                        logs.pop();
+                // Get transaction identifier and check stored CIP-64 execution info
+                use alloy_primitives::keccak256;
+                let tx_identifier = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
+                    keccak256([cip64.recover_signer().ok().unwrap_or_default().as_slice(), &cip64.tx().nonce.to_be_bytes()].concat())
+                } else {
+                    // For non-CIP64 transactions, we don't need storage lookup
+                    [0u8; 32].into()
+                };
+                let cip64_info = self.cip64_storage.get_cip64_info(&tx_identifier);
+                if let Some(cip64_info) = cip64_info {
+                    if cip64_info.reverted {
+                        success = false;
                     }
                 }
 
-                // Actual status
-                let status = base_is_success && !reverted_by_marker_log;
-
                 let receipt = CeloCip64Receipt {
                     inner: alloy_consensus::Receipt {
-                        status: Eip658Value::Eip658(status),
+                        status: Eip658Value::Eip658(success),
                         cumulative_gas_used: ctx.cumulative_gas_used,
                         logs,
                     },
