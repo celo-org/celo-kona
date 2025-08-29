@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use alloy_consensus::BlockBody;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
 use op_alloy_consensus::{OpBlock, OpTxEnvelope};
-use tracing::warn;
+use tracing::debug;
 
 /// Converts a CeloBlock to OpBlock.
 /// NOTE: TxCip64 transactions are filtered out as they are not supported in Optimism
@@ -34,9 +34,9 @@ pub fn convert_celo_txs_to_op_txs(celo_txs: Vec<CeloTxEnvelope>) -> Vec<OpTxEnve
             CeloTxEnvelope::Deposit(tx) => Some(OpTxEnvelope::Deposit(tx)),
             // TxCip64 is Celo-specific and not supported in OpTxEnvelope, so ignore it
             CeloTxEnvelope::Cip64(_) => {
-                warn!(
-                    target: "celo_batch_validation_adapter",
-                    "Dropping TxCip64 transaction at index {} (not supported in OpTxEnvelope)",
+                debug!(
+                    target: "convert_celo_txs_to_op_txs",
+                    "Dropping CIP-64 transaction at index {} (not supported in OpTxEnvelope)",
                     index
                 );
                 None
