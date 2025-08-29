@@ -71,8 +71,6 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                     None
                 };
 
-                // For CIP-64 transactions, we need to check if the transaction actually reverted
-                // First check the success status before consuming the result
                 let success = ctx.result.is_success();
                 let mut logs = ctx.result.into_logs();
 
