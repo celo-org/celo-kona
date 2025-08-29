@@ -29,16 +29,13 @@ kona-preimage.workspace = true
 kona-driver.workspace = true
 kona-genesis.workspace = true
 kona-protocol.workspace = true
-kona-derive.workspace = true
 
 # Alloy
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-rlp.workspace = true
 
 # OP Alloy
-op-alloy-consensus.workspace = true
 op-alloy-rpc-types-engine.workspace = true
 
 # Execution

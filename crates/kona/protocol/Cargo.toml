@@ -23,7 +23,6 @@ celo-alloy-rpc-types.workspace = true
 kona-genesis.workspace = true
 kona-protocol.workspace = true
 kona-derive.workspace = true
-kona-hardforks.workspace = true
 kona-proof.workspace = true
 
 # OP Alloy
