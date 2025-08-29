@@ -8,7 +8,7 @@ use kona_protocol::L2BlockInfo;
 
 /// A trait for a data source that fetches safe blocks from Celo
 ///
-/// This trait is cloned from Kona's [`BatchValidationProvider`] and modified to return
+/// This trait is cloned from Kona's BatchValidationProvider and modified to return
 /// CeloBlock types instead of the original block types
 #[async_trait]
 pub trait CeloBatchValidationProvider {
