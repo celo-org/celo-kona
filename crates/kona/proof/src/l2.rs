@@ -156,7 +156,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
             .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
-        let optimism_block = CeloBlock {
+        let celo_block = CeloBlock {
             header,
             body: BlockBody {
                 transactions,
@@ -167,7 +167,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
                     .then(|| alloy_eips::eip4895::Withdrawals::new(Vec::new())),
             },
         };
-        Ok(optimism_block)
+        Ok(celo_block)
     }
 }
 
