@@ -7,9 +7,6 @@ extern crate alloc;
 mod batch;
 pub use batch::{CeloBatchValidationProvider, CeloToOpProviderAdapter};
 
-mod derive;
-pub use derive::{CeloBatchValidationProviderDerive, CeloL2ChainProvider};
-
 mod block;
 pub use block::CeloL2BlockInfo;
 

@@ -6,10 +6,8 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
-use celo_protocol::{
-    CeloBatchValidationProvider, CeloL2BlockInfo, CeloL2ChainProvider,
-    convert_celo_block_to_op_block,
-};
+use celo_protocol::{CeloBatchValidationProvider, CeloL2BlockInfo, convert_celo_block_to_op_block};
+use kona_derive::traits::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
 use kona_genesis::{RollupConfig, SystemConfig};
@@ -18,7 +16,8 @@ use kona_preimage::CommsClient;
 use kona_proof::{
     HintType, eip_2935_history_lookup, errors::OracleProviderError, l2::OracleL2ChainProvider,
 };
-use kona_protocol::{L2BlockInfo, to_system_config};
+use kona_protocol::{BatchValidationProvider, L2BlockInfo, to_system_config};
+use op_alloy_consensus::OpBlock;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use spin::RwLock;
 
@@ -74,9 +73,7 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
         }
         provider
     }
-}
 
-impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
     /// Returns a [Header] corresponding to the given L2 block number, by walking back from the
     /// L2 safe head.
     /// Re-implement here because header_by_number is private in OracleL2ChainProvider
@@ -126,7 +123,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
         number: u64,
     ) -> Result<L2BlockInfo, OracleProviderError> {
         // Get the block at the given number.
-        let block = self.block_by_number(number).await?;
+        let block = CeloBatchValidationProvider::block_by_number(self, number).await?;
         // Construct the system config from the payload.
         CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
@@ -172,15 +169,33 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
 }
 
 #[async_trait]
-impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for CeloOracleL2ChainProvider<T> {
+impl<'a, T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2ChainProvider<T> {
+    type Error = OracleProviderError;
+
+    async fn l2_block_info_by_number(
+        &mut self,
+        number: u64,
+    ) -> Result<L2BlockInfo, OracleProviderError> {
+        CeloBatchValidationProvider::l2_block_info_by_number(self, number).await
+    }
+
+    async fn block_by_number(&mut self, number: u64) -> Result<OpBlock, OracleProviderError> {
+        CeloBatchValidationProvider::block_by_number(self, number)
+            .await
+            .map(convert_celo_block_to_op_block)
+    }
+}
+
+#[async_trait]
+impl<T: CommsClient + Send + Sync> L2ChainProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     async fn system_config_by_number(
         &mut self,
         number: u64,
         rollup_config: Arc<RollupConfig>,
-    ) -> Result<SystemConfig, <Self as CeloL2ChainProvider>::Error> {
-        let block = self.block_by_number(number).await?;
+    ) -> Result<SystemConfig, <Self as L2ChainProvider>::Error> {
+        let block = CeloBatchValidationProvider::block_by_number(self, number).await?;
         // Construct the system config from the payload.
         // `CeloBlock` can be safely converted to `OpBlock` here
         // since `to_system_config` depends solely on the block header (and not on transactions)
