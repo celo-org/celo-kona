@@ -15,7 +15,7 @@ use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
 /// Receipt builder operating on celo-alloy types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloAlloyReceiptBuilder {
     /// The fee currency context for calculating ERC20 base fees
@@ -35,16 +35,7 @@ impl CeloAlloyReceiptBuilder {
 
     /// Creates a new receipt builder with the given fee currency context (legacy constructor)
     pub fn new_with_context(fee_currency_context: FeeCurrencyContext) -> Self {
-        Self { fee_currency_context, cip64_storage: Cip64Storage::new() }
-    }
-}
-
-impl Default for CeloAlloyReceiptBuilder {
-    fn default() -> Self {
-        Self {
-            fee_currency_context: FeeCurrencyContext::default(),
-            cip64_storage: Cip64Storage::new(),
-        }
+        Self { fee_currency_context, cip64_storage: Cip64Storage::default() }
     }
 }
 

@@ -25,13 +25,6 @@ pub fn none_tx_identifier() -> B256 {
 }
 
 impl Cip64Storage {
-    /// Creates a new empty CIP-64 storage.
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(HashMap::default())),
-        }
-    }
-
     /// Stores CIP-64 execution info for a cip64 transaction.
     pub fn store_cip64_info(&self, identifier: B256, info: Cip64Info) {
         let mut storage = self.inner.lock();

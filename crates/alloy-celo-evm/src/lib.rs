@@ -80,7 +80,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
     pub fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, cip64_storage: Cip64Storage::new() }
+        Self { inner: evm, inspect, cip64_storage: Cip64Storage::default() }
     }
 }
 
@@ -283,7 +283,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(NoOpInspector {})
                 .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: false,
-            cip64_storage: Cip64Storage::new(),
+            cip64_storage: Cip64Storage::default(),
         }
     }
 
@@ -302,7 +302,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(inspector)
                 .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
             inspect: true,
-            cip64_storage: Cip64Storage::new(),
+            cip64_storage: Cip64Storage::default(),
         }
     }
 }
