@@ -6,8 +6,7 @@ use core::fmt::Display;
 use kona_derive::errors::PipelineErrorKind;
 use kona_genesis::{RollupConfig, SystemConfig};
 
-/// Describes the functionality of a data source that fetches safe blocks.
-/// TODO: Not need?
+/// This trait provides an interface for fetching L2 system configuration by block number
 #[async_trait]
 pub trait CeloL2ChainProvider: CeloBatchValidationProviderDerive {
     /// The error type for the [L2ChainProvider].
@@ -25,6 +24,6 @@ pub trait CeloL2ChainProvider: CeloBatchValidationProviderDerive {
 /// [PipelineErrorKind].
 pub trait CeloBatchValidationProviderDerive: CeloBatchValidationProvider {}
 
-// Auto-implement the [BatchValidationProviderDerive] trait for all types that implement
-// [BatchValidationProvider] where the error can be converted into [PipelineErrorKind].
+// Auto-implement the [CeloBatchValidationProviderDerive] trait for all types that implement
+// [CeloBatchValidationProvider] where the error can be converted into [PipelineErrorKind].
 impl<T> CeloBatchValidationProviderDerive for T where T: CeloBatchValidationProvider {}

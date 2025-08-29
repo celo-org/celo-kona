@@ -5,7 +5,7 @@ use op_alloy_consensus::{OpBlock, OpTxEnvelope};
 use tracing::warn;
 
 /// Converts a CeloBlock to OpBlock.
-/// NOTE: TxCip64 transactions are filtered out as they are not supported in the Optimism
+/// NOTE: TxCip64 transactions are filtered out as they are not supported in Optimism
 pub fn convert_celo_block_to_op_block(celo_block: CeloBlock) -> OpBlock {
     OpBlock {
         header: celo_block.header,
@@ -21,7 +21,7 @@ pub fn convert_celo_block_to_op_block(celo_block: CeloBlock) -> OpBlock {
 ///
 /// This function processes a collection of Celo transactions and converts them
 /// to Optimism transactions.
-/// NOTE: TxCip64 transactions are filtered out as they are not supported in the Optimism
+/// NOTE: TxCip64 transactions are filtered out as they are not supported in Optimism
 pub fn convert_celo_txs_to_op_txs(celo_txs: Vec<CeloTxEnvelope>) -> Vec<OpTxEnvelope> {
     celo_txs
         .into_iter()

@@ -15,7 +15,7 @@ pub trait CeloBatchValidationProvider {
     /// The error type for the [`CeloBatchValidationProvider`].
     type Error: Display;
 
-    /// Returns the [`CeloL2BlockInfo`] given a block number.
+    /// Returns the [`L2BlockInfo`] given a block number.
     ///
     /// Errors if the block does not exist.
     async fn l2_block_info_by_number(&mut self, number: u64) -> Result<L2BlockInfo, Self::Error>;

@@ -54,8 +54,8 @@ where
         let celo_block =
             self.0.block_by_number(number).await.map_err(<Self as L2ChainProvider>::Error::from)?;
         // Construct the system config from the payload.
-        // `CeloBlock`` can be safely converted to `OpBlock`` here
-        // since `to_system_config`` depends solely on the block header (and not on transactions)
+        // `CeloBlock` can be safely converted to `OpBlock` here
+        // since `to_system_config` depends solely on the block header (and not on transactions)
         to_system_config(&convert_celo_block_to_op_block(celo_block), rollup_config.as_ref())
             .map_err(OracleProviderError::OpBlockConversion)
     }

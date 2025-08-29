@@ -151,7 +151,8 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
         // Decode the transactions within the transactions trie.
         let transactions = trie_walker
             .into_iter()
-            // Use CeloTxEnvelope decoder instead of CeloTxEnvelope's one to decode CIP-64 tx
+            // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
+            // EIP-2718 decoding rather than standard RLP decoding.
             .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
@@ -181,8 +182,8 @@ impl<T: CommsClient + Send + Sync> CeloL2ChainProvider for CeloOracleL2ChainProv
     ) -> Result<SystemConfig, <Self as CeloL2ChainProvider>::Error> {
         let block = self.block_by_number(number).await?;
         // Construct the system config from the payload.
-        // `CeloBlock`` can be safely converted to `OpBlock`` here
-        // since `to_system_config`` depends solely on the block header (and not on transactions)
+        // `CeloBlock` can be safely converted to `OpBlock` here
+        // since `to_system_config` depends solely on the block header (and not on transactions)
         to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
             .map_err(OracleProviderError::OpBlockConversion)
     }
