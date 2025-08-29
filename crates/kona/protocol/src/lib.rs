@@ -5,7 +5,7 @@
 extern crate alloc;
 
 mod batch;
-pub use batch::{CeloBatchValidationProvider, CeloL2ChainAdapter};
+pub use batch::{CeloBatchValidationProvider, CeloToOpProviderAdapter};
 
 mod derive;
 pub use derive::{CeloBatchValidationProviderDerive, CeloL2ChainProvider};
@@ -13,5 +13,5 @@ pub use derive::{CeloBatchValidationProviderDerive, CeloL2ChainProvider};
 mod block;
 pub use block::CeloL2BlockInfo;
 
-mod convert;
-pub use convert::{convert_celo_block_to_op_block, convert_celo_txs_to_op_txs};
+mod celo_to_op;
+pub use celo_to_op::{convert_celo_block_to_op_block, convert_celo_txs_to_op_txs};

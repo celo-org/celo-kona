@@ -14,10 +14,10 @@ use op_alloy_consensus::OpBlock;
 /// NOTE: When converting blocks, the adapter automatically filters out Celo-specific transaction
 /// types that are not supported in the Optimism protocol
 #[derive(Debug, Clone)]
-pub struct CeloL2ChainAdapter<T: CeloBatchValidationProvider>(pub T);
+pub struct CeloToOpProviderAdapter<T: CeloBatchValidationProvider>(pub T);
 
 #[async_trait]
-impl<T> BatchValidationProvider for CeloL2ChainAdapter<T>
+impl<T> BatchValidationProvider for CeloToOpProviderAdapter<T>
 where
     T: CeloBatchValidationProvider + Send,
     OracleProviderError: From<<T as CeloBatchValidationProvider>::Error>,
@@ -38,7 +38,7 @@ where
 }
 
 #[async_trait]
-impl<T> L2ChainProvider for CeloL2ChainAdapter<T>
+impl<T> L2ChainProvider for CeloToOpProviderAdapter<T>
 where
     T: CeloBatchValidationProvider + Send,
     OracleProviderError: From<<T as CeloBatchValidationProvider>::Error>,

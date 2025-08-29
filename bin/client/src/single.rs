@@ -7,7 +7,7 @@ use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
-use celo_protocol::CeloL2ChainAdapter;
+use celo_protocol::CeloToOpProviderAdapter;
 use core::fmt::Debug;
 use hokulea_eigenda::{EigenDABlobSource, EigenDADataSource};
 use hokulea_proof::eigenda_provider::OracleEigenDAProvider;
@@ -94,7 +94,7 @@ where
         safe_head,
         &mut l1_provider,
         // new_oracle_pipeline_cursor requires l2_block_info_by_number
-        &mut CeloL2ChainAdapter(l2_provider.clone()),
+        &mut CeloToOpProviderAdapter(l2_provider.clone()),
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());
@@ -113,7 +113,7 @@ where
         oracle.clone(),
         da_provider,
         l1_provider.clone(),
-        CeloL2ChainAdapter(l2_provider.clone()),
+        CeloToOpProviderAdapter(l2_provider.clone()),
     )
     .await?;
     let executor = CeloExecutor::new(
