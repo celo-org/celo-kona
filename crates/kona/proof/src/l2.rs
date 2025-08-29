@@ -169,7 +169,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
 }
 
 #[async_trait]
-impl<'a, T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2ChainProvider<T> {
+impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2ChainProvider<T> {
     type Error = OracleProviderError;
 
     async fn l2_block_info_by_number(
