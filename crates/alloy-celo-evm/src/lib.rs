@@ -7,10 +7,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
-use alloy_primitives::{Address, Bytes, TxKind, U256, keccak256};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_revm::{
-    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, common::Cip64Storage,
+    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo,
+    common::{Cip64Storage, cip64_storage::get_tx_identifier},
 };
 use core::{
     fmt::Debug,
@@ -125,9 +126,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // Get a transaction identifier for storage - use a combination of caller and nonce
-        let tx_identifier = keccak256(
-            [tx.op_tx.base.caller.as_slice(), &tx.op_tx.base.nonce.to_be_bytes()].concat(),
-        );
+        let tx_identifier = get_tx_identifier(tx.op_tx.base.caller, tx.op_tx.base.nonce);
 
         let result = if self.inspect {
             self.inner.set_tx(tx);

@@ -6,7 +6,11 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::{Cip64Storage, fee_currency_context::FeeCurrencyContext};
+use celo_revm::common::{
+    Cip64Storage,
+    cip64_storage::{get_tx_identifier, none_tx_identifier},
+    fee_currency_context::FeeCurrencyContext,
+};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
@@ -75,18 +79,14 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 let mut logs = ctx.result.into_logs();
 
                 // Get transaction identifier and check stored CIP-64 execution info
-                use alloy_primitives::keccak256;
                 let tx_identifier = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
-                    keccak256(
-                        [
-                            cip64.recover_signer().ok().unwrap_or_default().as_slice(),
-                            &cip64.tx().nonce.to_be_bytes(),
-                        ]
-                        .concat(),
+                    get_tx_identifier(
+                        cip64.recover_signer().ok().unwrap_or_default(),
+                        cip64.tx().nonce,
                     )
                 } else {
                     // For non-CIP64 transactions, we don't need storage lookup
-                    [0u8; 32].into()
+                    none_tx_identifier()
                 };
                 let cip64_info = self.cip64_storage.get_cip64_info(&tx_identifier);
                 if let Some(cip64_info) = cip64_info {
