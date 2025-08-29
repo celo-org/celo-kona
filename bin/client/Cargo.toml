@@ -14,6 +14,7 @@ alloy-celo-evm.workspace = true
 celo-proof.workspace = true
 celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
+celo-protocol.workspace = true
 
 # Kona
 kona-client.workspace = true

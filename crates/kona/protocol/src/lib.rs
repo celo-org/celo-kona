@@ -4,5 +4,11 @@
 
 extern crate alloc;
 
+mod batch;
+pub use batch::{CeloBatchValidationProvider, CeloToOpProviderAdapter};
+
 mod block;
 pub use block::CeloL2BlockInfo;
+
+mod celo_to_op;
+pub use celo_to_op::{convert_celo_block_to_op_block, convert_celo_txs_to_op_txs};
