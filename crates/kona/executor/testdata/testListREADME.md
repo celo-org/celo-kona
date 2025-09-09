@@ -21,6 +21,11 @@
   * Network: Celo Sepolia
   * File: sepolia-cip64-native-tx_block-2346490.tar.gz
   * Explorer: https://celo-sepolia.blockscout.com/block/2346490
+- Reverted tx
+  * Testcase: Block with cip64 tx that reverts
+  * Network: Mainnet
+  * File: mainnet-cip64-reverted-tx_block-31071493.tar.gz
+  * Explorer: https://celo.blockscout.com/block/31071493
 
 ## L1 to L2 bridge transaction
 * Testcase: Block with deposit tx

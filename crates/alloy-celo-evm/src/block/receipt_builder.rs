@@ -6,22 +6,36 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::fee_currency_context::FeeCurrencyContext;
+use celo_revm::common::{
+    Cip64Storage,
+    cip64_storage::{get_tx_identifier, none_tx_identifier},
+    fee_currency_context::FeeCurrencyContext,
+};
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
 /// Receipt builder operating on celo-alloy types.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloAlloyReceiptBuilder {
     /// The fee currency context for calculating ERC20 base fees
     pub fee_currency_context: FeeCurrencyContext,
+    /// Storage for CIP-64 transaction execution results
+    pub cip64_storage: Cip64Storage,
 }
 
 impl CeloAlloyReceiptBuilder {
-    /// Creates a new receipt builder with the given fee currency context
-    pub const fn new(fee_currency_context: FeeCurrencyContext) -> Self {
-        Self { fee_currency_context }
+    /// Creates a new receipt builder with the given fee currency context and CIP-64 storage
+    pub const fn new(
+        fee_currency_context: FeeCurrencyContext,
+        cip64_storage: Cip64Storage,
+    ) -> Self {
+        Self { fee_currency_context, cip64_storage }
+    }
+
+    /// Creates a new receipt builder with the given fee currency context (legacy constructor)
+    pub fn new_with_context(fee_currency_context: FeeCurrencyContext) -> Self {
+        Self { fee_currency_context, cip64_storage: Cip64Storage::default() }
     }
 }
 
@@ -52,11 +66,32 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                     None
                 };
 
+                let success = ctx.result.is_success();
+                let mut logs = ctx.result.into_logs();
+
+                // Get transaction identifier and check stored CIP-64 execution info
+                let tx_identifier = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
+                    get_tx_identifier(
+                        cip64.recover_signer().ok().unwrap_or_default(),
+                        cip64.tx().nonce,
+                    )
+                } else {
+                    // For non-CIP64 transactions, we don't need storage lookup
+                    none_tx_identifier()
+                };
+                let cip64_info = self.cip64_storage.get_cip64_info(&tx_identifier);
+                if let Some(cip64_info) = cip64_info {
+                    let mut merged_logs = cip64_info.logs_pre.clone();
+                    merged_logs.extend(logs.clone());
+                    merged_logs.extend(cip64_info.logs_post);
+                    logs = merged_logs;
+                }
+
                 let receipt = CeloCip64Receipt {
                     inner: alloy_consensus::Receipt {
-                        status: Eip658Value::Eip658(ctx.result.is_success()),
+                        status: Eip658Value::Eip658(success),
                         cumulative_gas_used: ctx.cumulative_gas_used,
-                        logs: ctx.result.into_logs(),
+                        logs,
                     },
                     base_fee: base_fee_in_erc20,
                 };

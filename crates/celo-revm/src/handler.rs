@@ -793,7 +793,7 @@ where
         result: <Self::Frame as Frame>::FrameResult,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         let result = self.mainnet.output(evm, result)?;
-        let mut result = result.map_haltreason(OpHaltReason::Base);
+        let result = result.map_haltreason(OpHaltReason::Base);
         if result.result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
@@ -804,23 +804,11 @@ where
             }
         }
 
-        // Merge system call logs with main transaction logs
-        let cip64_tx_info = evm.ctx().tx().cip64_tx_info.clone();
-        if cip64_tx_info.is_some() {
-            let cip64_tx_info = cip64_tx_info.unwrap();
-            match &mut result.result {
-                ExecutionResult::Success { logs, .. } => {
-                    // Build merged logs: pre_logs + main_tx_logs + post_logs
-                    let mut merged_logs = cip64_tx_info.logs_pre.clone();
-                    merged_logs.extend(logs.clone());
-                    merged_logs.extend(cip64_tx_info.logs_post.clone());
-                    *logs = merged_logs;
-                }
-                _ => {
-                    // Errors don't have logs to merge
-                }
-            }
-        }
+        // CIP64 NOTE:
+        // The ResultAndState class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs),
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
 
         evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
 
