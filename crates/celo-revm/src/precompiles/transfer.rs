@@ -94,10 +94,9 @@ where
 
     // If the 'to' address was cold initially, make it cold again after the transfer.
     if account_started_cold {
-        match context.journal().load_account(to) {
-            Ok(mut account) => account.mark_cold(),
-            Err(_) => {} // If account doesn't exist or error loading, do nothing
-        };
+        if let Ok(mut account) = context.journal().load_account(to) {
+            account.mark_cold();
+        }
     }
 
     if let Ok(Some(transfer_err)) = result {
