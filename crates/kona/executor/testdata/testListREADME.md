@@ -54,5 +54,5 @@
 - Multiple instances
   * Testcase: Block with 8 txs. Ther 3rd and 4th txs consume the transfer precompile, with the "to" address cold, and later that "to" address is load again in a sub call and treat it as cold again. This is to match the exact behaviour we are running from the beginning of mainnet
   * Network: Celo Mainnet
-  * File: mainnet-transfer_precompile_warm_block-31074658.tar.gz
+  * File: mainnet-transfer_precompile_warm_multi_block-31074658.tar.gz
   * Explorer: https://celo.blockscout.com/block/31074658

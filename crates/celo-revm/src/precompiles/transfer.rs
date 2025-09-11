@@ -83,7 +83,7 @@ where
     let value = U256::from_be_slice(&input[64..96]);
 
     // Celo transfer precompile does not warm the 'to' address, so we need to check if it was cold initially
-    // to match op-geth behavior, and make it cold again after the transfer.
+    // to match original Celo implementation behavior, and make it cold again after the transfer.
     let account_started_cold = match context.journal().load_account(to) {
         Ok(account) => account.is_cold,
         Err(_) => true, // If account doesn't exist or error loading, treat as cold
@@ -95,7 +95,7 @@ where
     // If the 'to' address was cold initially, make it cold again after the transfer.
     if account_started_cold {
         match context.journal().load_account(to) {
-            Ok(account) => account.data.mark_cold(),
+            Ok(mut account) => account.mark_cold(),
             Err(_) => {} // If account doesn't exist or error loading, do nothing
         };
     }
