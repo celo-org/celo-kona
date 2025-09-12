@@ -47,7 +47,7 @@
 
 ## Transfer precompile not warming the "to" address
 - One instance
-  * Testcase: Block with 3 txs. The last tx consumes the transfer precompile, with the "to" address cold, and later that "to" address is load again in a sub call and treat it as cold again. This is to match the exact behaviour we are running from the beginning of mainnet
+  * Testcase: Block with 3 txs. The last tx consumes the transfer precompile, with the "to" address cold, and later that "to" address is loaded again in a sub call and treated as cold again. This is to match the exact behaviour we are running from the beginning of mainnet
   * Network: Celo Mainnet
   * File: mainnet-transfer_precompile_warm_block-31128957.tar.gz
   * Explorer: https://celo.blockscout.com/block/31128957
