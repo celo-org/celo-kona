@@ -148,9 +148,9 @@ revm-context = { version = "5.0.1", default-features = false }
 alloy-signer = { version = "1.0.9", default-features = false }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "f825484", default-features = false}
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "f825484", default-features = false}
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "f825484", default-features = false}
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "0c8f62c", default-features = false}
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "0c8f62c", default-features = false}
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "0c8f62c", default-features = false}
 
 # General
 url = "2.5.4"
@@ -179,7 +179,7 @@ miniz_oxide = "0.8.8"
 brotli = { version = "8.0.1", default-features = false }
 
 # Tracing
-tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+tracing-subscriber = { version = "0.3.19", features = ["fmt"] }
 tracing = { version = "0.1.41", default-features = false }
 
 # Serialization

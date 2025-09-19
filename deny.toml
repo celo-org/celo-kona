@@ -65,6 +65,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
     "https://github.com/Layr-Labs/hokulea",
+    "https://github.com/Layr-Labs/rust-kzg-bn254",
     "https://github.com/op-rs/kona"
 ]
 
