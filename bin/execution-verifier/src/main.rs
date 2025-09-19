@@ -445,10 +445,11 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            let block_to_verify = next_block;
             next_block += 1;
+            handles.spawn(async move {
+                verify_block(block_to_verify, provider.as_ref(), &rollup_config, metrics, tracker).await
+            });
         }
     }
 
@@ -460,10 +461,11 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            let block_to_verify = next_block;
             next_block += 1;
+            handles.spawn(async move {
+                verify_block(block_to_verify, provider.as_ref(), &rollup_config, metrics, tracker).await
+            });
         }
     }
 
