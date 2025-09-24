@@ -140,7 +140,7 @@ impl CeloSingleChainHost {
     /// Reads the [CeloRollupConfig] from the file system and returns it as a string.
     pub fn read_rollup_config(&self) -> Result<CeloRollupConfig, SingleChainHostError> {
         let rollup_config = self.kona_cfg.read_rollup_config()?;
-        let celo_rollup_config = CeloRollupConfig { op_rollup_config: rollup_config };
+        let celo_rollup_config = CeloRollupConfig(rollup_config);
         Ok(celo_rollup_config)
     }
 

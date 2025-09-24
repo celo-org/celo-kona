@@ -28,6 +28,10 @@ alloy-op-hardforks.workspace = true
 
 # Misc
 thiserror.workspace = true
+derive_more = { workspace = true, default-features = false, features = [
+    "deref",
+    "deref_mut",
+] }
 
 # `revm` feature
 op-revm = { workspace = true, optional = true }
@@ -57,7 +61,7 @@ std = [
     "alloy-eips/std",
     "kona-serde?/std",
     "serde?/std",
-    "thiserror/std"
+    "thiserror/std",
 ]
 arbitrary = [
     "std",

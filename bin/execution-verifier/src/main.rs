@@ -384,7 +384,6 @@ async fn verify_block(
             transactions: Some(encoded_executing_transactions),
             no_tx_pool: None,
             eip_1559_params: rollup_config
-                .op_rollup_config
                 .is_holocene_active(executing_header.timestamp)
                 .then(|| executing_header.extra_data[1..].try_into())
                 .transpose()

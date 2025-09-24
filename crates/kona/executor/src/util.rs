@@ -78,7 +78,7 @@ pub(crate) fn encode_holocene_eip_1559_params(
 ///
 /// <https://specs.optimism.io/protocol/holocene/exec-engine.html#eip1559params-encoding>
 pub(crate) fn encode_canyon_base_fee_params(config: &CeloRollupConfig) -> B64 {
-    let params = config.op_rollup_config.chain_op_config.as_canyon_base_fee_params();
+    let params = config.chain_op_config.as_canyon_base_fee_params();
 
     let mut buf = B64::ZERO;
     buf[..4].copy_from_slice(&(params.max_change_denominator as u32).to_be_bytes());
@@ -149,16 +149,14 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_missing() {
-        let cfg = CeloRollupConfig {
-            op_rollup_config: RollupConfig {
-                chain_op_config: BaseFeeConfig {
-                    eip1559_denominator: 32,
-                    eip1559_elasticity: 64,
-                    eip1559_denominator_canyon: 32,
-                },
-                ..Default::default()
+        let cfg = CeloRollupConfig(RollupConfig {
+            chain_op_config: BaseFeeConfig {
+                eip1559_denominator: 32,
+                eip1559_elasticity: 64,
+                eip1559_denominator_canyon: 32,
             },
-        };
+            ..Default::default()
+        });
         let attrs = mock_payload(None);
 
         assert!(encode_holocene_eip_1559_params(&cfg, &attrs).is_err());
@@ -166,16 +164,14 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_default() {
-        let cfg = CeloRollupConfig {
-            op_rollup_config: RollupConfig {
-                chain_op_config: BaseFeeConfig {
-                    eip1559_denominator: 32,
-                    eip1559_elasticity: 64,
-                    eip1559_denominator_canyon: 32,
-                },
-                ..Default::default()
+        let cfg = CeloRollupConfig(RollupConfig {
+            chain_op_config: BaseFeeConfig {
+                eip1559_denominator: 32,
+                eip1559_elasticity: 64,
+                eip1559_denominator_canyon: 32,
             },
-        };
+            ..Default::default()
+        });
         let attrs = mock_payload(Some(B64::ZERO));
 
         assert_eq!(
@@ -186,16 +182,14 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params() {
-        let cfg = CeloRollupConfig {
-            op_rollup_config: RollupConfig {
-                chain_op_config: BaseFeeConfig {
-                    eip1559_denominator: 32,
-                    eip1559_elasticity: 64,
-                    eip1559_denominator_canyon: 32,
-                },
-                ..Default::default()
+        let cfg = CeloRollupConfig(RollupConfig {
+            chain_op_config: BaseFeeConfig {
+                eip1559_denominator: 32,
+                eip1559_elasticity: 64,
+                eip1559_denominator_canyon: 32,
             },
-        };
+            ..Default::default()
+        });
         let attrs = mock_payload(Some(b64!("0000004000000060")));
 
         assert_eq!(
@@ -206,16 +200,14 @@ mod test {
 
     #[test]
     fn test_encode_canyon_1559_params() {
-        let cfg = CeloRollupConfig {
-            op_rollup_config: RollupConfig {
-                chain_op_config: BaseFeeConfig {
-                    eip1559_denominator: 32,
-                    eip1559_elasticity: 64,
-                    eip1559_denominator_canyon: 32,
-                },
-                ..Default::default()
+        let cfg = CeloRollupConfig(RollupConfig {
+            chain_op_config: BaseFeeConfig {
+                eip1559_denominator: 32,
+                eip1559_elasticity: 64,
+                eip1559_denominator_canyon: 32,
             },
-        };
+            ..Default::default()
+        });
         assert_eq!(encode_canyon_base_fee_params(&cfg), b64!("0000002000000040"));
     }
 }

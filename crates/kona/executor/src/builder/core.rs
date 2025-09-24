@@ -68,7 +68,7 @@ where
         let base_fee_params =
             Self::active_base_fee_params(self.config, self.trie_db.parent_block_header(), &attrs)?;
         let evm_env = self.evm_env(
-            self.config.op_rollup_config.spec_id(op_attrs.payload_attributes.timestamp),
+            self.config.spec_id(op_attrs.payload_attributes.timestamp),
             self.trie_db.parent_block_header(),
             &attrs,
             &base_fee_params,

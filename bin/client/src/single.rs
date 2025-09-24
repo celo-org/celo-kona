@@ -41,8 +41,7 @@ where
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
     // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config =
-        CeloRollupConfig { op_rollup_config: boot.op_boot_info.rollup_config.clone() };
+    let celo_rollup_config = CeloRollupConfig(boot.op_boot_info.rollup_config.clone());
     let celo_rollup_config = Arc::new(celo_rollup_config);
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
