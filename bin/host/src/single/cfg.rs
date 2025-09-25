@@ -5,7 +5,7 @@ use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
-use hokulea_host_bin::eigenda_blobs::OnlineEigenDABlobProvider;
+use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
 use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
@@ -171,13 +171,13 @@ impl CeloSingleChainHost {
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
         );
         let eigen_da_blob_provider =
-            self.eigenda_proxy_address.clone().map(OnlineEigenDABlobProvider::new_http);
+            self.eigenda_proxy_address.clone().map(OnlineEigenDAPreimageProvider::new_http);
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
             blobs: blob_provider,
             l2: l2_provider,
-            eigenda_blob_provider: eigen_da_blob_provider,
+            eigenda_preimage_provider: eigen_da_blob_provider,
         })
     }
 }
@@ -197,7 +197,7 @@ pub struct CeloSingleChainProviders {
     /// The L2 EL provider.
     pub l2: RootProvider<Celo>,
     /// The EigenDA blob provider
-    pub eigenda_blob_provider: Option<OnlineEigenDABlobProvider>,
+    pub eigenda_preimage_provider: Option<OnlineEigenDAPreimageProvider>,
 }
 
 #[cfg(test)]
