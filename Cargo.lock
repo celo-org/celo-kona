@@ -1700,6 +1700,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "arbitrary",
+ "derive_more",
  "kona-genesis",
  "kona-serde",
  "op-revm",

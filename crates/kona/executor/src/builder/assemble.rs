@@ -45,9 +45,9 @@ where
         )
         .root();
         let receipts_root = compute_receipts_root(&ex_result.receipts, self.config, timestamp);
-        let withdrawals_root = if self.config.op_rollup_config.is_isthmus_active(timestamp) {
+        let withdrawals_root = if self.config.is_isthmus_active(timestamp) {
             Some(self.message_passer_account(block_env.number)?)
-        } else if self.config.op_rollup_config.is_canyon_active(timestamp) {
+        } else if self.config.is_canyon_active(timestamp) {
             Some(EMPTY_ROOT_HASH)
         } else {
             None
@@ -59,7 +59,6 @@ where
         // Compute Cancun fields, if active.
         let (blob_gas_used, excess_blob_gas) = self
             .config
-            .op_rollup_config
             .is_ecotone_active(timestamp)
             .then_some((Some(0), Some(0)))
             .unwrap_or_default();
@@ -71,15 +70,13 @@ where
         // field is set to the encoded canyon base fee parameters.
         let encoded_base_fee_params = self
             .config
-            .op_rollup_config
             .is_holocene_active(timestamp)
             .then(|| encode_holocene_eip_1559_params(self.config, attrs))
             .transpose()?
             .unwrap_or_default();
 
         // The requests hash on Celo, if Isthmus is active, is always the empty SHA256 hash.
-        let requests_hash =
-            self.config.op_rollup_config.is_isthmus_active(timestamp).then_some(SHA256_EMPTY);
+        let requests_hash = self.config.is_isthmus_active(timestamp).then_some(SHA256_EMPTY);
 
         // Construct the new header.
         let header = Header {
@@ -170,9 +167,7 @@ pub fn compute_receipts_root(
     // the receipt root calculation does not inclide the deposit nonce in the
     // receipt encoding. In the Regolith hardfork, we must strip the deposit nonce
     // from the receipt encoding to match the receipt root calculation.
-    if config.op_rollup_config.is_regolith_active(timestamp) &&
-        !config.op_rollup_config.is_canyon_active(timestamp)
-    {
+    if config.is_regolith_active(timestamp) && !config.is_canyon_active(timestamp) {
         let receipts = receipts
             .iter()
             .cloned()

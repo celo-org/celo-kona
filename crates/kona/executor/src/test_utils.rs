@@ -50,7 +50,7 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
 
     // Wrap RollupConfig to CeloRollupConfig
     let rollup_config = fixture.op_executor_test_fixture.rollup_config;
-    let celo_rollup_config = CeloRollupConfig { op_rollup_config: rollup_config };
+    let celo_rollup_config = CeloRollupConfig(rollup_config);
     let mut executor = CeloStatelessL2Builder::new(
         &celo_rollup_config,
         CeloEvmFactory::default(),
@@ -156,21 +156,20 @@ impl ExecutorTestFixtureCreator {
                 gas_limit: Some(executing_header.gas_limit),
                 transactions: Some(encoded_executing_transactions),
                 no_tx_pool: None,
-                eip_1559_params: rollup_config
-                    .op_rollup_config
-                    .is_holocene_active(executing_header.timestamp)
-                    .then(|| {
+                eip_1559_params: rollup_config.is_holocene_active(executing_header.timestamp).then(
+                    || {
                         executing_header.extra_data[1..]
                             .try_into()
                             .expect("Invalid header format for Holocene")
-                    }),
+                    },
+                ),
             },
         };
 
         let fixture_path = self.op_executor_test_fixture_creator.data_dir.join("fixture.json");
         let fixture = ExecutorTestFixture {
             op_executor_test_fixture: OpExecutorTestFixture {
-                rollup_config: rollup_config.op_rollup_config.clone(),
+                rollup_config: rollup_config.0.clone(),
                 parent_header: parent_header.inner().clone(),
                 expected_block_hash: executing_header.hash_slow(),
                 executing_payload: payload_attrs.op_payload_attributes.clone(),

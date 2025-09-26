@@ -76,7 +76,7 @@ impl CeloBootInfo {
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
         let rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
-            config.op_rollup_config.clone()
+            config.0.clone()
         } else {
             warn!(
                 target: "boot_loader",
