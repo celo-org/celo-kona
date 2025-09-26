@@ -66,8 +66,8 @@ impl HintHandler for CeloSingleChainHintHandler {
                             ),
                             blobs: providers.blobs.clone(),
                         },
-                        eigenda_blob_provider: providers
-                            .eigenda_blob_provider
+                        eigenda_preimage_provider: providers
+                            .eigenda_preimage_provider
                             .as_ref()
                             .ok_or(anyhow!("Eigen DA blob provider must be set"))?
                             .clone(),
