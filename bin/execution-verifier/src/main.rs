@@ -279,6 +279,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn verify_new_heads(
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: celo_registry::CeloRollupConfig,
@@ -308,10 +309,8 @@ async fn verify_new_heads(
             first_block = false;
         }
 
-        let (start_block, end_block) = match last_verified_height {
-            Some(last_verified_height) => (last_verified_height + 1, num),
-            None => (num, num),
-        };
+        let (start_block, end_block) = last_verified_height
+            .map_or((num, num), |last_verified_height| (last_verified_height + 1, num));
 
         if end_block > start_block {
             // Some heights skipped since last iteration
