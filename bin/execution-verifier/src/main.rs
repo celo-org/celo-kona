@@ -314,6 +314,7 @@ async fn verify_new_heads(
         };
 
         if end_block > start_block {
+            // Some heights skipped since last iteration
             tracing::info!(
                 last_verified = start_block - 1,
                 latest = end_block,
