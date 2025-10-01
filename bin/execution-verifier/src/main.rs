@@ -228,6 +228,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             Some(first_head_tx.clone()),
             metrics.clone(),
             tracker.clone(),
+            cli.concurrency,
         ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
@@ -251,6 +252,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             None,
             metrics.clone(),
             tracker.clone(),
+            cli.concurrency,
         ));
     };
 
@@ -285,10 +287,13 @@ async fn verify_new_heads(
     first_head_tx: Option<mpsc::Sender<u64>>,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    concurrency: usize,
 ) -> Result<()> {
     let mut first_block = true;
 
     let mut stream = subscription.into_stream();
+
+    let mut last_verified_height: Option<u64> = None;
 
     while let Some(header) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -303,10 +308,28 @@ async fn verify_new_heads(
             first_block = false;
         }
 
-        let result = verify_block(
-            header.number,
-            provider.as_ref(),
-            &rollup_config,
+        let (start_block, end_block) = match last_verified_height {
+            Some(last_verified_height) => (last_verified_height + 1, num),
+            None => (num, num),
+        };
+
+        if end_block > start_block {
+            tracing::info!(
+                last_verified = start_block - 1,
+                latest = end_block,
+                gap = end_block - start_block + 1, // includes the latest head
+                concurrency = concurrency,
+                "Subscription gap detected, backfilling missing blocks"
+            );
+        }
+
+        let result = verify_block_range(
+            start_block,
+            end_block,
+            provider.clone(),
+            rollup_config.clone(),
+            concurrency,
+            cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
         )
@@ -319,6 +342,7 @@ async fn verify_new_heads(
                 e
             ),
         }
+        last_verified_height = Some(num);
     }
 
     Ok(())
