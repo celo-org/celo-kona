@@ -489,6 +489,8 @@ where
             // and it will be reloaded from the database if it is not for the current block.
             if ctx.chain().l1_block_info.l2_block != block_number {
                 ctx.chain().l1_block_info = L1BlockInfo::try_fetch(ctx.db(), block_number, spec)?;
+                ctx.chain().l1_block_info.l1_base_fee_scalar = U256::ZERO;
+                ctx.chain().l1_block_info.l1_blob_base_fee_scalar = Some(U256::ZERO);
             }
 
             // account for additional cost of l1 fee and operator fee
