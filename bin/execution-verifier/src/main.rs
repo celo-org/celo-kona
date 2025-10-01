@@ -30,7 +30,7 @@ use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
 };
 use tokio::{
     runtime::Handle,
@@ -218,6 +218,12 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             tracker.clone(),
         ));
     } else if let Some(start_block) = start_block {
+        // Use dynamic concurrency for verify_new_heads
+        // verify_block_range is running => half capacity
+        // verify_block_range completes  => full capacity
+        let veryfy_new_heads_concurrency =
+            Arc::new(AtomicUsize::new(cli.concurrency / 2 + cli.concurrency % 2));
+
         // Used to communicate the first head block so that we can set the end of the block range.
         let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
         handles.spawn(verify_new_heads(
@@ -228,21 +234,33 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             Some(first_head_tx.clone()),
             metrics.clone(),
             tracker.clone(),
-            cli.concurrency,
+            veryfy_new_heads_concurrency.clone(),
         ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
-        handles.spawn(verify_block_range(
-            start_block,
-            end,
-            provider.clone(),
-            rollup_config.clone(),
-            cli.concurrency - 1,
-            cancel_token.clone(),
-            metrics.clone(),
-            tracker.clone(),
-        ));
+        let concurrency_handle = veryfy_new_heads_concurrency.clone();
+        handles.spawn({
+            let cancel_token = cancel_token.clone();
+            async move {
+                let result = verify_block_range(
+                    start_block,
+                    end,
+                    provider.clone(),
+                    rollup_config.clone(),
+                    cli.concurrency / 2,
+                    cancel_token.clone(),
+                    metrics.clone(),
+                    tracker.clone(),
+                )
+                .await;
+
+                // Restore full concurrency for verify_new_heads after verify_block_range completes.
+                concurrency_handle.store(cli.concurrency, std::sync::atomic::Ordering::Relaxed);
+
+                result
+            }
+        });
     } else {
         handles.spawn(verify_new_heads(
             provider.clone(),
@@ -252,7 +270,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             None,
             metrics.clone(),
             tracker.clone(),
-            cli.concurrency,
+            Arc::new(AtomicUsize::new(cli.concurrency)),
         ));
     };
 
@@ -288,7 +306,7 @@ async fn verify_new_heads(
     first_head_tx: Option<mpsc::Sender<u64>>,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
-    concurrency: usize,
+    concurrency: Arc<AtomicUsize>,
 ) -> Result<()> {
     let mut first_block = true;
 
@@ -312,13 +330,14 @@ async fn verify_new_heads(
         let (start_block, end_block) = last_verified_height
             .map_or((num, num), |last_verified_height| (last_verified_height + 1, num));
 
+        let current_concurrency = concurrency.load(std::sync::atomic::Ordering::Relaxed);
         if end_block > start_block {
             // Some heights skipped since last iteration
             tracing::info!(
                 last_verified = start_block - 1,
                 latest = end_block,
                 gap = end_block - start_block + 1, // includes the latest head
-                concurrency = concurrency,
+                concurrency = current_concurrency,
                 "Subscription gap detected, backfilling missing blocks"
             );
         }
@@ -328,7 +347,7 @@ async fn verify_new_heads(
             end_block,
             provider.clone(),
             rollup_config.clone(),
-            concurrency,
+            current_concurrency,
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
