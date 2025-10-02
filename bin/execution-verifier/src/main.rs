@@ -221,7 +221,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         // Use dynamic concurrency for verify_new_heads
         // verify_block_range is running => half capacity
         // verify_block_range completes  => full capacity
-        let veryfy_new_heads_concurrency =
+        let verify_new_heads_concurrency =
             Arc::new(AtomicUsize::new(cli.concurrency / 2 + cli.concurrency % 2));
 
         // Used to communicate the first head block so that we can set the end of the block range.
@@ -234,12 +234,12 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             Some(first_head_tx.clone()),
             metrics.clone(),
             tracker.clone(),
-            veryfy_new_heads_concurrency.clone(),
+            verify_new_heads_concurrency.clone(),
         ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
-        let concurrency_handle = veryfy_new_heads_concurrency.clone();
+        let concurrency_handle = verify_new_heads_concurrency.clone();
         handles.spawn({
             let cancel_token = cancel_token.clone();
             async move {
