@@ -219,10 +219,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         ));
     } else if let Some(start_block) = start_block {
         // Use dynamic concurrency for verify_new_heads
-        // verify_block_range is running => half capacity
+        // verify_block_range is running => 1
         // verify_block_range completes  => full capacity
-        let verify_new_heads_concurrency =
-            Arc::new(AtomicUsize::new(cli.concurrency / 2 + cli.concurrency % 2));
+        let verify_new_heads_concurrency = Arc::new(AtomicUsize::new(1));
 
         // Used to communicate the first head block so that we can set the end of the block range.
         let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
@@ -248,7 +247,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                     end,
                     provider.clone(),
                     rollup_config.clone(),
-                    cli.concurrency / 2,
+                    std::cmp::max(1, cli.concurrency - 1),
                     cancel_token.clone(),
                     metrics.clone(),
                     tracker.clone(),
