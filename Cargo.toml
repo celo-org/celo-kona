@@ -207,20 +207,24 @@ opentelemetry-appender-tracing = "0.30.1"
 uuid = { version = "1", features = ["v4"] }
 
 [patch."https://github.com/op-rs/kona"]
-# Binaries
-kona-host = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-client = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-driver   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-derive   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-genesis  = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-protocol = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-registry = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-providers-alloy = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-mpt        = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-proof      = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-executor   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-std-fpvm   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-preimage   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-std-fpvm-proc = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-cli   = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
-kona-serde = { git = "https://github.com/Kourin1996/kona", rev = "99faa9", default-features = false }
+kona-host = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-client = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-driver   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-derive   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-genesis  = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-protocol = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-registry = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-providers-alloy = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-mpt        = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-proof      = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-executor   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-std-fpvm   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-preimage   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-std-fpvm-proc = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-cli   = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+kona-serde = { git = "https://github.com/Kourin1996/kona", rev = "4ccd24", default-features = false }
+
+[patch."https://github.com/Layr-Labs/hokulea"]
+hokulea-eigenda = { git = "https://github.com/Kourin1996/hokulea", rev = "d74ffa3", default-features = false}
+hokulea-proof = { git = "https://github.com/Kourin1996/hokulea", rev = "d74ffa3", default-features = false}
+hokulea-host-bin = { git = "https://github.com/Kourin1996/hokulea", rev = "d74ffa3", default-features = false}
