@@ -1521,7 +1521,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-sol-types",
 ]
@@ -2328,7 +2328,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -2894,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -2913,7 +2913,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-evm",
  "cfg-if",
@@ -2931,7 +2931,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -2947,7 +2947,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -2974,7 +2974,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=729bf78#729bf786bd38066136809576f61561b3c6f50194"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=ceffe35#ceffe35bc996dafa49f9cb6892d722dfbfa33abf"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",

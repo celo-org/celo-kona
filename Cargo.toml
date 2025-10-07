@@ -223,8 +223,3 @@ kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "bafc266", d
 kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "bafc266", default-features = false }
 kona-cli   = { git = "https://github.com/celo-org/kona", rev = "bafc266", default-features = false }
 kona-serde = { git = "https://github.com/celo-org/kona", rev = "bafc266", default-features = false }
-
-[patch."https://github.com/Layr-Labs/hokulea"]
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "729bf78", default-features = false}
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "729bf78", default-features = false}
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "729bf78", default-features = false}
