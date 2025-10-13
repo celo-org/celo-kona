@@ -82,22 +82,17 @@ where
     let to = Address::from_slice(&input[44..64]);
     let value = U256::from_be_slice(&input[64..96]);
 
-    // Celo transfer precompile does not warm the 'to' address, so we need to check if it was cold initially
-    // to match original Celo implementation behavior, and make it cold again after the transfer.
-    let account_started_cold = match context.journal().load_account(to) {
-        Ok(account) => account.is_cold,
-        Err(_) => true, // If account doesn't exist or error loading, treat as cold
-    };
+    // Celo transfer precompile does not warm the either address, so we need to check if it they were cold initially
+    // to match original Celo implementation behavior, and make them cold again after the transfer.
+    let from_account_cold_status = account_cold_status(context, from);
+    let to_account_cold_status = account_cold_status(context, to);
 
     // Now do the transfer (which will load both accounts and warm them)
     let result = context.journal().transfer(from, to, value);
 
-    // If the 'to' address was cold initially, make it cold again after the transfer.
-    if account_started_cold {
-        if let Ok(mut account) = context.journal().load_account(to) {
-            account.mark_cold();
-        }
-    }
+    // If the addresses were cold initially, make them cold again after the transfer.
+    revert_account_cold_status(context, from, from_account_cold_status);
+    revert_account_cold_status(context, to, to_account_cold_status);
 
     if let Ok(Some(transfer_err)) = result {
         return Err(PrecompileError::Other(format!(
@@ -110,4 +105,25 @@ where
     }
 
     Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new()))
+}
+
+fn account_cold_status<CTX>(context: &mut CTX, address: Address) -> bool
+where
+    CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
+{
+    match context.journal().load_account(address) {
+        Ok(account) => account.is_cold,
+        Err(_) => true, // If account doesn't exist or error loading, treat as cold
+    }
+}
+
+fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold: bool)
+where
+    CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
+{
+    if was_cold {
+        if let Ok(mut account) = context.journal().load_account(address) {
+            account.mark_cold();
+        }
+    }
 }
