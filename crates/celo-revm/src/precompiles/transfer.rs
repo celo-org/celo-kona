@@ -24,6 +24,7 @@ pub const TRANSFER_GAS_COST: u64 = 9_000;
 pub fn transfer_run<CTX>(
     context: &mut CTX,
     inputs: &InputsImpl,
+    is_static: bool,
     gas_limit: u64,
 ) -> Result<Option<InterpreterResult>, String>
 where
@@ -36,7 +37,13 @@ where
     };
 
     let input_bytes = inputs.input.bytes(context);
-    match run(context, &input_bytes, inputs.caller_address, gas_limit) {
+    match run(
+        context,
+        &input_bytes,
+        inputs.caller_address,
+        is_static,
+        gas_limit,
+    ) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
             assert!(underflow, "Gas underflow is not possible");
@@ -59,11 +66,18 @@ fn run<CTX>(
     context: &mut CTX,
     input: &Bytes,
     caller_address: Address,
+    is_static: bool,
     gas_limit: u64,
 ) -> PrecompileResult
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
+    if is_static {
+        return Err(PrecompileError::Other(
+            "transfer precompile cannot be called in static context".to_string(),
+        ));
+    }
+
     if gas_limit < TRANSFER_GAS_COST {
         return Err(PrecompileError::OutOfGas);
     }

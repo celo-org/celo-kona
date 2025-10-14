@@ -50,7 +50,7 @@ where
         gas_limit: u64,
     ) -> Result<Option<Self::Output>, String> {
         if *address == TRANSFER_ADDRESS {
-            transfer_run(context, inputs, gas_limit)
+            transfer_run(context, inputs, is_static, gas_limit)
         } else {
             self.op_precompiles
                 .run(context, address, inputs, is_static, gas_limit)
@@ -246,6 +246,22 @@ mod tests {
             &TRANSFER_ADDRESS,
             &big_value_input,
             false,
+            TRANSFER_GAS_COST,
+        );
+        assert!(matches!(
+            res,
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::PrecompileError,
+                ..
+            }))
+        ));
+
+        // Test calling in static context (STATICCALL)
+        let res = precompiles.run(
+            &mut ctx,
+            &TRANSFER_ADDRESS,
+            &inputs,
+            true,
             TRANSFER_GAS_COST,
         );
         assert!(matches!(
