@@ -42,8 +42,8 @@ Licensed under the [MIT license.](https://github.com/op-rs/kona/blob/main/LICENS
 [alloy]: https://github.com/alloy-rs/alloy
 [maili]: https://github.com/op-rs/maili
 [op-alloy]: https://github.com/alloy-rs/op-alloy
-[kona-monorepo]: https://github.com/op-rs/kona/tree/develop
-[op-go-monorepo]: https://github.com/ethereum-optimism/optimism/tree/develop
+[kona-monorepo]: https://github.com/op-rs/kona/
+[op-go-monorepo]: https://github.com/ethereum-optimism/optimism/
 [badboi-cannon-rs]: https://github.com/BadBoiLabs/cannon-rs
 [op-labs]: https://github.com/ethereum-optimism
 [bad-boi-labs]: https://github.com/BadBoiLabs
