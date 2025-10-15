@@ -26,8 +26,6 @@ Celo's [op-succinct fork](https://github.com/celo-org/op-succinct/) uses Celo-Ko
 contributors' work on the [kona monorepo][kona-monorepo], [Optimism monorepo][op-go-monorepo] and
 [BadBoiLabs][bad-boi-labs]'s work on [Cannon-rs][badboi-cannon-rs].
 
-`kona` is also built on rust types in [alloy][alloy], [op-alloy][op-alloy], and [maili][maili].
-
 ## License
 
 Licensed under the [MIT license.](https://github.com/op-rs/kona/blob/main/LICENSE.md)
@@ -39,9 +37,6 @@ Licensed under the [MIT license.](https://github.com/op-rs/kona/blob/main/LICENS
 
 <!-- Links -->
 
-[alloy]: https://github.com/alloy-rs/alloy
-[maili]: https://github.com/op-rs/maili
-[op-alloy]: https://github.com/alloy-rs/op-alloy
 [kona-monorepo]: https://github.com/op-rs/kona/
 [op-go-monorepo]: https://github.com/ethereum-optimism/optimism/
 [badboi-cannon-rs]: https://github.com/BadBoiLabs/cannon-rs
