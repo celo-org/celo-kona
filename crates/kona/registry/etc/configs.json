@@ -190,6 +190,8 @@
         {
           "Name": "Celo Chaos",
           "PublicRPC": "https://forno.chaos.cel2.celo-networks-dev.org",
+          "Explorer": "https://celo-chaos.blockscout.com",
+          "SequencerRPC": "https://sequencer.chaos.cel2.celo-testnet.org",
           "SuperchainLevel": 0,
           "GovernedByOptimism": false,
           "DataAvailabilityType": "alt-da",
