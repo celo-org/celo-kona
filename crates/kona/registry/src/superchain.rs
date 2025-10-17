@@ -59,3 +59,13 @@ impl Registry {
         Self { chain_list, op_chains, rollup_configs }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Registry;
+
+    #[test]
+    fn test_smoketest_init_from_chain_list() {
+        Registry::from_chain_list();
+    }
+}
