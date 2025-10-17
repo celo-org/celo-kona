@@ -199,7 +199,6 @@
           "block_time": 1,
           "seq_window_size": 7200,
           "max_sequencer_drift": 600,
-          "channel_timeout": 300,
           "hardfork_configuration": {
             "regolith_time": 0,
             "canyon_time": 0,
