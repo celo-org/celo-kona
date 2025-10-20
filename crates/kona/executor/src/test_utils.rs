@@ -26,6 +26,12 @@ use tokio::fs;
 /// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
 /// produced block hash matches the expected block hash.
 pub async fn run_test_fixture(fixture_path: PathBuf) {
+    // Initialize tracing subscriber for test output
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+
     // First, untar the fixture.
     let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
     tokio::process::Command::new("tar")
