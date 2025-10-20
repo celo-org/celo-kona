@@ -838,16 +838,20 @@ where
         &self,
         evm: &mut Self::Evm,
         error: Self::Error,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let output = if error.is_tx_error() && is_deposit {
             let ctx = evm.ctx();
             let spec = ctx.cfg().spec();
             let tx = ctx.tx();
             let caller = tx.caller();
-            let mint = tx.mint();
             let is_system_tx = tx.is_system_transaction();
             let gas_limit = tx.gas_limit();
+            let is_call = tx.kind().is_call();
+
+            // discard all changes of this transaction
+            evm.ctx().journal_mut().discard_tx();
+
             // If the transaction is a deposit transaction and it failed
             // for any reason, the caller nonce must be bumped, and the
             // gas reported must be altered depending on the Hardfork. This is
@@ -855,25 +859,32 @@ where
             // easily distinguish between a failed deposit and a failed
             // normal transaction.
 
-            // Increment sender nonce and account balance for the mint amount. Deposits
-            // always persist the mint amount, even if the transaction fails.
-            let account = {
-                let mut acc = Account::from(
-                    evm.ctx()
-                        .db()
-                        .basic(caller)
-                        .unwrap_or_default()
-                        .unwrap_or_default(),
-                );
+            // For failed deposits, ensure the nonce and mint persist.
+            // Note: The mint was already applied in validate_against_state_and_deduct_caller
+            // and persists through discard_tx (since it was applied before the execution checkpoint).
+            // We only need to increment the nonce for create transactions (call transactions
+            // already had their nonce incremented in validate_against_state_and_deduct_caller).
+            let acc: &mut Account = evm.ctx().journal_mut().load_account(caller)?.data;
+
+            let old_balance = acc.info.balance;
+
+            // decrement transaction id as it was incremented when we discarded the tx.
+            acc.transaction_id -= acc.transaction_id;
+
+            // Only increment nonce if it wasn't already incremented (i.e., for create transactions)
+            if !is_call {
                 acc.info.nonce = acc.info.nonce.saturating_add(1);
-                acc.info.balance = acc
-                    .info
-                    .balance
-                    .saturating_add(U256::from(mint.unwrap_or_default()));
-                acc.mark_touch();
-                acc
-            };
-            let state = HashMap::from_iter([(caller, account)]);
+            }
+
+            // NOTE: Do NOT re-apply mint here - it was already applied in
+            // validate_against_state_and_deduct_caller and persists after discard_tx.
+
+            acc.mark_touch();
+
+            // add journal entry for accounts
+            evm.ctx()
+                .journal_mut()
+                .caller_accounting_journal_entry(caller, old_balance, true);
 
             // The gas used of a failed deposit post-regolith is the gas
             // limit of the transaction. pre-regolith, it is the gas limit
@@ -884,21 +895,18 @@ where
             } else {
                 0
             };
-            // clear the journal
-            Ok(ResultAndState {
-                result: ExecutionResult::Halt {
-                    reason: OpHaltReason::FailedDeposit,
-                    gas_used,
-                },
-                state,
+
+            Ok(ExecutionResult::Halt {
+                reason: OpHaltReason::FailedDeposit,
+                gas_used,
             })
         } else {
             Err(error)
         };
         // do the cleanup
-        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
-        evm.ctx().journal().clear();
-        evm.ctx().local().clear();
+        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().local_mut().clear();
+        evm.frame_stack().clear();
 
         output
     }
