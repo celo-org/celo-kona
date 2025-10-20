@@ -2,11 +2,11 @@ use crate::{CeloContext, CeloPrecompiles};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Inspector,
-    context::Evm,
+    context::{Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
     handler::{EvmTr, instructions::EthInstructions},
     inspector::InspectorEvmTr,
-    interpreter::{Interpreter, InterpreterAction, interpreter::EthInterpreter},
+    interpreter::interpreter::EthInterpreter,
 };
 
 pub struct CeloEvm<DB: revm::Database, INSP>(
@@ -28,6 +28,7 @@ where
             inspector,
             instruction: EthInstructions::new_mainnet(),
             precompiles: CeloPrecompiles::default(),
+            frame_stack: FrameStack::new(),
         }))
     }
 
@@ -62,11 +63,21 @@ where
         self.0.ctx_inspector()
     }
 
-    fn run_inspect_interpreter(
+    fn ctx_inspector_frame(
         &mut self,
-        interpreter: &mut Interpreter<EthInterpreter>,
-    ) -> InterpreterAction {
-        self.0.run_inspect_interpreter(interpreter)
+    ) -> (&mut Self::Context, &mut Self::Inspector, &mut Self::Frame) {
+        self.0.ctx_inspector_frame()
+    }
+
+    fn ctx_inspector_frame_instructions(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Inspector,
+        &mut Self::Frame,
+        &mut Self::Instructions,
+    ) {
+        self.0.ctx_inspector_frame_instructions()
     }
 }
 
@@ -78,13 +89,12 @@ where
     type Context = CeloContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, CeloContext<DB>>;
     type Precompiles = CeloPrecompiles;
-
-    fn run_interpreter(
-        &mut self,
-        interpreter: &mut Interpreter<EthInterpreter>,
-    ) -> InterpreterAction {
-        self.0.run_interpreter(interpreter)
-    }
+    type Frame = <op_revm::OpEvm<
+        CeloContext<DB>,
+        INSP,
+        EthInstructions<EthInterpreter, CeloContext<DB>>,
+        CeloPrecompiles,
+    > as EvmTr>::Frame;
 
     fn ctx(&mut self) -> &mut Self::Context {
         self.0.ctx()
@@ -101,6 +111,51 @@ where
     fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
         self.0.ctx_precompiles()
     }
+
+    fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
+        self.0.frame_stack()
+    }
+
+    fn frame_init(
+        &mut self,
+        frame_init: <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
+    ) -> Result<
+        revm::handler::ItemOrResult<
+            &mut Self::Frame,
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+        >,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_init(frame_init)
+    }
+
+    fn frame_run(
+        &mut self,
+    ) -> Result<
+        revm::handler::ItemOrResult<
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+        >,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_run()
+    }
+
+    fn frame_return_result(
+        &mut self,
+        result: <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+    ) -> Result<
+        Option<<Self::Frame as revm::handler::evm::FrameTr>::FrameResult>,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_return_result(result)
+    }
 }
 
 #[cfg(test)]
@@ -111,7 +166,7 @@ mod tests {
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
     };
     use revm::{
-        Context, ExecuteEvm, InspectEvm, Inspector, Journal,
+        Context, ExecuteEvm, Inspector, Journal,
         bytecode::opcode,
         context::{
             BlockEnv, CfgEnv, TxEnv,
