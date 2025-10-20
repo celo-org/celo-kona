@@ -56,6 +56,10 @@ impl TransactionBuilder<Celo> for CeloTransactionRequest {
         self.as_mut().set_nonce(nonce);
     }
 
+    fn take_nonce(&mut self) -> Option<u64> {
+        self.as_mut().take_nonce()
+    }
+
     fn input(&self) -> Option<&Bytes> {
         self.as_ref().input()
     }
