@@ -11,11 +11,7 @@ use celo_executor::CeloBlockBuildingOutcome;
 use celo_genesis::CeloRollupConfig;
 use celo_protocol::CeloL2BlockInfo;
 use core::fmt::Debug;
-use kona_derive::{
-    errors::{PipelineError, PipelineErrorKind},
-    traits::{Pipeline, SignalReceiver},
-    types::Signal,
-};
+use kona_derive::{Pipeline, PipelineError, PipelineErrorKind, Signal, SignalReceiver};
 use kona_driver::{DriverError, DriverPipeline, DriverResult, PipelineCursor, TipCursor};
 use kona_protocol::{L2BlockInfo, OpAttributesWithParent};
 use spin::RwLock;

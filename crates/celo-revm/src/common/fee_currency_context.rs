@@ -18,14 +18,14 @@ use std::{format, string::String};
 pub struct FeeCurrencyContext {
     exchange_rates: HashMap<Address, (U256, U256)>,
     intrinsic_gas: HashMap<Address, u64>,
-    pub updated_at_block: Option<u64>,
+    pub updated_at_block: Option<U256>,
 }
 
 impl FeeCurrencyContext {
     pub fn new(
         exchange_rates: HashMap<Address, (U256, U256)>,
         intrinsic_gas: HashMap<Address, u64>,
-        updated_at_block: Option<u64>,
+        updated_at_block: Option<U256>,
     ) -> Self {
         Self {
             exchange_rates,
