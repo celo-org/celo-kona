@@ -484,7 +484,8 @@ where
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
             if ctx.chain().l1_block_info.l2_block != block_number {
-                ctx.chain().l1_block_info = L1BlockInfo::try_fetch(ctx.db(), block_number, spec)?;
+                ctx.chain_mut().l1_block_info =
+                    L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
             // account for additional cost of l1 fee and operator fee
@@ -743,7 +744,7 @@ where
             let ctx = evm.ctx();
             let enveloped = ctx.tx().enveloped_tx().cloned();
             let spec = ctx.cfg().spec();
-            let l1_block_info = &mut ctx.chain().l1_block_info;
+            let l1_block_info = &mut ctx.chain_mut().l1_block_info;
 
             let Some(enveloped_tx) = &enveloped else {
                 return Err(ERROR::from_string(
@@ -760,20 +761,23 @@ where
                 );
             }
             // Send the L1 cost of the transaction to the L1 Fee Vault.
-            let mut l1_fee_vault_account = ctx.journal().load_account(L1_FEE_RECIPIENT)?;
+            let mut l1_fee_vault_account =
+                evm.ctx().journal_mut().load_account(L1_FEE_RECIPIENT)?;
             l1_fee_vault_account.mark_touch();
-            l1_fee_vault_account.info.balance += l1_cost;
+            l1_fee_vault_account.data.info.balance += l1_cost;
 
             // Send the base fee of the transaction to the FeeHandler.
             let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
-            let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
+            let mut base_fee_vault_account = evm.ctx().journal_mut().load_account(fee_handler)?;
             base_fee_vault_account.mark_touch();
-            base_fee_vault_account.info.balance +=
+            base_fee_vault_account.data.info.balance +=
                 U256::from(basefee.saturating_mul(exec_result.gas().spent_sub_refunded() as u128));
 
             // Send the operator fee of the transaction to the coinbase.
-            let mut operator_fee_vault_account =
-                evm.ctx().journal().load_account(OPERATOR_FEE_RECIPIENT)?;
+            let mut operator_fee_vault_account = evm
+                .ctx()
+                .journal_mut()
+                .load_account(OPERATOR_FEE_RECIPIENT)?;
             operator_fee_vault_account.mark_touch();
             operator_fee_vault_account.data.info.balance += operator_fee_cost;
         }
