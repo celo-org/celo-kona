@@ -53,16 +53,23 @@ where
         payload_attrs: &CeloPayloadAttributes,
         base_fee_params: &BaseFeeParams,
     ) -> ExecutorResult<BlockEnv> {
+        let blob_params = if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
+            Some(BlobParams::prague())
+        } else if spec_id.is_enabled_in(OpSpecId::ECOTONE) {
+            Some(BlobParams::cancun())
+        } else {
+            None
+        };
+
         let blob_excess_gas_and_price = parent_header
-            .maybe_next_block_excess_blob_gas(if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
-                Some(BlobParams::prague())
-            } else if spec_id.is_enabled_in(OpSpecId::ECOTONE) {
-                Some(BlobParams::cancun())
-            } else {
-                None
-            })
+            .maybe_next_block_excess_blob_gas(blob_params)
             .or_else(|| spec_id.is_enabled_in(OpSpecId::ECOTONE).then_some(0))
-            .map(|e| BlobExcessGasAndPrice::new(e, spec_id.is_enabled_in(OpSpecId::ISTHMUS)));
+            .map(|excess_blob_gas| {
+                let blob_base_fee_update_fraction =
+                    blob_params.map(|p| p.update_fraction as u64).unwrap_or(3338477); // BLOB_GASPRICE_UPDATE_FRACTION (Cancun default)
+                BlobExcessGasAndPrice::new(excess_blob_gas, blob_base_fee_update_fraction)
+            });
+
         let mut next_block_base_fee =
             parent_header.next_block_base_fee(*base_fee_params).unwrap_or_default();
         next_block_base_fee = core::cmp::max(next_block_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR);
