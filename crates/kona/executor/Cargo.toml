@@ -59,9 +59,11 @@ alloy-rpc-types-engine = { workspace = true, optional = true }
 alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"], optional = true }
 alloy-rpc-client = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
+tracing-subscriber.workspace = true
 
 [features]
 test-utils = [
@@ -77,6 +79,7 @@ test-utils = [
     "dep:alloy-provider",
     "dep:alloy-rpc-client",
     "dep:alloy-transport-http",
+    "dep:tracing-subscriber",
     "kona-executor/test-utils"
 ]
 
