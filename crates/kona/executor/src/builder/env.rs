@@ -5,6 +5,7 @@ use crate::{constants::CELO_EIP_1559_BASE_FEE_FLOOR, util::decode_holocene_eip_1
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::EvmEnv;
+use alloy_primitives::U256;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_revm::constants::CELO_MAX_CODE_SIZE;
@@ -18,8 +19,8 @@ use revm::{
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
-    P: TrieDBProvider,
-    H: TrieHinter,
+    P: TrieDBProvider + core::fmt::Debug,
+    H: TrieHinter + core::fmt::Debug,
 {
     /// Returns the active [`EvmEnv`] for the executor.
     pub(crate) fn evm_env(
@@ -68,9 +69,9 @@ where
 
         let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
         Ok(BlockEnv {
-            number: parent_header.number + 1,
+            number: U256::from(parent_header.number + 1),
             beneficiary: op_payload_attrs.payload_attributes.suggested_fee_recipient,
-            timestamp: op_payload_attrs.payload_attributes.timestamp,
+            timestamp: U256::from(op_payload_attrs.payload_attributes.timestamp),
             gas_limit: op_payload_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
             basefee: next_block_base_fee,
             prevrandao: Some(op_payload_attrs.payload_attributes.prev_randao),
