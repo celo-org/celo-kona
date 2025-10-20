@@ -20,7 +20,7 @@ use core::{
 use op_revm::{OpHaltReason, OpSpecId, OpTransaction, OpTransactionError};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
-    context::{BlockEnv, TxEnv},
+    context::{BlockEnv, TxEnv, result::ExecResultAndState},
     context_interface::result::{EVMError, ResultAndState},
     inspector::NoOpInspector,
 };
@@ -128,12 +128,7 @@ where
         // Get a transaction identifier for storage - use a combination of caller and nonce
         let tx_identifier = get_tx_identifier(tx.op_tx.base.caller, tx.op_tx.base.nonce);
 
-        let result = if self.inspect {
-            self.inner.set_tx(tx);
-            self.inner.inspect_replay()
-        } else {
-            self.inner.transact(tx)
-        };
+        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
 
         // CIP64 NOTE:
         // Extract and store the cip64 info to a shared storage to be able to add the credit/debit
