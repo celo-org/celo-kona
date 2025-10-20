@@ -92,7 +92,7 @@ mod tests {
     use op_revm::OpTransaction;
     use revm::{
         Context,
-        context::{JournalOutput, JournalTr, TxEnv},
+        context::{JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::InMemoryDB},
         interpreter::{CallInput, InstructionResult},
         primitives::Bytes,
@@ -168,7 +168,7 @@ mod tests {
         );
         assert!(res.is_ok());
 
-        let JournalOutput { state, .. } = ctx.journal().finalize();
+        let state = ctx.journal_mut().finalize();
         let from_account = state.get(&from).unwrap();
         let to_account = state.get(&to).unwrap();
         assert_eq!(
