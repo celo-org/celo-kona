@@ -1,3 +1,4 @@
+use crate::api::celo_system_tx::CELO_SYSTEM_ADDRESS;
 use crate::api::celo_system_tx::CeloSystemCallTx;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
@@ -5,15 +6,16 @@ use op_revm::{OpHaltReason, OpTransactionError};
 use revm::SystemCallEvm;
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
+    context::{ContextSetters, result::ExecResultAndState},
     context_interface::{
         ContextTr, Database,
-        result::{EVMError, ExecutionResult, ResultAndState},
+        result::{EVMError, ExecutionResult},
     },
     handler::{EthFrame, EvmTr, Handler},
     inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
+    state::EvmState,
 };
-use revm_context::ContextSetters;
 
 /// Type alias for the error type of the CeloEvm.
 type CeloError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, OpTransactionError>;
@@ -21,29 +23,44 @@ type CeloError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, OpTr
 impl<DB, INSP> ExecuteEvm for CeloEvm<DB, INSP>
 where
     DB: Database,
-    INSP: Inspector<CeloContext<DB>>,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
-    type Output = Result<ResultAndState<OpHaltReason>, CeloError<CeloContext<DB>>>;
-
     type Tx = <CeloContext<DB> as ContextTr>::Tx;
-
     type Block = <CeloContext<DB> as ContextTr>::Block;
-
-    fn set_tx(&mut self, tx: Self::Tx) {
-        self.0.ctx().set_tx(tx);
-    }
+    type State = EvmState;
+    type Error = CeloError<CeloContext<DB>>;
+    type ExecutionResult = ExecutionResult<OpHaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
         self.0.ctx().set_block(block);
     }
 
-    fn replay(&mut self) -> Self::Output {
+    fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0.ctx().set_tx(tx);
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
-            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+            EthFrame<EthInterpreter>,
         >::new();
         h.run(self)
+    }
+
+    fn finalize(&mut self) -> Self::State {
+        self.0.ctx().journal_mut().finalize()
+    }
+
+    fn replay(
+        &mut self,
+    ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
+        let mut h = CeloHandler::<
+            CeloEvm<DB, INSP>,
+            CeloError<CeloContext<DB>>,
+            EthFrame<EthInterpreter>,
+        >::new();
+        h.run(self).map(|result| {
+            let state = self.finalize();
+            ExecResultAndState::new(result, state)
+        })
     }
 }
 
@@ -52,13 +69,8 @@ where
     DB: Database + DatabaseCommit,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
-    type CommitOutput = Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>>;
-
-    fn replay_commit(&mut self) -> Self::CommitOutput {
-        self.replay().map(|r| {
-            self.ctx().db().commit(r.state);
-            r.result
-        })
+    fn commit(&mut self, state: Self::State) {
+        self.0.ctx().db_mut().commit(state);
     }
 }
 
@@ -73,11 +85,12 @@ where
         self.0.0.inspector = inspector;
     }
 
-    fn inspect_replay(&mut self) -> Self::Output {
+    fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0.ctx().set_tx(tx);
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
-            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+            EthFrame<EthInterpreter>,
         >::new();
         h.inspect_run(self)
     }
@@ -88,12 +101,6 @@ where
     DB: Database + DatabaseCommit,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
-    fn inspect_replay_commit(&mut self) -> Self::CommitOutput {
-        self.inspect_replay().map(|r| {
-            self.ctx().db().commit(r.state);
-            r.result
-        })
-    }
 }
 
 impl<DB, INSP> SystemCallEvm for CeloEvm<DB, INSP>
@@ -101,19 +108,23 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
-    fn transact_system_call(
+    fn transact_system_call_with_caller(
         &mut self,
+        caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> Self::Output {
-        self.set_tx(<CeloContext<DB> as ContextTr>::Tx::new_system_tx(
-            data,
-            system_contract_address,
-        ));
+    ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0
+            .ctx()
+            .set_tx(<CeloContext<DB> as ContextTr>::Tx::new_system_tx(
+                // YYY-TODO: use caller
+                data,
+                system_contract_address,
+            ));
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
-            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+            EthFrame<EthInterpreter>,
         >::new();
         h.run_system_call(self)
     }
@@ -127,7 +138,7 @@ pub trait CeloSystemCallEvmExt: SystemCallEvm {
         system_contract_address: Address,
         data: Bytes,
         gas_limit: u64,
-    ) -> Self::Output;
+    ) -> Result<Self::ExecutionResult, Self::Error>;
 }
 
 impl<DB, INSP> CeloSystemCallEvmExt for CeloEvm<DB, INSP>
@@ -140,8 +151,8 @@ where
         system_contract_address: Address,
         data: Bytes,
         gas_limit: u64,
-    ) -> Self::Output {
-        self.set_tx(
+    ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0.ctx().set_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
                 data,
                 system_contract_address,
@@ -151,7 +162,7 @@ where
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
-            EthFrame<CeloEvm<DB, INSP>, CeloError<CeloContext<DB>>, EthInterpreter>,
+            EthFrame<EthInterpreter>,
         >::new();
         h.run_system_call(self)
     }
