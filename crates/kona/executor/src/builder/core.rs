@@ -14,15 +14,18 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
-use revm::database::{State, states::bundle_state::BundleRetention};
+use revm::{
+    context_interface::ContextTr,
+    database::{State, states::bundle_state::BundleRetention},
+};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
 #[derive(Debug)]
 pub struct CeloStatelessL2Builder<'a, P, H>
 where
-    P: TrieDBProvider,
-    H: TrieHinter,
+    P: TrieDBProvider + core::fmt::Debug,
+    H: TrieHinter + core::fmt::Debug,
 {
     /// The [CeloRollupConfig].
     pub(crate) config: &'a CeloRollupConfig,
@@ -37,8 +40,8 @@ where
 
 impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
 where
-    P: TrieDBProvider,
-    H: TrieHinter,
+    P: TrieDBProvider + core::fmt::Debug,
+    H: TrieHinter + core::fmt::Debug,
 {
     /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
@@ -87,8 +90,8 @@ where
 
         info!(
             target: "block_builder",
-            block_number = block_env.number,
-            block_timestamp = block_env.timestamp,
+            block_number = ?block_env.number,
+            block_timestamp = ?block_env.timestamp,
             block_gas_limit = block_env.gas_limit,
             transactions = op_attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
             "Beginning block building."
@@ -122,7 +125,7 @@ where
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };
-        let executor = factory.create_executor(evm, ctx);
+        let executor = self.factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
         let transactions = attrs

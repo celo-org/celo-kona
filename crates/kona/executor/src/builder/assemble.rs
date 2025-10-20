@@ -18,8 +18,8 @@ use revm::{context::BlockEnv, database::BundleState};
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
-    P: TrieDBProvider,
-    H: TrieHinter,
+    P: TrieDBProvider + core::fmt::Debug,
+    H: TrieHinter + core::fmt::Debug,
 {
     /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning
     /// the computed [Header].
@@ -32,7 +32,9 @@ where
         bundle: BundleState,
     ) -> ExecutorResult<Sealed<Header>> {
         let op_attrs = &attrs.op_payload_attributes.clone();
-        let timestamp = block_env.timestamp;
+        let timestamp: u64 = block_env.timestamp.try_into().expect("timestamp should fit in u64");
+        let block_number: u64 =
+            block_env.number.try_into().expect("block number should fit in u64");
 
         // Compute the roots for the block header.
         let state_root = self.trie_db.state_root(&bundle)?;
@@ -46,7 +48,7 @@ where
         .root();
         let receipts_root = compute_receipts_root(&ex_result.receipts, self.config, timestamp);
         let withdrawals_root = if self.config.is_isthmus_active(timestamp) {
-            Some(self.message_passer_account(block_env.number)?)
+            Some(self.message_passer_account(block_number)?)
         } else if self.config.is_canyon_active(timestamp) {
             Some(EMPTY_ROOT_HASH)
         } else {
@@ -90,7 +92,7 @@ where
             requests_hash,
             logs_bloom,
             difficulty: U256::ZERO,
-            number: block_env.number,
+            number: block_number,
             gas_limit: op_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
             gas_used: ex_result.gas_used,
             timestamp,
