@@ -15,8 +15,8 @@ use kona_mpt::TrieHinter;
 #[derive(Debug)]
 pub struct CeloExecutor<'a, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone,
-    H: TrieHinter + Send + Sync + Clone,
+    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
+    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
 {
     /// The rollup config for the executor.
     rollup_config: &'a CeloRollupConfig,
@@ -32,8 +32,8 @@ where
 
 impl<'a, P, H> CeloExecutor<'a, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone,
-    H: TrieHinter + Send + Sync + Clone,
+    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
+    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
 {
     /// Creates a new executor.
     pub const fn new(
@@ -50,8 +50,8 @@ where
 #[async_trait]
 impl<P, H> CeloExecutorTr for CeloExecutor<'_, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone,
-    H: TrieHinter + Send + Sync + Clone,
+    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
+    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
 {
     type Error = kona_executor::ExecutorError;
 

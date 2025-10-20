@@ -7,7 +7,7 @@ use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
 use celo_protocol::{CeloBatchValidationProvider, CeloL2BlockInfo, convert_celo_block_to_op_block};
-use kona_derive::traits::L2ChainProvider;
+use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
 use kona_genesis::{RollupConfig, SystemConfig};
