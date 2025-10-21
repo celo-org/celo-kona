@@ -20,7 +20,7 @@ use core::{
 use op_revm::{OpHaltReason, OpSpecId, OpTransaction, OpTransactionError};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
-    context::{BlockEnv, TxEnv, result::ExecResultAndState},
+    context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, ResultAndState},
     inspector::NoOpInspector,
 };
