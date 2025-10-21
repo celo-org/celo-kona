@@ -20,18 +20,17 @@ use revm::{
     Database, Inspector,
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{ExecutionResult, FromStringError, InvalidTransaction, ResultAndState},
+        result::{ExecutionResult, FromStringError, InvalidTransaction},
     },
     handler::{
-        EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
+        EvmTr, FrameResult, Handler, MainnetHandler, evm::FrameTr, handler::EvmTrError,
         pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
-    inspector::{InspectorFrame, InspectorHandler},
+    inspector::InspectorHandler,
     interpreter::{
-        FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
-        interpreter::EthInterpreter,
+        Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
-    primitives::{HashMap, U256, hardfork::SpecId},
+    primitives::{U256, hardfork::SpecId},
     state::{Account, EvmState},
 };
 use revm_context::{ContextSetters, LocalContextTr};
@@ -66,7 +65,14 @@ where
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
+        warn!(
+            target: "celo_handler",
+            "load_fee_currency_context: current_block={}, updated_at_block={:?}",
+            current_block,
+            evm.ctx().chain().fee_currency_context.updated_at_block
+        );
         if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
+            warn!(target: "celo_handler", "Loading fee currency context...");
             // Update the chain with the new fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
@@ -80,6 +86,8 @@ where
                     return Err(ERROR::from_string(e.to_string()));
                 }
             }
+        } else {
+            warn!(target: "celo_handler", "Skipping fee currency context loading (already loaded)");
         }
 
         Ok(())
@@ -322,6 +330,13 @@ where
         }
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
+
+        info!(
+            target: "celo_handler",
+            "CIP-64 debit: gas_limit={}, effective_gas_price={}, debit_amount={}, balance={}",
+            gas_limit, effective_gas_price, gas_cost, balance
+        );
+
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
         // The state changes from this call will be part of the transaction execution
         let (state, logs, gas_used) = erc20::debit_gas_fees(
@@ -332,6 +347,12 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+
+        info!(
+            target: "celo_handler",
+            "CIP-64 pre-logs count={}",
+            logs.len()
+        );
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
@@ -542,6 +563,9 @@ where
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
             )?;
+            // Increment nonce for regular transactions (not deposits)
+            // This matches the mainnet handler behavior
+            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
 
         if is_balance_check_disabled {
@@ -784,14 +808,59 @@ where
         Ok(())
     }
 
-    fn output(
-        &self,
+    fn execution_result(
+        &mut self,
         evm: &mut Self::Evm,
-        result: <Self::Frame as Frame>::FrameResult,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        let result = self.mainnet.output(evm, result)?;
-        let result = result.map_haltreason(OpHaltReason::Base);
-        if result.result.is_halt() {
+        mut frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // Handle context errors
+        match core::mem::replace(evm.ctx().error(), Ok(())) {
+            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
+            Err(revm::context_interface::context::ContextError::Custom(e)) => {
+                return Err(ERROR::from_string(e));
+            }
+            Ok(_) => (),
+        }
+
+        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
+        // This matches the old revm 24.0 flow where it was called in the `end` function
+        // as a separate step after reward_beneficiary
+        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
+
+        // Call post_execution::output to get ExecutionResult
+        let mut exec_result = revm::handler::post_execution::output(evm.ctx(), frame_result)
+            .map_haltreason(OpHaltReason::Base);
+
+        // Handle CIP-64 logs
+        let tx = evm.ctx().tx().clone();
+        if let Some(cip64_info) = &tx.cip64_tx_info {
+            info!(
+                target: "celo_handler",
+                "CIP-64 Transaction Logs: pre_logs={}, post_logs={}",
+                cip64_info.logs_pre.len(),
+                cip64_info.logs_post.len()
+            );
+            // Add CIP-64 logs to the execution result
+            match &mut exec_result {
+                ExecutionResult::Success { logs, .. } => {
+                    // Prepend pre-logs and append post-logs
+                    let mut all_logs = cip64_info.logs_pre.clone();
+                    all_logs.extend(logs.clone());
+                    all_logs.extend(cip64_info.logs_post.clone());
+                    *logs = all_logs;
+                }
+                ExecutionResult::Revert { .. } => {
+                    // For reverts, we still need to include CIP-64 logs for gas payment
+                    // Note: ExecutionResult::Revert doesn't have logs field in revm 27.0
+                    // This will be handled in the receipts_builder layer
+                }
+                ExecutionResult::Halt { .. } => {
+                    // Halts also don't have logs in ExecutionResult
+                }
+            }
+        }
+
+        if exec_result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
             // and the caller nonce will be incremented there.
@@ -801,37 +870,13 @@ where
             }
         }
 
-        // CIP64 NOTE:
-        // The ResultAndState class does not allow logs to be passed in for revert results.
-        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
-        // So, instead of modifying only the success results here (to contain those logs),
-        // both cases are handled in the receipts_builder (alloy-celo-evm)
+        // Commit journal, clear frame stack, clear l1_block_info
+        evm.ctx().journal_mut().commit_tx();
+        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().local_mut().clear();
+        evm.frame_stack().clear();
 
-        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
-
-        Ok(result)
-    }
-
-    fn post_execution(
-        &self,
-        evm: &mut Self::Evm,
-        mut exec_result: FrameResult,
-        init_and_floor_gas: InitialAndFloorGas,
-        eip7702_gas_refund: i64,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Calculate final refund and add EIP-7702 refund to gas.
-        self.refund(evm, &mut exec_result, eip7702_gas_refund);
-        // Ensure gas floor is met and minimum floor gas is spent.
-        self.mainnet
-            .eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
-        // Return unused gas to caller
-        self.reimburse_caller(evm, &mut exec_result)?;
-        // Pay transaction fees to beneficiary
-        self.reward_beneficiary(evm, &mut exec_result)?;
-        // CIP-64: Credit the fee currency to the fee handler
-        self.cip64_credit_fee_currency(evm, &mut exec_result)?;
-        // Prepare transaction output
-        self.output(evm, exec_result)
+        Ok(exec_result)
     }
 
     fn catch_error(
