@@ -1,3 +1,4 @@
+use crate::api::celo_system_tx::CELO_SYSTEM_ADDRESS;
 use crate::api::celo_system_tx::CeloSystemCallTx;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
@@ -113,13 +114,13 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0
-            .ctx()
-            .set_tx(<CeloContext<DB> as ContextTr>::Tx::new_system_tx(
-                // YYY-TODO: use caller
-                data,
+        self.0.ctx().set_tx(
+            <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_caller(
+                caller,
                 system_contract_address,
-            ));
+                data,
+            ),
+        );
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
@@ -153,8 +154,9 @@ where
     ) -> Result<Self::ExecutionResult, Self::Error> {
         self.0.ctx().set_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
-                data,
+                CELO_SYSTEM_ADDRESS,
                 system_contract_address,
+                data,
                 gas_limit,
             ),
         );
