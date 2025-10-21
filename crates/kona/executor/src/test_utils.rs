@@ -170,7 +170,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
 
         match receipt {
             CeloReceiptEnvelope::Legacy(r) => {
-                output.push(format!("      type: Legacy"));
+                output.push("      type: Legacy".to_string());
                 output.push(format!("      status: {:?}", r.receipt.status));
                 output
                     .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
@@ -178,7 +178,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
                 output.push(format!("      logs_bloom: {}", r.logs_bloom));
             }
             CeloReceiptEnvelope::Eip2930(r) => {
-                output.push(format!("      type: Eip2930"));
+                output.push("      type: Eip2930".to_string());
                 output.push(format!("      status: {:?}", r.receipt.status));
                 output
                     .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
@@ -186,7 +186,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
                 output.push(format!("      logs_bloom: {}", r.logs_bloom));
             }
             CeloReceiptEnvelope::Eip1559(r) => {
-                output.push(format!("      type: Eip1559"));
+                output.push("      type: Eip1559".to_string());
                 output.push(format!("      status: {:?}", r.receipt.status));
                 output
                     .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
@@ -194,7 +194,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
                 output.push(format!("      logs_bloom: {}", r.logs_bloom));
             }
             CeloReceiptEnvelope::Eip7702(r) => {
-                output.push(format!("      type: Eip7702"));
+                output.push("      type: Eip7702".to_string());
                 output.push(format!("      status: {:?}", r.receipt.status));
                 output
                     .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
@@ -202,7 +202,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
                 output.push(format!("      logs_bloom: {}", r.logs_bloom));
             }
             CeloReceiptEnvelope::Cip64(r) => {
-                output.push(format!("      type: Cip64"));
+                output.push("      type: Cip64".to_string());
                 output.push(format!("      status: {:?}", r.receipt.inner.status));
                 output.push(format!(
                     "      cumulative_gas_used: {}",
@@ -213,7 +213,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
                 output.push(format!("      base_fee: {:?}", r.receipt.base_fee));
             }
             CeloReceiptEnvelope::Deposit(r) => {
-                output.push(format!("      type: Deposit"));
+                output.push("      type: Deposit".to_string());
                 output.push(format!("      status: {:?}", r.receipt.inner.status));
                 output.push(format!(
                     "      cumulative_gas_used: {}",
@@ -236,7 +236,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
             CeloReceiptEnvelope::Eip1559(r) |
             CeloReceiptEnvelope::Eip7702(r) => {
                 if !r.receipt.logs.is_empty() {
-                    output.push(format!("      logs:"));
+                    output.push("      logs:".to_string());
                     for (log_idx, log) in r.receipt.logs.iter().enumerate() {
                         output.push(format!(
                             "        Log #{}: address={}, topics_count={}",
@@ -249,7 +249,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
             }
             CeloReceiptEnvelope::Cip64(r) => {
                 if !r.receipt.inner.logs.is_empty() {
-                    output.push(format!("      logs:"));
+                    output.push("      logs:".to_string());
                     for (log_idx, log) in r.receipt.inner.logs.iter().enumerate() {
                         output.push(format!(
                             "        Log #{}: address={}, topics_count={}",
@@ -262,7 +262,7 @@ fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
             }
             CeloReceiptEnvelope::Deposit(r) => {
                 if !r.receipt.inner.logs.is_empty() {
-                    output.push(format!("      logs:"));
+                    output.push("      logs:".to_string());
                     for (log_idx, log) in r.receipt.inner.logs.iter().enumerate() {
                         output.push(format!(
                             "        Log #{}: address={}, topics_count={}",
