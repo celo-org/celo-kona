@@ -104,16 +104,7 @@ where
         _ => Vec::new(),
     };
 
-    // In revm 27, we need to extract state after the system call but before it gets
-    // rolled back. We do this by calling finalize() which extracts state changes.
-    // IMPORTANT: This will extract ALL state changes in the current journal, which
-    // includes the system call. The caller (handler) will then re-apply these changes
-    // at the correct journal depth to ensure they persist even if the main tx reverts.
     let state = evm.finalize();
-
-    use tracing::info;
-    info!("Core contract call exec_result: {:?}", exec_result);
-    info!("Core contract call logs: {:?}", logs_from_call);
 
     // Check success
     match exec_result {
