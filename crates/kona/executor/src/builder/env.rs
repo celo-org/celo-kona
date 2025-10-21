@@ -40,7 +40,7 @@ where
     /// Returns the active [CfgEnv] for the executor.
     pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
         let mut cfg_env = CfgEnv::new()
-            .with_chain_id(self.config.l2_chain_id)
+            .with_chain_id(self.config.l2_chain_id.into())
             .with_spec(self.config.spec_id(timestamp));
         cfg_env.limit_contract_code_size = Some(CELO_MAX_CODE_SIZE);
         cfg_env

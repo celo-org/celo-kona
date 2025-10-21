@@ -9,7 +9,7 @@ use revm::precompile::{self, PrecompileWithAddress};
 #[allow(dead_code)]
 pub(crate) const ACCELERATED_PRECOMPILES: &[PrecompileWithAddress] = &[
     precompile::secp256k1::ECRECOVER,          // ecRecover
-    precompile::bn128::pair::ISTANBUL,         // ecPairing
+    precompile::bn254::pair::ISTANBUL,         // ecPairing
     precompile::bls12_381::g1_add::PRECOMPILE, // BLS12-381 G1 Point Addition
     precompile::bls12_381::g1_msm::PRECOMPILE, /* BLS12-381 G1 Point Multi-scalar
                                                 * Multiplication */

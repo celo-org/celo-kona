@@ -131,7 +131,7 @@ mod tests {
     use crate::{CeloBuilder, DefaultCelo, contracts::core_contracts::tests::make_celo_test_db};
     use alloy_primitives::{U256, address};
     use revm::Context;
-    use revm_context::ContextTr;
+    use revm_context_interface::ContextTr;
     use revm_handler::EvmTr;
 
     #[test]

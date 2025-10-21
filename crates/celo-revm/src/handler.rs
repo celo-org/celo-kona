@@ -33,7 +33,7 @@ use revm::{
     primitives::{U256, hardfork::SpecId},
     state::{Account, EvmState},
 };
-use revm_context::{ContextSetters, LocalContextTr};
+use revm_context_interface::{ContextSetters, LocalContextTr};
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
