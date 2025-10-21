@@ -19,7 +19,6 @@ pub mod transaction;
 pub mod tx;
 
 pub use api::{
-    CeloSystemCallEvmExt,
     builder::CeloBuilder,
     celo_block_env::CeloBlockEnv,
     default_ctx::{CeloContext, DefaultCelo},
