@@ -108,7 +108,7 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
-    fn transact_system_call_with_caller(
+    fn system_call_one_with_caller(
         &mut self,
         caller: Address,
         system_contract_address: Address,

@@ -29,7 +29,6 @@ celo-alloy-consensus.workspace = true
 revm = { workspace = true }
 op-revm = { workspace = true, features = ["serde"] }
 revm-context-interface.workspace = true
-revm-context.workspace = true
 
 # Alloy
 alloy-eips.workspace = true

@@ -12,8 +12,7 @@ use revm::{
     primitives::Log,
     state::EvmState,
 };
-use revm_context::{Cfg, ContextSetters};
-use revm_context_interface::result::{ExecutionResult, Output};
+use revm_context_interface::{ContextSetters, result::{ExecutionResult, Output}};
 use std::{
     format,
     string::{String, ToString},
@@ -87,7 +86,7 @@ where
     let call_result = if let Some(limit) = gas_limit {
         evm.transact_system_call_with_gas_limit(address, calldata, limit)
     } else {
-        evm.transact_system_call(address, calldata)
+        evm.system_call_one(address, calldata)
     };
 
     // Restore the original transaction context
@@ -134,7 +133,7 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
+    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
     let (output_bytes, _, _, _) = call(
         evm,
         fee_curr_dir,
@@ -171,7 +170,7 @@ where
     for token in currencies {
         let (output_bytes, _, _, _) = call(
             evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
             None,
         )?;
@@ -209,7 +208,7 @@ where
     for token in currencies {
         let (output_bytes, _, _, _) = call(
             evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
             None,
         )?;
