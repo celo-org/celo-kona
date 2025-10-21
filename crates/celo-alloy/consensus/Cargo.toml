@@ -36,6 +36,7 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 serde_with = { workspace = true, optional = true }
 alloy-serde = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand.workspace = true
@@ -48,7 +49,7 @@ op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["std"]
-std = ["alloy-eips/std", "alloy-consensus/std", "derive_more/std"]
+std = ["alloy-eips/std", "alloy-consensus/std", "derive_more/std", "serde_json"]
 k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
 kzg = ["alloy-eips/kzg", "alloy-consensus/kzg", "std"]
 arbitrary = [
