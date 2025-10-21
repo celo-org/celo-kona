@@ -1,4 +1,4 @@
-use crate::{CeloContext, CeloSystemCallEvmExt, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
