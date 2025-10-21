@@ -1,4 +1,3 @@
-use crate::api::celo_system_tx::CELO_SYSTEM_ADDRESS;
 use crate::api::celo_system_tx::CeloSystemCallTx;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};

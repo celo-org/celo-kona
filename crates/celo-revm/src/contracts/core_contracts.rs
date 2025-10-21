@@ -6,11 +6,11 @@ use alloy_primitives::{
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
     Database, ExecuteEvm,
-    context_interface::{ContextTr, JournalTr},
+    context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
     primitives::Log,
-    state::{Account, EvmState},
+    state::EvmState,
 };
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};

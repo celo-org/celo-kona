@@ -14,10 +14,7 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
-use revm::{
-    context_interface::ContextTr,
-    database::{State, states::bundle_state::BundleRetention},
-};
+use revm::database::{State, states::bundle_state::BundleRetention};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
