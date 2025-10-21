@@ -125,7 +125,7 @@ where
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
         };
-        let executor = self.factory.create_executor(evm, ctx);
+        let executor = factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
         let transactions = attrs
