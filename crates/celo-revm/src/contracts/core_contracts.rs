@@ -5,12 +5,12 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
-    Database,
-    context_interface::ContextTr,
+    Database, ExecuteEvm,
+    context_interface::{ContextTr, JournalTr},
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
     primitives::Log,
-    state::EvmState,
+    state::{Account, EvmState},
 };
 use revm_context::{Cfg, ContextSetters};
 use revm_context_interface::result::{ExecutionResult, Output};
@@ -98,14 +98,30 @@ where
         Ok(o) => o,
     };
 
+    // Get logs from the execution result
+    let logs_from_call = match &exec_result {
+        ExecutionResult::Success { logs, .. } => logs.clone(),
+        _ => Vec::new(),
+    };
+
+    // In revm 27, we need to extract state after the system call but before it gets
+    // rolled back. We do this by calling finalize() which extracts state changes.
+    // IMPORTANT: This will extract ALL state changes in the current journal, which
+    // includes the system call. The caller (handler) will then re-apply these changes
+    // at the correct journal depth to ensure they persist even if the main tx reverts.
+    let state = evm.finalize();
+
+    use tracing::info;
+    info!("Core contract call exec_result: {:?}", exec_result);
+    info!("Core contract call logs: {:?}", logs_from_call);
+
     // Check success
-    match exec_result.result {
+    match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
-            logs,
             gas_used,
             ..
-        } => Ok((bytes, exec_result.state, logs, gas_used)),
+        } => Ok((bytes, state, logs_from_call, gas_used)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {:?}",
             reason
