@@ -63,7 +63,7 @@
   * File: mainnet-transfer_precompile_warm_multi_block-31074658.tar.gz
   * Explorer: https://celo.blockscout.com/block/31074658
 
-## Transfer precompile not warmimg the "from" address
+## Transfer precompile not warming the "from" address
 * Testcase: Block with an aggregate3 tx that makes 2 transferFrom using the transfer precompile using the same "from" in both txs. The deployed Celo contract is pre-warming the "from" address
 * Network: Celo Sepolia
 * File: sepolia-transfer_precompile_warm_from-tx_block-6750121.tar.gz  
