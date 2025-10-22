@@ -9,12 +9,14 @@ use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
     BootInfo,
     boot::{
-        L1_HEAD_KEY, L2_CHAIN_ID_KEY, L2_CLAIM_BLOCK_NUMBER_KEY, L2_CLAIM_KEY, L2_OUTPUT_ROOT_KEY,
-        L2_ROLLUP_CONFIG_KEY,
+        L1_CONFIG_KEY, L1_HEAD_KEY, L2_CHAIN_ID_KEY, L2_CLAIM_BLOCK_NUMBER_KEY, L2_CLAIM_KEY,
+        L2_OUTPUT_ROOT_KEY, L2_ROLLUP_CONFIG_KEY,
     },
     errors::OracleProviderError,
 };
+use kona_registry::L1_CONFIGS;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// The boot information for the client program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +92,23 @@ impl CeloBootInfo {
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
 
+        // Attempt to load the L1 config from the L1 chain ID. If there is no config for the chain,
+        // fall back to loading the config from the preimage oracle.
+        let l1_config = if let Some(config) = L1_CONFIGS.get(&rollup_config.l1_chain_id) {
+            config.clone()
+        } else {
+            warn!(
+                target: "boot_loader",
+                "No L1 config found for L1 chain ID {}, falling back to preimage oracle. This is insecure in production without additional validation!",
+                rollup_config.l1_chain_id
+            );
+            let ser_cfg = oracle
+                .get(PreimageKey::new_local(L1_CONFIG_KEY.to()))
+                .await
+                .map_err(OracleProviderError::Preimage)?;
+            serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
+        };
+
         Ok(Self {
             op_boot_info: BootInfo {
                 l1_head,
@@ -98,6 +117,7 @@ impl CeloBootInfo {
                 claimed_l2_block_number: l2_claim_block,
                 chain_id,
                 rollup_config,
+                l1_config,
             },
         })
     }
