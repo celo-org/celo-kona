@@ -162,7 +162,7 @@ where
 mod tests {
     use crate::{CeloBlockEnv, CeloBuilder, CeloTransaction, DefaultCelo};
     use op_revm::{
-        OpHaltReason, OpSpecId, precompiles::bn128_pair::GRANITE_MAX_INPUT_SIZE,
+        OpHaltReason, OpSpecId, precompiles::bn254_pair::GRANITE_MAX_INPUT_SIZE,
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
     };
     use revm::{
@@ -178,7 +178,7 @@ mod tests {
             Interpreter, InterpreterTypes,
             gas::{InitialAndFloorGas, calculate_initial_tx_gas},
         },
-        precompile::{bls12_381_const, bls12_381_utils, bn128, secp256r1, u64_to_address},
+        precompile::{bls12_381_const, bls12_381_utils, bn254, secp256r1, u64_to_address},
         primitives::{Address, Bytes, Log, TxKind, U256},
         state::Bytecode,
     };
@@ -235,7 +235,7 @@ mod tests {
             output.result,
             ExecutionResult::Halt {
                 reason: OpHaltReason::FailedDeposit,
-                gas_used: 30_000_000
+                gas_used: 16_777_216
             }
         );
         assert_eq!(
@@ -309,7 +309,7 @@ mod tests {
 
         Context::celo()
             .modify_tx_chained(|tx| {
-                tx.op_tx.base.kind = TxKind::Call(bn128::pair::ADDRESS);
+                tx.op_tx.base.kind = TxKind::Call(bn254::pair::ADDRESS);
                 tx.op_tx.base.data = input;
                 tx.op_tx.base.gas_limit = initial_gas;
             })
