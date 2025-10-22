@@ -7817,8 +7817,3 @@ dependencies = [
  "quote",
  "syn 2.0.107",
 ]
-
-[[patch.unused]]
-name = "alloy-tx-macros"
-version = "1.0.38"
-source = "git+https://github.com/alloy-rs/alloy?tag=v1.0.38#52455a1e117b286e623ae5ad496d7b50bb827e0f"

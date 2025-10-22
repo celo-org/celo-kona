@@ -210,9 +210,3 @@ uuid = { version = "1", features = ["v4"] }
 # Note: hokulea (EigenDA) dependencies temporarily commented out for Step 1
 # We will re-enable and update them in later steps once kona is fully upgraded
 # The incompatibility is that hokulea@ac71d84 uses kona v1.0.2, but we're upgrading to 6282962b
-
-[patch.crates-io]
-# Force alloy-tx-macros to 1.0.38 to match alloy-consensus 1.0.38
-# Without this, Cargo will pull in the latest alloy-tx-macros which has incompatible macro expansion
-alloy-tx-macros = { git = "https://github.com/alloy-rs/alloy", tag = "v1.0.38" }
-
