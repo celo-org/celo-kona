@@ -144,9 +144,9 @@
             "isthmus_time": 0
           },
           "optimism": {
-            "eip1559Elasticity": "0x5",
-            "eip1559Denominator": "0x190",
-            "eip1559DenominatorCanyon": "0xFA"
+            "eip1559Elasticity": 5,
+            "eip1559Denominator": 400,
+            "eip1559DenominatorCanyon": 250
           },
           "alt_da": {
             "da_challenge_window": 1,
@@ -354,9 +354,9 @@
             "isthmus_time": 1749654000
           },
           "optimism": {
-            "eip1559Elasticity": "0x5",
-            "eip1559Denominator": "0x190",
-            "eip1559DenominatorCanyon": "0x190"
+            "eip1559Elasticity": 5,
+            "eip1559Denominator": 400,
+            "eip1559DenominatorCanyon": 400
           },
           "alt_da": {
             "da_challenge_window": 1,
