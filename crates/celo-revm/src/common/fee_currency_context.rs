@@ -130,9 +130,7 @@ mod tests {
     use super::*;
     use crate::{CeloBuilder, DefaultCelo, contracts::core_contracts::tests::make_celo_test_db};
     use alloy_primitives::{U256, address};
-    use revm::Context;
-    use revm_context_interface::ContextTr;
-    use revm_handler::EvmTr;
+    use revm::{Context, context_interface::ContextTr, handler::EvmTr};
 
     #[test]
     fn test_new_from_evm() {

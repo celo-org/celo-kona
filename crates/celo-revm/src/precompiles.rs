@@ -91,15 +91,13 @@ mod tests {
     use alloy_sol_types::{SolCall, sol};
     use op_revm::OpTransaction;
     use revm::{
-        Context,
-        context::{JournalTr, TxEnv},
+        Context, ExecuteEvm,
+        context::{JournalTr, TxEnv, result::ExecutionResult},
         database::{EmptyDB, in_memory_db::InMemoryDB},
         interpreter::{CallInput, InstructionResult},
         primitives::Bytes,
         state::{AccountInfo, Bytecode},
     };
-    use revm_context_interface::result::ExecutionResult;
-    use revm_handler::ExecuteEvm;
 
     #[test]
     fn test_celo_precompiles_count() {
