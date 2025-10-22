@@ -106,13 +106,16 @@ where
     let da_provider =
         EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
 
+    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
+        l1_config,
         cursor.clone(),
         oracle.clone(),
         da_provider,
         l1_provider.clone(),
-        CeloToOpProviderAdapter(l2_provider.clone()),
+        l2_provider.clone(),
     )
     .await?;
     let executor = CeloExecutor::new(
