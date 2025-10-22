@@ -14,14 +14,15 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
-// Hokulea temporarily disabled for Step 1 (kona upgrade)
-// use hokulea_host_bin::{
-//     cfg::{SingleChainHostWithEigenDA, SingleChainProvidersWithEigenDA},
-//     handler::fetch_eigenda_hint,
-// };
-// use hokulea_proof::hint::ExtendedHintType;
-use crate::single::cfg::ExtendedHintType; // Use our stub instead
-use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
+use hokulea_host_bin::{
+    cfg::{SingleChainHostWithEigenDA, SingleChainProvidersWithEigenDA},
+    handler::fetch_eigenda_hint,
+};
+use hokulea_proof::hint::ExtendedHintType;
+use kona_host::{
+    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::http_provider,
+    single::SingleChainProviders,
+};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
 use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
@@ -45,8 +46,36 @@ impl HintHandler for CeloSingleChainHintHandler {
         match hint.ty {
             ExtendedHintType::Original(ty) => {
                 Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
-            } /* TODO: Re-enable EigenDA support after hokulea upgrade
-               * For now, our stub ExtendedHintType only has Original variant */
+            }
+            ExtendedHintType::EigenDACert => {
+                fetch_eigenda_hint(
+                    hint,
+                    &SingleChainHostWithEigenDA {
+                        kona_cfg: cfg.kona_cfg.clone(),
+                        eigenda_proxy_address: cfg.eigenda_proxy_address.clone(),
+                        verbose: cfg.verbose,
+                    },
+                    &SingleChainProvidersWithEigenDA {
+                        kona_providers: SingleChainProviders {
+                            l1: providers.l1.clone(),
+                            l2: http_provider(
+                                &cfg.kona_cfg
+                                    .l2_node_address
+                                    .clone()
+                                    .ok_or(anyhow!("L2 node address must be set"))?,
+                            ),
+                            blobs: providers.blobs.clone(),
+                        },
+                        eigenda_preimage_provider: providers
+                            .eigenda_preimage_provider
+                            .as_ref()
+                            .ok_or(anyhow!("Eigen DA blob provider must be set"))?
+                            .clone(),
+                    },
+                    kv,
+                )
+                .await
+            }
         }
     }
 }

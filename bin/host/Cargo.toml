@@ -45,9 +45,9 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 # Revm
 revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst"] }
 
-# Hokulea - temporarily commented out for Step 1 (kona upgrade)
-# hokulea-proof.workspace = true
-# hokulea-host-bin.workspace = true
+# Hokulea
+hokulea-proof.workspace = true
+hokulea-host-bin.workspace = true
 
 # General
 anyhow.workspace = true
