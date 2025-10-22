@@ -31,7 +31,7 @@ use revm::{
         Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
     primitives::{U256, hardfork::SpecId},
-    state::{Account, EvmState},
+    state::EvmState,
 };
 use revm_context_interface::{ContextSetters, LocalContextTr};
 use std::{boxed::Box, format, string::ToString, vec::Vec};
@@ -572,8 +572,7 @@ where
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
             new_balance = new_balance.saturating_sub(op_gas_balance_spending);
-        } else {
-        }
+        } 
 
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
