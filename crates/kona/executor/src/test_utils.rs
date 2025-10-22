@@ -6,7 +6,6 @@ use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
-use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_registry::ROLLUP_CONFIGS;
@@ -24,270 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Compares two headers field by field and returns a detailed error message if they differ.
-fn compare_headers(produced: &Header, expected: &Header) -> Result<(), String> {
-    let mut diffs = Vec::new();
-
-    if produced.parent_hash != expected.parent_hash {
-        diffs.push(format!(
-            "  parent_hash: produced={}, expected={}",
-            produced.parent_hash, expected.parent_hash
-        ));
-    }
-    if produced.ommers_hash != expected.ommers_hash {
-        diffs.push(format!(
-            "  ommers_hash: produced={}, expected={}",
-            produced.ommers_hash, expected.ommers_hash
-        ));
-    }
-    if produced.beneficiary != expected.beneficiary {
-        diffs.push(format!(
-            "  beneficiary: produced={}, expected={}",
-            produced.beneficiary, expected.beneficiary
-        ));
-    }
-    if produced.state_root != expected.state_root {
-        diffs.push(format!(
-            "  state_root: produced={}, expected={}",
-            produced.state_root, expected.state_root
-        ));
-    }
-    if produced.transactions_root != expected.transactions_root {
-        diffs.push(format!(
-            "  transactions_root: produced={}, expected={}",
-            produced.transactions_root, expected.transactions_root
-        ));
-    }
-    if produced.receipts_root != expected.receipts_root {
-        diffs.push(format!(
-            "  receipts_root: produced={}, expected={}",
-            produced.receipts_root, expected.receipts_root
-        ));
-    }
-    if produced.logs_bloom != expected.logs_bloom {
-        diffs.push(format!(
-            "  logs_bloom: produced={}, expected={}",
-            produced.logs_bloom, expected.logs_bloom
-        ));
-    }
-    if produced.difficulty != expected.difficulty {
-        diffs.push(format!(
-            "  difficulty: produced={}, expected={}",
-            produced.difficulty, expected.difficulty
-        ));
-    }
-    if produced.number != expected.number {
-        diffs.push(format!("  number: produced={}, expected={}", produced.number, expected.number));
-    }
-    if produced.gas_limit != expected.gas_limit {
-        diffs.push(format!(
-            "  gas_limit: produced={}, expected={}",
-            produced.gas_limit, expected.gas_limit
-        ));
-    }
-    if produced.gas_used != expected.gas_used {
-        diffs.push(format!(
-            "  gas_used: produced={}, expected={}",
-            produced.gas_used, expected.gas_used
-        ));
-    }
-    if produced.timestamp != expected.timestamp {
-        diffs.push(format!(
-            "  timestamp: produced={}, expected={}",
-            produced.timestamp, expected.timestamp
-        ));
-    }
-    if produced.extra_data != expected.extra_data {
-        diffs.push(format!(
-            "  extra_data: produced={}, expected={}",
-            produced.extra_data, expected.extra_data
-        ));
-    }
-    if produced.mix_hash != expected.mix_hash {
-        diffs.push(format!(
-            "  mix_hash: produced={}, expected={}",
-            produced.mix_hash, expected.mix_hash
-        ));
-    }
-    if produced.nonce != expected.nonce {
-        diffs.push(format!("  nonce: produced={}, expected={}", produced.nonce, expected.nonce));
-    }
-    if produced.base_fee_per_gas != expected.base_fee_per_gas {
-        diffs.push(format!(
-            "  base_fee_per_gas: produced={:?}, expected={:?}",
-            produced.base_fee_per_gas, expected.base_fee_per_gas
-        ));
-    }
-    if produced.withdrawals_root != expected.withdrawals_root {
-        diffs.push(format!(
-            "  withdrawals_root: produced={:?}, expected={:?}",
-            produced.withdrawals_root, expected.withdrawals_root
-        ));
-    }
-    if produced.blob_gas_used != expected.blob_gas_used {
-        diffs.push(format!(
-            "  blob_gas_used: produced={:?}, expected={:?}",
-            produced.blob_gas_used, expected.blob_gas_used
-        ));
-    }
-    if produced.excess_blob_gas != expected.excess_blob_gas {
-        diffs.push(format!(
-            "  excess_blob_gas: produced={:?}, expected={:?}",
-            produced.excess_blob_gas, expected.excess_blob_gas
-        ));
-    }
-    if produced.parent_beacon_block_root != expected.parent_beacon_block_root {
-        diffs.push(format!(
-            "  parent_beacon_block_root: produced={:?}, expected={:?}",
-            produced.parent_beacon_block_root, expected.parent_beacon_block_root
-        ));
-    }
-    if produced.requests_hash != expected.requests_hash {
-        diffs.push(format!(
-            "  requests_hash: produced={:?}, expected={:?}",
-            produced.requests_hash, expected.requests_hash
-        ));
-    }
-
-    if diffs.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Header mismatch:\n  produced_hash={}\n  expected_hash={}\nDiffering fields:\n{}",
-            produced.hash_slow(),
-            expected.hash_slow(),
-            diffs.join("\n")
-        ))
-    }
-}
-
-/// Formats receipt details for debugging
-fn format_receipt_details(receipts: &[CeloReceiptEnvelope]) -> String {
-    let mut output = Vec::new();
-
-    for (i, receipt) in receipts.iter().enumerate() {
-        output.push(format!("    Receipt #{}:", i));
-
-        match receipt {
-            CeloReceiptEnvelope::Legacy(r) => {
-                output.push("      type: Legacy".to_string());
-                output.push(format!("      status: {:?}", r.receipt.status));
-                output
-                    .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
-                output.push(format!("      logs_count: {}", r.receipt.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-            }
-            CeloReceiptEnvelope::Eip2930(r) => {
-                output.push("      type: Eip2930".to_string());
-                output.push(format!("      status: {:?}", r.receipt.status));
-                output
-                    .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
-                output.push(format!("      logs_count: {}", r.receipt.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-            }
-            CeloReceiptEnvelope::Eip1559(r) => {
-                output.push("      type: Eip1559".to_string());
-                output.push(format!("      status: {:?}", r.receipt.status));
-                output
-                    .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
-                output.push(format!("      logs_count: {}", r.receipt.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-            }
-            CeloReceiptEnvelope::Eip7702(r) => {
-                output.push("      type: Eip7702".to_string());
-                output.push(format!("      status: {:?}", r.receipt.status));
-                output
-                    .push(format!("      cumulative_gas_used: {}", r.receipt.cumulative_gas_used));
-                output.push(format!("      logs_count: {}", r.receipt.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-            }
-            CeloReceiptEnvelope::Cip64(r) => {
-                output.push("      type: Cip64".to_string());
-                output.push(format!("      status: {:?}", r.receipt.inner.status));
-                output.push(format!(
-                    "      cumulative_gas_used: {}",
-                    r.receipt.inner.cumulative_gas_used
-                ));
-                output.push(format!("      logs_count: {}", r.receipt.inner.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-                output.push(format!("      base_fee: {:?}", r.receipt.base_fee));
-            }
-            CeloReceiptEnvelope::Deposit(r) => {
-                output.push("      type: Deposit".to_string());
-                output.push(format!("      status: {:?}", r.receipt.inner.status));
-                output.push(format!(
-                    "      cumulative_gas_used: {}",
-                    r.receipt.inner.cumulative_gas_used
-                ));
-                output.push(format!("      logs_count: {}", r.receipt.inner.logs.len()));
-                output.push(format!("      logs_bloom: {}", r.logs_bloom));
-                output.push(format!("      deposit_nonce: {:?}", r.receipt.deposit_nonce));
-                output.push(format!(
-                    "      deposit_receipt_version: {:?}",
-                    r.receipt.deposit_receipt_version
-                ));
-            }
-        };
-
-        // Show individual logs if there are any
-        match receipt {
-            CeloReceiptEnvelope::Legacy(r) |
-            CeloReceiptEnvelope::Eip2930(r) |
-            CeloReceiptEnvelope::Eip1559(r) |
-            CeloReceiptEnvelope::Eip7702(r) => {
-                if !r.receipt.logs.is_empty() {
-                    output.push("      logs:".to_string());
-                    for (log_idx, log) in r.receipt.logs.iter().enumerate() {
-                        output.push(format!(
-                            "        Log #{}: address={}, topics_count={}",
-                            log_idx,
-                            log.address,
-                            log.data.topics().len()
-                        ));
-                    }
-                }
-            }
-            CeloReceiptEnvelope::Cip64(r) => {
-                if !r.receipt.inner.logs.is_empty() {
-                    output.push("      logs:".to_string());
-                    for (log_idx, log) in r.receipt.inner.logs.iter().enumerate() {
-                        output.push(format!(
-                            "        Log #{}: address={}, topics_count={}",
-                            log_idx,
-                            log.address,
-                            log.data.topics().len()
-                        ));
-                    }
-                }
-            }
-            CeloReceiptEnvelope::Deposit(r) => {
-                if !r.receipt.inner.logs.is_empty() {
-                    output.push("      logs:".to_string());
-                    for (log_idx, log) in r.receipt.inner.logs.iter().enumerate() {
-                        output.push(format!(
-                            "        Log #{}: address={}, topics_count={}",
-                            log_idx,
-                            log.address,
-                            log.data.topics().len()
-                        ));
-                    }
-                }
-            }
-        };
-    }
-
-    output.join("\n")
-}
-
 /// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
 /// produced block hash matches the expected block hash.
 pub async fn run_test_fixture(fixture_path: PathBuf) {
-    // Initialize tracing subscriber for test output
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_test_writer()
-        .try_init();
-
     // First, untar the fixture.
     let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
     tokio::process::Command::new("tar")
@@ -323,47 +61,11 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
 
     let outcome = executor.build_block(fixture.executing_payload).unwrap();
 
-    // First check if hashes match
-    let produced_hash = outcome.header.hash();
-    let expected_hash = fixture.op_executor_test_fixture.expected_block_hash;
-
-    if produced_hash != expected_hash {
-        // If we have the expected header, show detailed field comparison
-        if let Some(ref expected_header) = fixture.expected_header {
-            let header_cmp = compare_headers(outcome.header.inner(), expected_header);
-
-            // If receipts_root differs, show detailed receipt information
-            if outcome.header.inner().receipts_root != expected_header.receipts_root {
-                let produced_receipts = &outcome.execution_result.receipts;
-                let receipt_details = format_receipt_details(produced_receipts);
-                let receipt_summary = format!(
-                    "\nReceipts root mismatch:\n  Produced receipts_root: {}\n  Expected receipts_root: {}\n  Number of receipts: {}\n\n  Produced receipts:\n{}",
-                    outcome.header.inner().receipts_root,
-                    expected_header.receipts_root,
-                    produced_receipts.len(),
-                    receipt_details
-                );
-
-                // Show header errors with receipt details
-                if let Err(header_err) = header_cmp {
-                    panic!("{}{}", header_err, receipt_summary);
-                } else {
-                    panic!("Receipts root mismatch only!{}", receipt_summary);
-                }
-            }
-
-            // If we have a header error without receipt issues, show it
-            if let Err(e) = header_cmp {
-                panic!("{}", e);
-            }
-        } else {
-            // Fall back to hash-only comparison
-            panic!(
-                "Produced header hash does not match expected hash:\n  produced={}\n  expected={}",
-                produced_hash, expected_hash
-            );
-        }
-    }
+    assert_eq!(
+        outcome.header.hash(),
+        fixture.op_executor_test_fixture.expected_block_hash,
+        "Produced header does not match the expected header"
+    );
 }
 
 /// The test fixture format for the [`CeloStatelessL2Builder`].
@@ -373,9 +75,6 @@ pub struct ExecutorTestFixture {
     pub op_executor_test_fixture: OpExecutorTestFixture,
     /// The executing payload attributes.
     pub executing_payload: CeloPayloadAttributes,
-    /// The expected header (optional, for detailed error reporting).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_header: Option<Header>,
 }
 
 /// A test fixture creator for the [`CeloStatelessL2Builder`].
@@ -477,7 +176,6 @@ impl ExecutorTestFixtureCreator {
                 executing_payload: payload_attrs.op_payload_attributes.clone(),
             },
             executing_payload: payload_attrs.clone(),
-            expected_header: Some(executing_header.inner.clone()),
         };
 
         let mut executor = CeloStatelessL2Builder::new(
@@ -489,33 +187,11 @@ impl ExecutorTestFixtureCreator {
         );
         let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
 
-        // Use detailed header comparison with receipt details
-        let header_cmp = compare_headers(outcome.header.inner(), &executing_header.inner);
-
-        // If receipts_root differs, show detailed receipt information
-        if outcome.header.inner().receipts_root != executing_header.inner.receipts_root {
-            let produced_receipts = &outcome.execution_result.receipts;
-            let receipt_details = format_receipt_details(produced_receipts);
-            let receipt_summary = format!(
-                "\nReceipts root mismatch:\n  Produced receipts_root: {}\n  Expected receipts_root: {}\n  Number of receipts: {}\n\n  Produced receipts:\n{}",
-                outcome.header.inner().receipts_root,
-                executing_header.inner.receipts_root,
-                produced_receipts.len(),
-                receipt_details
-            );
-
-            // Show header errors with receipt details
-            if let Err(header_err) = header_cmp {
-                panic!("{}{}", header_err, receipt_summary);
-            } else {
-                panic!("Receipts root mismatch only!{}", receipt_summary);
-            }
-        }
-
-        // If we have a header error without receipt issues, show it
-        if let Err(e) = header_cmp {
-            panic!("{}", e);
-        }
+        assert_eq!(
+            outcome.header.inner(),
+            &executing_header.inner,
+            "Produced header (left) does not match the expected header (right)"
+        );
         fs::write(fixture_path.as_path(), serde_json::to_vec(&fixture).unwrap()).await.unwrap();
 
         // Tar the fixture.
