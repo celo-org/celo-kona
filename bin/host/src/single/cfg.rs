@@ -5,9 +5,8 @@ use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
-// Hokulea temporarily disabled for Step 1 (kona upgrade)
-// use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
-// use hokulea_proof::hint::ExtendedHintType;
+use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
+use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
     OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
@@ -24,39 +23,6 @@ use kona_std_fpvm::{FileChannel, FileDescriptor};
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::task::{self, JoinHandle};
-
-// TODO: Re-enable hokulea (EigenDA) support after upgrade is complete
-// Temporary stub types to allow compilation without hokulea
-
-/// Temporary stub for OnlineEigenDAPreimageProvider
-#[allow(unreachable_pub, unnameable_types)]
-#[derive(Debug, Clone)]
-pub struct OnlineEigenDAPreimageProvider;
-
-#[allow(unreachable_pub)]
-impl OnlineEigenDAPreimageProvider {
-    pub fn new_http(_url: String) -> Self {
-        Self
-    }
-}
-
-/// Temporary stub for ExtendedHintType
-#[allow(unreachable_pub, unnameable_types)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ExtendedHintType {
-    /// Original kona hint types
-    Original(HintType),
-}
-
-impl std::str::FromStr for ExtendedHintType {
-    type Err = kona_proof::errors::HintParsingError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Parse as original hint type
-        let hint_type = HintType::from_str(s)?;
-        Ok(Self::Original(hint_type))
-    }
-}
 
 /// The host binary CLI application arguments.
 #[derive(Default, Parser, Serialize, Clone, Debug)]
