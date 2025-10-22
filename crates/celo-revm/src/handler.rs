@@ -65,14 +65,7 @@ where
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
-        warn!(
-            target: "celo_handler",
-            "load_fee_currency_context: current_block={}, updated_at_block={:?}",
-            current_block,
-            evm.ctx().chain().fee_currency_context.updated_at_block
-        );
         if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
-            warn!(target: "celo_handler", "Loading fee currency context...");
             // Update the chain with the new fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
@@ -86,8 +79,6 @@ where
                     return Err(ERROR::from_string(e.to_string()));
                 }
             }
-        } else {
-            warn!(target: "celo_handler", "Skipping fee currency context loading (already loaded)");
         }
 
         Ok(())
@@ -330,13 +321,6 @@ where
         }
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
-
-        info!(
-            target: "celo_handler",
-            "CIP-64 debit: gas_limit={}, effective_gas_price={}, debit_amount={}, balance={}",
-            gas_limit, effective_gas_price, gas_cost, balance
-        );
-
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
         // The state changes from this call will be part of the transaction execution
         let (state, logs, gas_used) = erc20::debit_gas_fees(
@@ -347,12 +331,6 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
-
-        info!(
-            target: "celo_handler",
-            "CIP-64 pre-logs count={}",
-            logs.len()
-        );
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
@@ -834,12 +812,6 @@ where
         // Handle CIP-64 logs
         let tx = evm.ctx().tx().clone();
         if let Some(cip64_info) = &tx.cip64_tx_info {
-            info!(
-                target: "celo_handler",
-                "CIP-64 Transaction Logs: pre_logs={}, post_logs={}",
-                cip64_info.logs_pre.len(),
-                cip64_info.logs_post.len()
-            );
             // Add CIP-64 logs to the execution result
             match &mut exec_result {
                 ExecutionResult::Success { logs, .. } => {
