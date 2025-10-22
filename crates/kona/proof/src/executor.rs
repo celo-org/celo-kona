@@ -8,6 +8,7 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
 use celo_executor::{CeloBlockBuildingOutcome, CeloEvmFactory, CeloStatelessL2Builder};
 use celo_genesis::CeloRollupConfig;
+use core::fmt::Debug;
 use kona_executor::TrieDBProvider;
 use kona_mpt::TrieHinter;
 
@@ -15,8 +16,8 @@ use kona_mpt::TrieHinter;
 #[derive(Debug)]
 pub struct CeloExecutor<'a, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
-    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
+    P: TrieDBProvider + Send + Sync + Clone,
+    H: TrieHinter + Send + Sync + Clone,
 {
     /// The rollup config for the executor.
     rollup_config: &'a CeloRollupConfig,
@@ -32,8 +33,8 @@ where
 
 impl<'a, P, H> CeloExecutor<'a, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
-    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
+    P: TrieDBProvider + Send + Sync + Clone,
+    H: TrieHinter + Send + Sync + Clone,
 {
     /// Creates a new executor.
     pub const fn new(
@@ -50,8 +51,8 @@ where
 #[async_trait]
 impl<P, H> CeloExecutorTr for CeloExecutor<'_, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone + core::fmt::Debug,
-    H: TrieHinter + Send + Sync + Clone + core::fmt::Debug,
+    P: TrieDBProvider + Debug + Send + Sync + Clone,
+    H: TrieHinter + Debug + Send + Sync + Clone,
 {
     type Error = kona_executor::ExecutorError;
 

@@ -19,8 +19,8 @@ use revm::{
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
-    P: TrieDBProvider + core::fmt::Debug,
-    H: TrieHinter + core::fmt::Debug,
+    P: TrieDBProvider,
+    H: TrieHinter,
 {
     /// Returns the active [`EvmEnv`] for the executor.
     pub(crate) fn evm_env(
