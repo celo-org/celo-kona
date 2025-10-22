@@ -123,7 +123,7 @@
           "Name": "Celo Sepolia",
           "PublicRPC": "https://forno.celo-sepolia.celo-testnet.org",
           "SequencerRPC": "https://sequencer-proxyd.sepolia.celo-testnet.org",
-          "Explorer": "https://celo-baklava.blockscout.com",
+          "Explorer": "https://celo-sepolia.blockscout.com",
           "SuperchainLevel": 0,
           "GovernedByOptimism": false,
           "SuperchainTime": null,
@@ -173,18 +173,85 @@
             }
           },
           "Addresses": {
-              "ProxyAdmin": "0xf7d7a3d3bb8abb6829249b3d3ad3d525d052027e",
-              "AddressManager": "0x8f0c6fc85a53551d87899ac2a5af2b48c793eb63",
-              "L1ERC721BridgeProxy": "0xb8c8dcbccd0f7c5e7a2184b13b85d461d8711e96",
-              "SystemConfigProxy": "0x760a5f022c9940f4a074e0030be682f560d29818",
-              "OptimismMintableERC20FactoryProxy": "0x261be2ed7241fed9c746e0b5dff3a4a335991377",
-              "L1StandardBridgeProxy": "0xec18a3c30131a0db4246e785355fbc16e2eaf408",
-              "L1CrossDomainMessengerProxy": "0x70b0e58e6039831954ede2ea1e9ef8a51680e4fd",
-              "OptimismPortalProxy": "0x44ae3d41a335a7d05eb533029917aad35662dcc2",
-              "DisputeGameFactoryProxy": "0x57c45d82d1a995f1e135b8d7edc0a6bb5211cfaa",
-              "AnchorStateRegistryProxy": "0xd73ba8168a61f3e917f0930d5c0401aa47e269d6",
-              "FaultDisputeGame": "0x0000000000000000000000000000000000000000",
-              "PermissionedDisputeGame": "0x5a4feaeb665f8049ac1e0714f82a11532d47ae49"
+            "ProxyAdmin": "0xf7d7a3d3bb8abb6829249b3d3ad3d525d052027e",
+            "AddressManager": "0x8f0c6fc85a53551d87899ac2a5af2b48c793eb63",
+            "L1ERC721BridgeProxy": "0xb8c8dcbccd0f7c5e7a2184b13b85d461d8711e96",
+            "SystemConfigProxy": "0x760a5f022c9940f4a074e0030be682f560d29818",
+            "OptimismMintableERC20FactoryProxy": "0x261be2ed7241fed9c746e0b5dff3a4a335991377",
+            "L1StandardBridgeProxy": "0xec18a3c30131a0db4246e785355fbc16e2eaf408",
+            "L1CrossDomainMessengerProxy": "0x70b0e58e6039831954ede2ea1e9ef8a51680e4fd",
+            "OptimismPortalProxy": "0x44ae3d41a335a7d05eb533029917aad35662dcc2",
+            "DisputeGameFactoryProxy": "0x57c45d82d1a995f1e135b8d7edc0a6bb5211cfaa",
+            "AnchorStateRegistryProxy": "0xd73ba8168a61f3e917f0930d5c0401aa47e269d6",
+            "FaultDisputeGame": "0x0000000000000000000000000000000000000000",
+            "PermissionedDisputeGame": "0x5a4feaeb665f8049ac1e0714f82a11532d47ae49"
+          }
+        },
+        {
+          "Name": "Celo Chaos",
+          "PublicRPC": "https://forno.chaos.cel2.celo-networks-dev.org",
+          "Explorer": "https://celo-chaos.blockscout.com",
+          "SequencerRPC": "https://sequencer.chaos.cel2.celo-testnet.org",
+          "SuperchainLevel": 0,
+          "GovernedByOptimism": false,
+          "DataAvailabilityType": "alt-da",
+          "GasPayingToken": "0x24AB1e36289BA2689Cb346e628431e353457471C",
+          "l2_chain_id": 11162320,
+          "batch_inbox_address": "0x00ff59048b8ce3179c1c007e31227b1b8bb50b65",
+          "block_time": 1,
+          "seq_window_size": 7200,
+          "max_sequencer_drift": 600,
+          "hardfork_configuration": {
+            "regolith_time": 0,
+            "canyon_time": 0,
+            "delta_time": 0,
+            "ecotone_time": 0,
+            "fjord_time": 0,
+            "granite_time": 0,
+            "holocene_time": 0,
+            "isthmus_time": 0
+          },
+          "optimism": {
+            "eip1559Elasticity": 5,
+            "eip1559Denominator": 400,
+            "eip1559DenominatorCanyon": 250
+          },
+          "alt_da": {
+            "da_commitment_type": "GenericCommitment",
+            "da_challenge_window": 1,
+            "da_resolve_window": 1
+          },
+          "genesis": {
+            "l1": {
+              "hash": "0x30516c3a57ffd51129a708c07ba3e61bbc1e745fe551e464849accbc78fb6344",
+              "number": 9382986
+            },
+            "l2": {
+              "hash": "0x43f8e3e854a2d58f0ddfca69c233ee7674111cb7bbfddffc1661ea0ce5e72cfb",
+              "number": 0
+            },
+            "l2_time": 1760106420,
+            "system_config": {
+              "batcherAddr": "0x80a5f6d9334a81a5c57dde37b919fa6345d4befe",
+              "overhead": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "scalar": "0x0100000000000000000000000000000000000000000000000000000000000000",
+              "gasLimit": 30000000,
+              "eip1559Params": "0x0000000000000000",
+              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          "Addresses": {
+            "ProxyAdmin": "0x6151d1cc7724ee7594f414c152320757c9c5844e",
+            "AddressManager": "0xfc7950601fd0b3d07fcb8899a6dfaf578eac8fec",
+            "L1ERC721BridgeProxy": "0xe9b3351f4632df6609ab6434c17667ecb97a5f6d",
+            "SystemConfigProxy": "0x624ce254d4d0e84e4179897c9e9b97784f37f6fd",
+            "OptimismMintableERC20FactoryProxy": "0x80a8c6c150bdbd0f0c6ac7fc71c42fd6523f8284",
+            "L1StandardBridgeProxy": "0xb2f2468d0ab462da6cab2ef547fefd3511e33d14",
+            "L1CrossDomainMessengerProxy": "0x88bc63f650a49a5b3d10035cd5bdab036da0e3d8",
+            "OptimismPortalProxy": "0x37e3521cc2c2e3fc12ad4adc36aa8f6b6b686473",
+            "DisputeGameFactoryProxy": "0xc0215f0202418568c06b899f5e11245dbf717802",
+            "AnchorStateRegistryProxy": "0x06ec7ffc5ec88b750152bc26e4a456345a57c286",
+            "PermissionedDisputeGame": "0x60b2a0ccd7b1d7536ad328ebf483a61d01a58a4f"
           }
         }
       ]
