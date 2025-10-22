@@ -430,6 +430,7 @@ async fn verify_block(
                 .then(|| executing_header.extra_data[1..].try_into())
                 .transpose()
                 .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
+            min_base_fee: None,
         },
     };
 

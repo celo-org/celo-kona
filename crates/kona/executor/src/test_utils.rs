@@ -464,6 +464,7 @@ impl ExecutorTestFixtureCreator {
                             .expect("Invalid header format for Holocene")
                     },
                 ),
+                min_base_fee: None,
             },
         };
 
