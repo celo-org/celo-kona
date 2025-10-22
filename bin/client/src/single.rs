@@ -9,9 +9,8 @@ use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use celo_protocol::CeloToOpProviderAdapter;
 use core::fmt::Debug;
-// Hokulea temporarily disabled for Step 1 (kona upgrade)
-// use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
-// use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
+use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
+use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
 use kona_derive::EthereumDataSource;
 use kona_executor::TrieDBProvider;
@@ -101,10 +100,12 @@ where
 
     let evm_factory = CeloEvmFactory::default();
 
-    // TODO: Re-enable EigenDA support after hokulea is updated for kona 6282962b
-    // For now, using standard Ethereum data source
-    let da_provider =
+    // Set up EigenDA data source with Ethereum fallback
+    let eth_data_source =
         EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
+    let eigenda_preimage_provider = OracleEigenDAPreimageProvider::new(oracle.clone());
+    let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
+    let da_provider = EigenDADataSource::new(eth_data_source, eigenda_preimage_source);
 
     let l1_config = Arc::new(boot.op_boot_info.l1_config);
 

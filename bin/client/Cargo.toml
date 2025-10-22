@@ -33,9 +33,9 @@ kona-derive.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
-# Hokulea - temporarily commented out for Step 1 (kona upgrade)
-# hokulea-eigenda.workspace = true
-# hokulea-proof.workspace = true
+# Hokulea
+hokulea-eigenda.workspace = true
+hokulea-proof.workspace = true
 
 # General
 cfg-if.workspace = true
