@@ -18,8 +18,8 @@ use revm::{context::BlockEnv, database::BundleState};
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
-    P: TrieDBProvider + core::fmt::Debug,
-    H: TrieHinter + core::fmt::Debug,
+    P: TrieDBProvider,
+    H: TrieHinter,
 {
     /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning
     /// the computed [Header].
