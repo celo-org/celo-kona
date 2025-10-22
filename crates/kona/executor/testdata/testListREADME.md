@@ -5,10 +5,16 @@
 * Explorer: https://celo-sepolia.blockscout.com/block/2343822
 
 ## Token duality
-* Testcase: Block with erc20 transfer of celo
-* Network: Celo Sepolia
-* File: sepolia-token-duality-tx_block-2346831.tar.gz  
-* Explorer: https://celo-sepolia.blockscout.com/block/2346831
+- Celo Erc20 transfer
+  * Testcase: Block with erc20 transfer of celo
+  * Network: Celo Sepolia
+  * File: sepolia-token-duality-tx_block-2346831.tar.gz  
+  * Explorer: https://celo-sepolia.blockscout.com/block/2346831
+- Celo Erc20 transferFrom
+  * Testcase: Block with erc20 transfer of celo
+  * Network: Celo Mainnet
+  * File: mainnet-token-duality-transfer-from-tx_block-43396452.tar.gz  
+  * Explorer: https://celo.blockscout.com/block/43396452
 
 ## Cip64 transaction
 - Erc20 transfer
@@ -56,3 +62,9 @@
   * Network: Celo Mainnet
   * File: mainnet-transfer_precompile_warm_multi_block-31074658.tar.gz
   * Explorer: https://celo.blockscout.com/block/31074658
+
+## Transfer precompile not warmimg the "from" address
+* Testcase: Block with an aggregate3 tx that makes 2 transferFrom using the transfer precompile using the same "from" in both txs. The deployed Celo contract is pre-warming the "from" address
+* Network: Celo Sepolia
+* File: sepolia-transfer_precompile_warm_from-tx_block-6750121.tar.gz  
+* Explorer: https://celo-sepolia.blockscout.com/block/6750121
