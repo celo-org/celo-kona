@@ -190,7 +190,7 @@ serde_json = { version = "1.0.140", default-features = false }
 serde_with = { version = "3", default-features = false, features = ["macros"] }
 
 # K/V database
-rocksdb = { version = "0.23.0", default-features = false }
+rocksdb = { version = "0.24.0", default-features = false }
 
 # Cryptography
 ark-ff = { version = "0.5.0", default-features = false }

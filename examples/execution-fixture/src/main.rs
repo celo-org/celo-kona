@@ -19,7 +19,7 @@
 use anyhow::{Result, anyhow};
 use celo_executor::test_utils::ExecutorTestFixtureCreator;
 use clap::Parser;
-use kona_cli::{LogConfig, log::LogArgs};
+use kona_cli::{LogArgs, LogConfig};
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;

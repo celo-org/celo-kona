@@ -130,6 +130,7 @@ mod test {
                 no_tx_pool: Some(true),
                 gas_limit: Some(42),
                 eip_1559_params: None,
+                min_base_fee: None,
             },
         };
 
@@ -154,6 +155,7 @@ mod test {
                 no_tx_pool: Some(true),
                 gas_limit: Some(42),
                 eip_1559_params: Some(b64!("0000dead0000beef")),
+                min_base_fee: None,
             },
         };
 
