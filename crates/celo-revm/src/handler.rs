@@ -474,12 +474,17 @@ where
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
-        let mint = ctx.tx().mint();
+
+        let mint = if is_deposit {
+            ctx.tx().mint().unwrap_or_default()
+        } else {
+            0
+        };
 
         let mut additional_cost = U256::ZERO;
 
         // The L1-cost fee is only computed for Optimism non-deposit transactions.
-        if !is_deposit {
+        if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
             if ctx.chain().l1_block_info.l2_block != block_number {
@@ -488,25 +493,22 @@ where
             }
 
             // account for additional cost of l1 fee and operator fee
-            let enveloped_tx = evm
-                .ctx()
+            let enveloped_tx = ctx
                 .tx()
                 .enveloped_tx()
                 .expect("all not deposit tx have enveloped tx")
                 .clone();
 
             // compute L1 cost
-            additional_cost = evm
-                .ctx()
+            additional_cost = ctx
                 .chain_mut()
                 .l1_block_info
                 .calculate_tx_l1_cost(&enveloped_tx, spec);
 
             // compute operator fee
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
-                let gas_limit = U256::from(evm.ctx().tx().gas_limit());
-                let operator_fee_charge = evm
-                    .ctx()
+                let gas_limit = U256::from(ctx.tx().gas_limit());
+                let operator_fee_charge = ctx
                     .chain()
                     .l1_block_info
                     .operator_fee_charge(&enveloped_tx, gas_limit);
@@ -517,23 +519,11 @@ where
         if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
-
-        // Now handle all account operations
         let (tx, journal) = evm.ctx().tx_journal_mut();
+
         let caller_account = journal.load_account_code(tx.caller())?.data;
 
-        // If the transaction is a deposit with a `mint` value, add the mint value
-        // in wei to the caller's balance. This should be persisted to the database
-        // prior to the rest of execution.
-        if is_deposit {
-            if let Some(mint) = mint {
-                caller_account.info.balance =
-                    caller_account.info.balance.saturating_add(U256::from(mint));
-            }
-            if tx.kind().is_call() {
-                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
-            }
-        } else {
+        if !is_deposit {
             // validates account nonce and code
             validate_account_nonce_and_code(
                 &mut caller_account.info,
@@ -541,46 +531,31 @@ where
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
             )?;
-            // Increment nonce for regular transactions (not deposits)
-            // This matches the mainnet handler behavior
-            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
 
-        if is_balance_check_disabled {
-            // Make sure the caller's balance is at least the value of the transaction.
-            // this is not consensus critical, and it is used in testing.
-            caller_account.info.balance = caller_account.info.balance.max(tx.value());
-        } else if !is_deposit {
-            // Check balance for gas payment for regular transactions
-            if fees_in_celo {
-                // Regular transaction: check CELO balance for both value and gas
-                let max_balance_spending =
-                    tx.max_balance_spending()?.saturating_add(additional_cost);
+        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
 
-                if max_balance_spending > caller_account.info.balance {
-                    return Err(InvalidTransaction::LackOfFundForMaxFee {
-                        fee: Box::new(max_balance_spending),
-                        balance: Box::new(caller_account.info.balance),
-                    }
-                    .into());
+        // old balance is journaled before mint is incremented.
+        let old_balance = caller_account.info.balance;
+
+        // If the transaction is a deposit with a `mint` value, add the mint value
+        // in wei to the caller's balance. This should be persisted to the database
+        // prior to the rest of execution.
+        let mut new_balance = caller_account.info.balance.saturating_add(U256::from(mint));
+
+        if fees_in_celo {
+            // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
+            // Transfer will be done inside `*_inner` functions.
+            if !is_deposit && max_balance_spending > new_balance && !is_balance_check_disabled {
+                // skip max balance check for deposit transactions.
+                // this check for deposit was skipped previously in `validate_tx_against_state` function
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(max_balance_spending),
+                    balance: Box::new(new_balance),
                 }
-            } else {
-                // Check CELO balance for value transfer (value is always in CELO)
-                if tx.value() > caller_account.info.balance {
-                    return Err(ERROR::from_string(format!(
-                        "lack of funds ({}) for value payment ({})",
-                        caller_account.info.balance,
-                        tx.value()
-                    )));
-                }
+                .into());
             }
-        }
 
-        // Handle balance deduction for CELO gas fees
-        // Note: We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
-        // because it will be deducted later in the call
-        if !is_balance_check_disabled && fees_in_celo {
-            // Only deduct CELO for gas if not using fee currency
             let effective_balance_spending =
                 tx.effective_balance_spending(basefee, blob_price).expect(
                     "effective balance is always smaller than max balance so it can't overflow",
@@ -596,16 +571,29 @@ where
             // In case of deposit additional cost will be zero.
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
-            caller_account.info.balance = caller_account
-                .info
-                .balance
-                .saturating_sub(op_gas_balance_spending);
+            new_balance = new_balance.saturating_sub(op_gas_balance_spending);
+        } else {
         }
 
-        if fees_in_celo || tx.value() > U256::ZERO {
-            // Touch account so we know it is changed.
-            caller_account.mark_touch();
+        if is_balance_check_disabled {
+            // Make sure the caller's balance is at least the value of the transaction.
+            // this is not consensus critical, and it is used in testing.
+            new_balance = new_balance.max(tx.value());
         }
+
+        // Touch account so we know it is changed.
+        caller_account.mark_touch();
+        caller_account.info.balance = new_balance;
+
+        // Bump the nonce for calls. Nonce for CREATE will be bumped in `handle_create`.
+        if tx.kind().is_call() {
+            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+        }
+
+        // NOTE: all changes to the caller account should journaled so in case of error
+        // we can revert the changes.
+        journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+
         Ok(())
     }
 
@@ -862,9 +850,9 @@ where
             let spec = ctx.cfg().spec();
             let tx = ctx.tx();
             let caller = tx.caller();
+            let mint = tx.mint();
             let is_system_tx = tx.is_system_transaction();
             let gas_limit = tx.gas_limit();
-            let is_call = tx.kind().is_call();
 
             // discard all changes of this transaction
             evm.ctx().journal_mut().discard_tx();
@@ -876,26 +864,19 @@ where
             // easily distinguish between a failed deposit and a failed
             // normal transaction.
 
-            // For failed deposits, ensure the nonce and mint persist.
-            // Note: The mint was already applied in validate_against_state_and_deduct_caller
-            // and persists through discard_tx (since it was applied before the execution checkpoint).
-            // We only need to increment the nonce for create transactions (call transactions
-            // already had their nonce incremented in validate_against_state_and_deduct_caller).
-            let acc: &mut Account = evm.ctx().journal_mut().load_account(caller)?.data;
+            // Increment sender nonce and account balance for the mint amount. Deposits
+            // always persist the mint amount, even if the transaction fails.
+            let acc: &mut revm::state::Account = evm.ctx().journal_mut().load_account(caller)?.data;
 
             let old_balance = acc.info.balance;
 
             // decrement transaction id as it was incremented when we discarded the tx.
-            acc.transaction_id -= acc.transaction_id;
-
-            // Only increment nonce if it wasn't already incremented (i.e., for create transactions)
-            if !is_call {
-                acc.info.nonce = acc.info.nonce.saturating_add(1);
-            }
-
-            // NOTE: Do NOT re-apply mint here - it was already applied in
-            // validate_against_state_and_deduct_caller and persists after discard_tx.
-
+            acc.transaction_id -= 1;
+            acc.info.nonce = acc.info.nonce.saturating_add(1);
+            acc.info.balance = acc
+                .info
+                .balance
+                .saturating_add(U256::from(mint.unwrap_or_default()));
             acc.mark_touch();
 
             // add journal entry for accounts
@@ -912,7 +893,7 @@ where
             } else {
                 0
             };
-
+            // clear the journal
             Ok(ExecutionResult::Halt {
                 reason: OpHaltReason::FailedDeposit,
                 gas_used,
