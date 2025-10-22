@@ -11,7 +11,7 @@
   * File: sepolia-token-duality-tx_block-2346831.tar.gz  
   * Explorer: https://celo-sepolia.blockscout.com/block/2346831
 - Celo Erc20 transferFrom
-  * Testcase: Block with erc20 transfer of celo
+  * Testcase: Block with erc20 transferFrom of celo (spender moves celo on behalf of owner)
   * Network: Celo Mainnet
   * File: mainnet-token-duality-transfer-from-tx_block-43396452.tar.gz  
   * Explorer: https://celo.blockscout.com/block/43396452
