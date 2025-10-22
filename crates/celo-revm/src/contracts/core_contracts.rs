@@ -12,7 +12,10 @@ use revm::{
     primitives::Log,
     state::EvmState,
 };
-use revm_context_interface::{ContextSetters, result::{ExecutionResult, Output}};
+use revm_context_interface::{
+    ContextSetters,
+    result::{ExecutionResult, Output},
+};
 use std::{
     format,
     string::{String, ToString},
