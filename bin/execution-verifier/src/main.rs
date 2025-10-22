@@ -99,14 +99,14 @@ async fn main() -> anyhow::Result<()> {
                 start_block
             ));
         }
-        if let Some(end_block) = cli.end_block {
-            if start_block > end_block {
-                return Err(anyhow::anyhow!(
-                    "start_block {} must be <= end_block {}",
-                    start_block,
-                    end_block
-                ));
-            }
+        if let Some(end_block) = cli.end_block &&
+            start_block > end_block
+        {
+            return Err(anyhow::anyhow!(
+                "start_block {} must be <= end_block {}",
+                start_block,
+                end_block
+            ));
         }
     } else if let Some(end_block) = cli.end_block {
         return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
