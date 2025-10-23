@@ -166,7 +166,7 @@ mod tests {
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
     };
     use revm::{
-        Context, ExecuteEvm, Inspector, Journal,
+        Context, ExecuteEvm, Journal,
         bytecode::opcode,
         context::{
             BlockEnv, CfgEnv, TxEnv,
@@ -174,15 +174,11 @@ mod tests {
         },
         context_interface::result::HaltReason,
         database::{BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BenchmarkDB, EmptyDB},
-        interpreter::{
-            Interpreter, InterpreterTypes,
-            gas::{InitialAndFloorGas, calculate_initial_tx_gas},
-        },
+        interpreter::gas::{InitialAndFloorGas, calculate_initial_tx_gas},
         precompile::{bls12_381_const, bls12_381_utils, bn254, secp256r1, u64_to_address},
-        primitives::{Address, Bytes, Log, TxKind, U256},
+        primitives::{Address, Bytes, TxKind, U256},
         state::Bytecode,
     };
-    use std::vec::Vec;
 
     // TODO: add cip64 tx test
 
@@ -829,16 +825,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[derive(Default, Debug)]
-    struct LogInspector {
-        logs: Vec<Log>,
-    }
-
-    impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for LogInspector {
-        fn log(&mut self, _interp: &mut Interpreter<INTR>, _context: &mut CTX, log: Log) {
-            self.logs.push(log)
-        }
     }
 }
