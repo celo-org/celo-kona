@@ -106,7 +106,6 @@ kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client
 
 # Utilities
 kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.3", default-features = false }
-kona-serde = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.3", default-features = false }
 
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
@@ -222,4 +221,3 @@ kona-std-fpvm   = { git = "https://github.com/celo-org/kona", branch = "karlb/re
 kona-preimage   = { git = "https://github.com/celo-org/kona", branch = "karlb/replace-max-sequencer-drift-v1.1.3", default-features = false }
 kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", branch = "karlb/replace-max-sequencer-drift-v1.1.3", default-features = false }
 kona-cli   = { git = "https://github.com/celo-org/kona", branch = "karlb/replace-max-sequencer-drift-v1.1.3", default-features = false }
-kona-serde = { git = "https://github.com/celo-org/kona", branch = "karlb/replace-max-sequencer-drift-v1.1.3", default-features = false }
