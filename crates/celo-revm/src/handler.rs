@@ -589,8 +589,6 @@ where
             new_balance = new_balance.max(tx.value());
         }
 
-        // Touch account so we know it is changed.
-        caller_account.mark_touch();
         caller_account.info.balance = new_balance;
 
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `handle_create`.
@@ -598,9 +596,14 @@ where
             caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
         }
 
-        // NOTE: all changes to the caller account should journaled so in case of error
-        // we can revert the changes.
-        journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        // Touch account and journal it only if some change was performed.
+        if old_balance != new_balance || tx.kind().is_call() {
+            // Touch account so we know it is changed.
+            caller_account.mark_touch();
+            // NOTE: all changes to the caller account should journaled so in case of error
+            // we can revert the changes.
+            journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        }
 
         Ok(())
     }
