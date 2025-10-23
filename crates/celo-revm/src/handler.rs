@@ -572,6 +572,15 @@ where
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
             new_balance = new_balance.saturating_sub(op_gas_balance_spending);
+        } else {
+            // Check CELO balance for value transfer (value is always in CELO)
+            if tx.value() > caller_account.info.balance {
+                return Err(ERROR::from_string(format!(
+                    "lack of funds ({}) for value payment ({})",
+                    caller_account.info.balance,
+                    tx.value()
+                )));
+            }
         }
 
         if is_balance_check_disabled {
