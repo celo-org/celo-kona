@@ -95,21 +95,18 @@ async fn main() -> anyhow::Result<()> {
     if let Some(start_block) = cli.start_block {
         if start_block == 0 {
             return Err(anyhow::anyhow!(
-                "start_block {} must be > 0 (need parent block)",
-                start_block
+                "start_block {start_block} must be > 0 (need parent block)"
             ));
         }
         if let Some(end_block) = cli.end_block &&
             start_block > end_block
         {
             return Err(anyhow::anyhow!(
-                "start_block {} must be <= end_block {}",
-                start_block,
-                end_block
+                "start_block {start_block} must be <= end_block {end_block}"
             ));
         }
     } else if let Some(end_block) = cli.end_block {
-        return Err(anyhow::anyhow!("end-block {} provided without start-block", end_block));
+        return Err(anyhow::anyhow!("end-block {end_block} provided without start-block"));
     }
 
     // Construct the OTel resources.
@@ -177,10 +174,10 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     let chain_id = provider
         .get_chain_id()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to get chain ID: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to get chain ID: {e}"))?;
     let rollup_config = ROLLUP_CONFIGS
         .get(&chain_id)
-        .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {}", chain_id))?;
+        .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
 
     let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
 
@@ -198,7 +195,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 _ = interval.tick() => {
                     let tracker = tracker_handle.clone();
                     if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
-                        eprintln!("Error storing verified block: {}", e);
+                        eprintln!("Error storing verified block: {e}");
                     }
                 }
             }
@@ -286,7 +283,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
-                return Err(anyhow::anyhow!("Task panicked: {}", e));
+                return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
             _ => {}
         }
@@ -390,8 +387,8 @@ async fn verify_block(
     let executing_block = provider
         .get_block_by_number(block_number.into())
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e))?
-        .ok_or_else(|| anyhow::anyhow!("Executing block {} not found", block_number))?;
+        .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
 
     let encoded_executing_transactions = match executing_block.transactions {
         BlockTransactions::Hashes(transactions) => {
@@ -401,9 +398,7 @@ async fn verify_block(
                     .client()
                     .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
                     .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to get raw transaction {}: {}", tx_hash, e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}: {e}"))?;
                 encoded_transactions.push(tx);
             }
             encoded_transactions
@@ -443,7 +438,7 @@ async fn verify_block(
     );
     let outcome = executor
         .build_block(payload_attrs)
-        .map_err(|e| anyhow::anyhow!("Failed to execute block {}: {}", block_number, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {

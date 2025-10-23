@@ -218,7 +218,7 @@ where
             U256::from(base_tx_charge),
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
+        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {e}")))?;
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
@@ -305,7 +305,7 @@ where
         let fee_currency_addr = fee_currency.unwrap();
 
         let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {e}")))?;
 
         let gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
@@ -330,7 +330,7 @@ where
             gas_cost,
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+        .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {e}")))?;
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;

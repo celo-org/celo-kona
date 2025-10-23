@@ -335,7 +335,7 @@ mod tests {
                 panic!("Revert output: {:?}", get_revert_message(output));
             }
             _ => {
-                panic!("Transaction failed: {:?}", result);
+                panic!("Transaction failed: {result:?}");
             }
         }
     }

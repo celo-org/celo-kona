@@ -60,15 +60,11 @@ pub fn get_revert_message(output: Bytes) -> String {
         match <sol_data::String as SolType>::abi_decode(abi_encoded_string_data) {
             Ok(decoded_string) => decoded_string,
             Err(decoding_error) => {
-                format! {
-                        "could not decode: {:?}, {:?}", output, decoding_error
-                }
+                format!("could not decode: {output:?}, {decoding_error:?}")
             }
         }
     } else {
-        format! {
-                "no revert message: {:?}", output
-        }
+        format!("no revert message: {output:?}")
     }
 }
 
@@ -116,8 +112,7 @@ where
             ..
         } => Ok((bytes, state, logs_from_call, gas_used)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
-            "halt: {:?}",
-            reason
+            "halt: {reason:?}"
         ))),
         ExecutionResult::Revert { output, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "revert: {}",
