@@ -572,7 +572,7 @@ where
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
             new_balance = new_balance.saturating_sub(op_gas_balance_spending);
-        } 
+        }
 
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
