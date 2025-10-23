@@ -793,31 +793,14 @@ where
         self.cip64_credit_fee_currency(evm, &mut frame_result)?;
 
         // Call post_execution::output to get ExecutionResult
-        let mut exec_result = revm::handler::post_execution::output(evm.ctx(), frame_result)
+        let exec_result = revm::handler::post_execution::output(evm.ctx(), frame_result)
             .map_haltreason(OpHaltReason::Base);
 
-        // Handle CIP-64 logs
-        let tx = evm.ctx().tx().clone();
-        if let Some(cip64_info) = &tx.cip64_tx_info {
-            // Add CIP-64 logs to the execution result
-            match &mut exec_result {
-                ExecutionResult::Success { logs, .. } => {
-                    // Prepend pre-logs and append post-logs
-                    let mut all_logs = cip64_info.logs_pre.clone();
-                    all_logs.extend(logs.clone());
-                    all_logs.extend(cip64_info.logs_post.clone());
-                    *logs = all_logs;
-                }
-                ExecutionResult::Revert { .. } => {
-                    // For reverts, we still need to include CIP-64 logs for gas payment
-                    // Note: ExecutionResult::Revert doesn't have logs field in revm 27.0
-                    // This will be handled in the receipts_builder layer
-                }
-                ExecutionResult::Halt { .. } => {
-                    // Halts also don't have logs in ExecutionResult
-                }
-            }
-        }
+        // CIP64 NOTE:
+        // The ExecutionResult class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs),
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
 
         if exec_result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,

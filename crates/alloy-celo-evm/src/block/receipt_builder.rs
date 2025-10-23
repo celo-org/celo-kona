@@ -81,16 +81,8 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
                 };
                 let cip64_info = self.cip64_storage.get_cip64_info(&tx_identifier);
                 if let Some(cip64_info) = cip64_info {
-                    use tracing::warn;
-                    warn!(
-                        "CIP-64 logs count: pre: {}, main: {}, post: {}",
-                        cip64_info.logs_pre.len(),
-                        logs.len(),
-                        cip64_info.logs_post.len(),
-                    );
                     let mut merged_logs = cip64_info.logs_pre.clone();
-                    // YYY-TODO; these seem to be wrongly included in the logs_post.
-                    // merged_logs.extend(logs.clone());
+                    merged_logs.extend(logs.clone());
                     merged_logs.extend(cip64_info.logs_post);
                     logs = merged_logs;
                 }
