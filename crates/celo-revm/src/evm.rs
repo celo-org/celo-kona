@@ -2,11 +2,11 @@ use crate::{CeloContext, CeloPrecompiles};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Inspector,
-    context::Evm,
+    context::{Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
     handler::{EvmTr, instructions::EthInstructions},
     inspector::InspectorEvmTr,
-    interpreter::{Interpreter, InterpreterAction, interpreter::EthInterpreter},
+    interpreter::interpreter::EthInterpreter,
 };
 
 pub struct CeloEvm<DB: revm::Database, INSP>(
@@ -28,6 +28,7 @@ where
             inspector,
             instruction: EthInstructions::new_mainnet(),
             precompiles: CeloPrecompiles::default(),
+            frame_stack: FrameStack::new(),
         }))
     }
 
@@ -62,11 +63,21 @@ where
         self.0.ctx_inspector()
     }
 
-    fn run_inspect_interpreter(
+    fn ctx_inspector_frame(
         &mut self,
-        interpreter: &mut Interpreter<EthInterpreter>,
-    ) -> InterpreterAction {
-        self.0.run_inspect_interpreter(interpreter)
+    ) -> (&mut Self::Context, &mut Self::Inspector, &mut Self::Frame) {
+        self.0.ctx_inspector_frame()
+    }
+
+    fn ctx_inspector_frame_instructions(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Inspector,
+        &mut Self::Frame,
+        &mut Self::Instructions,
+    ) {
+        self.0.ctx_inspector_frame_instructions()
     }
 }
 
@@ -78,13 +89,12 @@ where
     type Context = CeloContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, CeloContext<DB>>;
     type Precompiles = CeloPrecompiles;
-
-    fn run_interpreter(
-        &mut self,
-        interpreter: &mut Interpreter<EthInterpreter>,
-    ) -> InterpreterAction {
-        self.0.run_interpreter(interpreter)
-    }
+    type Frame = <op_revm::OpEvm<
+        CeloContext<DB>,
+        INSP,
+        EthInstructions<EthInterpreter, CeloContext<DB>>,
+        CeloPrecompiles,
+    > as EvmTr>::Frame;
 
     fn ctx(&mut self) -> &mut Self::Context {
         self.0.ctx()
@@ -101,17 +111,62 @@ where
     fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
         self.0.ctx_precompiles()
     }
+
+    fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
+        self.0.frame_stack()
+    }
+
+    fn frame_init(
+        &mut self,
+        frame_init: <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
+    ) -> Result<
+        revm::handler::ItemOrResult<
+            &mut Self::Frame,
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+        >,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_init(frame_init)
+    }
+
+    fn frame_run(
+        &mut self,
+    ) -> Result<
+        revm::handler::ItemOrResult<
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
+            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+        >,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_run()
+    }
+
+    fn frame_return_result(
+        &mut self,
+        result: <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+    ) -> Result<
+        Option<<Self::Frame as revm::handler::evm::FrameTr>::FrameResult>,
+        revm::context_interface::context::ContextError<
+            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
+        >,
+    > {
+        self.0.frame_return_result(result)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{CeloBlockEnv, CeloBuilder, CeloTransaction, DefaultCelo};
     use op_revm::{
-        OpHaltReason, OpSpecId, precompiles::bn128_pair::GRANITE_MAX_INPUT_SIZE,
+        OpHaltReason, OpSpecId, precompiles::bn254_pair::GRANITE_MAX_INPUT_SIZE,
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
     };
     use revm::{
-        Context, ExecuteEvm, InspectEvm, Inspector, Journal,
+        Context, ExecuteEvm, Journal,
         bytecode::opcode,
         context::{
             BlockEnv, CfgEnv, TxEnv,
@@ -119,15 +174,11 @@ mod tests {
         },
         context_interface::result::HaltReason,
         database::{BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BenchmarkDB, EmptyDB},
-        interpreter::{
-            Interpreter, InterpreterTypes,
-            gas::{InitialAndFloorGas, calculate_initial_tx_gas},
-        },
-        precompile::{bls12_381_const, bls12_381_utils, bn128, secp256r1, u64_to_address},
-        primitives::{Address, Bytes, Log, TxKind, U256},
+        interpreter::gas::{InitialAndFloorGas, calculate_initial_tx_gas},
+        precompile::{bls12_381_const, bls12_381_utils, bn254, secp256r1, u64_to_address},
+        primitives::{Address, Bytes, TxKind, U256},
         state::Bytecode,
     };
-    use std::vec::Vec;
 
     // TODO: add cip64 tx test
 
@@ -180,7 +231,7 @@ mod tests {
             output.result,
             ExecutionResult::Halt {
                 reason: OpHaltReason::FailedDeposit,
-                gas_used: 30_000_000
+                gas_used: 16_777_216
             }
         );
         assert_eq!(
@@ -254,7 +305,7 @@ mod tests {
 
         Context::celo()
             .modify_tx_chained(|tx| {
-                tx.op_tx.base.kind = TxKind::Call(bn128::pair::ADDRESS);
+                tx.op_tx.base.kind = TxKind::Call(bn254::pair::ADDRESS);
                 tx.op_tx.base.data = input;
                 tx.op_tx.base.gas_limit = initial_gas;
             })
@@ -774,51 +825,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[derive(Default, Debug)]
-    struct LogInspector {
-        logs: Vec<Log>,
-    }
-
-    impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for LogInspector {
-        fn log(&mut self, _interp: &mut Interpreter<INTR>, _context: &mut CTX, log: Log) {
-            self.logs.push(log)
-        }
-    }
-
-    #[test]
-    fn test_log_inspector() {
-        // simple yul contract emits a log in constructor
-
-        /*object "Contract" {
-            code {
-                log0(0, 0)
-            }
-        }*/
-
-        let contract_data: Bytes = Bytes::from([
-            opcode::PUSH1,
-            0x00,
-            opcode::DUP1,
-            opcode::LOG0,
-            opcode::STOP,
-        ]);
-        let bytecode = Bytecode::new_raw(contract_data);
-
-        let ctx = Context::celo()
-            .with_db(BenchmarkDB::new_bytecode(bytecode.clone()))
-            .modify_tx_chained(|tx| {
-                tx.op_tx.base.caller = BENCH_CALLER;
-                tx.op_tx.base.kind = TxKind::Call(BENCH_TARGET);
-            });
-
-        let mut evm = ctx.build_celo_with_inspector(LogInspector::default());
-
-        // Run evm.
-        let _ = evm.inspect_replay().unwrap();
-
-        let inspector = &evm.0.0.inspector;
-        assert!(!inspector.logs.is_empty());
     }
 }

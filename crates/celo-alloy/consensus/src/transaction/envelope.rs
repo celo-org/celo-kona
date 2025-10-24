@@ -2,8 +2,8 @@
 
 use crate::{CeloTxType, CeloTypedTransaction, TxCip64};
 use alloy_consensus::{
-    Sealable, Sealed, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
-    TxEnvelope, TxLegacy, Typed2718, transaction::RlpEcdsaDecodableTx,
+    EthereumTxEnvelope, Sealable, Sealed, SignableTransaction, Signed, Transaction, TxEip1559,
+    TxEip2930, TxEip7702, TxEnvelope, TxLegacy, Typed2718, transaction::RlpEcdsaDecodableTx,
 };
 use alloy_eips::{
     eip2718::{Decodable2718, Eip2718Error, Eip2718Result, Encodable2718, IsTyped2718},
@@ -130,10 +130,10 @@ impl From<Sealed<TxDeposit>> for CeloTxEnvelope {
     }
 }
 
-impl TryFrom<TxEnvelope> for CeloTxEnvelope {
-    type Error = TxEnvelope;
+impl<T> TryFrom<EthereumTxEnvelope<T>> for CeloTxEnvelope {
+    type Error = EthereumTxEnvelope<T>;
 
-    fn try_from(value: TxEnvelope) -> Result<Self, Self::Error> {
+    fn try_from(value: EthereumTxEnvelope<T>) -> Result<Self, Self::Error> {
         Self::try_from_eth_envelope(value)
     }
 }
@@ -443,6 +443,7 @@ impl CeloTxEnvelope {
     ///
     /// Returns the envelope as error if it is a variant unsupported on ethereum: [`TxDeposit`,
     /// `TxCip64`]
+    #[allow(clippy::result_large_err)]
     pub fn try_into_eth_envelope(self) -> Result<TxEnvelope, Self> {
         match self {
             Self::Legacy(tx) => Ok(tx.into()),
@@ -458,13 +459,16 @@ impl CeloTxEnvelope {
     ///
     /// Returns the given envelope as error if [`CeloTxEnvelope`] doesn't support the variant
     /// (EIP-4844)
-    pub fn try_from_eth_envelope(tx: TxEnvelope) -> Result<Self, TxEnvelope> {
+    #[allow(clippy::result_large_err)]
+    pub fn try_from_eth_envelope<T>(
+        tx: EthereumTxEnvelope<T>,
+    ) -> Result<Self, EthereumTxEnvelope<T>> {
         match tx {
-            TxEnvelope::Legacy(tx) => Ok(tx.into()),
-            TxEnvelope::Eip2930(tx) => Ok(tx.into()),
-            TxEnvelope::Eip1559(tx) => Ok(tx.into()),
-            tx @ TxEnvelope::Eip4844(_) => Err(tx),
-            TxEnvelope::Eip7702(tx) => Ok(tx.into()),
+            EthereumTxEnvelope::Legacy(tx) => Ok(tx.into()),
+            EthereumTxEnvelope::Eip2930(tx) => Ok(tx.into()),
+            EthereumTxEnvelope::Eip1559(tx) => Ok(tx.into()),
+            tx @ EthereumTxEnvelope::<T>::Eip4844(_) => Err(tx),
+            EthereumTxEnvelope::Eip7702(tx) => Ok(tx.into()),
         }
     }
 
@@ -512,7 +516,7 @@ impl CeloTxEnvelope {
     ///
     /// Caution: modifying this will cause side-effects on the hash.
     #[doc(hidden)]
-    pub fn input_mut(&mut self) -> &mut Bytes {
+    pub const fn input_mut(&mut self) -> &mut Bytes {
         match self {
             Self::Eip1559(tx) => &mut tx.tx_mut().input,
             Self::Eip2930(tx) => &mut tx.tx_mut().input,
@@ -584,6 +588,7 @@ impl CeloTxEnvelope {
     /// Attempts to consume the type into a [`Signed`].
     ///
     /// Returns the envelope as error if it is a variant not converted to signed txn: [`TxDeposit`]
+    #[allow(clippy::result_large_err)]
     pub fn try_into_signed(self) -> Result<Signed<CeloTypedTransaction>, Self> {
         match self {
             Self::Legacy(tx) => Ok(tx.convert()),

@@ -32,7 +32,9 @@ where
         bundle: BundleState,
     ) -> ExecutorResult<Sealed<Header>> {
         let op_attrs = &attrs.op_payload_attributes.clone();
-        let timestamp = block_env.timestamp;
+        let timestamp: u64 = block_env.timestamp.try_into().expect("timestamp should fit in u64");
+        let block_number: u64 =
+            block_env.number.try_into().expect("block number should fit in u64");
 
         // Compute the roots for the block header.
         let state_root = self.trie_db.state_root(&bundle)?;
@@ -46,7 +48,7 @@ where
         .root();
         let receipts_root = compute_receipts_root(&ex_result.receipts, self.config, timestamp);
         let withdrawals_root = if self.config.is_isthmus_active(timestamp) {
-            Some(self.message_passer_account(block_env.number)?)
+            Some(self.message_passer_account(block_number)?)
         } else if self.config.is_canyon_active(timestamp) {
             Some(EMPTY_ROOT_HASH)
         } else {
@@ -57,11 +59,11 @@ where
         let logs_bloom = logs_bloom(ex_result.receipts.iter().flat_map(|r| r.logs()));
 
         // Compute Cancun fields, if active.
-        let (blob_gas_used, excess_blob_gas) = self
-            .config
-            .is_ecotone_active(timestamp)
-            .then_some((Some(0), Some(0)))
-            .unwrap_or_default();
+        let (blob_gas_used, excess_blob_gas) = if self.config.is_ecotone_active(timestamp) {
+            (Some(0), Some(0))
+        } else {
+            Default::default()
+        };
 
         // At holocene activation, the base fee parameters from the payload are placed
         // into the Header's `extra_data` field.
@@ -90,7 +92,7 @@ where
             requests_hash,
             logs_bloom,
             difficulty: U256::ZERO,
-            number: block_env.number,
+            number: block_number,
             gas_limit: op_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
             gas_used: ex_result.gas_used,
             timestamp,

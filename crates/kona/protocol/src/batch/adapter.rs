@@ -3,7 +3,7 @@
 use crate::{CeloBatchValidationProvider, convert_celo_block_to_op_block};
 use alloc::{boxed::Box, sync::Arc};
 use async_trait::async_trait;
-use kona_derive::{errors::PipelineErrorKind, traits::L2ChainProvider};
+use kona_derive::{L2ChainProvider, PipelineErrorKind};
 use kona_genesis::{RollupConfig, SystemConfig};
 use kona_proof::errors::OracleProviderError;
 use kona_protocol::{BatchValidationProvider, L2BlockInfo, to_system_config};

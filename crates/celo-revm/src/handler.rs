@@ -20,21 +20,20 @@ use revm::{
     Database, Inspector,
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{ExecutionResult, FromStringError, InvalidTransaction, ResultAndState},
+        result::{ExecutionResult, FromStringError, InvalidTransaction},
     },
     handler::{
-        EvmTr, Frame, FrameResult, Handler, MainnetHandler, handler::EvmTrError,
+        EvmTr, FrameResult, Handler, MainnetHandler, evm::FrameTr, handler::EvmTrError,
         pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
-    inspector::{InspectorFrame, InspectorHandler},
+    inspector::InspectorHandler,
     interpreter::{
-        FrameInput, Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx,
-        interpreter::EthInterpreter,
+        Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
-    primitives::{HashMap, U256, hardfork::SpecId},
-    state::{Account, EvmState},
+    primitives::{U256, hardfork::SpecId},
+    state::EvmState,
 };
-use revm_context::{ContextSetters, LocalContextTr};
+use revm_context_interface::{ContextSetters, LocalContextTr};
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
@@ -58,17 +57,11 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<ERROR, FRAME, DB, INSP> CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
+impl<ERROR, DB, INSP> CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
-    INSP: Inspector<CeloContext<DB>>,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
-    FRAME: Frame<
-            Evm = CeloEvm<DB, INSP>,
-            Error = ERROR,
-            FrameResult = FrameResult,
-            FrameInit = FrameInput,
-        >,
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
@@ -76,7 +69,7 @@ where
             // Update the chain with the new fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
-                    evm.ctx().chain().fee_currency_context = fee_currency_context;
+                    evm.ctx().chain_mut().fee_currency_context = fee_currency_context;
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -98,7 +91,7 @@ where
         state: EvmState,
     ) -> Result<(), ERROR> {
         for (address, account) in state {
-            let mut loaded_account = evm.ctx().journal().load_account(address)?;
+            let mut loaded_account = evm.ctx().journal_mut().load_account(address)?;
 
             // Apply the account changes to the loaded account
             loaded_account.data.info.balance = account.info.balance;
@@ -125,7 +118,8 @@ where
         basefee: u64,
     ) -> Result<u128, ERROR> {
         // Convert costs to fee currency
-        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let ctx = evm.ctx();
+        let fee_currency_context = &ctx.chain().fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
             .celo_to_currency(fee_currency, U256::from(basefee))
             .map_err(|e| ERROR::from_string(e))?;
@@ -141,7 +135,8 @@ where
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
     ) -> Result<u64, ERROR> {
-        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let ctx = evm.ctx();
+        let fee_currency_context = &ctx.chain().fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?;
@@ -223,7 +218,7 @@ where
             U256::from(base_tx_charge),
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {}", e)))?;
+        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {e}")))?;
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
@@ -289,7 +284,7 @@ where
         let gas_limit = tx.gas_limit();
         let basefee = ctx.block().basefee();
 
-        let fee_currency_context = &evm.ctx().chain().fee_currency_context;
+        let fee_currency_context = &ctx.chain().fee_currency_context;
 
         // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
@@ -309,7 +304,7 @@ where
         let fee_currency_addr = fee_currency.unwrap();
 
         let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {}", e)))?;
+            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {e}")))?;
 
         let gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
@@ -334,7 +329,7 @@ where
             gas_cost,
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {}", e)))?;
+        .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {e}")))?;
 
         // Apply the state changes from the system call to the current execution context
         self.apply_state_to_journal(evm, state)?;
@@ -396,21 +391,15 @@ where
     }
 }
 
-impl<ERROR, FRAME, DB, INSP> Handler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
+impl<ERROR, DB, INSP> Handler
+    for CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
-    INSP: Inspector<CeloContext<DB>>,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
-    FRAME: Frame<
-            Evm = CeloEvm<DB, INSP>,
-            Error = ERROR,
-            FrameResult = FrameResult,
-            FrameInit = FrameInput,
-        >,
 {
     type Evm = CeloEvm<DB, INSP>;
     type Error = ERROR;
-    type Frame = FRAME;
     type HaltReason = OpHaltReason;
 
     fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
@@ -451,7 +440,12 @@ where
 
                 let base_fee_in_erc20 =
                     self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?;
-                validate_priority_fee_tx(max_fee, max_priority_fee, Some(base_fee_in_erc20))?;
+                validate_priority_fee_tx(
+                    max_fee,
+                    max_priority_fee,
+                    Some(base_fee_in_erc20),
+                    false,
+                )?;
             }
             _ => {
                 // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
@@ -479,16 +473,22 @@ where
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
         let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
-        let mint = ctx.tx().mint();
+
+        let mint = if is_deposit {
+            ctx.tx().mint().unwrap_or_default()
+        } else {
+            0
+        };
 
         let mut additional_cost = U256::ZERO;
 
         // The L1-cost fee is only computed for Optimism non-deposit transactions.
-        if !is_deposit {
+        if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
             if ctx.chain().l1_block_info.l2_block != block_number {
-                ctx.chain().l1_block_info = L1BlockInfo::try_fetch(ctx.db(), block_number, spec)?;
+                ctx.chain_mut().l1_block_info =
+                    L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
             // account for additional cost of l1 fee and operator fee
@@ -500,7 +500,7 @@ where
 
             // compute L1 cost
             additional_cost = ctx
-                .chain()
+                .chain_mut()
                 .l1_block_info
                 .calculate_tx_l1_cost(&enveloped_tx, spec);
 
@@ -518,68 +518,43 @@ where
         if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
+        let (tx, journal) = evm.ctx().tx_journal_mut();
 
-        // Now handle all account operations
-        let (tx, journal) = evm.ctx().tx_journal();
         let caller_account = journal.load_account_code(tx.caller())?.data;
 
-        // If the transaction is a deposit with a `mint` value, add the mint value
-        // in wei to the caller's balance. This should be persisted to the database
-        // prior to the rest of execution.
-        if is_deposit {
-            if let Some(mint) = mint {
-                caller_account.info.balance =
-                    caller_account.info.balance.saturating_add(U256::from(mint));
-            }
-            if tx.kind().is_call() {
-                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
-            }
-        } else {
+        if !is_deposit {
             // validates account nonce and code
             validate_account_nonce_and_code(
                 &mut caller_account.info,
                 tx.nonce(),
-                tx.kind().is_call(),
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
             )?;
         }
 
-        if is_balance_check_disabled {
-            // Make sure the caller's balance is at least the value of the transaction.
-            // this is not consensus critical, and it is used in testing.
-            caller_account.info.balance = caller_account.info.balance.max(tx.value());
-        } else if !is_deposit {
-            // Check balance for gas payment for regular transactions
-            if fees_in_celo {
-                // Regular transaction: check CELO balance for both value and gas
-                let max_balance_spending =
-                    tx.max_balance_spending()?.saturating_add(additional_cost);
+        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
 
-                if max_balance_spending > caller_account.info.balance {
-                    return Err(InvalidTransaction::LackOfFundForMaxFee {
-                        fee: Box::new(max_balance_spending),
-                        balance: Box::new(caller_account.info.balance),
-                    }
-                    .into());
+        // old balance is journaled before mint is incremented.
+        let old_balance = caller_account.info.balance;
+
+        // If the transaction is a deposit with a `mint` value, add the mint value
+        // in wei to the caller's balance. This should be persisted to the database
+        // prior to the rest of execution.
+        let mut new_balance = caller_account.info.balance.saturating_add(U256::from(mint));
+
+        if fees_in_celo {
+            // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
+            // Transfer will be done inside `*_inner` functions.
+            if !is_deposit && max_balance_spending > new_balance && !is_balance_check_disabled {
+                // skip max balance check for deposit transactions.
+                // this check for deposit was skipped previously in `validate_tx_against_state` function
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(max_balance_spending),
+                    balance: Box::new(new_balance),
                 }
-            } else {
-                // Check CELO balance for value transfer (value is always in CELO)
-                if tx.value() > caller_account.info.balance {
-                    return Err(ERROR::from_string(format!(
-                        "lack of funds ({}) for value payment ({})",
-                        caller_account.info.balance,
-                        tx.value()
-                    )));
-                }
+                .into());
             }
-        }
 
-        // Handle balance deduction for CELO gas fees
-        // Note: We are not deducting the tx value (in CELO) from the caller's balance for CIP-64 transactions
-        // because it will be deducted later in the call
-        if !is_balance_check_disabled && fees_in_celo {
-            // Only deduct CELO for gas if not using fee currency
             let effective_balance_spending =
                 tx.effective_balance_spending(basefee, blob_price).expect(
                     "effective balance is always smaller than max balance so it can't overflow",
@@ -595,23 +570,51 @@ where
             // In case of deposit additional cost will be zero.
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
-            caller_account.info.balance = caller_account
-                .info
-                .balance
-                .saturating_sub(op_gas_balance_spending);
+            new_balance = new_balance.saturating_sub(op_gas_balance_spending);
+        } else {
+            // Check CELO balance for value transfer (value is always in CELO)
+            assert!(
+                !is_deposit,
+                "gas for deposit txs can't be paid in erc20 tokens"
+            );
+            if tx.value() > new_balance && !is_balance_check_disabled {
+                return Err(ERROR::from_string(format!(
+                    "lack of funds ({}) for value payment ({})",
+                    new_balance,
+                    tx.value()
+                )));
+            }
         }
 
-        if fees_in_celo || tx.value() > U256::ZERO {
+        if is_balance_check_disabled {
+            // Make sure the caller's balance is at least the value of the transaction.
+            // this is not consensus critical, and it is used in testing.
+            new_balance = new_balance.max(tx.value());
+        }
+
+        caller_account.info.balance = new_balance;
+
+        // Bump the nonce for calls. Nonce for CREATE will be bumped in `handle_create`.
+        if tx.kind().is_call() {
+            caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+        }
+
+        // Touch account and journal it only if some change was performed.
+        if old_balance != new_balance || tx.kind().is_call() {
             // Touch account so we know it is changed.
             caller_account.mark_touch();
+            // NOTE: all changes to the caller account should journaled so in case of error
+            // we can revert the changes.
+            journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
         }
+
         Ok(())
     }
 
     fn last_frame_result(
         &mut self,
         evm: &mut Self::Evm,
-        frame_result: &mut <Self::Frame as Frame>::FrameResult,
+        frame_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let ctx = evm.ctx();
         let tx = ctx.tx();
@@ -676,7 +679,7 @@ where
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <Self::Frame as Frame>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         // For CIP-64 transactions, we need to credit the fee currency all in the same
         // place. We address that in the reward_beneficiary function.
@@ -695,7 +698,7 @@ where
                 .l1_block_info
                 .operator_fee_refund(exec_result.gas(), spec);
 
-            let caller_account = context.journal().load_account(caller)?;
+            let caller_account = evm.ctx().journal_mut().load_account(caller)?;
 
             // In additional to the normal transaction fee, additionally refund the caller
             // for the operator fee.
@@ -709,12 +712,7 @@ where
         Ok(())
     }
 
-    fn refund(
-        &self,
-        evm: &mut Self::Evm,
-        exec_result: &mut <Self::Frame as Frame>::FrameResult,
-        eip7702_refund: i64,
-    ) {
+    fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
         exec_result.gas_mut().record_refund(eip7702_refund);
 
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
@@ -736,7 +734,7 @@ where
     fn reward_beneficiary(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <Self::Frame as Frame>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
@@ -750,7 +748,7 @@ where
             let ctx = evm.ctx();
             let enveloped = ctx.tx().enveloped_tx().cloned();
             let spec = ctx.cfg().spec();
-            let l1_block_info = &mut ctx.chain().l1_block_info;
+            let l1_block_info = &mut ctx.chain_mut().l1_block_info;
 
             let Some(enveloped_tx) = &enveloped else {
                 return Err(ERROR::from_string(
@@ -767,34 +765,59 @@ where
                 );
             }
             // Send the L1 cost of the transaction to the L1 Fee Vault.
-            let mut l1_fee_vault_account = ctx.journal().load_account(L1_FEE_RECIPIENT)?;
+            let mut l1_fee_vault_account =
+                evm.ctx().journal_mut().load_account(L1_FEE_RECIPIENT)?;
             l1_fee_vault_account.mark_touch();
-            l1_fee_vault_account.info.balance += l1_cost;
+            l1_fee_vault_account.data.info.balance += l1_cost;
 
             // Send the base fee of the transaction to the FeeHandler.
             let fee_handler = get_addresses(evm.ctx().cfg().chain_id()).fee_handler;
-            let mut base_fee_vault_account = evm.ctx().journal().load_account(fee_handler)?;
+            let mut base_fee_vault_account = evm.ctx().journal_mut().load_account(fee_handler)?;
             base_fee_vault_account.mark_touch();
-            base_fee_vault_account.info.balance +=
+            base_fee_vault_account.data.info.balance +=
                 U256::from(basefee.saturating_mul(exec_result.gas().spent_sub_refunded() as u128));
 
             // Send the operator fee of the transaction to the coinbase.
-            let mut operator_fee_vault_account =
-                evm.ctx().journal().load_account(OPERATOR_FEE_RECIPIENT)?;
+            let mut operator_fee_vault_account = evm
+                .ctx()
+                .journal_mut()
+                .load_account(OPERATOR_FEE_RECIPIENT)?;
             operator_fee_vault_account.mark_touch();
             operator_fee_vault_account.data.info.balance += operator_fee_cost;
         }
         Ok(())
     }
 
-    fn output(
-        &self,
+    fn execution_result(
+        &mut self,
         evm: &mut Self::Evm,
-        result: <Self::Frame as Frame>::FrameResult,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        let result = self.mainnet.output(evm, result)?;
-        let result = result.map_haltreason(OpHaltReason::Base);
-        if result.result.is_halt() {
+        mut frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // Handle context errors
+        match core::mem::replace(evm.ctx().error(), Ok(())) {
+            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
+            Err(revm::context_interface::context::ContextError::Custom(e)) => {
+                return Err(ERROR::from_string(e));
+            }
+            Ok(_) => (),
+        }
+
+        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
+        // This matches the old revm 24.0 flow where it was called in the `end` function
+        // as a separate step after reward_beneficiary
+        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
+
+        // Call post_execution::output to get ExecutionResult
+        let exec_result = revm::handler::post_execution::output(evm.ctx(), frame_result)
+            .map_haltreason(OpHaltReason::Base);
+
+        // CIP64 NOTE:
+        // The ExecutionResult class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs),
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
+
+        if exec_result.is_halt() {
             // Post-regolith, if the transaction is a deposit transaction and it halts,
             // we bubble up to the global return handler. The mint value will be persisted
             // and the caller nonce will be incremented there.
@@ -804,44 +827,20 @@ where
             }
         }
 
-        // CIP64 NOTE:
-        // The ResultAndState class does not allow logs to be passed in for revert results.
-        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
-        // So, instead of modifying only the success results here (to contain those logs),
-        // both cases are handled in the receipts_builder (alloy-celo-evm)
+        // Commit journal, clear frame stack, clear l1_block_info
+        evm.ctx().journal_mut().commit_tx();
+        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().local_mut().clear();
+        evm.frame_stack().clear();
 
-        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
-
-        Ok(result)
-    }
-
-    fn post_execution(
-        &self,
-        evm: &mut Self::Evm,
-        mut exec_result: FrameResult,
-        init_and_floor_gas: InitialAndFloorGas,
-        eip7702_gas_refund: i64,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Calculate final refund and add EIP-7702 refund to gas.
-        self.refund(evm, &mut exec_result, eip7702_gas_refund);
-        // Ensure gas floor is met and minimum floor gas is spent.
-        self.mainnet
-            .eip7623_check_gas_floor(evm, &mut exec_result, init_and_floor_gas);
-        // Return unused gas to caller
-        self.reimburse_caller(evm, &mut exec_result)?;
-        // Pay transaction fees to beneficiary
-        self.reward_beneficiary(evm, &mut exec_result)?;
-        // CIP-64: Credit the fee currency to the fee handler
-        self.cip64_credit_fee_currency(evm, &mut exec_result)?;
-        // Prepare transaction output
-        self.output(evm, exec_result)
+        Ok(exec_result)
     }
 
     fn catch_error(
         &self,
         evm: &mut Self::Evm,
         error: Self::Error,
-    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let output = if error.is_tx_error() && is_deposit {
             let ctx = evm.ctx();
@@ -851,6 +850,10 @@ where
             let mint = tx.mint();
             let is_system_tx = tx.is_system_transaction();
             let gas_limit = tx.gas_limit();
+
+            // discard all changes of this transaction
+            evm.ctx().journal_mut().discard_tx();
+
             // If the transaction is a deposit transaction and it failed
             // for any reason, the caller nonce must be bumped, and the
             // gas reported must be altered depending on the Hardfork. This is
@@ -860,23 +863,23 @@ where
 
             // Increment sender nonce and account balance for the mint amount. Deposits
             // always persist the mint amount, even if the transaction fails.
-            let account = {
-                let mut acc = Account::from(
-                    evm.ctx()
-                        .db()
-                        .basic(caller)
-                        .unwrap_or_default()
-                        .unwrap_or_default(),
-                );
-                acc.info.nonce = acc.info.nonce.saturating_add(1);
-                acc.info.balance = acc
-                    .info
-                    .balance
-                    .saturating_add(U256::from(mint.unwrap_or_default()));
-                acc.mark_touch();
-                acc
-            };
-            let state = HashMap::from_iter([(caller, account)]);
+            let acc: &mut revm::state::Account = evm.ctx().journal_mut().load_account(caller)?.data;
+
+            let old_balance = acc.info.balance;
+
+            // decrement transaction id as it was incremented when we discarded the tx.
+            acc.transaction_id -= 1;
+            acc.info.nonce = acc.info.nonce.saturating_add(1);
+            acc.info.balance = acc
+                .info
+                .balance
+                .saturating_add(U256::from(mint.unwrap_or_default()));
+            acc.mark_touch();
+
+            // add journal entry for accounts
+            evm.ctx()
+                .journal_mut()
+                .caller_accounting_journal_entry(caller, old_balance, true);
 
             // The gas used of a failed deposit post-regolith is the gas
             // limit of the transaction. pre-regolith, it is the gas limit
@@ -888,37 +891,28 @@ where
                 0
             };
             // clear the journal
-            Ok(ResultAndState {
-                result: ExecutionResult::Halt {
-                    reason: OpHaltReason::FailedDeposit,
-                    gas_used,
-                },
-                state,
+            Ok(ExecutionResult::Halt {
+                reason: OpHaltReason::FailedDeposit,
+                gas_used,
             })
         } else {
             Err(error)
         };
         // do the cleanup
-        evm.ctx().chain().l1_block_info.clear_tx_l1_cost();
-        evm.ctx().journal().clear();
-        evm.ctx().local().clear();
+        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().local_mut().clear();
+        evm.frame_stack().clear();
 
         output
     }
 }
 
-impl<ERROR, FRAME, DB, INSP> InspectorHandler for CeloHandler<CeloEvm<DB, INSP>, ERROR, FRAME>
+impl<ERROR, DB, INSP> InspectorHandler
+    for CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
-    INSP: Inspector<CeloContext<DB>>,
+    INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
-    FRAME: InspectorFrame<
-            Evm = CeloEvm<DB, INSP>,
-            Error = ERROR,
-            FrameResult = FrameResult,
-            FrameInit = FrameInput,
-            IT = EthInterpreter,
-        >,
 {
     type IT = EthInterpreter;
 }
@@ -958,7 +952,7 @@ mod tests {
         ));
 
         let mut handler =
-            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         handler
             .last_frame_result(&mut evm, &mut exec_result)
@@ -1086,14 +1080,15 @@ mod tests {
 
         let mut evm = ctx.build_celo();
 
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         handler
             .validate_against_state_and_deduct_caller(&mut evm)
             .unwrap();
 
         // Check the account balance is updated.
-        let account = evm.ctx().journal().load_account(caller).unwrap();
-        assert_eq!(account.info.balance, U256::from(1010));
+        let account = evm.ctx().journal_mut().load_account(caller).unwrap();
+        assert_eq!(account.data.info.balance, U256::from(1010));
     }
 
     #[test]
@@ -1131,14 +1126,15 @@ mod tests {
 
         let mut evm = ctx.build_celo();
 
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         handler
             .validate_against_state_and_deduct_caller(&mut evm)
             .unwrap();
 
         // Check the account balance is updated.
-        let account = evm.ctx().journal().load_account(caller).unwrap();
-        assert_eq!(account.info.balance, U256::from(1010));
+        let account = evm.ctx().journal_mut().load_account(caller).unwrap();
+        assert_eq!(account.data.info.balance, U256::from(1010));
     }
 
     #[test]
@@ -1173,7 +1169,8 @@ mod tests {
             });
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // l1block cost is 1048 fee.
         handler
@@ -1181,8 +1178,8 @@ mod tests {
             .unwrap();
 
         // Check the account balance is updated.
-        let account = evm.ctx().journal().load_account(caller).unwrap();
-        assert_eq!(account.info.balance, U256::from(1));
+        let account = evm.ctx().journal_mut().load_account(caller).unwrap();
+        assert_eq!(account.data.info.balance, U256::from(1));
     }
 
     #[test]
@@ -1215,7 +1212,8 @@ mod tests {
             });
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // operator fee cost is operator_fee_scalar * gas_limit / 1e6 + operator_fee_constant
         // 10_000_000 * 10 / 1_000_000 + 50 = 150
@@ -1224,8 +1222,8 @@ mod tests {
             .unwrap();
 
         // Check the account balance is updated.
-        let account = evm.ctx().journal().load_account(caller).unwrap();
-        assert_eq!(account.info.balance, U256::from(1));
+        let account = evm.ctx().journal_mut().load_account(caller).unwrap();
+        assert_eq!(account.data.info.balance, U256::from(1));
     }
 
     #[test]
@@ -1258,7 +1256,8 @@ mod tests {
 
         // l1block cost is 1048 fee.
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // l1block cost is 1048 fee.
         assert_eq!(
@@ -1284,7 +1283,8 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         assert_eq!(
             handler.validate_env(&mut evm),
@@ -1310,7 +1310,8 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         assert!(handler.validate_env(&mut evm).is_ok());
     }
@@ -1327,7 +1328,8 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // Nonce and balance checks should be skipped for deposit transactions.
         assert!(handler.validate_env(&mut evm).is_ok());
@@ -1356,7 +1358,8 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
         let mut evm = ctx.build_celo();
-        let handler = CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<_, _, _>>::new();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // Set the operator fee scalar & constant to non-zero values in the L1 block info.
         evm.ctx().chain.l1_block_info.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
@@ -1395,7 +1398,7 @@ mod tests {
         }
 
         // Check that the caller was reimbursed the correct amount of ETH.
-        let account = evm.ctx().journal().load_account(SENDER).unwrap();
-        assert_eq!(account.info.balance, expected_refund);
+        let account = evm.ctx().journal_mut().load_account(SENDER).unwrap();
+        assert_eq!(account.data.info.balance, expected_refund);
     }
 }

@@ -4,9 +4,6 @@
 
 extern crate alloc;
 
-#[macro_use]
-extern crate tracing;
-
 pub mod executor;
 
 pub mod boot;

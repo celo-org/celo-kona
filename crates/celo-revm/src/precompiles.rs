@@ -91,15 +91,13 @@ mod tests {
     use alloy_sol_types::{SolCall, sol};
     use op_revm::OpTransaction;
     use revm::{
-        Context,
-        context::{JournalOutput, JournalTr, TxEnv},
+        Context, ExecuteEvm,
+        context::{JournalTr, TxEnv, result::ExecutionResult},
         database::{EmptyDB, in_memory_db::InMemoryDB},
         interpreter::{CallInput, InstructionResult},
         primitives::Bytes,
         state::{AccountInfo, Bytecode},
     };
-    use revm_context_interface::result::ExecutionResult;
-    use revm_handler::ExecuteEvm;
 
     #[test]
     fn test_celo_precompiles_count() {
@@ -168,7 +166,7 @@ mod tests {
         );
         assert!(res.is_ok());
 
-        let JournalOutput { state, .. } = ctx.journal().finalize();
+        let state = ctx.journal_mut().finalize();
         let from_account = state.get(&from).unwrap();
         let to_account = state.get(&to).unwrap();
         assert_eq!(
@@ -337,7 +335,7 @@ mod tests {
                 panic!("Revert output: {:?}", get_revert_message(output));
             }
             _ => {
-                panic!("Transaction failed: {:?}", result);
+                panic!("Transaction failed: {result:?}");
             }
         }
     }

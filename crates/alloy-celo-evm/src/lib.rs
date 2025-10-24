@@ -128,12 +128,7 @@ where
         // Get a transaction identifier for storage - use a combination of caller and nonce
         let tx_identifier = get_tx_identifier(tx.op_tx.base.caller, tx.op_tx.base.nonce);
 
-        let result = if self.inspect {
-            self.inner.set_tx(tx);
-            self.inner.inspect_replay()
-        } else {
-            self.inner.transact(tx)
-        };
+        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
 
         // CIP64 NOTE:
         // Extract and store the cip64 info to a shared storage to be able to add the credit/debit
@@ -251,6 +246,22 @@ where
 
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
         &mut self.inner.0.0.inspector
+    }
+
+    fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
+        (
+            &self.inner.0.0.ctx.journaled_state.database,
+            &self.inner.0.0.inspector,
+            &self.inner.0.0.precompiles,
+        )
+    }
+
+    fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        (
+            &mut self.inner.0.0.ctx.journaled_state.database,
+            &mut self.inner.0.0.inspector,
+            &mut self.inner.0.0.precompiles,
+        )
     }
 }
 

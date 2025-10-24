@@ -26,10 +26,9 @@ all = "warn"
 celo-alloy-consensus.workspace = true
 
 # revm
-revm = { workspace = true, features = ["secp256r1"] }
+revm = { workspace = true }
 op-revm = { workspace = true, features = ["serde"] }
 revm-context-interface.workspace = true
-revm-context.workspace = true
 
 # Alloy
 alloy-eips.workspace = true

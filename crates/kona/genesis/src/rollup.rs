@@ -99,9 +99,9 @@ mod tests {
           "l1_system_config_address": "0x94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710",
           "protocol_versions_address": "0x0000000000000000000000000000000000000000",
           "chain_op_config": {
-            "eip1559Elasticity": "0x6",
-            "eip1559Denominator": "0x32",
-            "eip1559DenominatorCanyon": "0xfa"
+            "eip1559Elasticity": 6,
+            "eip1559Denominator": 50,
+            "eip1559DenominatorCanyon": 250
           },
           "alt_da": {
             "da_challenge_contract_address": "0x0000000000000000000000000000000000000000",
@@ -134,6 +134,7 @@ mod tests {
                     eip1559_elasticity: None,
                     operator_fee_scalar: None,
                     operator_fee_constant: None,
+                    min_base_fee: None,
                 }),
             },
             block_time: 2,
@@ -142,7 +143,7 @@ mod tests {
             channel_timeout: 300,
             granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
             l1_chain_id: 3151908,
-            l2_chain_id: 1337,
+            l2_chain_id: 1337.into(),
             hardforks: HardForkConfig {
                 regolith_time: Some(0),
                 canyon_time: Some(0),

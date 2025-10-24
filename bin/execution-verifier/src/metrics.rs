@@ -45,7 +45,7 @@ impl Metrics {
 
     pub(crate) fn block_verification_completed(&mut self, success: bool, duration: Duration) {
         let result = KeyValue::new("result", if success { "success" } else { "failed" });
-        self.block_verification_count.add(1, &[result.clone()]);
+        self.block_verification_count.add(1, std::slice::from_ref(&result));
         self.duration_verification.record(duration.as_secs_f64() * 1000.0, &[result])
     }
 }

@@ -12,7 +12,7 @@ use core::fmt::Debug;
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
 use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
-use kona_derive::prelude::EthereumDataSource;
+use kona_derive::EthereumDataSource;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -99,20 +99,24 @@ where
     l2_provider.set_cursor(cursor.clone());
 
     let evm_factory = CeloEvmFactory::default();
+
+    // Set up EigenDA data source with Ethereum fallback
     let eth_data_source =
         EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
-
     let eigenda_preimage_provider = OracleEigenDAPreimageProvider::new(oracle.clone());
     let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
     let da_provider = EigenDADataSource::new(eth_data_source, eigenda_preimage_source);
 
+    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
+        l1_config,
         cursor.clone(),
         oracle.clone(),
         da_provider,
         l1_provider.clone(),
-        CeloToOpProviderAdapter(l2_provider.clone()),
+        l2_provider.clone(),
     )
     .await?;
     let executor = CeloExecutor::new(

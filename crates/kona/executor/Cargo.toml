@@ -33,6 +33,7 @@ alloy-eips.workspace = true
 alloy-trie.workspace = true
 
 # Op Alloy
+op-alloy-consensus.workspace = true
 op-alloy-rpc-types-engine = { workspace = true, features = ["serde", "k256"] }
 
 # revm

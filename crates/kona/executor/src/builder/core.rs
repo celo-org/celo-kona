@@ -12,6 +12,7 @@ use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
+use core::fmt::Debug;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use revm::database::{State, states::bundle_state::BundleRetention};
@@ -37,8 +38,8 @@ where
 
 impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
 where
-    P: TrieDBProvider,
-    H: TrieHinter,
+    P: TrieDBProvider + Debug,
+    H: TrieHinter + Debug,
 {
     /// Creates a new [CeloStatelessL2Builder] instance.
     pub fn new(
@@ -87,8 +88,8 @@ where
 
         info!(
             target: "block_builder",
-            block_number = block_env.number,
-            block_timestamp = block_env.timestamp,
+            block_number = %block_env.number,
+            block_timestamp = %block_env.timestamp,
             block_gas_limit = block_env.gas_limit,
             transactions = op_attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
             "Beginning block building."

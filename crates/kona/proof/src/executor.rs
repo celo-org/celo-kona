@@ -8,6 +8,7 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
 use celo_executor::{CeloBlockBuildingOutcome, CeloEvmFactory, CeloStatelessL2Builder};
 use celo_genesis::CeloRollupConfig;
+use core::fmt::Debug;
 use kona_executor::TrieDBProvider;
 use kona_mpt::TrieHinter;
 
@@ -50,8 +51,8 @@ where
 #[async_trait]
 impl<P, H> CeloExecutorTr for CeloExecutor<'_, P, H>
 where
-    P: TrieDBProvider + Send + Sync + Clone,
-    H: TrieHinter + Send + Sync + Clone,
+    P: TrieDBProvider + Debug + Send + Sync + Clone,
+    H: TrieHinter + Debug + Send + Sync + Clone,
 {
     type Error = kona_executor::ExecutorError;
 

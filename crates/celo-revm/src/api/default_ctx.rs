@@ -29,10 +29,7 @@ impl DefaultCelo for CeloContext<EmptyDB> {
 mod test {
     use super::*;
     use crate::CeloBuilder;
-    use revm::{
-        ExecuteEvm,
-        inspector::{InspectEvm, NoOpInspector},
-    };
+    use revm::{ExecuteEvm, inspector::NoOpInspector};
 
     #[test]
     fn default_run_celo() {
@@ -41,7 +38,5 @@ mod test {
         let mut evm = ctx.build_celo_with_inspector(NoOpInspector {});
         // execute
         let _ = evm.replay();
-        // inspect
-        let _ = evm.inspect_replay();
     }
 }

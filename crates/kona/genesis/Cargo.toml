@@ -43,7 +43,6 @@ arbitrary = { workspace = true, features = ["derive"], optional = true }
 serde = { workspace = true, optional = true }
 serde_repr = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-kona-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = { workspace = true, features = ["thread_rng"] }
@@ -59,7 +58,6 @@ std = [
     "alloy-sol-types/std",
     "alloy-consensus/std",
     "alloy-eips/std",
-    "kona-serde?/std",
     "serde?/std",
     "thiserror/std",
 ]
@@ -75,7 +73,6 @@ serde = [
     "dep:serde",
     "dep:serde_repr",
     "dep:serde_json",
-    "dep:kona-serde",
     "alloy-primitives/serde",
     "alloy-eips/serde",
     "alloy-consensus/serde",

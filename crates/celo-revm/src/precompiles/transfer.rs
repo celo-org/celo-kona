@@ -102,7 +102,7 @@ where
     let to_account_cold_status = account_cold_status(context, to);
 
     // Now do the transfer (which will load both accounts and warm them)
-    let result = context.journal().transfer(from, to, value);
+    let result = context.journal_mut().transfer(from, to, value);
 
     // If the addresses were cold initially, make them cold again after the transfer.
     revert_account_cold_status(context, from, from_account_cold_status);
@@ -125,7 +125,7 @@ fn account_cold_status<CTX>(context: &mut CTX, address: Address) -> bool
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    match context.journal().load_account(address) {
+    match context.journal_mut().load_account(address) {
         Ok(account) => account.is_cold,
         Err(_) => true, // If account doesn't exist or error loading, treat as cold
     }
@@ -135,9 +135,7 @@ fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    if was_cold {
-        if let Ok(mut account) = context.journal().load_account(address) {
-            account.mark_cold();
-        }
+    if was_cold && let Ok(mut account) = context.journal_mut().load_account(address) {
+        account.mark_cold();
     }
 }

@@ -18,8 +18,8 @@
 
 use anyhow::{Result, anyhow};
 use celo_executor::test_utils::ExecutorTestFixtureCreator;
-use clap::{ArgAction, Parser};
-use kona_cli::init_tracing_subscriber;
+use clap::Parser;
+use kona_cli::{LogArgs, LogConfig};
 use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -29,11 +29,9 @@ use url::Url;
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Creates a static test fixture for `celo-executor` from a live chain")]
 pub struct ExecutionFixtureCommand {
-    /// Verbosity level (0-5).
-    /// If set to 0, no logs are printed.
-    /// By default, the verbosity level is set to 3 (info level).
-    #[arg(long, short, default_value = "3", action = ArgAction::Count)]
-    pub v: u8,
+    /// Logging arguments.
+    #[command(flatten)]
+    pub log_args: LogArgs,
     /// The L2 archive EL to use.
     #[arg(long, short = 'r')]
     pub l2_rpc: Url,
@@ -48,7 +46,7 @@ pub struct ExecutionFixtureCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = ExecutionFixtureCommand::parse();
-    init_tracing_subscriber(cli.v, None::<EnvFilter>)?;
+    LogConfig::new(cli.log_args).init_tracing_subscriber(None::<EnvFilter>)?;
 
     let output_dir = if let Some(output_dir) = cli.output_dir {
         output_dir

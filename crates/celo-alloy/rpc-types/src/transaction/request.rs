@@ -96,6 +96,7 @@ impl CeloTransactionRequest {
     ///
     /// Note that EIP-4844 transactions are not supported by Celo and will be converted into
     /// EIP-1559 transactions.
+    #[allow(clippy::result_large_err)]
     pub fn build_typed_tx(self) -> Result<CeloTypedTransaction, Self> {
         let tx = self.0.build_typed_tx().map_err(Self)?;
         match tx {

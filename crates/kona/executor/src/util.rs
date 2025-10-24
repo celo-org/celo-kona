@@ -18,28 +18,36 @@ use kona_executor::{ExecutorError, ExecutorResult};
 /// - `Ok(BaseFeeParams)`: The EIP-1559 parameters.
 /// - `Err(ExecutorError::InvalidExtraData)`: If the extra data is invalid.
 pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult<BaseFeeParams> {
+    use op_alloy_consensus::eip1559::EIP1559ParamError;
+
     // Check the extra data length.
     if header.extra_data.len() != 1 + 8 {
-        return Err(ExecutorError::InvalidExtraData);
+        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::InvalidExtraDataLength));
     }
 
     // Check the extra data version byte.
     if header.extra_data[0] != HOLOCENE_EXTRA_DATA_VERSION {
-        return Err(ExecutorError::InvalidExtraData);
+        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::InvalidVersion(
+            header.extra_data[0],
+        )));
     }
 
     // Parse the EIP-1559 parameters.
     let data = &header.extra_data[1..];
-    let denominator =
-        u32::from_be_bytes(data[..4].try_into().map_err(|_| ExecutorError::InvalidExtraData)?)
-            as u128;
-    let elasticity =
-        u32::from_be_bytes(data[4..].try_into().map_err(|_| ExecutorError::InvalidExtraData)?)
-            as u128;
+    let denominator = u32::from_be_bytes(
+        data[..4]
+            .try_into()
+            .map_err(|_| ExecutorError::InvalidExtraData(EIP1559ParamError::DenominatorOverflow))?,
+    ) as u128;
+    let elasticity = u32::from_be_bytes(
+        data[4..]
+            .try_into()
+            .map_err(|_| ExecutorError::InvalidExtraData(EIP1559ParamError::ElasticityOverflow))?,
+    ) as u128;
 
     // Check for potential division by zero.
     if denominator == 0 {
-        return Err(ExecutorError::InvalidExtraData);
+        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::DenominatorOverflow));
     }
 
     Ok(BaseFeeParams { elasticity_multiplier: elasticity, max_change_denominator: denominator })
@@ -112,6 +120,7 @@ mod test {
                 no_tx_pool: None,
                 gas_limit: None,
                 eip_1559_params,
+                min_base_fee: None,
             },
         }
     }

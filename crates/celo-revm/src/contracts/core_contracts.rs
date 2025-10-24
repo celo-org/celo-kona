@@ -1,19 +1,21 @@
-use crate::{CeloContext, CeloSystemCallEvmExt, constants::get_addresses, evm::CeloEvm};
+use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
-    Database,
+    Database, ExecuteEvm,
     context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
     primitives::Log,
     state::EvmState,
 };
-use revm_context::{Cfg, ContextSetters};
-use revm_context_interface::result::{ExecutionResult, Output};
+use revm_context_interface::{
+    ContextSetters,
+    result::{ExecutionResult, Output},
+};
 use std::{
     format,
     string::{String, ToString},
@@ -58,15 +60,11 @@ pub fn get_revert_message(output: Bytes) -> String {
         match <sol_data::String as SolType>::abi_decode(abi_encoded_string_data) {
             Ok(decoded_string) => decoded_string,
             Err(decoding_error) => {
-                format! {
-                        "could not decode: {:?}, {:?}", output, decoding_error
-                }
+                format!("could not decode: {output:?}, {decoding_error:?}")
             }
         }
     } else {
-        format! {
-                "no revert message: {:?}", output
-        }
+        format!("no revert message: {output:?}")
     }
 }
 
@@ -87,7 +85,7 @@ where
     let call_result = if let Some(limit) = gas_limit {
         evm.transact_system_call_with_gas_limit(address, calldata, limit)
     } else {
-        evm.transact_system_call(address, calldata)
+        evm.system_call_one(address, calldata)
     };
 
     // Restore the original transaction context
@@ -98,17 +96,23 @@ where
         Ok(o) => o,
     };
 
+    // Get logs from the execution result
+    let logs_from_call = match &exec_result {
+        ExecutionResult::Success { logs, .. } => logs.clone(),
+        _ => Vec::new(),
+    };
+
+    let state = evm.finalize();
+
     // Check success
-    match exec_result.result {
+    match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
-            logs,
             gas_used,
             ..
-        } => Ok((bytes, exec_result.state, logs, gas_used)),
+        } => Ok((bytes, state, logs_from_call, gas_used)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
-            "halt: {:?}",
-            reason
+            "halt: {reason:?}"
         ))),
         ExecutionResult::Revert { output, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "revert: {}",
@@ -127,7 +131,7 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory;
+    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
     let (output_bytes, _, _, _) = call(
         evm,
         fee_curr_dir,
@@ -164,7 +168,7 @@ where
     for token in currencies {
         let (output_bytes, _, _, _) = call(
             evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
             None,
         )?;
@@ -202,7 +206,7 @@ where
     for token in currencies {
         let (output_bytes, _, _, _) = call(
             evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id()).fee_currency_directory,
+            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
             None,
         )?;
