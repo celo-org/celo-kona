@@ -284,8 +284,7 @@ where
         let gas_limit = tx.gas_limit();
         let basefee = ctx.block().basefee();
 
-        let ctx2 = evm.ctx();
-        let fee_currency_context = &ctx2.chain().fee_currency_context;
+        let fee_currency_context = &ctx.chain().fee_currency_context;
 
         // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
