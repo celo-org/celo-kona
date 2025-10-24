@@ -573,10 +573,14 @@ where
             new_balance = new_balance.saturating_sub(op_gas_balance_spending);
         } else {
             // Check CELO balance for value transfer (value is always in CELO)
-            if tx.value() > caller_account.info.balance {
+            assert!(
+                !is_deposit,
+                "gas for deposit txs can't be paid in erc20 tokens"
+            );
+            if tx.value() > new_balance && !is_balance_check_disabled {
                 return Err(ERROR::from_string(format!(
                     "lack of funds ({}) for value payment ({})",
-                    caller_account.info.balance,
+                    new_balance,
                     tx.value()
                 )));
             }
