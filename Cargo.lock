@@ -85,6 +85,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf01dd83a1ca5e4807d0ca0223c9615e211ce5db0a9fd1443c2778cacf89b546"
 dependencies = [
  "alloy-primitives",
+ "alloy-rlp",
  "arbitrary",
  "num_enum",
  "proptest",
@@ -1547,20 +1548,23 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-sol-types",
+ "serde",
 ]
 
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
+ "alloy-genesis",
  "alloy-primitives",
- "alloy-sol-types",
- "canoe-bindings",
  "eigenda-cert",
+ "reth-chainspec",
+ "reth-evm",
+ "revm-primitives",
  "serde",
  "thiserror 2.0.17",
 ]
@@ -2114,6 +2118,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2411,7 +2421,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -3001,7 +3011,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -3020,7 +3030,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-evm",
  "cfg-if",
@@ -3038,7 +3048,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -3054,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -3081,7 +3091,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=5164717bed02a202fb254efe73505aac54eed1f9#5164717bed02a202fb254efe73505aac54eed1f9"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=847d3ca#847d3ca3d4111415f0b0984c7fb68d93fa9dcb17"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
@@ -3570,7 +3580,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3590,7 +3600,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3629,7 +3639,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3650,7 +3660,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -3671,7 +3681,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3708,7 +3718,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -3729,7 +3739,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -3740,7 +3750,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3788,7 +3798,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3810,12 +3820,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -3827,7 +3837,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -3840,7 +3850,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3876,7 +3886,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3908,7 +3918,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -3939,7 +3949,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3970,7 +3980,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "alloy-chains",
  "alloy-eips",
@@ -3989,7 +3999,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -4002,7 +4012,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac#ebd77b8d0ea9549bfcb5c5b79a11feb6e52be8ac"
+source = "git+https://github.com/celo-org/kona?rev=2c33430#2c33430f50c36524ccf34d8b4fb372efb0d923ab"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",
@@ -4496,6 +4506,10 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+dependencies = [
+ "critical-section",
+ "portable-atomic",
+]
 
 [[package]]
 name = "once_cell_polyfill"
@@ -5540,6 +5554,227 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "webpki-roots 1.0.3",
+]
+
+[[package]]
+name = "reth-chainspec"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-chains",
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-trie",
+ "auto_impl",
+ "derive_more",
+ "reth-ethereum-forks",
+ "reth-network-peers",
+ "reth-primitives-traits",
+ "serde_json",
+]
+
+[[package]]
+name = "reth-db-models"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "reth-primitives-traits",
+]
+
+[[package]]
+name = "reth-ethereum-forks"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-eip2124",
+ "alloy-hardforks",
+ "alloy-primitives",
+ "auto_impl",
+ "once_cell",
+]
+
+[[package]]
+name = "reth-ethereum-primitives"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "reth-primitives-traits",
+]
+
+[[package]]
+name = "reth-evm"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-primitives",
+ "auto_impl",
+ "derive_more",
+ "futures-util",
+ "reth-execution-errors",
+ "reth-execution-types",
+ "reth-primitives-traits",
+ "reth-storage-api",
+ "reth-storage-errors",
+ "reth-trie-common",
+ "revm",
+]
+
+[[package]]
+name = "reth-execution-errors"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "nybbles",
+ "reth-storage-errors",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "reth-execution-types"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-primitives",
+ "derive_more",
+ "reth-ethereum-primitives",
+ "reth-primitives-traits",
+ "reth-trie-common",
+ "revm",
+]
+
+[[package]]
+name = "reth-network-peers"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "serde_with",
+ "thiserror 2.0.17",
+ "url",
+]
+
+[[package]]
+name = "reth-primitives-traits"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "auto_impl",
+ "bytes",
+ "derive_more",
+ "once_cell",
+ "revm-bytecode",
+ "revm-primitives",
+ "revm-state",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "reth-prune-types"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-primitives",
+ "derive_more",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "reth-stages-types"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-primitives",
+ "reth-trie-common",
+]
+
+[[package]]
+name = "reth-static-file-types"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-primitives",
+ "derive_more",
+ "serde",
+ "strum",
+]
+
+[[package]]
+name = "reth-storage-api"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "auto_impl",
+ "reth-chainspec",
+ "reth-db-models",
+ "reth-ethereum-primitives",
+ "reth-execution-types",
+ "reth-primitives-traits",
+ "reth-prune-types",
+ "reth-stages-types",
+ "reth-storage-errors",
+ "reth-trie-common",
+ "revm-database",
+]
+
+[[package]]
+name = "reth-storage-errors"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "derive_more",
+ "reth-primitives-traits",
+ "reth-prune-types",
+ "reth-static-file-types",
+ "revm-database-interface",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "reth-trie-common"
+version = "1.8.2"
+source = "git+https://github.com/paradigmxyz/reth?tag=v1.8.2#9c30bf7af5e0d45deaf5917375c9922c16654b28"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "derive_more",
+ "itertools 0.14.0",
+ "nybbles",
+ "reth-primitives-traits",
+ "revm-database",
 ]
 
 [[package]]
