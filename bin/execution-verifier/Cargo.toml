@@ -28,6 +28,7 @@ op-alloy-rpc-types-engine.workspace = true
 alloy-provider = { workspace = true, features = ["ipc"] }
 alloy-rpc-client.workspace = true
 alloy-transport.workspace = true
+alloy-json-rpc = "1.0"
 alloy-transport-ws = "1.0.38"
 tokio-util = "0.7.15"
 alloy-pubsub = "1.0.38"
@@ -44,6 +45,8 @@ thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 parking_lot = "0.12.4"
+tower = { version = "0.5", features = ["timeout"] }
+rand = "0.8"
 
 # tracing and telemetry
 tracing.workspace = true
@@ -51,6 +54,9 @@ opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 
 
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 
 [lints]
 workspace = true

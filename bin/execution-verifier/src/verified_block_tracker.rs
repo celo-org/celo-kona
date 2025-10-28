@@ -1,12 +1,17 @@
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::Mutex;
+
 /// Tracks verified blocks and maintains the highest consecutive verified block.
 pub(crate) struct VerifiedBlockTracker {
     /// The starting block number for verification. If None, will be set to the first block added.
-    start_block: Option<u64>,
-    /// The highest block number that forms a consecutive sequence from start_block.
-    highest_verified_block: Option<u64>,
+    start: Option<u64>,
+    /// The highest block number that forms a consecutive sequence from start.
+    highest: OnceLock<AtomicU64>,
     /// List of verified block numbers that haven't been processed yet.
     /// Blocks are removed from this list once they become part of the consecutive sequence.
-    verified_blocks: Vec<u64>,
+    pending: Mutex<BTreeSet<u64>>,
 }
 
 impl VerifiedBlockTracker {
@@ -14,10 +19,10 @@ impl VerifiedBlockTracker {
     ///
     /// # Arguments
     ///
-    /// * `start_block` - The starting block number for verification. If `None`, it will be set to
-    ///   the first block that gets added.
-    pub(crate) const fn new(start_block: Option<u64>) -> Self {
-        Self { start_block, highest_verified_block: None, verified_blocks: Vec::new() }
+    /// * `start` - The starting block number for verification. If `None`, it will be set to
+    ///   the first block that gets marked verified.
+    pub(crate) fn new(start: Option<u64>) -> Self {
+        Self { start, highest: OnceLock::new(), pending: Mutex::new(BTreeSet::new()) }
     }
 
     /// Returns the highest block number that forms a consecutive sequence.
@@ -26,45 +31,91 @@ impl VerifiedBlockTracker {
     ///
     /// * `Some(block_number)` - The highest consecutive verified block
     /// * `None` - If no consecutive sequence has been established yet
-    pub(crate) const fn highest_verified_block(&self) -> Option<u64> {
-        self.highest_verified_block
+    pub(crate) fn highest(&self) -> Option<u64> {
+        self.highest.get().map(|a| a.load(Ordering::Acquire))
     }
 
-    /// Adds a block number to the list of verified blocks.
-    pub(crate) fn add_verified_block(&mut self, block_number: u64) {
-        self.verified_blocks.push(block_number);
-    }
-
-    /// Recalculates the highest consecutive verified block.
+    ///
+    /// Marks a block as verified and recalculates the highest consecutive verified block.
     ///
     /// This method sorts the verified blocks, removes duplicates, and determines
     /// the highest block that forms a consecutive sequence starting from the
-    /// current highest verified block (or start_block if none exists yet).
+    /// current highest verified block (or `start` if none exists yet).
     ///
     /// Blocks that become part of the consecutive sequence are removed from
-    /// the internal list to save memory.
-    pub(crate) fn update_highest_verified_block(&mut self) {
-        // Sort and deduplicate only when we need to calculate
-        self.verified_blocks.sort_unstable();
-        self.verified_blocks.dedup();
+    /// the internal btree to save memory.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (highest_verified_block, was_updated) where:
+    /// * `highest_verified_block` - The current highest consecutive verified block (or None)
+    /// * `was_updated` - Whether the highest verified block changed during this update
+    pub(crate) async fn mark_verified(&self, n: u64) -> (Option<u64>, bool) {
+        self.mark_verified_many(std::iter::once(n)).await
+    }
 
-        if self.start_block.is_none() {
-            self.start_block = self.verified_blocks.first().cloned();
+    /// Batch-friendly version (one lock acquisition).
+    pub(crate) async fn mark_verified_many<I: IntoIterator<Item = u64>>(
+        &self,
+        blocks: I,
+    ) -> (Option<u64>, bool) {
+        // OPTIM: sync barrier / bottleneck, all concurrent tasks await this.
+        let mut set = self.pending.lock().await;
+        let mut advanced = false;
+        let mut highest: Option<u64> = None;
+
+        // Insert candidates.
+        for b in blocks {
+            set.insert(b);
         }
 
-        let mut start =
-            self.highest_verified_block.map(|h| h + 1).unwrap_or(self.start_block.unwrap_or(0));
+        // If we already published a highest, start checking from the next after that.
+        let mut next_probe = if let Some(a) = self.highest.get() {
+            let h = a.load(Ordering::Acquire);
+            highest = Some(h);
+            h + 1
+        } else if let Some(s) = self.start {
+            // No publication yet, but we have an explicit start.
+            s
+        } else {
+            // No publication yet and no explicit start.
+            // Bootstrap from the lowest verified block seen so far (if any).
+            match set.iter().next().copied() {
+                None => return (None, false), // nothing to do
+                Some(m) => m, // we know this will work, but this simplifies the code
+            }
+        };
 
-        for verified_block in self.verified_blocks.iter() {
-            if *verified_block == start {
-                self.highest_verified_block = Some(*verified_block);
-                start += 1;
-            } else {
-                break;
+        // advance h while we have consecutive next values.
+        while set.remove(&(next_probe)) {
+            next_probe += 1;
+            advanced = true;
+        }
+
+        // publish & truncate if we advanced.
+        if advanced {
+            highest = Some(next_probe - 1);
+            // TODO: panic message
+            let h = highest.expect("panic");
+            // we held the lock, so it's fine for simplicity to get the
+            // values again
+            if let Some(a) = self.highest.get() {
+                a.store(h, Ordering::Release);
+            } else if self.highest.set(AtomicU64::new(h)).is_err() {
+                // Not possible when this is the only write-ocne,
+                // but we lost the race to initialize; just store.
+                self.highest.get().unwrap().store(h, Ordering::Release);
+            }
+            let keep = set.split_off(&(next_probe));
+            *set = keep;
+        } else {
+            if let Some(h) = highest {
+                let keep = set.split_off(&(h));
+                *set = keep;
             }
         }
-
-        self.verified_blocks.retain(|&b| b > self.highest_verified_block.unwrap_or_default());
+        return (highest, advanced);
+        // mutex drops after the return
     }
 }
 
@@ -72,118 +123,114 @@ impl VerifiedBlockTracker {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_no_verified_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        assert_eq!(tracker.highest_verified_block(), None);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), None);
+    #[tokio::test]
+    async fn test_no_verified_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        assert_eq!(tracker.highest(), None);
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        assert_eq!(tracker.highest_verified_block(), None);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), None);
+        let tracker = VerifiedBlockTracker::new(None);
+        assert_eq!(tracker.highest(), None);
     }
 
-    #[test]
-    fn test_single_block() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.add_verified_block(1);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(1));
+    #[tokio::test]
+    async fn test_single_block() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
+        assert_eq!(tracker.highest(), Some(1));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.add_verified_block(1);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(1));
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
+        assert_eq!(tracker.highest(), Some(1));
     }
-    #[test]
-    fn test_single_block_not_at_start() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.add_verified_block(2);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), None);
+    #[tokio::test]
+    async fn test_single_block_not_at_start() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(2).await;
+        assert_eq!(tracker.highest(), None);
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.add_verified_block(2);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(2));
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(2).await;
+        assert_eq!(tracker.highest(), Some(2));
     }
 
-    #[test]
-    fn test_consecutive_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(3);
-        tracker.add_verified_block(4);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(4));
+    #[tokio::test]
+    async fn test_consecutive_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(4).await;
+        assert_eq!(tracker.highest(), Some(4));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(3);
-        tracker.add_verified_block(4);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(4));
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified_many(1..=4).await;
+        assert_eq!(tracker.highest(), Some(4));
+
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(4).await;
+        assert_eq!(tracker.highest(), Some(4));
+
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified_many(1..=4).await;
+        assert_eq!(tracker.highest(), Some(4));
     }
 
-    #[test]
-    fn test_out_of_order_insertion() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.add_verified_block(3);
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(5);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(3));
+    #[tokio::test]
+    async fn test_out_of_order_insertion() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(5).await;
+        assert_eq!(tracker.highest(), Some(3));
 
-        // verify `update_highest_verified_block` is idempotent
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(3));
-
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.add_verified_block(3);
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(5);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(3));
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(3));
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(5).await;
+        assert_eq!(tracker.highest(), Some(3));
     }
 
-    #[test]
-    fn test_duplicate_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(2);
-        tracker.update_highest_verified_block();
-        assert_eq!(tracker.highest_verified_block(), Some(2));
+    #[tokio::test]
+    async fn test_duplicate_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(2).await;
+        assert_eq!(tracker.highest(), Some(2));
     }
 
-    #[test]
-    fn test_verified_blocks_removed() {
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.add_verified_block(1);
-        tracker.add_verified_block(2);
-        tracker.add_verified_block(4);
-        tracker.add_verified_block(5);
-        tracker.update_highest_verified_block();
+    #[tokio::test]
+    async fn test_verified_blocks_removed() {
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(4).await;
+        tracker.mark_verified(5).await;
 
-        assert_eq!(tracker.highest_verified_block(), Some(2));
+        assert_eq!(tracker.highest(), Some(2));
+
+        let verified_blocks: Vec<u64> = {
+            let set = tracker.pending.lock().await;
+            set.iter().copied().collect()
+        };
         // Only blocks 4 and 5 should remain (after the gap at 3)
-        assert_eq!(tracker.verified_blocks, vec![4u64, 5u64]);
+        assert_eq!(verified_blocks, vec![4u64, 5u64]);
 
         // Add block 3 to fill the gap
-        tracker.add_verified_block(3);
-        tracker.update_highest_verified_block();
+        tracker.mark_verified(3).await;
+        assert_eq!(tracker.highest(), Some(5));
 
-        assert_eq!(tracker.highest_verified_block(), Some(5));
+        let verified_blocks_empty: Vec<u64> = {
+            let set = tracker.pending.lock().await;
+            set.iter().copied().collect()
+        };
         // All blocks should be removed now as they're all consecutive
-        assert_eq!(tracker.verified_blocks, Vec::<u64>::new());
+        assert_eq!(verified_blocks_empty, Vec::<u64>::new());
     }
 }
