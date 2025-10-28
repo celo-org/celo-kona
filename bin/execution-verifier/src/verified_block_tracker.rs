@@ -43,7 +43,13 @@ impl VerifiedBlockTracker {
     ///
     /// Blocks that become part of the consecutive sequence are removed from
     /// the internal list to save memory.
-    pub(crate) fn try_update_highest_verified_block(&mut self) {
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (highest_verified_block, was_updated) where:
+    /// * `highest_verified_block` - The current highest consecutive verified block (or None)
+    /// * `was_updated` - Whether the highest verified block changed during this update
+    pub(crate) fn try_update_highest_verified_block(&mut self) -> (Option<u64>, bool) {
         // Sort and deduplicate only when we need to calculate
         self.verified_blocks.sort_unstable();
         self.verified_blocks.dedup();
@@ -67,7 +73,9 @@ impl VerifiedBlockTracker {
 
         self.verified_blocks.retain(|&b| b > self.highest_verified_block.unwrap_or_default());
 
-        if previous_highest_verified_block != self.highest_verified_block() {
+        let was_updated = previous_highest_verified_block != self.highest_verified_block();
+
+        if was_updated {
             tracing::info!(
                 previous = previous_highest_verified_block,
                 updated = self.highest_verified_block(),
@@ -82,6 +90,8 @@ impl VerifiedBlockTracker {
                 "unable to update highest verified block"
             );
         };
+
+        (self.highest_verified_block(), was_updated)
     }
 }
 
@@ -93,12 +103,12 @@ mod tests {
     fn test_no_verified_blocks() {
         let mut tracker = VerifiedBlockTracker::new(Some(1));
         assert_eq!(tracker.highest_verified_block(), None);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), None);
 
         let mut tracker = VerifiedBlockTracker::new(None);
         assert_eq!(tracker.highest_verified_block(), None);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), None);
     }
 
@@ -106,24 +116,24 @@ mod tests {
     fn test_single_block() {
         let mut tracker = VerifiedBlockTracker::new(Some(1));
         tracker.add_verified_block(1);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(1));
 
         let mut tracker = VerifiedBlockTracker::new(None);
         tracker.add_verified_block(1);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(1));
     }
     #[test]
     fn test_single_block_not_at_start() {
         let mut tracker = VerifiedBlockTracker::new(Some(1));
         tracker.add_verified_block(2);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), None);
 
         let mut tracker = VerifiedBlockTracker::new(None);
         tracker.add_verified_block(2);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(2));
     }
 
@@ -134,7 +144,7 @@ mod tests {
         tracker.add_verified_block(2);
         tracker.add_verified_block(3);
         tracker.add_verified_block(4);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(4));
 
         let mut tracker = VerifiedBlockTracker::new(None);
@@ -142,7 +152,7 @@ mod tests {
         tracker.add_verified_block(2);
         tracker.add_verified_block(3);
         tracker.add_verified_block(4);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(4));
     }
 
@@ -153,11 +163,11 @@ mod tests {
         tracker.add_verified_block(1);
         tracker.add_verified_block(2);
         tracker.add_verified_block(5);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
 
         // verify `update_highest_verified_block` is idempotent
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
 
         let mut tracker = VerifiedBlockTracker::new(None);
@@ -165,9 +175,9 @@ mod tests {
         tracker.add_verified_block(1);
         tracker.add_verified_block(2);
         tracker.add_verified_block(5);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(3));
     }
 
@@ -178,7 +188,7 @@ mod tests {
         tracker.add_verified_block(1);
         tracker.add_verified_block(2);
         tracker.add_verified_block(2);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
         assert_eq!(tracker.highest_verified_block(), Some(2));
     }
 
@@ -189,7 +199,7 @@ mod tests {
         tracker.add_verified_block(2);
         tracker.add_verified_block(4);
         tracker.add_verified_block(5);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
 
         assert_eq!(tracker.highest_verified_block(), Some(2));
         // Only blocks 4 and 5 should remain (after the gap at 3)
@@ -197,7 +207,7 @@ mod tests {
 
         // Add block 3 to fill the gap
         tracker.add_verified_block(3);
-        tracker.try_update_highest_verified_block();
+        let _ = tracker.try_update_highest_verified_block();
 
         assert_eq!(tracker.highest_verified_block(), Some(5));
         // All blocks should be removed now as they're all consecutive

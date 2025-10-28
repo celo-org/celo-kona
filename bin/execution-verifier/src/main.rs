@@ -512,9 +512,10 @@ async fn persist_verified_block<P: AsRef<Path>>(
     file_path: Option<P>,
 ) -> Result<()> {
     let mut tracker = tracker.lock();
-    tracker.try_update_highest_verified_block();
+    let (highest_block, was_updated) = tracker.try_update_highest_verified_block();
 
-    if let Some(highest_block) = tracker.highest_verified_block() {
+    if was_updated {
+        if let Some(highest_block) = highest_block {
         if let Some(f) = file_path {
             let path = f.as_ref();
             let temp_path = path.with_extension("tmp");
@@ -537,6 +538,7 @@ async fn persist_verified_block<P: AsRef<Path>>(
                     e
                 )
             });
+        }
         }
     }
     Ok(())
