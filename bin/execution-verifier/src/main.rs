@@ -515,7 +515,6 @@ async fn persist_verified_block<P: AsRef<Path>>(
     tracker.try_update_highest_verified_block();
 
     if let Some(highest_block) = tracker.highest_verified_block() {
-        tracing::info!("Current highest verified block: {:?}", highest_block);
         if let Some(f) = file_path {
             let path = f.as_ref();
             let temp_path = path.with_extension("tmp");
