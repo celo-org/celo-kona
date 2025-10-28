@@ -107,7 +107,14 @@ where
     let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
     let da_provider = EigenDADataSource::new(eth_data_source, eigenda_preimage_source);
 
-    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+    let mut l1_config_mut = boot.op_boot_info.l1_config;
+    l1_config_mut.osaka_time = None;
+    l1_config_mut.bpo1_time = None;
+    l1_config_mut.bpo2_time = None;
+    l1_config_mut.bpo3_time = None;
+    l1_config_mut.bpo4_time = None;
+    l1_config_mut.bpo5_time = None;
+    let l1_config = Arc::new(l1_config_mut);
 
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
