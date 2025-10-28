@@ -55,6 +55,7 @@ impl VerifiedBlockTracker {
         let mut start =
             self.highest_verified_block.map(|h| h + 1).unwrap_or(self.start_block.unwrap_or(0));
 
+        let previous_highest_verified_block = self.highest_verified_block();
         for verified_block in self.verified_blocks.iter() {
             if *verified_block == start {
                 self.highest_verified_block = Some(*verified_block);
@@ -65,6 +66,22 @@ impl VerifiedBlockTracker {
         }
 
         self.verified_blocks.retain(|&b| b > self.highest_verified_block.unwrap_or_default());
+
+        if previous_highest_verified_block != self.highest_verified_block() {
+            tracing::info!(
+                previous = previous_highest_verified_block,
+                updated = self.highest_verified_block(),
+                len_verified_blocks = self.verified_blocks.len(),
+                "updated highest verified block"
+            );
+        } else {
+            tracing::debug!(
+                highest_verified_block = self.highest_verified_block(),
+                len_verified_blocks = self.verified_blocks.len(),
+                first_gap_block_number = start,
+                "unable to update highest verified block"
+            );
+        };
     }
 }
 
