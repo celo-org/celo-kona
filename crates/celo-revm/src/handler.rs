@@ -39,14 +39,12 @@ use tracing::{info, warn};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
-    // pub _phantom: core::marker::PhantomData<(EVM, ERROR, FRAME)>,
 }
 
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
             mainnet: MainnetHandler::default(),
-            // _phantom: core::marker::PhantomData,
         }
     }
 }
@@ -273,6 +271,7 @@ where
         }
         Ok(())
     }
+
     fn cip64_validate_erc20_and_debit_gas_fees(
         &self,
         evm: &mut CeloEvm<DB, INSP>,
