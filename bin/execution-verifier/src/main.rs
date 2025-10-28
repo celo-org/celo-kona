@@ -98,8 +98,8 @@ async fn main() -> anyhow::Result<()> {
                 "start_block {start_block} must be > 0 (need parent block)"
             ));
         }
-        if let Some(end_block) = cli.end_block &&
-            start_block > end_block
+        if let Some(end_block) = cli.end_block
+            && start_block > end_block
         {
             return Err(anyhow::anyhow!(
                 "start_block {start_block} must be <= end_block {end_block}"
@@ -512,7 +512,7 @@ async fn persist_verified_block<P: AsRef<Path>>(
     file_path: Option<P>,
 ) -> Result<()> {
     let mut tracker = tracker.lock();
-    tracker.update_highest_verified_block();
+    tracker.try_update_highest_verified_block();
 
     if let Some(highest_block) = tracker.highest_verified_block() {
         tracing::info!("Current highest verified block: {:?}", highest_block);
