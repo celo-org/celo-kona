@@ -2617,6 +2617,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "parking_lot",
+ "similar",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",

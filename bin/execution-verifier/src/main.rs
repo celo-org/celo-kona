@@ -55,9 +55,9 @@ struct BlockVerificationResult {
     /// Whether the verification was successful
     success: bool,
     /// Expected header (from the network)
-    expected_header: alloy_rpc_types_eth::Header,
+    expected_header: alloy_consensus::Header,
     /// Actual header (from execution)
-    actual_header: alloy_rpc_types_eth::Header,
+    actual_header: alloy_consensus::Header,
 }
 
 /// Work pool that manages concurrent block verification tasks with automatic capacity management
@@ -538,12 +538,25 @@ async fn verify_block(
     // Verify the result
     let success = outcome.header.inner() == &executing_header.inner;
 
+    // XXX: should we clone here?
     Ok(BlockVerificationResult {
         block_number,
         success,
-        expected_header: executing_header,
-        actual_header: outcome.header,
+        expected_header: executing_header.inner.clone(),
+        actual_header: outcome.header.inner().clone(),
     })
+}
+
+/// Generate a unified diff between two headers for debugging
+fn format_header_diff(expected: &alloy_consensus::Header, actual: &alloy_consensus::Header) -> String {
+    let expected_str = format!("{:#?}", expected);
+    let actual_str = format!("{:#?}", actual);
+
+    similar::TextDiff::from_lines(&expected_str, &actual_str)
+        .unified_diff()
+        .context_radius(3)
+        .header("expected", "actual")
+        .to_string()
 }
 
 /// Helper function to spawn a block verification task with error logging.
@@ -573,18 +586,23 @@ fn spawn_verify_task(
 
                 if success {
                     tracing::debug!(
-                        block_number = block_number,
+                        block_number = verification_result.block_number,
                         attempt = attempt,
                         "block verification task completed"
                     );
                     tracker.lock().add_verified_block(block_number);
                 } else {
+                    let diff = format_header_diff(
+                        &verification_result.expected_header,
+                        &verification_result.actual_header,
+                    );
                     tracing::warn!(
-                        block_number = block_number,
+                        block_number = verification_result.block_number,
                         attempt = attempt,
                         expected_header = ?verification_result.expected_header,
                         actual_header = ?verification_result.actual_header,
-                        "block verification failed: header mismatch"
+                        "block verification failed: header mismatch\n{}",
+                        diff
                     );
                 }
 
@@ -632,15 +650,15 @@ async fn verify_block_range(
     // Unified work loop: prioritize retries, fall back to new blocks
     loop {
         if cancel_token.is_cancelled() {
+            // TODO: don't we need to cancel all handles in the join-set?
             break;
         }
 
         // Get next work: retry or new block
-        let Some((block_number, attempt)) = work_pool
-            .get_next_retry()
-            .or_else(|| new_blocks.next().map(|block| (block, 0)))
+        let Some((block_number, attempt)) =
+            work_pool.get_next_retry().or_else(|| new_blocks.next().map(|block| (block, 0)))
         else {
-            break; // No more work
+            break; // No more work to schedule
         };
 
         work_pool
