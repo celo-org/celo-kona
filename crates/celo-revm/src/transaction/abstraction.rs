@@ -58,17 +58,13 @@ impl Default for CeloTransaction<TxEnv> {
     }
 }
 
-impl<TX: Transaction + SystemCallTx> SystemCallTx for CeloTransaction<TX> {
+impl SystemCallTx for CeloTransaction<TxEnv> {
     fn new_system_tx_with_caller(
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
     ) -> Self {
-        CeloTransaction::new(OpTransaction::new(TX::new_system_tx_with_caller(
-            caller,
-            system_contract_address,
-            data,
-        )))
+        Self::new_system_tx_with_gas_limit(caller, system_contract_address, data, 30_000_000)
     }
 }
 
