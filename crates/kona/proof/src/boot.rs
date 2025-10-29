@@ -94,7 +94,7 @@ impl CeloBootInfo {
 
         // Attempt to load the L1 config from the L1 chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
-        let l1_config = if let Some(config) = L1_CONFIGS.get(&rollup_config.l1_chain_id) {
+        let mut l1_config = if let Some(config) = L1_CONFIGS.get(&rollup_config.l1_chain_id) {
             config.clone()
         } else {
             warn!(
@@ -108,6 +108,22 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
+
+        // Override the L1 config to remove the BPOs and OSAKA timestamp and blob schedule for Celo,
+        // until we're ready for Fusaka in op-geth.
+        // This is done independently of the chain id, because updates are
+        // required once Mainnet or Sepolia has further changes.
+        // Also pay attention when bumping kona if there're any additions to
+        // l1_config.blob_schedule. https://github.com/op-rs/kona/blob/kona-client/v1.1.6/crates/protocol/registry/src/l1/mod.rs#L63-L86
+        l1_config.osaka_time = None;
+        l1_config.bpo1_time = None;
+        l1_config.bpo2_time = None;
+        l1_config.bpo3_time = None;
+        l1_config.bpo4_time = None;
+        l1_config.bpo5_time = None;
+        l1_config.blob_schedule.remove("osaka");
+        l1_config.blob_schedule.remove("bpo1");
+        l1_config.blob_schedule.remove("bpo2");
 
         Ok(Self {
             op_boot_info: BootInfo {
