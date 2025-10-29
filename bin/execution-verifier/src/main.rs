@@ -627,32 +627,20 @@ async fn verify_block_range(
     );
 
     let mut work_pool = WorkPool::new(concurrency, max_retries);
+    let mut new_blocks = start_block..=end_block;
 
-    // Process all new blocks (add blocks when at capacity)
-    for block_number in start_block..=end_block {
-        if cancel_token.is_cancelled() {
-            break;
-        }
-        work_pool
-            .add(
-                block_number,
-                0, // first attempt
-                provider.clone(),
-                rollup_config.clone(),
-                metrics.clone(),
-                tracker.clone(),
-            )
-            .await;
-    }
-
-    // Process any retries that were queued during block processing
+    // Unified work loop: prioritize retries, fall back to new blocks
     loop {
         if cancel_token.is_cancelled() {
             break;
         }
 
-        let Some((block_number, attempt)) = work_pool.get_next_retry() else {
-            break;
+        // Get next work: retry or new block
+        let Some((block_number, attempt)) = work_pool
+            .get_next_retry()
+            .or_else(|| new_blocks.next().map(|block| (block, 0)))
+        else {
+            break; // No more work
         };
 
         work_pool
