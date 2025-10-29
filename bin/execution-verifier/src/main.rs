@@ -374,6 +374,7 @@ async fn verify_block(
     let start = Instant::now();
     // Create trie for this task
     let trie = Trie::new(provider);
+    tracing::debug!(block_number = block_number, "requested to verify block");
 
     // Fetch parent block
     let parent_block = provider
@@ -456,6 +457,28 @@ async fn verify_block(
     Ok(block_number)
 }
 
+/// Helper function to spawn a block verification task with error logging
+fn spawn_verify_task(
+    handles: &mut JoinSet<()>,
+    block_number: u64,
+    provider: Arc<RootProvider<Ethereum>>,
+    rollup_config: celo_registry::CeloRollupConfig,
+    metrics: Arc<Mutex<Metrics>>,
+    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+) {
+    handles.spawn(async move {
+        let result =
+            verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await;
+        match result {
+            Ok(block_number) => tracing::debug!(
+                block_number = block_number,
+                "block verification task completed"
+            ),
+            Err(e) => tracing::error!(error = %e, "block verification task failed"),
+        }
+    });
+}
+
 /// Verifies execution for a range of blocks concurrently
 #[allow(clippy::too_many_arguments)]
 async fn verify_block_range(
@@ -470,6 +493,12 @@ async fn verify_block_range(
 ) -> Result<()> {
     let mut handles = JoinSet::new();
     let mut next_block = start_block;
+    tracing::debug!(
+        start_block = start_block,
+        end_block = end_block,
+        concurrency = concurrency,
+        "requested to verify block range"
+    );
 
     // Spawn initial batch
     for _ in 0..concurrency {
@@ -478,13 +507,14 @@ async fn verify_block_range(
         }
         // let provider = provider.clone();
         if next_block <= end_block {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            spawn_verify_task(
+                &mut handles,
+                next_block,
+                provider.clone(),
+                rollup_config.clone(),
+                metrics.clone(),
+                tracker.clone(),
+            );
             next_block += 1;
         }
     }
@@ -493,13 +523,14 @@ async fn verify_block_range(
     while handles.join_next().await.is_some() {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            spawn_verify_task(
+                &mut handles,
+                next_block,
+                provider.clone(),
+                rollup_config.clone(),
+                metrics.clone(),
+                tracker.clone(),
+            );
             next_block += 1;
         }
     }
@@ -516,29 +547,29 @@ async fn persist_verified_block<P: AsRef<Path>>(
 
     if was_updated {
         if let Some(highest_block) = highest_block {
-        if let Some(f) = file_path {
-            let path = f.as_ref();
-            let temp_path = path.with_extension("tmp");
+            if let Some(f) = file_path {
+                let path = f.as_ref();
+                let temp_path = path.with_extension("tmp");
 
-            // Write to temporary file first
-            std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write highest verified block to temp file {}: {}",
-                    temp_path.display(),
-                    e
-                )
-            })?;
+                // Write to temporary file first
+                std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to write highest verified block to temp file {}: {}",
+                        temp_path.display(),
+                        e
+                    )
+                })?;
 
-            // Atomically rename to final file
-            return std::fs::rename(&temp_path, path).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to rename temp file {} to {}: {}",
-                    temp_path.display(),
-                    path.display(),
-                    e
-                )
-            });
-        }
+                // Atomically rename to final file
+                return std::fs::rename(&temp_path, path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to rename temp file {} to {}: {}",
+                        temp_path.display(),
+                        path.display(),
+                        e
+                    )
+                });
+            }
         }
     }
     Ok(())
