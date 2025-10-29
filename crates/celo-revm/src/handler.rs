@@ -63,11 +63,11 @@ where
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
-        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
-            // Update the chain with the new fee currency context
+        if evm.fee_currency_context.updated_at_block != Some(current_block) {
+            // Update the fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
-                    evm.ctx().chain_mut().fee_currency_context = fee_currency_context;
+                    evm.fee_currency_context = fee_currency_context;
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -116,8 +116,7 @@ where
         basefee: u64,
     ) -> Result<u128, ERROR> {
         // Convert costs to fee currency
-        let ctx = evm.ctx();
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
             .celo_to_currency(fee_currency, U256::from(basefee))
             .map_err(|e| ERROR::from_string(e))?;
@@ -133,8 +132,7 @@ where
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
     ) -> Result<u64, ERROR> {
-        let ctx = evm.ctx();
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?;
@@ -246,8 +244,6 @@ where
             .unwrap()
             .actual_intrinsic_gas_used;
         let intrinsic_gas_cost = evm
-            .ctx()
-            .chain()
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| ERROR::from_string(e))?;
@@ -283,7 +279,7 @@ where
         let gas_limit = tx.gas_limit();
         let basefee = ctx.block().basefee();
 
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
 
         // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
@@ -357,8 +353,7 @@ where
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
         if fee_currency.is_some_and(|fc| fc != Address::ZERO) {
-            let intrinsic_gas_for_erc20 = ctx
-                .chain()
+            let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
                 .map_err(|e| ERROR::from_string(e))?;
@@ -485,9 +480,8 @@ where
         if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
-            if ctx.chain().l1_block_info.l2_block != block_number {
-                ctx.chain_mut().l1_block_info =
-                    L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
+            if ctx.chain().l2_block != block_number {
+                *ctx.chain_mut() = L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
             // account for additional cost of l1 fee and operator fee
@@ -498,18 +492,12 @@ where
                 .clone();
 
             // compute L1 cost
-            additional_cost = ctx
-                .chain_mut()
-                .l1_block_info
-                .calculate_tx_l1_cost(&enveloped_tx, spec);
+            additional_cost = ctx.chain_mut().calculate_tx_l1_cost(&enveloped_tx, spec);
 
             // compute operator fee
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                 let gas_limit = U256::from(ctx.tx().gas_limit());
-                let operator_fee_charge = ctx
-                    .chain()
-                    .l1_block_info
-                    .operator_fee_charge(&enveloped_tx, gas_limit);
+                let operator_fee_charge = ctx.chain().operator_fee_charge(&enveloped_tx, gas_limit);
                 additional_cost = additional_cost.saturating_add(operator_fee_charge);
             }
         }
@@ -692,10 +680,7 @@ where
         {
             let caller = context.tx().caller();
             let spec = context.cfg().spec();
-            let operator_fee_refund = context
-                .chain()
-                .l1_block_info
-                .operator_fee_refund(exec_result.gas(), spec);
+            let operator_fee_refund = context.chain().operator_fee_refund(exec_result.gas(), spec);
 
             let caller_account = evm.ctx().journal_mut().load_account(caller)?;
 
@@ -747,7 +732,7 @@ where
             let ctx = evm.ctx();
             let enveloped = ctx.tx().enveloped_tx().cloned();
             let spec = ctx.cfg().spec();
-            let l1_block_info = &mut ctx.chain_mut().l1_block_info;
+            let l1_block_info = ctx.chain_mut();
 
             let Some(enveloped_tx) = &enveloped else {
                 return Err(ERROR::from_string(
@@ -828,7 +813,7 @@ where
 
         // Commit journal, clear frame stack, clear l1_block_info
         evm.ctx().journal_mut().commit_tx();
-        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().chain_mut().clear_tx_l1_cost();
         evm.ctx().local_mut().clear();
         evm.frame_stack().clear();
 
@@ -898,7 +883,7 @@ where
             Err(error)
         };
         // do the cleanup
-        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().chain_mut().clear_tx_l1_cost();
         evm.ctx().local_mut().clear();
         evm.frame_stack().clear();
 
@@ -919,7 +904,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBlockEnv, CeloBuilder, CeloContext, DefaultCelo};
+    use crate::{CeloBuilder, CeloContext, DefaultCelo};
     use op_revm::L1BlockInfo;
     use revm::{
         context::{Context, TransactionType},
@@ -1065,10 +1050,7 @@ mod tests {
 
         let mut ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
         ctx.modify_tx(|celo_tx| {
             let tx = &mut celo_tx.op_tx;
@@ -1109,10 +1091,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1155,10 +1134,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1199,10 +1175,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1244,10 +1217,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|tx| {
                 tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
@@ -1361,8 +1331,8 @@ mod tests {
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // Set the operator fee scalar & constant to non-zero values in the L1 block info.
-        evm.ctx().chain.l1_block_info.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
-        evm.ctx().chain.l1_block_info.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
 
         let mut gas = Gas::new(100);
         gas.set_spent(10);
@@ -1388,7 +1358,6 @@ mod tests {
         let op_fee_refund = evm
             .ctx()
             .chain()
-            .l1_block_info
             .operator_fee_refund(&gas, OpSpecId::ISTHMUS);
         assert!(op_fee_refund > U256::ZERO);
 

@@ -1,4 +1,4 @@
-use crate::{CeloContext, CeloPrecompiles};
+use crate::{CeloContext, CeloPrecompiles, fee_currency_context::FeeCurrencyContext};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Inspector,
@@ -9,42 +9,52 @@ use revm::{
     interpreter::interpreter::EthInterpreter,
 };
 
-pub struct CeloEvm<DB: revm::Database, INSP>(
-    pub  OpEvm<
+pub struct CeloEvm<DB: revm::Database, INSP> {
+    pub inner: OpEvm<
         CeloContext<DB>,
         INSP,
         EthInstructions<EthInterpreter, CeloContext<DB>>,
         CeloPrecompiles,
     >,
-);
+    pub fee_currency_context: FeeCurrencyContext,
+}
 
 impl<DB, INSP> CeloEvm<DB, INSP>
 where
     DB: revm::Database,
 {
     pub fn new(ctx: CeloContext<DB>, inspector: INSP) -> Self {
-        Self(OpEvm(Evm {
-            ctx,
-            inspector,
-            instruction: EthInstructions::new_mainnet(),
-            precompiles: CeloPrecompiles::default(),
-            frame_stack: FrameStack::new(),
-        }))
+        Self {
+            inner: OpEvm(Evm {
+                ctx,
+                inspector,
+                instruction: EthInstructions::new_mainnet(),
+                precompiles: CeloPrecompiles::default(),
+                frame_stack: FrameStack::new(),
+            }),
+            fee_currency_context: FeeCurrencyContext::default(),
+        }
     }
 
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP> {
-        Self(OpEvm(self.0.0.with_inspector(inspector)))
+        Self {
+            inner: OpEvm(self.inner.0.with_inspector(inspector)),
+            fee_currency_context: self.fee_currency_context,
+        }
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<DB, INSP> {
-        Self(OpEvm(self.0.0.with_precompiles(precompiles)))
+        Self {
+            inner: OpEvm(self.inner.0.with_precompiles(precompiles)),
+            fee_currency_context: self.fee_currency_context,
+        }
     }
 
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> INSP {
-        self.0.into_inspector()
+        self.inner.into_inspector()
     }
 }
 
@@ -56,17 +66,17 @@ where
     type Inspector = INSP;
 
     fn inspector(&mut self) -> &mut Self::Inspector {
-        self.0.inspector()
+        self.inner.inspector()
     }
 
     fn ctx_inspector(&mut self) -> (&mut Self::Context, &mut Self::Inspector) {
-        self.0.ctx_inspector()
+        self.inner.ctx_inspector()
     }
 
     fn ctx_inspector_frame(
         &mut self,
     ) -> (&mut Self::Context, &mut Self::Inspector, &mut Self::Frame) {
-        self.0.ctx_inspector_frame()
+        self.inner.ctx_inspector_frame()
     }
 
     fn ctx_inspector_frame_instructions(
@@ -77,7 +87,7 @@ where
         &mut Self::Frame,
         &mut Self::Instructions,
     ) {
-        self.0.ctx_inspector_frame_instructions()
+        self.inner.ctx_inspector_frame_instructions()
     }
 }
 
@@ -97,23 +107,23 @@ where
     > as EvmTr>::Frame;
 
     fn ctx(&mut self) -> &mut Self::Context {
-        self.0.ctx()
+        self.inner.ctx()
     }
 
     fn ctx_ref(&self) -> &Self::Context {
-        self.0.ctx_ref()
+        self.inner.ctx_ref()
     }
 
     fn ctx_instructions(&mut self) -> (&mut Self::Context, &mut Self::Instructions) {
-        self.0.ctx_instructions()
+        self.inner.ctx_instructions()
     }
 
     fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
-        self.0.ctx_precompiles()
+        self.inner.ctx_precompiles()
     }
 
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
-        self.0.frame_stack()
+        self.inner.frame_stack()
     }
 
     fn frame_init(
@@ -128,7 +138,7 @@ where
             <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
         >,
     > {
-        self.0.frame_init(frame_init)
+        self.inner.frame_init(frame_init)
     }
 
     fn frame_run(
@@ -142,7 +152,7 @@ where
             <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
         >,
     > {
-        self.0.frame_run()
+        self.inner.frame_run()
     }
 
     fn frame_return_result(
@@ -154,13 +164,13 @@ where
             <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
         >,
     > {
-        self.0.frame_return_result(result)
+        self.inner.frame_return_result(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{CeloBlockEnv, CeloBuilder, CeloTransaction, DefaultCelo};
+    use crate::{CeloBuilder, CeloTransaction, DefaultCelo};
     use op_revm::{
         OpHaltReason, OpSpecId, precompiles::bn254_pair::GRANITE_MAX_INPUT_SIZE,
         transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
@@ -246,7 +256,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::FJORD;
 
@@ -297,7 +307,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         let input = Bytes::from([1; GRANITE_MAX_INPUT_SIZE + 2]);
         let InitialAndFloorGas { initial_gas, .. } =
@@ -354,8 +364,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE - 1;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
@@ -381,8 +391,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G1_ADD_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
@@ -405,7 +415,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -425,8 +435,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = initial_gas + gs1_msm_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
@@ -491,8 +501,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE - 1;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
@@ -518,8 +528,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = 21_000 + bls12_381_const::G2_ADD_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS);
 
@@ -543,7 +553,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -563,8 +573,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = initial_gas + gs2_msm_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
@@ -627,7 +637,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -645,8 +655,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = initial_gas + pairing_gas;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
     }
@@ -709,7 +719,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -724,8 +734,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP_TO_G1_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
@@ -771,7 +781,7 @@ mod tests {
         CfgEnv<OpSpecId>,
         EmptyDB,
         Journal<EmptyDB>,
-        CeloBlockEnv,
+        op_revm::L1BlockInfo,
     > {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
@@ -786,8 +796,8 @@ mod tests {
                 tx.op_tx.base.gas_limit = initial_gas + bls12_381_const::MAP_FP2_TO_G2_BASE_GAS_FEE;
             })
             .modify_chain_chained(|l1_block| {
-                l1_block.l1_block_info.operator_fee_constant = Some(U256::ZERO);
-                l1_block.l1_block_info.operator_fee_scalar = Some(U256::ZERO)
+                l1_block.operator_fee_constant = Some(U256::ZERO);
+                l1_block.operator_fee_scalar = Some(U256::ZERO)
             })
             .modify_cfg_chained(|cfg| cfg.spec = SPEC_ID)
     }
