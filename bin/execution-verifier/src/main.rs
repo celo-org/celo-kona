@@ -231,18 +231,15 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // if a persistence-file option is given
     let start_block = match cli.state_file {
         None => cli.start_block,
-        Some(ref f) => read_verified_block(f)
-            .inspect(|verified_block| {
-                tracing::info!(
-                    persisted_block_number = verified_block,
-                    start_block_number = cli.start_block,
-                    "Found persisted highest verified block number, overwriting `start-block` argument"
-                );
-            })
-            .or(cli.start_block),
+        Some(ref f) => read_verified_block(f).map_or(cli.start_block, |verified_block| {
+            tracing::info!(
+                persisted_block_number = verified_block,
+                cli_start_block_number = cli.start_block,
+                "Found persisted highest verified block number, overwriting `start-block` argument"
+            );
+            Some(verified_block + 1)
+        }),
     };
-
-    tracing::info!(start_block_number = start_block, "Using start-block");
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
@@ -275,6 +272,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
 
+    tracing::info!(start_block_number = start_block, "Using start-block");
     let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
 
     // Spawn the repeating task in the background
@@ -286,11 +284,14 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         loop {
             tokio::select! {
                 _ = cancel_token_clone.cancelled() => {
+                    // Do final persist before exiting
+                    if let Err(e) = persist_verified_block(tracker_handle.clone(), cli.state_file.as_ref()).await {
+                        eprintln!("Error storing verified block on shutdown: {e}");
+                    }
                     break;
                 }
                 _ = interval.tick() => {
-                    let tracker = tracker_handle.clone();
-                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
+                    if let Err(e) = persist_verified_block(tracker_handle.clone(), cli.state_file.as_ref()).await {
                         eprintln!("Error storing verified block: {e}");
                     }
                 }
@@ -389,7 +390,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         }
     }
 
-    verified_block_store_task.abort();
+    // Cancel and wait for the persistence task to finish (and do final persist)
+    cancel_token.cancel();
+    let _ = verified_block_store_task.await;
     Ok(())
 }
 
@@ -552,7 +555,10 @@ async fn verify_block(
 }
 
 /// Generate a unified diff between two headers for debugging
-fn format_header_diff(expected: &alloy_consensus::Header, actual: &alloy_consensus::Header) -> String {
+fn format_header_diff(
+    expected: &alloy_consensus::Header,
+    actual: &alloy_consensus::Header,
+) -> String {
     let expected_str = format!("{:#?}", expected);
     let actual_str = format!("{:#?}", actual);
 
