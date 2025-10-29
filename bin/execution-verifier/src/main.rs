@@ -47,6 +47,19 @@ use verified_block_tracker::VerifiedBlockTracker;
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Result of a block verification operation
+#[derive(Debug, Clone)]
+struct BlockVerificationResult {
+    /// The block number that was verified
+    block_number: u64,
+    /// Whether the verification was successful
+    success: bool,
+    /// Expected header (from the network)
+    expected_header: alloy_rpc_types_eth::Header,
+    /// Actual header (from execution)
+    actual_header: alloy_rpc_types_eth::Header,
+}
+
 /// the version string injected by Cargo at compile time
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -378,13 +391,8 @@ async fn verify_block(
     block_number: u64,
     provider: &RootProvider<Ethereum>,
     rollup_config: &celo_registry::CeloRollupConfig,
-    metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
-) -> Result<u64> {
-    let start = Instant::now();
-    // Create trie for this task
+) -> Result<BlockVerificationResult> {
     let trie = Trie::new(provider);
-    tracing::debug!(block_number = block_number, "requested to verify block");
 
     // Fetch parent block
     let parent_block = provider
@@ -414,6 +422,7 @@ async fn verify_block(
             }
             encoded_transactions
         }
+        // XXX: panic or error?
         _ => panic!("Only BlockTransactions::Hashes are supported."),
     };
 
@@ -452,19 +461,14 @@ async fn verify_block(
         .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
 
     // Verify the result
-    if outcome.header.inner() != &executing_header.inner {
-        tracing::warn!(
-            block_number = block_number,
-            expected_header = ?executing_header.inner,
-            actual_header = ?outcome.header.inner(),
-            "Block verification failed header mismatch"
-        );
-        metrics.lock().block_verification_completed(false, start.elapsed());
-    } else {
-        metrics.lock().block_verification_completed(true, start.elapsed());
-    }
-    tracker.lock().add_verified_block(block_number);
-    Ok(block_number)
+    let success = outcome.header.inner() == &executing_header.inner;
+
+    Ok(BlockVerificationResult {
+        block_number,
+        success,
+        expected_header: executing_header,
+        actual_header: outcome.header,
+    })
 }
 
 /// Helper function to spawn a block verification task with error logging.
@@ -479,16 +483,34 @@ fn spawn_verify_task(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) {
     handles.spawn(async move {
-        let result =
-            verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await;
+        let start = Instant::now();
+        tracing::debug!(block_number = block_number, attempt = attempt, "requested to verify block");
+
+        let result = verify_block(block_number, provider.as_ref(), &rollup_config).await;
+
         match result {
-            Ok(block_number) => {
-                tracing::debug!(
-                    block_number = block_number,
-                    attempt = attempt,
-                    "block verification task completed"
-                );
-                (block_number, attempt, true)
+            Ok(verification_result) => {
+                let success = verification_result.success;
+
+                if success {
+                    tracing::debug!(
+                        block_number = block_number,
+                        attempt = attempt,
+                        "block verification task completed"
+                    );
+                    tracker.lock().add_verified_block(block_number);
+                } else {
+                    tracing::warn!(
+                        block_number = block_number,
+                        attempt = attempt,
+                        expected_header = ?verification_result.expected_header,
+                        actual_header = ?verification_result.actual_header,
+                        "block verification failed: header mismatch"
+                    );
+                }
+
+                metrics.lock().block_verification_completed(success, start.elapsed());
+                (block_number, attempt, success)
             }
             Err(e) => {
                 tracing::error!(
@@ -497,6 +519,7 @@ fn spawn_verify_task(
                     attempt = attempt,
                     "block verification task failed"
                 );
+                metrics.lock().block_verification_completed(false, start.elapsed());
                 (block_number, attempt, false)
             }
         }
