@@ -60,6 +60,81 @@ struct BlockVerificationResult {
     actual_header: alloy_rpc_types_eth::Header,
 }
 
+/// Work pool that manages concurrent block verification tasks with automatic capacity management
+struct WorkPool {
+    handles: JoinSet<(u64, usize, bool)>,
+    capacity: usize,
+    retry_queue: std::collections::VecDeque<(u64, usize)>,
+    max_retries: usize,
+}
+
+impl WorkPool {
+    fn new(capacity: usize, max_retries: usize) -> Self {
+        Self {
+            handles: JoinSet::new(),
+            capacity,
+            retry_queue: std::collections::VecDeque::new(),
+            max_retries,
+        }
+    }
+
+    /// Add work to the pool. Blocks if at capacity until a slot becomes available.
+    async fn add(
+        &mut self,
+        block_number: u64,
+        attempt: usize,
+        provider: Arc<RootProvider<Ethereum>>,
+        rollup_config: celo_registry::CeloRollupConfig,
+        metrics: Arc<Mutex<Metrics>>,
+        tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    ) {
+        // Wait for a slot if at capacity
+        while self.handles.len() >= self.capacity {
+            self.handle_completed_task().await;
+        }
+
+        // Spawn the task
+        spawn_verify_task(
+            &mut self.handles,
+            block_number,
+            attempt,
+            provider,
+            rollup_config,
+            metrics,
+            tracker,
+        );
+    }
+
+    /// Handle one completed task, queueing retries if needed
+    async fn handle_completed_task(&mut self) {
+        if let Some(result) = self.handles.join_next().await {
+            if let Ok((block_number, attempt, success)) = result {
+                if !success && attempt < self.max_retries {
+                    self.retry_queue.push_back((block_number, attempt + 1));
+                    tracing::debug!(
+                        block_number = block_number,
+                        next_attempt = attempt + 1,
+                        max_retries = self.max_retries,
+                        "queueing block for retry"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Get the next retry from the queue
+    fn get_next_retry(&mut self) -> Option<(u64, usize)> {
+        self.retry_queue.pop_front()
+    }
+
+    /// Wait for all remaining tasks to complete
+    async fn finish(mut self) {
+        while self.handles.join_next().await.is_some() {
+            // Results are already handled in the spawned tasks
+        }
+    }
+}
+
 /// the version string injected by Cargo at compile time
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -484,7 +559,11 @@ fn spawn_verify_task(
 ) {
     handles.spawn(async move {
         let start = Instant::now();
-        tracing::debug!(block_number = block_number, attempt = attempt, "requested to verify block");
+        tracing::debug!(
+            block_number = block_number,
+            attempt = attempt,
+            "requested to verify block"
+        );
 
         let result = verify_block(block_number, provider.as_ref(), &rollup_config).await;
 
@@ -510,7 +589,9 @@ fn spawn_verify_task(
                 }
 
                 metrics.lock().block_verification_completed(success, start.elapsed());
-                (block_number, attempt, success)
+                // returning true here means the verification did complete -
+                // even a header mismatch is a completed verification result
+                (block_number, attempt, true)
             }
             Err(e) => {
                 tracing::error!(
@@ -519,7 +600,6 @@ fn spawn_verify_task(
                     attempt = attempt,
                     "block verification task failed"
                 );
-                metrics.lock().block_verification_completed(false, start.elapsed());
                 (block_number, attempt, false)
             }
         }
@@ -539,12 +619,6 @@ async fn verify_block_range(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
     max_retries: usize,
 ) -> Result<()> {
-    use std::collections::VecDeque;
-
-    let mut handles = JoinSet::new();
-    let mut next_block = start_block;
-    let mut retry_queue: VecDeque<(u64, usize)> = VecDeque::new(); // (block_number, attempt_count)
-
     tracing::debug!(
         start_block = start_block,
         end_block = end_block,
@@ -552,68 +626,49 @@ async fn verify_block_range(
         "requested to verify block range"
     );
 
-    // Spawn initial batch
-    for _ in 0..concurrency {
+    let mut work_pool = WorkPool::new(concurrency, max_retries);
+
+    // Process all new blocks (add blocks when at capacity)
+    for block_number in start_block..=end_block {
         if cancel_token.is_cancelled() {
             break;
         }
-        if next_block <= end_block {
-            spawn_verify_task(
-                &mut handles,
-                next_block,
-                0, // attempt 0 (first attempt)
+        work_pool
+            .add(
+                block_number,
+                0, // first attempt
                 provider.clone(),
                 rollup_config.clone(),
                 metrics.clone(),
                 tracker.clone(),
-            );
-            next_block += 1;
-        }
+            )
+            .await;
     }
 
-    // Process results and spawn new tasks continuously
-    while let Some(result) = handles.join_next().await {
-        if let Ok((block_number, attempt, success)) = result {
-            if !success && attempt < max_retries {
-                // Queue for retry
-                retry_queue.push_back((block_number, attempt + 1));
-                tracing::debug!(
-                    block_number = block_number,
-                    next_attempt = attempt + 1,
-                    max_retries = max_retries,
-                    "queueing block for retry"
-                );
-            }
+    // Process any retries that were queued during block processing
+    loop {
+        if cancel_token.is_cancelled() {
+            break;
         }
 
-        // Spawn next task if available (prioritize retries over new blocks)
-        if !cancel_token.is_cancelled() {
-            if let Some((retry_block, retry_attempt)) = retry_queue.pop_front() {
-                // Spawn retry task
-                spawn_verify_task(
-                    &mut handles,
-                    retry_block,
-                    retry_attempt,
-                    provider.clone(),
-                    rollup_config.clone(),
-                    metrics.clone(),
-                    tracker.clone(),
-                );
-            } else if next_block <= end_block {
-                // Spawn new task
-                spawn_verify_task(
-                    &mut handles,
-                    next_block,
-                    0, // attempt 0 (first attempt)
-                    provider.clone(),
-                    rollup_config.clone(),
-                    metrics.clone(),
-                    tracker.clone(),
-                );
-                next_block += 1;
-            }
-        }
+        let Some((block_number, attempt)) = work_pool.get_next_retry() else {
+            break;
+        };
+
+        work_pool
+            .add(
+                block_number,
+                attempt,
+                provider.clone(),
+                rollup_config.clone(),
+                metrics.clone(),
+                tracker.clone(),
+            )
+            .await;
     }
+
+    // Wait for all remaining tasks to complete
+    work_pool.finish().await;
 
     Ok(())
 }
