@@ -1,5 +1,4 @@
-use crate::api::celo_system_tx::CELO_SYSTEM_ADDRESS;
-use crate::api::celo_system_tx::CeloSystemCallTx;
+use crate::constants::CELO_SYSTEM_ADDRESS;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpTransactionError};
@@ -11,7 +10,7 @@ use revm::{
         ContextTr, Database,
         result::{EVMError, ExecutionResult},
     },
-    handler::{EthFrame, EvmTr, Handler},
+    handler::{EthFrame, EvmTr, Handler, SystemCallTx},
     inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler},
     interpreter::interpreter::EthInterpreter,
     state::EvmState,
