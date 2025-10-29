@@ -212,7 +212,11 @@ async fn main() -> anyhow::Result<()> {
     // since it is very verbose.
     // set up the logs
     // If cli.telemetry is false this will not use any OTLP exporters
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    let mut filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    // Suppress verbose alloy_rpc_client logs unless TRACE level is enabled
+    if cli.v < 5 {
+        filter = filter.add_directive("alloy_rpc_client=info".parse().unwrap());
+    }
     init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
 
     if cli.telemetry {
