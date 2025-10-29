@@ -86,6 +86,10 @@ pub struct ExecutionVerifierCommand {
     /// env-vars can be used as per the standard
     #[arg(long, default_value_t = false)]
     pub telemetry: bool,
+    /// Maximum number of retry attempts for failed block verifications.
+    /// Set to 0 to disable retries.
+    #[arg(long, default_value = "3")]
+    pub max_retries: usize,
 }
 
 #[tokio::main]
@@ -213,6 +217,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
+            cli.max_retries,
         ));
     } else if let Some(start_block) = start_block {
         // Use dynamic concurrency for verify_new_heads
@@ -231,6 +236,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             metrics.clone(),
             tracker.clone(),
             verify_new_heads_concurrency.clone(),
+            cli.max_retries,
         ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
@@ -248,6 +254,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                     cancel_token.clone(),
                     metrics.clone(),
                     tracker.clone(),
+                    cli.max_retries,
                 )
                 .await;
 
@@ -267,6 +274,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             metrics.clone(),
             tracker.clone(),
             Arc::new(AtomicUsize::new(cli.concurrency)),
+            cli.max_retries,
         ));
     };
 
@@ -303,6 +311,7 @@ async fn verify_new_heads(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
     concurrency: Arc<AtomicUsize>,
+    max_retries: usize,
 ) -> Result<()> {
     let mut first_block = true;
 
@@ -347,6 +356,7 @@ async fn verify_new_heads(
             cancel_token.clone(),
             metrics.clone(),
             tracker.clone(),
+            max_retries,
         )
         .await;
         match result {
@@ -457,10 +467,12 @@ async fn verify_block(
     Ok(block_number)
 }
 
-/// Helper function to spawn a block verification task with error logging
+/// Helper function to spawn a block verification task with error logging.
+/// Returns (block_number, attempt_count, success) on completion.
 fn spawn_verify_task(
-    handles: &mut JoinSet<()>,
+    handles: &mut JoinSet<(u64, usize, bool)>,
     block_number: u64,
+    attempt: usize,
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
@@ -470,11 +482,23 @@ fn spawn_verify_task(
         let result =
             verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await;
         match result {
-            Ok(block_number) => tracing::debug!(
-                block_number = block_number,
-                "block verification task completed"
-            ),
-            Err(e) => tracing::error!(error = %e, "block verification task failed"),
+            Ok(block_number) => {
+                tracing::debug!(
+                    block_number = block_number,
+                    attempt = attempt,
+                    "block verification task completed"
+                );
+                (block_number, attempt, true)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    block_number = block_number,
+                    attempt = attempt,
+                    "block verification task failed"
+                );
+                (block_number, attempt, false)
+            }
         }
     });
 }
@@ -490,9 +514,14 @@ async fn verify_block_range(
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    max_retries: usize,
 ) -> Result<()> {
+    use std::collections::VecDeque;
+
     let mut handles = JoinSet::new();
     let mut next_block = start_block;
+    let mut retry_queue: VecDeque<(u64, usize)> = VecDeque::new(); // (block_number, attempt_count)
+
     tracing::debug!(
         start_block = start_block,
         end_block = end_block,
@@ -505,11 +534,11 @@ async fn verify_block_range(
         if cancel_token.is_cancelled() {
             break;
         }
-        // let provider = provider.clone();
         if next_block <= end_block {
             spawn_verify_task(
                 &mut handles,
                 next_block,
+                0, // attempt 0 (first attempt)
                 provider.clone(),
                 rollup_config.clone(),
                 metrics.clone(),
@@ -520,18 +549,46 @@ async fn verify_block_range(
     }
 
     // Process results and spawn new tasks continuously
-    while handles.join_next().await.is_some() {
-        // Spawn next task if available
-        if next_block <= end_block && !cancel_token.is_cancelled() {
-            spawn_verify_task(
-                &mut handles,
-                next_block,
-                provider.clone(),
-                rollup_config.clone(),
-                metrics.clone(),
-                tracker.clone(),
-            );
-            next_block += 1;
+    while let Some(result) = handles.join_next().await {
+        if let Ok((block_number, attempt, success)) = result {
+            if !success && attempt < max_retries {
+                // Queue for retry
+                retry_queue.push_back((block_number, attempt + 1));
+                tracing::debug!(
+                    block_number = block_number,
+                    next_attempt = attempt + 1,
+                    max_retries = max_retries,
+                    "queueing block for retry"
+                );
+            }
+        }
+
+        // Spawn next task if available (prioritize retries over new blocks)
+        if !cancel_token.is_cancelled() {
+            if let Some((retry_block, retry_attempt)) = retry_queue.pop_front() {
+                // Spawn retry task
+                spawn_verify_task(
+                    &mut handles,
+                    retry_block,
+                    retry_attempt,
+                    provider.clone(),
+                    rollup_config.clone(),
+                    metrics.clone(),
+                    tracker.clone(),
+                );
+            } else if next_block <= end_block {
+                // Spawn new task
+                spawn_verify_task(
+                    &mut handles,
+                    next_block,
+                    0, // attempt 0 (first attempt)
+                    provider.clone(),
+                    rollup_config.clone(),
+                    metrics.clone(),
+                    tracker.clone(),
+                );
+                next_block += 1;
+            }
         }
     }
 
