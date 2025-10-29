@@ -28,7 +28,7 @@ use revm::{
     },
     inspector::InspectorHandler,
     interpreter::{
-        Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
+        InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
     primitives::{U256, hardfork::SpecId},
     state::EvmState,
@@ -39,12 +39,14 @@ use tracing::{info, warn};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
+    pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
 }
 
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
             mainnet: MainnetHandler::default(),
+            op: op_revm::handler::OpHandler::new(),
         }
     }
 }
@@ -603,64 +605,7 @@ where
         evm: &mut Self::Evm,
         frame_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        let ctx = evm.ctx();
-        let tx = ctx.tx();
-        let is_deposit = tx.tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let tx_gas_limit = tx.gas_limit();
-        let is_regolith = ctx.cfg().spec().is_enabled_in(OpSpecId::REGOLITH);
-
-        let instruction_result = frame_result.interpreter_result().result;
-        let gas = frame_result.gas_mut();
-        let remaining = gas.remaining();
-        let refunded = gas.refunded();
-
-        // Spend the gas limit. Gas is reimbursed when the tx returns successfully.
-        *gas = Gas::new_spent(tx_gas_limit);
-
-        if instruction_result.is_ok() {
-            // On Optimism, deposit transactions report gas usage uniquely to other
-            // transactions due to them being pre-paid on L1.
-            //
-            // Hardfork Behavior:
-            // - Bedrock (success path):
-            //   - Deposit transactions (non-system) report their gas limit as the usage. No
-            //     refunds.
-            //   - Deposit transactions (system) report 0 gas used. No refunds.
-            //   - Regular transactions report gas usage as normal.
-            // - Regolith (success path):
-            //   - Deposit transactions (all) report their gas used as normal. Refunds enabled.
-            //   - Regular transactions report their gas used as normal.
-            if !is_deposit || is_regolith {
-                // For regular transactions prior to Regolith and all transactions after
-                // Regolith, gas is reported as normal.
-                gas.erase_cost(remaining);
-                gas.record_refund(refunded);
-            } else if is_deposit {
-                let tx = ctx.tx();
-                if tx.is_system_transaction() {
-                    // System transactions were a special type of deposit transaction in
-                    // the Bedrock hardfork that did not incur any gas costs.
-                    gas.erase_cost(tx_gas_limit);
-                }
-            }
-        } else if instruction_result.is_revert() {
-            // On Optimism, deposit transactions report gas usage uniquely to other
-            // transactions due to them being pre-paid on L1.
-            //
-            // Hardfork Behavior:
-            // - Bedrock (revert path):
-            //   - Deposit transactions (all) report the gas limit as the amount of gas used on
-            //     failure. No refunds.
-            //   - Regular transactions receive a refund on remaining gas as normal.
-            // - Regolith (revert path):
-            //   - Deposit transactions (all) report the actual gas used as the amount of gas used
-            //     on failure. Refunds on remaining gas enabled.
-            //   - Regular transactions receive a refund on remaining gas as normal.
-            if !is_deposit || is_regolith {
-                gas.erase_cost(remaining);
-            }
-        }
-        Ok(())
+        self.op.last_frame_result(evm, frame_result)
     }
 
     fn reimburse_caller(
@@ -697,22 +642,7 @@ where
     }
 
     fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
-        exec_result.gas_mut().record_refund(eip7702_refund);
-
-        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let is_regolith = evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH);
-
-        // Prior to Regolith, deposit transactions did not receive gas refunds.
-        let is_gas_refund_disabled = is_deposit && !is_regolith;
-        if !is_gas_refund_disabled {
-            exec_result.gas_mut().set_final_refund(
-                evm.ctx()
-                    .cfg()
-                    .spec()
-                    .into_eth_spec()
-                    .is_enabled_in(SpecId::LONDON),
-            );
-        }
+        self.op.refund(evm, exec_result, eip7702_refund)
     }
 
     fn reward_beneficiary(
@@ -825,69 +755,7 @@ where
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let output = if error.is_tx_error() && is_deposit {
-            let ctx = evm.ctx();
-            let spec = ctx.cfg().spec();
-            let tx = ctx.tx();
-            let caller = tx.caller();
-            let mint = tx.mint();
-            let is_system_tx = tx.is_system_transaction();
-            let gas_limit = tx.gas_limit();
-
-            // discard all changes of this transaction
-            evm.ctx().journal_mut().discard_tx();
-
-            // If the transaction is a deposit transaction and it failed
-            // for any reason, the caller nonce must be bumped, and the
-            // gas reported must be altered depending on the Hardfork. This is
-            // also returned as a special Halt variant so that consumers can more
-            // easily distinguish between a failed deposit and a failed
-            // normal transaction.
-
-            // Increment sender nonce and account balance for the mint amount. Deposits
-            // always persist the mint amount, even if the transaction fails.
-            let acc: &mut revm::state::Account = evm.ctx().journal_mut().load_account(caller)?.data;
-
-            let old_balance = acc.info.balance;
-
-            // decrement transaction id as it was incremented when we discarded the tx.
-            acc.transaction_id -= 1;
-            acc.info.nonce = acc.info.nonce.saturating_add(1);
-            acc.info.balance = acc
-                .info
-                .balance
-                .saturating_add(U256::from(mint.unwrap_or_default()));
-            acc.mark_touch();
-
-            // add journal entry for accounts
-            evm.ctx()
-                .journal_mut()
-                .caller_accounting_journal_entry(caller, old_balance, true);
-
-            // The gas used of a failed deposit post-regolith is the gas
-            // limit of the transaction. pre-regolith, it is the gas limit
-            // of the transaction for non system transactions and 0 for system
-            // transactions.
-            let gas_used = if spec.is_enabled_in(OpSpecId::REGOLITH) || !is_system_tx {
-                gas_limit
-            } else {
-                0
-            };
-            // clear the journal
-            Ok(ExecutionResult::Halt {
-                reason: OpHaltReason::FailedDeposit,
-                gas_used,
-            })
-        } else {
-            Err(error)
-        };
-        // do the cleanup
-        evm.ctx().chain_mut().clear_tx_l1_cost();
-        evm.ctx().local_mut().clear();
-        evm.frame_stack().clear();
-
-        output
+        self.op.catch_error(evm, error)
     }
 }
 
@@ -912,7 +780,7 @@ mod tests {
         database::InMemoryDB,
         database_interface::EmptyDB,
         handler::EthFrame,
-        interpreter::{CallOutcome, InstructionResult, InterpreterResult},
+        interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
         primitives::{Address, B256, Bytes, bytes},
         state::AccountInfo,
     };
