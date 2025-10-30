@@ -1,4 +1,5 @@
 use anyhow::{Result, ensure};
+use console_subscriber;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
@@ -26,6 +27,11 @@ pub fn init_tracing(
         .unwrap_or(EnvFilter::from_default_env())
         .add_directive(level.into());
 
+    // TODO: remove the temporary tokio trace logging
+    let tokio_console_layer = console_subscriber::spawn();
+    filter = filter.add_directive("tokio=trace".parse().unwrap());
+    filter = filter.add_directive("runtime=trace".parse().unwrap());
+
     if verbosity_level > 3 {
         filter = filter.add_directive("opentelemetry=debug".parse().unwrap());
     } else {
@@ -52,6 +58,7 @@ pub fn init_tracing(
     tracing_subscriber::Registry::default()
         .with(filter)
         .with(fmt_layer)
+        .with(tokio_console_layer)
         .with(otel_bridge_layer)
         .init();
     Ok(())

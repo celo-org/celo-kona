@@ -36,7 +36,7 @@ use tokio::{
     runtime::Handle,
     sync::mpsc,
     task::JoinSet,
-    time::{Duration, Instant, interval},
+    time::{Duration, Instant, interval, sleep, timeout},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -46,6 +46,21 @@ mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Helper to wrap RPC calls with a timeout
+async fn with_rpc_timeout<F, T, E>(future: F, operation: &str) -> Result<T>
+where
+    F: std::future::IntoFuture<Output = std::result::Result<T, E>>,
+    E: std::fmt::Display,
+{
+    timeout(RPC_TIMEOUT, future.into_future())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("RPC timeout after {}s: {}", RPC_TIMEOUT.as_secs(), operation)
+        })?
+        .map_err(|e| anyhow::anyhow!("{}: {}", operation, e))
+}
 
 /// Result of a block verification operation
 #[derive(Debug, Clone)]
@@ -68,6 +83,8 @@ struct WorkPool {
     max_retries: usize,
 }
 
+// TODO: make the adding, finalizign etc. threadsafe
+// TODO: make this general, don't bake in the actions in the add fn
 impl WorkPool {
     fn new(capacity: usize, max_retries: usize) -> Self {
         Self {
@@ -89,9 +106,7 @@ impl WorkPool {
         tracker: Arc<Mutex<VerifiedBlockTracker>>,
     ) {
         // Wait for a slot if at capacity
-        while self.handles.len() >= self.capacity {
-            self.handle_completed_task().await;
-        }
+        self.join_until_length(self.capacity - 1).await;
 
         // Spawn the task
         spawn_verify_task(
@@ -105,18 +120,46 @@ impl WorkPool {
         );
     }
 
+    /// Add work to the pool. Blocks if at capacity until a slot becomes available.
+    async fn join_until_length(&mut self, length: usize) {
+        // Wait for a slot if at capacity
+        let mut wait_logged = false;
+        while self.handles.len() > length {
+            if !wait_logged {
+                tracing::debug!(
+                    capacity = self.capacity,
+                    active_tasks = self.handles.len(),
+                    target_tasks = length,
+                    "Waiting for workpool tasks to complete"
+                );
+                wait_logged = true;
+            }
+            self.handle_completed_task().await;
+        }
+    }
+
     /// Handle one completed task, queueing retries if needed
     async fn handle_completed_task(&mut self) {
-        if let Some(result) = self.handles.join_next().await {
-            if let Ok((block_number, attempt, success)) = result {
-                if !success && attempt < self.max_retries {
-                    self.retry_queue.push_back((block_number, attempt + 1));
-                    tracing::debug!(
-                        block_number = block_number,
-                        next_attempt = attempt + 1,
-                        max_retries = self.max_retries,
-                        "queueing block for retry"
-                    );
+        if let Some(task) = self.handles.join_next() {
+            if let Some(result) = task.await {
+                match result {
+                    Ok((block_number, attempt, success)) => {
+                        if !success && attempt < self.max_retries {
+                            self.retry_queue.push_back((block_number, attempt + 1));
+                            tracing::debug!(
+                                block_number = block_number,
+                                next_attempt = attempt + 1,
+                                max_retries = self.max_retries,
+                                "queueing block for retry"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "block verification task panicked"
+                        );
+                    }
                 }
             }
         }
@@ -129,9 +172,7 @@ impl WorkPool {
 
     /// Wait for all remaining tasks to complete
     async fn finish(mut self) {
-        while self.handles.join_next().await.is_some() {
-            // Results are already handled in the spawned tasks
-        }
+        self.join_until_length(0).await;
     }
 }
 
@@ -243,8 +284,40 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
-        url if url.starts_with("ws://") || url.starts_with("wss://") => {
-            ProviderBuilder::new().connect(url).await?.root().clone()
+        url if url.starts_with("ws://") || url.starts_with("wss://") => 'retry: {
+            // Retry WebSocket connection with exponential backoff
+            let mut retry_delay = Duration::from_millis(100);
+            let max_retries = 3;
+            let mut last_error = None;
+
+            for attempt in 1..=max_retries {
+                match ProviderBuilder::new().connect(url).await {
+                    Ok(provider) => {
+                        if attempt > 1 {
+                            tracing::info!(attempt, "WebSocket connection established after retry");
+                        }
+                        break 'retry provider.root().clone();
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                        if attempt < max_retries {
+                            tracing::warn!(
+                                attempt,
+                                retry_delay_ms = retry_delay.as_millis(),
+                                "WebSocket connection failed, retrying..."
+                            );
+                            sleep(retry_delay).await;
+                            retry_delay *= 2;
+                        }
+                    }
+                }
+            }
+
+            return Err(anyhow::anyhow!(
+                "Failed to establish WebSocket connection after {} attempts: {}",
+                max_retries,
+                last_error.unwrap()
+            ));
         }
         file_path => {
             if !std::path::Path::new(file_path).exists() {
@@ -372,17 +445,20 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     };
 
     // Process results as they complete, cancel on first error
+    // XXX: this is mainly the outer task-set, so only the "spawner" of sub-tasks
     while let Some(result) = handles.join_next().await {
         match result {
             Ok(Err(e)) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
+                // XXX: rather use handles.abort_all() ?
                 handles.join_all().await;
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
+                // XXX: rather use handles.abort_all() ?
                 handles.join_all().await;
                 return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
@@ -393,6 +469,11 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // Cancel and wait for the persistence task to finish (and do final persist)
     cancel_token.cancel();
     let _ = verified_block_store_task.await;
+
+    // Allow time for WebSocket connections to close gracefully
+    // This prevents "Handshake not finished" errors on immediate restart
+    sleep(Duration::from_millis(100)).await;
+
     Ok(())
 }
 
@@ -477,34 +558,38 @@ async fn verify_block(
     let trie = Trie::new(provider);
 
     // Fetch parent block
-    let parent_block = provider
-        .get_block_by_number((block_number - 1).into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
-        .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+    let parent_block = with_rpc_timeout(
+        provider.get_block_by_number((block_number - 1).into()),
+        &format!("get parent block {}", block_number - 1),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
     let parent_header = parent_block.header.inner.seal_slow();
 
     // Fetch executing block
-    let executing_block = provider
-        .get_block_by_number(block_number.into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
+    let executing_block = with_rpc_timeout(
+        provider.get_block_by_number(block_number.into()),
+        &format!("get executing block {}", block_number),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
 
     let encoded_executing_transactions = match executing_block.transactions {
         BlockTransactions::Hashes(transactions) => {
             let mut encoded_transactions = Vec::with_capacity(transactions.len());
             for tx_hash in transactions {
-                let tx = provider
-                    .client()
-                    .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}: {e}"))?;
+                let tx = with_rpc_timeout(
+                    provider
+                        .client()
+                        .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash]),
+                    &format!("get raw transaction {}", tx_hash),
+                )
+                .await?;
                 encoded_transactions.push(tx);
             }
             encoded_transactions
         }
-        // XXX: panic or error?
+        // TODO: why did we decide to panic and not error here?
         _ => panic!("Only BlockTransactions::Hashes are supported."),
     };
 
@@ -545,7 +630,6 @@ async fn verify_block(
     // Verify the result
     let success = outcome.header.inner() == &executing_header.inner;
 
-    // XXX: should we clone here?
     Ok(BlockVerificationResult {
         block_number,
         success,
@@ -580,6 +664,7 @@ fn spawn_verify_task(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) {
+    // FIXME: tokio-console reports "tasks have lost their wakers" here often
     handles.spawn(async move {
         let start = Instant::now();
         tracing::debug!(
@@ -600,7 +685,10 @@ fn spawn_verify_task(
                         attempt = attempt,
                         "block verification task completed"
                     );
-                    tracker.lock().add_verified_block(block_number);
+                    // XXX: how long is this lock held?
+                    {
+                        tracker.lock().add_verified_block(block_number);
+                    }
                 } else {
                     let diff = format_header_diff(
                         &verification_result.expected_header,
@@ -668,6 +756,12 @@ async fn verify_block_range(
         let Some((block_number, attempt)) =
             work_pool.get_next_retry().or_else(|| new_blocks.next().map(|block| (block, 0)))
         else {
+            tracing::debug!(
+                start_block = start_block,
+                end_block = end_block,
+                concurrency = concurrency,
+                "no more work to schedule for verify block-range task"
+            );
             break; // No more work to schedule
         };
 
@@ -681,6 +775,9 @@ async fn verify_block_range(
                 tracker.clone(),
             )
             .await;
+        // this will be the blocking barrier when the worker-pool
+        // reaches full capacity, and it will unblock once more
+        // capacity is available
     }
 
     // Wait for all remaining tasks to complete
@@ -750,17 +847,19 @@ impl TrieProvider for &Trie<'_> {
 
     fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
         // Fetch the preimage from the L2 chain provider.
+        // FIXME: remove block_in_place
         let preimage: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_dbGet", &[key])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
+                with_rpc_timeout(
+                    self.provider.client().request("debug_dbGet", &[key]),
+                    "trie_node_by_hash",
+                )
+                .await
             })
+        })
+        .map_err(|e| {
+            tracing::warn!("Failed to fetch trie node: {}", e);
+            TrieError::PreimageNotFound
         })?;
 
         // Decode the preimage into a trie node.
@@ -774,47 +873,58 @@ impl TrieDBProvider for &Trie<'_> {
         const CODE_PREFIX: u8 = b'c';
 
         // Fetch the preimage from the L2 chain provider.
+        // FIXME: remove block_in_place
         let preimage: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
                 // Attempt to fetch the code from the L2 chain provider.
                 let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
-                let code = self
-                    .provider
-                    .client()
-                    .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    .await;
 
-                // Check if the first attempt to fetch the code failed. If it did, try fetching the
-                // code hash preimage without the geth hashdb scheme prefix.
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_) => self
-                        .provider
+                // Try with geth hashdb scheme prefix first
+                let code = with_rpc_timeout(
+                    self.provider
                         .client()
-                        .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                        .await
-                        .map_err(|_| TrieError::PreimageNotFound)?,
-                };
+                        .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()]),
+                    "bytecode_by_hash (with prefix)",
+                )
+                .await;
 
-                Ok(code)
+                // Check if the first attempt failed. If it did, try fetching without the prefix.
+                match code {
+                    Ok(code) => Ok(code),
+                    Err(_) => {
+                        with_rpc_timeout(
+                            self.provider
+                                .client()
+                                .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash]),
+                            "bytecode_by_hash (without prefix)",
+                        )
+                        .await
+                    }
+                }
             })
+        })
+        .map_err(|e| {
+            tracing::warn!("Failed to fetch bytecode: {}", e);
+            TrieError::PreimageNotFound
         })?;
 
         Ok(preimage)
     }
 
     fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
+        // FIXME: remove block_in_place
         let encoded_header: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_getRawHeader", &[hash])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
+                with_rpc_timeout(
+                    self.provider.client().request("debug_getRawHeader", &[hash]),
+                    "header_by_hash",
+                )
+                .await
             })
+        })
+        .map_err(|e| {
+            tracing::warn!("Failed to fetch header: {}", e);
+            TrieError::PreimageNotFound
         })?;
 
         // Decode the Header.

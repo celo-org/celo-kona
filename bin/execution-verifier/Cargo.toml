@@ -16,7 +16,7 @@ exclude.workspace = true
 celo-otel.workspace = true
 
 kona-executor.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "tracing"] }
 anyhow.workspace = true
 clap.workspace = true
 url.workspace = true
@@ -55,3 +55,4 @@ opentelemetry-otlp.workspace = true
 
 [lints]
 workspace = true
+
