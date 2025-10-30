@@ -9,10 +9,7 @@ use alloc::vec::Vec;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
-use celo_revm::{
-    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo,
-    common::{Cip64Storage, cip64_storage::get_tx_identifier},
-};
+use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -26,6 +23,9 @@ use revm::{
 };
 
 pub mod block;
+pub mod cip64_storage;
+
+use cip64_storage::{Cip64Storage, get_tx_identifier};
 
 /// Celo EVM implementation.
 ///

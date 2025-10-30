@@ -27,6 +27,7 @@ op-alloy-consensus.workspace = true
 revm.workspace = true
 op-revm.workspace = true
 celo-revm = { version = "0.1.0", path = "../celo-revm", default-features = false }
+spin.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true

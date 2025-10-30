@@ -76,6 +76,7 @@ dependencies = [
  "op-alloy-consensus",
  "op-revm",
  "revm",
+ "spin 0.10.0",
 ]
 
 [[package]]

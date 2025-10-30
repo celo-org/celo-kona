@@ -6,13 +6,11 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::{
-    Cip64Storage,
-    cip64_storage::{get_tx_identifier, none_tx_identifier},
-    fee_currency_context::FeeCurrencyContext,
-};
+use celo_revm::common::FeeCurrencyContext;
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
+
+use crate::cip64_storage::{Cip64Storage, get_tx_identifier, none_tx_identifier};
 
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Clone, Default)]
