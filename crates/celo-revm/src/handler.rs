@@ -2,10 +2,10 @@
 
 use crate::{
     CeloContext,
-    common::fee_currency_context::FeeCurrencyContext,
     constants::get_addresses,
     contracts::{core_contracts::CoreContractError, erc20},
     evm::CeloEvm,
+    fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, abstraction::Cip64Info},
 };
 use alloy_primitives::Address;

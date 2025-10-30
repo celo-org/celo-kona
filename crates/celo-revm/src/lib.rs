@@ -9,10 +9,10 @@ extern crate alloc as std;
 use spin as _;
 
 pub mod api;
-pub mod common;
 pub mod constants;
 pub mod contracts;
 pub mod evm;
+pub mod fee_currency_context;
 pub mod handler;
 pub mod precompiles;
 pub mod transaction;
@@ -24,5 +24,6 @@ pub use api::{
     default_ctx::{CeloContext, DefaultCelo},
 };
 pub use evm::CeloEvm;
+pub use fee_currency_context::FeeCurrencyContext;
 pub use precompiles::CeloPrecompiles;
 pub use transaction::CeloTransaction;
