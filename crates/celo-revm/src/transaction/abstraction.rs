@@ -1,10 +1,10 @@
-use crate::api::celo_system_tx::CeloSystemCallTx;
 use auto_impl::auto_impl;
 use celo_alloy_consensus::CeloTxType;
 use op_revm::{OpTransaction, transaction::OpTxTr};
 use revm::{
     context::TxEnv,
     context_interface::transaction::Transaction,
+    handler::SystemCallTx,
     primitives::{Address, B256, Bytes, Log, TxKind, U256},
 };
 use std::vec::Vec;
@@ -58,19 +58,31 @@ impl Default for CeloTransaction<TxEnv> {
     }
 }
 
-impl<TX: Transaction + CeloSystemCallTx> CeloSystemCallTx for CeloTransaction<TX> {
-    fn new_system_tx_with_gas_limit(
+impl SystemCallTx for CeloTransaction<TxEnv> {
+    fn new_system_tx_with_caller(
+        caller: Address,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> Self {
+        Self::new_system_tx_with_gas_limit(caller, system_contract_address, data, 30_000_000)
+    }
+}
+
+impl CeloTransaction<TxEnv> {
+    /// Creates new transaction for system call with custom gas limit.
+    pub fn new_system_tx_with_gas_limit(
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
         gas_limit: u64,
     ) -> Self {
-        CeloTransaction::new(OpTransaction::new(TX::new_system_tx_with_gas_limit(
+        CeloTransaction::new(OpTransaction::new(TxEnv {
             caller,
-            system_contract_address,
             data,
+            kind: TxKind::Call(system_contract_address),
             gas_limit,
-        )))
+            ..Default::default()
+        }))
     }
 }
 
