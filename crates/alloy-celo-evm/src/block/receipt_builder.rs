@@ -6,7 +6,7 @@ use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
 use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope, CeloTxType};
-use celo_revm::common::FeeCurrencyContext;
+use celo_revm::FeeCurrencyContext;
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 

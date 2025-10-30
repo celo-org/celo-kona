@@ -1,4 +1,4 @@
-use crate::common::fee_currency_context::FeeCurrencyContext;
+use crate::fee_currency_context::FeeCurrencyContext;
 use op_revm::L1BlockInfo;
 
 #[derive(Debug, Clone, Default)]

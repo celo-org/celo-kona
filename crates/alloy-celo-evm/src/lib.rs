@@ -59,13 +59,13 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     pub fn create_fee_currency_context(
         &mut self,
     ) -> Result<
-        celo_revm::common::FeeCurrencyContext,
+        celo_revm::FeeCurrencyContext,
         celo_revm::contracts::core_contracts::CoreContractError,
     >
     where
         I: Inspector<CeloContext<DB>>,
     {
-        celo_revm::common::FeeCurrencyContext::new_from_evm(&mut self.inner)
+        celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
 
     /// Provides a reference to the CIP-64 storage.
