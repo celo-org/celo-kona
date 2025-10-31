@@ -42,17 +42,17 @@ pub struct CeloEvm<DB: Database, I> {
 impl<DB: Database, I> CeloEvm<DB, I> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &CeloContext<DB> {
-        &self.inner.0.0.ctx
+        &self.inner.inner.0.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
     pub const fn ctx_mut(&mut self) -> &mut CeloContext<DB> {
-        &mut self.inner.0.0.ctx
+        &mut self.inner.inner.0.ctx
     }
 
     /// Provides a mutable reference to the EVM inspector.
     pub const fn inspector_mut(&mut self) -> &mut I {
-        &mut self.inner.0.0.inspector
+        &mut self.inner.inner.0.inspector
     }
 
     /// Creates a FeeCurrencyContext from the current EVM state.
@@ -136,7 +136,7 @@ where
 
         // After execution, extract the UPDATED CIP-64 info from the context
         // The handler modifies this during execution to set the reverted flag
-        if let Some(cip64_info) = self.inner.0.0.ctx.tx.cip64_tx_info.clone() {
+        if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
             self.cip64_storage.store_cip64_info(tx_identifier, cip64_info);
         }
 
@@ -223,7 +223,8 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
-        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.0.0.ctx;
+        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } =
+            self.inner.inner.0.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
@@ -233,34 +234,32 @@ where
     }
 
     fn precompiles(&self) -> &Self::Precompiles {
-        &self.inner.0.0.precompiles
+        &self.inner.inner.0.precompiles
     }
 
     fn precompiles_mut(&mut self) -> &mut Self::Precompiles {
-        &mut self.inner.0.0.precompiles
+        &mut self.inner.inner.0.precompiles
     }
 
     fn inspector(&self) -> &Self::Inspector {
-        &self.inner.0.0.inspector
+        &self.inner.inner.0.inspector
     }
 
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
-        &mut self.inner.0.0.inspector
+        &mut self.inner.inner.0.inspector
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
-        (
-            &self.inner.0.0.ctx.journaled_state.database,
-            &self.inner.0.0.inspector,
-            &self.inner.0.0.precompiles,
-        )
+        let inner_evm = &self.inner.inner.0;
+        (&inner_evm.ctx.journaled_state.database, &inner_evm.inspector, &inner_evm.precompiles)
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        let inner_evm = &mut self.inner.inner.0;
         (
-            &mut self.inner.0.0.ctx.journaled_state.database,
-            &mut self.inner.0.0.inspector,
-            &mut self.inner.0.0.precompiles,
+            &mut inner_evm.ctx.journaled_state.database,
+            &mut inner_evm.inspector,
+            &mut inner_evm.precompiles,
         )
     }
 }

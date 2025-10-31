@@ -31,11 +31,11 @@ where
     type ExecutionResult = ExecutionResult<OpHaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
-        self.0.ctx().set_block(block);
+        self.inner.ctx().set_block(block);
     }
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx().set_tx(tx);
+        self.inner.ctx().set_tx(tx);
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
@@ -45,7 +45,7 @@ where
     }
 
     fn finalize(&mut self) -> Self::State {
-        self.0.ctx().journal_mut().finalize()
+        self.inner.ctx().journal_mut().finalize()
     }
 
     fn replay(
@@ -69,7 +69,7 @@ where
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
     fn commit(&mut self, state: Self::State) {
-        self.0.ctx().db_mut().commit(state);
+        self.inner.ctx().db_mut().commit(state);
     }
 }
 
@@ -81,11 +81,11 @@ where
     type Inspector = INSP;
 
     fn set_inspector(&mut self, inspector: Self::Inspector) {
-        self.0.0.inspector = inspector;
+        self.inner.0.inspector = inspector;
     }
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx().set_tx(tx);
+        self.inner.ctx().set_tx(tx);
         let mut h = CeloHandler::<
             CeloEvm<DB, INSP>,
             CeloError<CeloContext<DB>>,
@@ -113,7 +113,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.0.ctx().set_tx(
+        self.inner.ctx().set_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_caller(
                 caller,
                 system_contract_address,
@@ -141,7 +141,7 @@ where
         data: Bytes,
         gas_limit: u64,
     ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
-        self.0.ctx().set_tx(
+        self.inner.ctx().set_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
                 CELO_SYSTEM_ADDRESS,
                 system_contract_address,

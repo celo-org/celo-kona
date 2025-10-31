@@ -20,7 +20,6 @@ pub mod tx;
 
 pub use api::{
     builder::CeloBuilder,
-    celo_block_env::CeloBlockEnv,
     default_ctx::{CeloContext, DefaultCelo},
 };
 pub use evm::CeloEvm;

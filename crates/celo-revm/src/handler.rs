@@ -28,7 +28,7 @@ use revm::{
     },
     inspector::InspectorHandler,
     interpreter::{
-        Gas, InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
+        InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
     primitives::{U256, hardfork::SpecId},
     state::EvmState,
@@ -39,12 +39,14 @@ use tracing::{info, warn};
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
+    pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
 }
 
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
             mainnet: MainnetHandler::default(),
+            op: op_revm::handler::OpHandler::new(),
         }
     }
 }
@@ -63,11 +65,11 @@ where
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
-        if evm.ctx().chain().fee_currency_context.updated_at_block != Some(current_block) {
-            // Update the chain with the new fee currency context
+        if evm.fee_currency_context.updated_at_block != Some(current_block) {
+            // Update the fee currency context
             match FeeCurrencyContext::new_from_evm(evm) {
                 Ok(fee_currency_context) => {
-                    evm.ctx().chain_mut().fee_currency_context = fee_currency_context;
+                    evm.fee_currency_context = fee_currency_context;
                 }
                 Err(CoreContractError::CoreContractMissing(_)) => {
                     // If core contracts are missing, we are probably in a non-celo test env.
@@ -116,8 +118,7 @@ where
         basefee: u64,
     ) -> Result<u128, ERROR> {
         // Convert costs to fee currency
-        let ctx = evm.ctx();
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
             .celo_to_currency(fee_currency, U256::from(basefee))
             .map_err(|e| ERROR::from_string(e))?;
@@ -133,8 +134,7 @@ where
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
     ) -> Result<u64, ERROR> {
-        let ctx = evm.ctx();
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?;
@@ -246,8 +246,6 @@ where
             .unwrap()
             .actual_intrinsic_gas_used;
         let intrinsic_gas_cost = evm
-            .ctx()
-            .chain()
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| ERROR::from_string(e))?;
@@ -283,7 +281,7 @@ where
         let gas_limit = tx.gas_limit();
         let basefee = ctx.block().basefee();
 
-        let fee_currency_context = &ctx.chain().fee_currency_context;
+        let fee_currency_context = &evm.fee_currency_context;
 
         // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
@@ -357,8 +355,7 @@ where
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
         if fee_currency.is_some_and(|fc| fc != Address::ZERO) {
-            let intrinsic_gas_for_erc20 = ctx
-                .chain()
+            let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
                 .map_err(|e| ERROR::from_string(e))?;
@@ -485,9 +482,8 @@ where
         if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
-            if ctx.chain().l1_block_info.l2_block != block_number {
-                ctx.chain_mut().l1_block_info =
-                    L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
+            if ctx.chain().l2_block != block_number {
+                *ctx.chain_mut() = L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
             // account for additional cost of l1 fee and operator fee
@@ -498,18 +494,12 @@ where
                 .clone();
 
             // compute L1 cost
-            additional_cost = ctx
-                .chain_mut()
-                .l1_block_info
-                .calculate_tx_l1_cost(&enveloped_tx, spec);
+            additional_cost = ctx.chain_mut().calculate_tx_l1_cost(&enveloped_tx, spec);
 
             // compute operator fee
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                 let gas_limit = U256::from(ctx.tx().gas_limit());
-                let operator_fee_charge = ctx
-                    .chain()
-                    .l1_block_info
-                    .operator_fee_charge(&enveloped_tx, gas_limit);
+                let operator_fee_charge = ctx.chain().operator_fee_charge(&enveloped_tx, gas_limit);
                 additional_cost = additional_cost.saturating_add(operator_fee_charge);
             }
         }
@@ -615,64 +605,7 @@ where
         evm: &mut Self::Evm,
         frame_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        let ctx = evm.ctx();
-        let tx = ctx.tx();
-        let is_deposit = tx.tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let tx_gas_limit = tx.gas_limit();
-        let is_regolith = ctx.cfg().spec().is_enabled_in(OpSpecId::REGOLITH);
-
-        let instruction_result = frame_result.interpreter_result().result;
-        let gas = frame_result.gas_mut();
-        let remaining = gas.remaining();
-        let refunded = gas.refunded();
-
-        // Spend the gas limit. Gas is reimbursed when the tx returns successfully.
-        *gas = Gas::new_spent(tx_gas_limit);
-
-        if instruction_result.is_ok() {
-            // On Optimism, deposit transactions report gas usage uniquely to other
-            // transactions due to them being pre-paid on L1.
-            //
-            // Hardfork Behavior:
-            // - Bedrock (success path):
-            //   - Deposit transactions (non-system) report their gas limit as the usage. No
-            //     refunds.
-            //   - Deposit transactions (system) report 0 gas used. No refunds.
-            //   - Regular transactions report gas usage as normal.
-            // - Regolith (success path):
-            //   - Deposit transactions (all) report their gas used as normal. Refunds enabled.
-            //   - Regular transactions report their gas used as normal.
-            if !is_deposit || is_regolith {
-                // For regular transactions prior to Regolith and all transactions after
-                // Regolith, gas is reported as normal.
-                gas.erase_cost(remaining);
-                gas.record_refund(refunded);
-            } else if is_deposit {
-                let tx = ctx.tx();
-                if tx.is_system_transaction() {
-                    // System transactions were a special type of deposit transaction in
-                    // the Bedrock hardfork that did not incur any gas costs.
-                    gas.erase_cost(tx_gas_limit);
-                }
-            }
-        } else if instruction_result.is_revert() {
-            // On Optimism, deposit transactions report gas usage uniquely to other
-            // transactions due to them being pre-paid on L1.
-            //
-            // Hardfork Behavior:
-            // - Bedrock (revert path):
-            //   - Deposit transactions (all) report the gas limit as the amount of gas used on
-            //     failure. No refunds.
-            //   - Regular transactions receive a refund on remaining gas as normal.
-            // - Regolith (revert path):
-            //   - Deposit transactions (all) report the actual gas used as the amount of gas used
-            //     on failure. Refunds on remaining gas enabled.
-            //   - Regular transactions receive a refund on remaining gas as normal.
-            if !is_deposit || is_regolith {
-                gas.erase_cost(remaining);
-            }
-        }
-        Ok(())
+        self.op.last_frame_result(evm, frame_result)
     }
 
     fn reimburse_caller(
@@ -692,10 +625,7 @@ where
         {
             let caller = context.tx().caller();
             let spec = context.cfg().spec();
-            let operator_fee_refund = context
-                .chain()
-                .l1_block_info
-                .operator_fee_refund(exec_result.gas(), spec);
+            let operator_fee_refund = context.chain().operator_fee_refund(exec_result.gas(), spec);
 
             let caller_account = evm.ctx().journal_mut().load_account(caller)?;
 
@@ -712,22 +642,7 @@ where
     }
 
     fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
-        exec_result.gas_mut().record_refund(eip7702_refund);
-
-        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let is_regolith = evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH);
-
-        // Prior to Regolith, deposit transactions did not receive gas refunds.
-        let is_gas_refund_disabled = is_deposit && !is_regolith;
-        if !is_gas_refund_disabled {
-            exec_result.gas_mut().set_final_refund(
-                evm.ctx()
-                    .cfg()
-                    .spec()
-                    .into_eth_spec()
-                    .is_enabled_in(SpecId::LONDON),
-            );
-        }
+        self.op.refund(evm, exec_result, eip7702_refund)
     }
 
     fn reward_beneficiary(
@@ -747,7 +662,7 @@ where
             let ctx = evm.ctx();
             let enveloped = ctx.tx().enveloped_tx().cloned();
             let spec = ctx.cfg().spec();
-            let l1_block_info = &mut ctx.chain_mut().l1_block_info;
+            let l1_block_info = ctx.chain_mut();
 
             let Some(enveloped_tx) = &enveloped else {
                 return Err(ERROR::from_string(
@@ -828,7 +743,7 @@ where
 
         // Commit journal, clear frame stack, clear l1_block_info
         evm.ctx().journal_mut().commit_tx();
-        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
+        evm.ctx().chain_mut().clear_tx_l1_cost();
         evm.ctx().local_mut().clear();
         evm.frame_stack().clear();
 
@@ -840,69 +755,7 @@ where
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let output = if error.is_tx_error() && is_deposit {
-            let ctx = evm.ctx();
-            let spec = ctx.cfg().spec();
-            let tx = ctx.tx();
-            let caller = tx.caller();
-            let mint = tx.mint();
-            let is_system_tx = tx.is_system_transaction();
-            let gas_limit = tx.gas_limit();
-
-            // discard all changes of this transaction
-            evm.ctx().journal_mut().discard_tx();
-
-            // If the transaction is a deposit transaction and it failed
-            // for any reason, the caller nonce must be bumped, and the
-            // gas reported must be altered depending on the Hardfork. This is
-            // also returned as a special Halt variant so that consumers can more
-            // easily distinguish between a failed deposit and a failed
-            // normal transaction.
-
-            // Increment sender nonce and account balance for the mint amount. Deposits
-            // always persist the mint amount, even if the transaction fails.
-            let acc: &mut revm::state::Account = evm.ctx().journal_mut().load_account(caller)?.data;
-
-            let old_balance = acc.info.balance;
-
-            // decrement transaction id as it was incremented when we discarded the tx.
-            acc.transaction_id -= 1;
-            acc.info.nonce = acc.info.nonce.saturating_add(1);
-            acc.info.balance = acc
-                .info
-                .balance
-                .saturating_add(U256::from(mint.unwrap_or_default()));
-            acc.mark_touch();
-
-            // add journal entry for accounts
-            evm.ctx()
-                .journal_mut()
-                .caller_accounting_journal_entry(caller, old_balance, true);
-
-            // The gas used of a failed deposit post-regolith is the gas
-            // limit of the transaction. pre-regolith, it is the gas limit
-            // of the transaction for non system transactions and 0 for system
-            // transactions.
-            let gas_used = if spec.is_enabled_in(OpSpecId::REGOLITH) || !is_system_tx {
-                gas_limit
-            } else {
-                0
-            };
-            // clear the journal
-            Ok(ExecutionResult::Halt {
-                reason: OpHaltReason::FailedDeposit,
-                gas_used,
-            })
-        } else {
-            Err(error)
-        };
-        // do the cleanup
-        evm.ctx().chain_mut().l1_block_info.clear_tx_l1_cost();
-        evm.ctx().local_mut().clear();
-        evm.frame_stack().clear();
-
-        output
+        self.op.catch_error(evm, error)
     }
 }
 
@@ -919,7 +772,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBlockEnv, CeloBuilder, CeloContext, DefaultCelo};
+    use crate::{CeloBuilder, CeloContext, DefaultCelo};
     use op_revm::L1BlockInfo;
     use revm::{
         context::{Context, TransactionType},
@@ -927,7 +780,7 @@ mod tests {
         database::InMemoryDB,
         database_interface::EmptyDB,
         handler::EthFrame,
-        interpreter::{CallOutcome, InstructionResult, InterpreterResult},
+        interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
         primitives::{Address, B256, Bytes, bytes},
         state::AccountInfo,
     };
@@ -1065,10 +918,7 @@ mod tests {
 
         let mut ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
         ctx.modify_tx(|celo_tx| {
             let tx = &mut celo_tx.op_tx;
@@ -1109,10 +959,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1155,10 +1002,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1199,10 +1043,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::ISTHMUS)
             .modify_tx_chained(|celo_tx| {
                 let tx = &mut celo_tx.op_tx;
@@ -1244,10 +1085,7 @@ mod tests {
 
         let ctx = Context::celo()
             .with_db(db)
-            .with_chain(CeloBlockEnv {
-                l1_block_info,
-                ..CeloBlockEnv::default()
-            })
+            .with_chain(l1_block_info)
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH)
             .modify_tx_chained(|tx| {
                 tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
@@ -1361,8 +1199,8 @@ mod tests {
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         // Set the operator fee scalar & constant to non-zero values in the L1 block info.
-        evm.ctx().chain.l1_block_info.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
-        evm.ctx().chain.l1_block_info.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.operator_fee_scalar = Some(U256::from(OP_FEE_MOCK_PARAM));
+        evm.ctx().chain.operator_fee_constant = Some(U256::from(OP_FEE_MOCK_PARAM));
 
         let mut gas = Gas::new(100);
         gas.set_spent(10);
@@ -1388,7 +1226,6 @@ mod tests {
         let op_fee_refund = evm
             .ctx()
             .chain()
-            .l1_block_info
             .operator_fee_refund(&gas, OpSpecId::ISTHMUS);
         assert!(op_fee_refund > U256::ZERO);
 

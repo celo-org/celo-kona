@@ -1,5 +1,5 @@
-use crate::{CeloBlockEnv, CeloTransaction};
-use op_revm::OpSpecId;
+use crate::CeloTransaction;
+use op_revm::{L1BlockInfo, OpSpecId};
 use revm::{
     Context, Journal, MainContext,
     context::{BlockEnv, CfgEnv, TxEnv},
@@ -8,7 +8,7 @@ use revm::{
 
 /// Type alias for the default context type of the CeloEvm.
 pub type CeloContext<DB> =
-    Context<BlockEnv, CeloTransaction<TxEnv>, CfgEnv<OpSpecId>, DB, Journal<DB>, CeloBlockEnv>;
+    Context<BlockEnv, CeloTransaction<TxEnv>, CfgEnv<OpSpecId>, DB, Journal<DB>, L1BlockInfo>;
 
 /// Trait that allows for a default context to be created.
 pub trait DefaultCelo {
@@ -21,7 +21,7 @@ impl DefaultCelo for CeloContext<EmptyDB> {
         Context::mainnet()
             .with_tx(CeloTransaction::default())
             .with_cfg(CfgEnv::new_with_spec(OpSpecId::BEDROCK))
-            .with_chain(CeloBlockEnv::default())
+            .with_chain(L1BlockInfo::default())
     }
 }
 
