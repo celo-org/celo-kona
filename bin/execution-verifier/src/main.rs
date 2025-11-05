@@ -218,20 +218,16 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
         tracing::debug!("debug::mode 1 start={}, end={}", start_block, end_block);
 
-        handles.spawn(async {
-            verify_block_range(
-                start_block,
-                end_block,
-                provider.clone(),
-                rollup_config.clone(),
-                cli.concurrency,
-                cancel_token.clone(),
-                metrics.clone(),
-                tracker.clone(),
-            )
-            .await;
-            tracing::debug!("debug::mode 1 completed");
-        });
+        handles.spawn(verify_block_range(
+            start_block,
+            end_block,
+            provider.clone(),
+            rollup_config.clone(),
+            cli.concurrency,
+            cancel_token.clone(),
+            metrics.clone(),
+            tracker.clone(),
+        ));
     } else if let Some(start_block) = start_block {
         tracing::debug!("debug::mode 2 start={}", start_block);
         // Use dynamic concurrency for verify_new_heads
@@ -241,20 +237,16 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
         // Used to communicate the first head block so that we can set the end of the block range.
         let (first_head_tx, mut first_head_rx) = mpsc::channel(1);
-        handles.spawn(async {
-            verify_new_heads(
-                provider.clone(),
-                rollup_config.clone(),
-                subscription,
-                cancel_token.clone(),
-                Some(first_head_tx.clone()),
-                metrics.clone(),
-                tracker.clone(),
-                verify_new_heads_concurrency.clone(),
-            )
-            .await;
-            tracing::debug!("debug::mode 2-1 completed");
-        });
+        handles.spawn(verify_new_heads(
+            provider.clone(),
+            rollup_config.clone(),
+            subscription,
+            cancel_token.clone(),
+            Some(first_head_tx.clone()),
+            metrics.clone(),
+            tracker.clone(),
+            verify_new_heads_concurrency.clone(),
+        ));
         let first_head_block =
             first_head_rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
         let end = first_head_block - 1;
@@ -277,27 +269,21 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Restore full concurrency for verify_new_heads after verify_block_range completes.
                 concurrency_handle.store(cli.concurrency, std::sync::atomic::Ordering::Relaxed);
 
-                tracing::debug!("debug::mode 2-2 completed");
-
                 result
             }
         });
     } else {
         tracing::debug!("debug::mode 3");
-        handles.spawn({
-            verify_new_heads(
-                provider.clone(),
-                rollup_config.clone(),
-                subscription,
-                cancel_token.clone(),
-                None,
-                metrics.clone(),
-                tracker.clone(),
-                Arc::new(AtomicUsize::new(cli.concurrency)),
-            )
-            .await;
-            tracing::debug!("debug::mode 3 completed");
-        });
+        handles.spawn(verify_new_heads(
+            provider.clone(),
+            rollup_config.clone(),
+            subscription,
+            cancel_token.clone(),
+            None,
+            metrics.clone(),
+            tracker.clone(),
+            Arc::new(AtomicUsize::new(cli.concurrency)),
+        ));
     };
 
     // Process results as they complete, cancel on first error
