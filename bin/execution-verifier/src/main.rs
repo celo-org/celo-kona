@@ -29,12 +29,13 @@ use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicUsize},
 };
 use tokio::{
     runtime::Handle,
-    sync::mpsc,
+    sync::{RwLock, mpsc},
     task::JoinSet,
     time::{Duration, Instant, interval},
 };
@@ -506,6 +507,51 @@ async fn verify_block_range(
     );
 
     let mut handles = JoinSet::new();
+
+    // BEGINS DEBUG CODE
+    let inflight: Arc<RwLock<HashMap<u64, Instant>>> = Arc::new(RwLock::new(HashMap::new()));
+    {
+        let inflight = inflight.clone();
+        tokio::spawn(async move {
+            let mut tick = interval(Duration::from_secs(10));
+            loop {
+                tick.tick().await;
+
+                let snapshot: Vec<(u64, Instant)> = {
+                    let map = inflight.read().await;
+                    map.iter().map(|(k, v)| (*k, *v)).collect()
+                };
+
+                if snapshot.is_empty() {
+                    tracing::debug!(
+                        "debug::verify_block_range in-flight start={}, end={} (no running verify_block tasks)",
+                        start_block,
+                        end_block
+                    );
+                    continue;
+                }
+
+                let now = Instant::now();
+                let mut oldest: Option<(u64, Duration)> = None;
+
+                for (block, started) in &snapshot {
+                    let elapsed = now.saturating_duration_since(*started);
+                    if oldest.map(|(_, d)| elapsed > d).unwrap_or(true) {
+                        oldest = Some((*block, elapsed));
+                    }
+                    tracing::debug!(
+                        "debug::verify_block_range in-flight start={}, end={} block={} elapsed={}",
+                        start_block,
+                        end_block,
+                        block,
+                        elapsed.as_secs_f64(),
+                    );
+                }
+            }
+        });
+    }
+    // ENDS DEBUG CODE
+
     let mut next_block = start_block;
 
     // Spawn initial batch
@@ -519,16 +565,39 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            tracing::debug!("debug::verify_block_range spawning {}", next_block);
+            let inflight_map = inflight.clone();
+            let block = next_block;
+
+            let started_at = Instant::now();
+            {
+                let mut m = inflight_map.write().await;
+                m.insert(block, started_at);
+            }
+
+            tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::debug!(
-                            "debug::verify_block_range verify_block (1) returns error: {}",
-                            e
-                        );
-                    })
+                let res =
+                    verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
+
+                let elapsed = started_at.elapsed();
+                {
+                    let mut m = inflight_map.write().await;
+                    m.remove(&block);
+                }
+
+                if let Err(e) = res {
+                    tracing::debug!(
+                        "verify_block({}) error elapsed={}ms: {e}",
+                        block,
+                        elapsed.as_millis() as u64
+                    );
+                } else {
+                    tracing::debug!(
+                        "verify_block({}) completed elapsed={}ms",
+                        block,
+                        elapsed.as_millis() as u64
+                    );
+                }
             });
             next_block += 1;
         }
@@ -542,17 +611,38 @@ async fn verify_block_range(
             let provider = provider.clone();
             let metrics = metrics.clone();
             let tracker = tracker.clone();
-            handles.spawn(async move {
-                tracing::debug!("debug::verify_block_range spawning {}", next_block);
+            let inflight_map = inflight.clone();
+            let block = next_block;
 
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::debug!(
-                            "debug::verify_block_range verify_block (2) returns error: {}",
-                            e
-                        );
-                    })
+            let started_at = Instant::now();
+            {
+                let mut m = inflight_map.write().await;
+                m.insert(block, started_at);
+            }
+
+            handles.spawn(async move {
+                let res =
+                    verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
+
+                let elapsed = started_at.elapsed();
+                {
+                    let mut m = inflight_map.write().await;
+                    m.remove(&block);
+                }
+
+                if let Err(e) = res {
+                    tracing::debug!(
+                        "verify_block({}) error elapsed={} ms: {e}",
+                        block,
+                        elapsed.as_millis() as u64
+                    );
+                } else {
+                    tracing::debug!(
+                        "verify_block({}) completed elapsed={} ms",
+                        block,
+                        elapsed.as_millis() as u64
+                    );
+                }
             });
             next_block += 1;
         }
