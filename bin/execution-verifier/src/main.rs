@@ -403,9 +403,13 @@ async fn verify_block(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
+    tracing::debug!("verify_block({}) stage 1 begining", block_number);
+
     let start = Instant::now();
     // Create trie for this task
     let trie = Trie::new(provider);
+
+    tracing::debug!("verify_block({}) stage 2 prepared", block_number);
 
     // Fetch parent block
     let parent_block = provider
@@ -413,7 +417,9 @@ async fn verify_block(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
         .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+    tracing::debug!("verify_block({}) stage 3 fetched parent block", block_number);
     let parent_header = parent_block.header.inner.seal_slow();
+    tracing::debug!("verify_block({}) stage 4 got parent header", block_number);
 
     // Fetch executing block
     let executing_block = provider
@@ -421,6 +427,8 @@ async fn verify_block(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
         .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
+
+    tracing::debug!("verify_block({}) stage 5 fetched target block", block_number);
 
     let encoded_executing_transactions = match executing_block.transactions {
         BlockTransactions::Hashes(transactions) => {
@@ -437,6 +445,8 @@ async fn verify_block(
         }
         _ => panic!("Only BlockTransactions::Hashes are supported."),
     };
+
+    tracing::debug!("verify_block({}) stage 6 encoded transactions", block_number);
 
     let executing_header = executing_block.header.clone();
 
@@ -461,6 +471,8 @@ async fn verify_block(
         },
     };
 
+    tracing::debug!("verify_block({}) stage 7 built payload attributes", block_number);
+
     let mut executor = CeloStatelessL2Builder::new(
         rollup_config,
         CeloEvmFactory::default(),
@@ -468,9 +480,12 @@ async fn verify_block(
         NoopTrieHinter,
         parent_header,
     );
+    tracing::debug!("verify_block({}) stage 8 inited executor", block_number);
     let outcome = executor
         .build_block(payload_attrs)
         .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
+
+    tracing::debug!("verify_block({}) stage 9 built block", block_number);
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
@@ -481,10 +496,13 @@ async fn verify_block(
             "Block verification failed header mismatch"
         );
         metrics.lock().block_verification_completed(false, start.elapsed());
+        tracing::debug!("verify_block({}) stage 10 recoreded success", block_number);
     } else {
         metrics.lock().block_verification_completed(true, start.elapsed());
+        tracing::debug!("verify_block({}) stage 10 recoreded failed", block_number);
     }
     tracker.lock().add_verified_block(block_number);
+    tracing::debug!("verify_block({}) stage 11 returning", block_number);
     Ok(block_number)
 }
 
@@ -574,39 +592,37 @@ async fn verify_block_range(
             tracing::debug!("debug::verify_block_range spawning {}", block);
 
             handles.spawn(async move {
-                let out = AssertUnwindSafe(verify_block(
-                    block,
-                    provider.as_ref(),
-                    &rollup_config,
-                    metrics,
-                    tracker,
-                ))
-                .catch_unwind()
+                let out = tokio::time::timeout(
+                    Duration::from_secs(120),
+                    AssertUnwindSafe(verify_block(
+                        block,
+                        provider.as_ref(),
+                        &rollup_config,
+                        metrics,
+                        tracker,
+                    ))
+                    .catch_unwind(),
+                )
                 .await;
 
                 let elapsed = started_at.elapsed().as_millis() as u64;
                 match out {
                     Ok(Ok(_)) => {
-                        tracing::debug!("verify_block({}) completed elapsed={}ms", block, elapsed);
+                        tracing::debug!("debug::verify_block_range::verify_block({}) completed elapsed={}ms", block, elapsed);
                     }
                     Ok(Err(e)) => {
                         tracing::debug!(
-                            "verify_block({}) returned error elapsed={}ms: {e}",
+                            "debug::verify_block_range::verify_block({}) returned error elapsed={}ms: {:?}",
                             block,
-                            elapsed
+                            elapsed,
+                            e,
                         );
                     }
                     Err(panic) => {
-                        let msg = panic
-                            .downcast_ref::<&str>()
-                            .map(|s| (*s).to_string())
-                            .or_else(|| panic.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "unknown panic payload".to_string());
                         tracing::error!(
-                            "verify_block({}) panicked elapsed={}ms: {}",
+                            "debug::verify_block_range::verify_block({}) timeout elapsed={}ms",
                             block,
                             elapsed,
-                            msg
                         );
                     }
                 }
@@ -639,39 +655,37 @@ async fn verify_block_range(
 
             tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
-                let out = AssertUnwindSafe(verify_block(
-                    block,
-                    provider.as_ref(),
-                    &rollup_config,
-                    metrics,
-                    tracker,
-                ))
-                .catch_unwind()
+                let out = tokio::time::timeout(
+                    Duration::from_secs(120),
+                    AssertUnwindSafe(verify_block(
+                        block,
+                        provider.as_ref(),
+                        &rollup_config,
+                        metrics,
+                        tracker,
+                    ))
+                    .catch_unwind(),
+                )
                 .await;
 
                 let elapsed = started_at.elapsed().as_millis() as u64;
                 match out {
                     Ok(Ok(_)) => {
-                        tracing::debug!("verify_block({}) completed elapsed={}ms", block, elapsed);
+                        tracing::debug!("debug::verify_block_range::verify_block({}) completed elapsed={}ms", block, elapsed);
                     }
                     Ok(Err(e)) => {
                         tracing::debug!(
-                            "verify_block({}) returned error elapsed={}ms: {e}",
+                            "debug::verify_block_range::verify_block({}) returned error elapsed={}ms: {:?}",
                             block,
-                            elapsed
+                            elapsed,
+                            e
                         );
                     }
                     Err(panic) => {
-                        let msg = panic
-                            .downcast_ref::<&str>()
-                            .map(|s| (*s).to_string())
-                            .or_else(|| panic.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "unknown panic payload".to_string());
                         tracing::error!(
-                            "verify_block({}) panicked elapsed={}ms: {}",
+                            "debug::verify_block_range::verify_block({}) time out elapsed={}ms",
                             block,
                             elapsed,
-                            msg
                         );
                     }
                 }
