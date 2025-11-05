@@ -21,7 +21,7 @@ use celo_executor::CeloStatelessL2Builder;
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
-use futures::stream::StreamExt;
+use futures::{FutureExt, stream::StreamExt};
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use metrics::Metrics;
@@ -30,6 +30,7 @@ use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicUsize},
 };
@@ -571,24 +572,43 @@ async fn verify_block_range(
             }
 
             tracing::debug!("debug::verify_block_range spawning {}", block);
+
             handles.spawn(async move {
-                let res =
-                    verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
+                let out = AssertUnwindSafe(verify_block(
+                    block,
+                    provider.as_ref(),
+                    &rollup_config,
+                    metrics,
+                    tracker,
+                ))
+                .catch_unwind()
+                .await;
 
-                let elapsed = started_at.elapsed();
-
-                if let Err(e) = res {
-                    tracing::debug!(
-                        "verify_block({}) error elapsed={}ms: {e}",
-                        block,
-                        elapsed.as_millis() as u64
-                    );
-                } else {
-                    tracing::debug!(
-                        "verify_block({}) completed elapsed={}ms",
-                        block,
-                        elapsed.as_millis() as u64
-                    );
+                let elapsed = started_at.elapsed().as_millis() as u64;
+                match out {
+                    Ok(Ok(_)) => {
+                        tracing::debug!("verify_block({}) completed elapsed={}ms", block, elapsed);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!(
+                            "verify_block({}) returned error elapsed={}ms: {e}",
+                            block,
+                            elapsed
+                        );
+                    }
+                    Err(panic) => {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .map(|s| (*s).to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic payload".to_string());
+                        tracing::error!(
+                            "verify_block({}) panicked elapsed={}ms: {}",
+                            block,
+                            elapsed,
+                            msg
+                        );
+                    }
                 }
 
                 {
@@ -601,7 +621,7 @@ async fn verify_block_range(
     }
 
     // Process results and spawn new tasks continuously
-    while handles.join_next().await.is_some() {
+    while let Some(res) = handles.join_next().await {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
             let rollup_config = rollup_config.clone();
@@ -619,23 +639,41 @@ async fn verify_block_range(
 
             tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
-                let res =
-                    verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
+                let out = AssertUnwindSafe(verify_block(
+                    block,
+                    provider.as_ref(),
+                    &rollup_config,
+                    metrics,
+                    tracker,
+                ))
+                .catch_unwind()
+                .await;
 
-                let elapsed = started_at.elapsed();
-
-                if let Err(e) = res {
-                    tracing::debug!(
-                        "verify_block({}) error elapsed={} ms: {e}",
-                        block,
-                        elapsed.as_millis() as u64
-                    );
-                } else {
-                    tracing::debug!(
-                        "verify_block({}) completed elapsed={} ms",
-                        block,
-                        elapsed.as_millis() as u64
-                    );
+                let elapsed = started_at.elapsed().as_millis() as u64;
+                match out {
+                    Ok(Ok(_)) => {
+                        tracing::debug!("verify_block({}) completed elapsed={}ms", block, elapsed);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!(
+                            "verify_block({}) returned error elapsed={}ms: {e}",
+                            block,
+                            elapsed
+                        );
+                    }
+                    Err(panic) => {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .map(|s| (*s).to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic payload".to_string());
+                        tracing::error!(
+                            "verify_block({}) panicked elapsed={}ms: {}",
+                            block,
+                            elapsed,
+                            msg
+                        );
+                    }
                 }
 
                 {
