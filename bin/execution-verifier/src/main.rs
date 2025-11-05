@@ -62,7 +62,7 @@ pub struct ExecutionVerifierCommand {
     /// Verbosity level (0-5).
     /// If set to 0, no logs are printed.
     /// By default, the verbosity level is set to 3 (info level).
-    #[arg(long, short, default_value = "3", action = ArgAction::Count)]
+    #[arg(long, short, default_value = "4", action = ArgAction::Count)]
     pub v: u8,
     /// The rpc connection to use, can be either an http or https URL or a file path to an IPC
     /// socket.
@@ -120,7 +120,16 @@ async fn main() -> anyhow::Result<()> {
     // since it is very verbose.
     // set up the logs
     // If cli.telemetry is false this will not use any OTLP exporters
-    let filter = EnvFilter::new("trace").add_directive("block_builder=off".parse().unwrap());
+    let filter = EnvFilter::new("trace")
+        .add_directive("block_builder=off".parse().unwrap())
+        .add_directive("alloy_rpc_client=off".parse().unwrap())
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("tower=off".parse().unwrap())
+        .add_directive("opentelemetry_sdk=off".parse().unwrap())
+        .add_directive("opentelemetry_otlp=off".parse().unwrap())
+        .add_directive("client_executor=off".parse().unwrap());
+
     init_tracing(cli.v, Some(filter), otel_resource.clone(), cli.telemetry)?;
 
     if cli.telemetry {
@@ -190,12 +199,15 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         loop {
             tokio::select! {
                 _ = cancel_token_clone.cancelled() => {
+                    tracing::debug!("debug::verified_block_store_task canceled");
                     break;
                 }
                 _ = interval.tick() => {
+                    tracing::debug!("debug::verified_block_store_task ticked");
                     let tracker = tracker_handle.clone();
                     if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
                         eprintln!("Error storing verified block: {e}");
+                        tracing::debug!("debug::verified_block_store_task failed persist_verified_block e={}", e);
                     }
                 }
             }
@@ -204,6 +216,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     let metrics = Arc::new(Mutex::new(Metrics::new(Some(tracker.clone()))));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
+        tracing::debug!("debug::mode 1");
+
         handles.spawn(verify_block_range(
             start_block,
             end_block,
@@ -215,6 +229,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             tracker.clone(),
         ));
     } else if let Some(start_block) = start_block {
+        tracing::debug!("debug::mode 2 start={}", start_block);
         // Use dynamic concurrency for verify_new_heads
         // verify_block_range is running => 1
         // verify_block_range completes  => full capacity
@@ -258,6 +273,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
         });
     } else {
+        tracing::debug!("debug::mode 3");
         handles.spawn(verify_new_heads(
             provider.clone(),
             rollup_config.clone(),
@@ -274,21 +290,28 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     while let Some(result) = handles.join_next().await {
         match result {
             Ok(Err(e)) => {
+                tracing::debug!("debug::task hander returns error {:?}", e);
+
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
                 return Err(e);
             }
             Err(e) => {
+                tracing::debug!("debug::task hander returns JoinError {:?}", e);
+
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
                 return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
-            _ => {}
+            _ => {
+                tracing::debug!("debug::task hander ended");
+            }
         }
     }
 
+    tracing::debug!("debug::main aborting");
     verified_block_store_task.abort();
     Ok(())
 }
@@ -337,6 +360,13 @@ async fn verify_new_heads(
                 "Subscription gap detected, backfilling missing blocks"
             );
         }
+
+        tracing::debug!(
+            "debug::verify_new_heads start={}, end={}, concurrency={}",
+            start_block,
+            end_block,
+            current_concurrency
+        );
 
         let result = verify_block_range(
             start_block,
@@ -468,6 +498,13 @@ async fn verify_block_range(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
+    tracing::debug!(
+        "debug::verify_block_range start={}, end={}, concurrency={}",
+        start_block,
+        end_block,
+        concurrency
+    );
+
     let mut handles = JoinSet::new();
     let mut next_block = start_block;
 
@@ -504,6 +541,13 @@ async fn verify_block_range(
         }
     }
 
+    tracing::debug!(
+        "debug::verify_block_range completed start={}, end={}, concurrency={}",
+        start_block,
+        end_block,
+        concurrency
+    );
+
     Ok(())
 }
 
@@ -511,10 +555,19 @@ async fn persist_verified_block<P: AsRef<Path>>(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
     file_path: Option<P>,
 ) -> Result<()> {
+    tracing::debug!("debug::persist_verified_block starts and locking");
+
     let mut tracker = tracker.lock();
+
+    tracing::debug!("debug::persist_verified_block tracker locked");
+
     tracker.update_highest_verified_block();
 
-    if let Some(highest_block) = tracker.highest_verified_block() {
+    let x = tracker.highest_verified_block();
+
+    tracing::debug!("debug::persist_verified_block highest={:?}", x);
+
+    if let Some(highest_block) = x {
         tracing::info!("Current highest verified block: {:?}", highest_block);
         if let Some(f) = file_path {
             let path = f.as_ref();
