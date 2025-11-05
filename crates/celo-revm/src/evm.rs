@@ -89,6 +89,30 @@ where
     ) {
         self.inner.ctx_inspector_frame_instructions()
     }
+
+    fn all_inspector(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+        &Self::Inspector,
+    ) {
+        self.inner.all_inspector()
+    }
+
+    fn all_mut_inspector(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+        &mut Self::Inspector,
+    ) {
+        self.inner.all_mut_inspector()
+    }
 }
 
 impl<DB, INSP> EvmTr for CeloEvm<DB, INSP>
@@ -105,6 +129,28 @@ where
         EthInstructions<EthInterpreter, CeloContext<DB>>,
         CeloPrecompiles,
     > as EvmTr>::Frame;
+
+    fn all(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+    ) {
+        self.inner.all()
+    }
+
+    fn all_mut(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+    ) {
+        self.inner.all_mut()
+    }
 
     fn ctx(&mut self) -> &mut Self::Context {
         self.inner.ctx()

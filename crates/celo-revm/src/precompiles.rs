@@ -8,7 +8,7 @@ use revm::{
     context::Cfg,
     context_interface::ContextTr,
     handler::PrecompileProvider,
-    interpreter::{InputsImpl, InterpreterResult},
+    interpreter::{CallInputs, InterpreterResult},
     primitives::Address,
 };
 use std::{boxed::Box, string::String};
@@ -44,16 +44,12 @@ where
     fn run(
         &mut self,
         context: &mut CTX,
-        address: &Address,
-        inputs: &InputsImpl,
-        is_static: bool,
-        gas_limit: u64,
+        inputs: &CallInputs,
     ) -> Result<Option<Self::Output>, String> {
-        if *address == TRANSFER_ADDRESS {
-            transfer_run(context, inputs, is_static, gas_limit)
+        if inputs.target_address == TRANSFER_ADDRESS {
+            transfer_run(context, inputs)
         } else {
-            self.op_precompiles
-                .run(context, address, inputs, is_static, gas_limit)
+            self.op_precompiles.run(context, inputs)
         }
     }
 

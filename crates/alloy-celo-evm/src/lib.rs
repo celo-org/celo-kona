@@ -106,6 +106,7 @@ where
     I: Inspector<CeloContext<DB>>,
 {
     type DB = DB;
+    type BlockEnv = BlockEnv;
     type Tx = CeloTransaction<TxEnv>;
     type Error = EVMError<DB::Error, OpTransactionError>;
     type HaltReason = OpHaltReason;
@@ -272,6 +273,7 @@ pub struct CeloEvmFactory;
 impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I>;
     type Context<DB: Database> = CeloContext<DB>;
+    type BlockEnv = BlockEnv;
     type Tx = CeloTransaction<TxEnv>;
     type Error<DBError: core::error::Error + Send + Sync + 'static> =
         EVMError<DBError, OpTransactionError>;
