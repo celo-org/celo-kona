@@ -2,7 +2,6 @@ use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
 };
-use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -14,7 +13,7 @@ pub(crate) struct Metrics {
 }
 
 impl Metrics {
-    pub(crate) fn new(highest_block_tracker: Option<Arc<Mutex<VerifiedBlockTracker>>>) -> Self {
+    pub(crate) fn new(highest_block_tracker: Option<Arc<VerifiedBlockTracker>>) -> Self {
         let meter = global::meter("execution-verifier");
         if let Some(tracker) = highest_block_tracker {
             meter
@@ -22,7 +21,7 @@ impl Metrics {
                 .with_unit("block-number")
                 .with_description("Highest verified continuous block.")
                 .with_callback(move |obs| {
-                    let block = tracker.lock().highest_verified_block();
+                    let block = tracker.highest();
                     if let Some(b) = block {
                         obs.observe(b, &[]);
                     }

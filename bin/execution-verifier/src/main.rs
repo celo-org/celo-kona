@@ -3,6 +3,7 @@
 //! This binary provides execution verification functionality for the Celo Kona project.
 
 mod metrics;
+mod rpc_timeout;
 
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_network::Ethereum;
@@ -12,9 +13,11 @@ use alloy_provider::{
 };
 use alloy_pubsub::Subscription;
 use alloy_rlp::Decodable;
+use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Header;
-use alloy_transport_ipc::IpcConnect;
+use alloy_transport_ipc;
+use alloy_transport_ws;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
@@ -27,13 +30,13 @@ use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use metrics::Metrics;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
-use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicUsize},
 };
 use tokio::{
     runtime::Handle,
+    sync::Mutex,
     sync::mpsc,
     task::JoinSet,
     time::{Duration, Instant, interval},
@@ -45,7 +48,10 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
+use rpc_timeout::RpcTimeoutLayer;
+
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// the version string injected by Cargo at compile time
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -135,23 +141,29 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // if a persistence-file option is given
     let start_block = match cli.state_file {
         None => cli.start_block,
-        Some(ref f) => read_verified_block(f)
-            .inspect(|verified_block| {
-                tracing::info!(
-                    persisted_block_number = verified_block,
-                    start_block_number = cli.start_block,
-                    "Found persisted highest verified block number, overwriting `start-block` argument"
-                );
-            })
-            .or(cli.start_block),
+        Some(ref f) => read_verified_block(f).map_or(cli.start_block, |verified_block| {
+            let new_start_block = Some(verified_block + 1);
+            tracing::info!(
+                persisted_block_number = verified_block,
+                cli_start_block_number = cli.start_block,
+                start_block_number = new_start_block,
+                "Found persisted highest verified block number, overwriting `start-block` argument"
+            );
+            new_start_block
+        }),
     };
 
     tracing::info!(start_block_number = start_block, "Using start-block");
 
-    // Check if l2_rpc is a URL or a file path
+    // Check if l2_rpc is a URL or a file path and create client with timeout layer
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
-            ProviderBuilder::new().connect(url).await?.root().clone()
+            let ws_connect = alloy_transport_ws::WsConnect::new(url);
+            let client = ClientBuilder::default()
+                .layer(RpcTimeoutLayer::new(RPC_TIMEOUT))
+                .ws(ws_connect)
+                .await?;
+            ProviderBuilder::new().connect_client(client).root().clone()
         }
         file_path => {
             if !std::path::Path::new(file_path).exists() {
@@ -160,8 +172,12 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                     cli.l2_rpc,
                 ));
             }
-            let ipc = IpcConnect::new(cli.l2_rpc);
-            ProviderBuilder::new().connect_ipc(ipc).await?.root().clone()
+            let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
+            let client = ClientBuilder::default()
+                .layer(RpcTimeoutLayer::new(RPC_TIMEOUT))
+                .ipc(ipc_connect)
+                .await?;
+            ProviderBuilder::new().connect_client(client).root().clone()
         }
     };
 
@@ -175,33 +191,52 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         .get_chain_id()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get chain ID: {e}"))?;
-    let rollup_config = ROLLUP_CONFIGS
-        .get(&chain_id)
-        .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
+    let rollup_config = Arc::new(
+        ROLLUP_CONFIGS
+            .get(&chain_id)
+            .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?
+            .clone(),
+    );
 
-    let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
+    let tracker = Arc::new(VerifiedBlockTracker::new(start_block));
 
     // Spawn the repeating task in the background
-    let tracker_handle = tracker.clone();
-    let cancel_token_clone = cancel_token.clone();
-    let verified_block_store_task = tokio::spawn(async move {
-        let mut interval = interval(PERSISTANCE_INTERVAL);
+    let persist_highest_block_task = cli.state_file.clone().map(|state_file| {
+        let tracker = tracker.clone();
+        let cancel = cancel_token.clone();
+        // let state_file = p.clone();
+        return tokio::spawn(async move {
+            let mut interval = interval(PERSISTANCE_INTERVAL);
+            let mut last_verified_block: Option<u64> = None;
 
-        loop {
-            tokio::select! {
-                _ = cancel_token_clone.cancelled() => {
-                    break;
-                }
-                _ = interval.tick() => {
-                    let tracker = tracker_handle.clone();
-                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
-                        eprintln!("Error storing verified block: {e}");
-                    }
+            loop {
+                tokio::select! {
+                   _ = cancel.cancelled() => {
+                       // TODO: try persist a last time
+                       break;
+                   }
+                   _ = interval.tick() => {
+                       if let Some(cur) = tracker.highest() {
+                           // Only persist if changed since last tick
+                           if last_verified_block.map_or(true, |prev| prev != cur) {
+                               match persist_verified_block(cur, &state_file) {
+                                   Ok(()) => {
+                                       // Update the cached last value only after a successful persist
+                                       last_verified_block = Some(cur);
+                                   }
+                                   Err(e) => {
+                                       eprintln!("Error storing verified block: {e}");
+                                       // Leave last_verified_block unchanged so we retry next tick
+                                   }
+                               }
+
+                           }
+                       }
+                   }
                 }
             }
-        }
+        });
     });
-
     let metrics = Arc::new(Mutex::new(Metrics::new(Some(tracker.clone()))));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
         handles.spawn(verify_block_range(
@@ -289,19 +324,21 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         }
     }
 
-    verified_block_store_task.abort();
+    if let Some(t) = persist_highest_block_task {
+        t.abort();
+    };
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn verify_new_heads(
     provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
+    rollup_config: Arc<celo_registry::CeloRollupConfig>,
     subscription: Subscription<Header>,
     cancel_token: CancellationToken,
     first_head_tx: Option<mpsc::Sender<u64>>,
     metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    tracker: Arc<VerifiedBlockTracker>,
     concurrency: Arc<AtomicUsize>,
 ) -> Result<()> {
     let mut first_block = true;
@@ -338,6 +375,7 @@ async fn verify_new_heads(
             );
         }
 
+        // XXX: why clone here?
         let result = verify_block_range(
             start_block,
             end_block,
@@ -366,14 +404,12 @@ async fn verify_new_heads(
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
-    provider: &RootProvider<Ethereum>,
-    rollup_config: &celo_registry::CeloRollupConfig,
+    provider: Arc<RootProvider<Ethereum>>,
+    rollup_config: Arc<celo_registry::CeloRollupConfig>,
     metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    tracker: Arc<VerifiedBlockTracker>,
 ) -> Result<u64> {
     let start = Instant::now();
-    // Create trie for this task
-    let trie = Trie::new(provider);
     tracing::debug!(block_number = block_number, "requested to verify block");
 
     // Fetch parent block
@@ -430,16 +466,23 @@ async fn verify_block(
         },
     };
 
-    let mut executor = CeloStatelessL2Builder::new(
-        rollup_config,
-        CeloEvmFactory::default(),
-        &trie,
-        NoopTrieHinter,
-        parent_header,
-    );
-    let outcome = executor
-        .build_block(payload_attrs)
-        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
+    // since the trie implementation uses handle.block_on() directly,
+    // it has to be executed in a blocking-thread, not a worker thread:
+    let outcome = tokio::task::spawn_blocking(move || {
+        // Create trie for this task
+        let trie = Trie::new(&provider);
+        let mut executor = CeloStatelessL2Builder::new(
+            &rollup_config,
+            CeloEvmFactory::default(),
+            &trie,
+            NoopTrieHinter,
+            parent_header,
+        );
+        executor
+            .build_block(payload_attrs)
+            .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))
+    })
+    .await??;
 
     // Verify the result
     if outcome.header.inner() != &executing_header.inner {
@@ -449,34 +492,33 @@ async fn verify_block(
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
-        metrics.lock().block_verification_completed(false, start.elapsed());
+        //OPTIM: sync barrier
+        metrics.lock().await.block_verification_completed(false, start.elapsed());
     } else {
-        metrics.lock().block_verification_completed(true, start.elapsed());
+        //OPTIM: sync barrier
+        metrics.lock().await.block_verification_completed(true, start.elapsed());
     }
-    tracker.lock().add_verified_block(block_number);
+    // TODO: result logging?
+    tracker.mark_verified(block_number).await;
     Ok(block_number)
 }
 
-/// Helper function to spawn a block verification task with error logging
-fn spawn_verify_task(
-    handles: &mut JoinSet<()>,
+/// Alternative helper for spawning block verification tasks with logging.
+/// Currently unused but kept as a cleaner alternative to inline error handling.
+#[allow(dead_code)]
+async fn verify_task_and_log(
     block_number: u64,
     provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
+    rollup_config: Arc<celo_registry::CeloRollupConfig>,
     metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    tracker: Arc<VerifiedBlockTracker>,
 ) {
-    handles.spawn(async move {
-        let result =
-            verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await;
-        match result {
-            Ok(block_number) => tracing::debug!(
-                block_number = block_number,
-                "block verification task completed"
-            ),
-            Err(e) => tracing::error!(error = %e, "block verification task failed"),
+    match verify_block(block_number, provider, rollup_config, metrics, tracker).await {
+        Ok(block_number) => {
+            tracing::debug!(block_number = block_number, "block verification task completed")
         }
-    });
+        Err(e) => tracing::error!(error = %e, "block verification task failed"),
+    }
 }
 
 /// Verifies execution for a range of blocks concurrently
@@ -485,11 +527,11 @@ async fn verify_block_range(
     start_block: u64,
     end_block: u64,
     provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
+    rollup_config: Arc<celo_registry::CeloRollupConfig>,
     concurrency: usize,
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
+    tracker: Arc<VerifiedBlockTracker>,
 ) -> Result<()> {
     let mut handles = JoinSet::new();
     let mut next_block = start_block;
@@ -505,74 +547,84 @@ async fn verify_block_range(
         if cancel_token.is_cancelled() {
             break;
         }
-        // let provider = provider.clone();
         if next_block <= end_block {
-            spawn_verify_task(
-                &mut handles,
+            handles.spawn(verify_block(
                 next_block,
                 provider.clone(),
                 rollup_config.clone(),
                 metrics.clone(),
                 tracker.clone(),
-            );
+            ));
             next_block += 1;
         }
     }
 
-    // Process results and spawn new tasks continuously
-    while handles.join_next().await.is_some() {
-        // Spawn next task if available
-        if next_block <= end_block && !cancel_token.is_cancelled() {
-            spawn_verify_task(
-                &mut handles,
-                next_block,
-                provider.clone(),
-                rollup_config.clone(),
-                metrics.clone(),
-                tracker.clone(),
-            );
-            next_block += 1;
-        }
+    loop {
+        match handles.join_next().await {
+            None => {
+                tracing::debug!(
+                    start_block = start_block,
+                    end_block = end_block,
+                    "no more work to handle in verify-block-range"
+                );
+                break;
+            }
+            Some(result) => {
+                match result {
+                    Ok(Ok(block_number)) => {
+                        tracing::debug!(
+                            block_number = block_number,
+                            "block verification task completed"
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "block verification task failed");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "block verification task panicked");
+                    }
+                }
+
+                // Spawn next task if available
+                if next_block <= end_block && !cancel_token.is_cancelled() {
+                    handles.spawn(verify_block(
+                        next_block,
+                        provider.clone(),
+                        rollup_config.clone(),
+                        metrics.clone(),
+                        tracker.clone(),
+                    ));
+                    next_block += 1;
+                }
+            }
+        };
     }
 
     Ok(())
 }
 
-async fn persist_verified_block<P: AsRef<Path>>(
-    tracker: Arc<Mutex<VerifiedBlockTracker>>,
-    file_path: Option<P>,
-) -> Result<()> {
-    let mut tracker = tracker.lock();
-    let (highest_block, was_updated) = tracker.try_update_highest_verified_block();
+fn persist_verified_block<P: AsRef<Path>>(highest_block: u64, file_path: P) -> Result<()> {
+    let path = file_path.as_ref();
+    let temp_path = path.with_extension("tmp");
 
-    if was_updated {
-        if let Some(highest_block) = highest_block {
-            if let Some(f) = file_path {
-                let path = f.as_ref();
-                let temp_path = path.with_extension("tmp");
+    // Write to temporary file first
+    std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to write highest verified block to temp file {}: {}",
+            temp_path.display(),
+            e
+        )
+    })?;
 
-                // Write to temporary file first
-                std::fs::write(&temp_path, format!("{highest_block}")).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to write highest verified block to temp file {}: {}",
-                        temp_path.display(),
-                        e
-                    )
-                })?;
-
-                // Atomically rename to final file
-                return std::fs::rename(&temp_path, path).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to rename temp file {} to {}: {}",
-                        temp_path.display(),
-                        path.display(),
-                        e
-                    )
-                });
-            }
-        }
-    }
-    Ok(())
+    // Atomically rename to final file
+    return std::fs::rename(&temp_path, path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to rename temp file {} to {}: {}",
+            temp_path.display(),
+            path.display(),
+            e
+        )
+    });
 }
 
 fn read_verified_block<P: AsRef<Path>>(file_path: P) -> Option<u64> {
@@ -599,17 +651,15 @@ impl TrieProvider for &Trie<'_> {
 
     fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
         // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_dbGet", &[key])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
+        let preimage: Bytes = Handle::current().block_on(async {
+            let preimage: Bytes = self
+                .provider
+                .client()
+                .request("debug_dbGet", &[key])
+                .await
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
-                Ok(preimage)
-            })
+            Ok(preimage)
         })?;
 
         // Decode the preimage into a trie node.
@@ -623,47 +673,43 @@ impl TrieDBProvider for &Trie<'_> {
         const CODE_PREFIX: u8 = b'c';
 
         // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                // Attempt to fetch the code from the L2 chain provider.
-                let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
-                let code = self
+        let preimage: Bytes = Handle::current().block_on(async {
+            // Attempt to fetch the code from the L2 chain provider.
+            let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
+            let code = self
+                .provider
+                .client()
+                .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
+                .await;
+
+            // Check if the first attempt to fetch the code failed. If it did, try fetching the
+            // code hash preimage without the geth hashdb scheme prefix.
+            let code = match code {
+                Ok(code) => code,
+                Err(_) => self
                     .provider
                     .client()
-                    .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    .await;
+                    .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
+                    .await
+                    .map_err(|_| TrieError::PreimageNotFound)?,
+            };
 
-                // Check if the first attempt to fetch the code failed. If it did, try fetching the
-                // code hash preimage without the geth hashdb scheme prefix.
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_) => self
-                        .provider
-                        .client()
-                        .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                        .await
-                        .map_err(|_| TrieError::PreimageNotFound)?,
-                };
-
-                Ok(code)
-            })
+            Ok(code)
         })?;
 
         Ok(preimage)
     }
 
     fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
-        let encoded_header: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_getRawHeader", &[hash])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
+        let encoded_header: Bytes = Handle::current().block_on(async {
+            let preimage: Bytes = self
+                .provider
+                .client()
+                .request("debug_getRawHeader", &[hash])
+                .await
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
-                Ok(preimage)
-            })
+            Ok(preimage)
         })?;
 
         // Decode the Header.
