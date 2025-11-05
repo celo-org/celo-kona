@@ -532,13 +532,9 @@ async fn verify_block_range(
                 }
 
                 let now = Instant::now();
-                let mut oldest: Option<(u64, Duration)> = None;
 
                 for (block, started) in &snapshot {
                     let elapsed = now.saturating_duration_since(*started);
-                    if oldest.map(|(_, d)| elapsed > d).unwrap_or(true) {
-                        oldest = Some((*block, elapsed));
-                    }
                     tracing::debug!(
                         "debug::verify_block_range in-flight start={}, end={} block={} elapsed={}",
                         start_block,
@@ -580,10 +576,6 @@ async fn verify_block_range(
                     verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
 
                 let elapsed = started_at.elapsed();
-                {
-                    let mut m = inflight_map.write().await;
-                    m.remove(&block);
-                }
 
                 if let Err(e) = res {
                     tracing::debug!(
@@ -597,6 +589,11 @@ async fn verify_block_range(
                         block,
                         elapsed.as_millis() as u64
                     );
+                }
+
+                {
+                    let mut m = inflight_map.write().await;
+                    m.remove(&block);
                 }
             });
             next_block += 1;
@@ -620,15 +617,12 @@ async fn verify_block_range(
                 m.insert(block, started_at);
             }
 
+            tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
                 let res =
                     verify_block(block, provider.as_ref(), &rollup_config, metrics, tracker).await;
 
                 let elapsed = started_at.elapsed();
-                {
-                    let mut m = inflight_map.write().await;
-                    m.remove(&block);
-                }
 
                 if let Err(e) = res {
                     tracing::debug!(
@@ -642,6 +636,11 @@ async fn verify_block_range(
                         block,
                         elapsed.as_millis() as u64
                     );
+                }
+
+                {
+                    let mut m = inflight_map.write().await;
+                    m.remove(&block);
                 }
             });
             next_block += 1;
