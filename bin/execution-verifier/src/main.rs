@@ -32,13 +32,14 @@ use std::{
     collections::HashMap,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
+    result,
     sync::{Arc, atomic::AtomicUsize},
 };
 use tokio::{
     runtime::Handle,
     sync::{RwLock, mpsc},
     task::JoinSet,
-    time::{Duration, Instant, interval},
+    time::{Duration, Instant, error::Elapsed, interval, timeout},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -395,6 +396,8 @@ async fn verify_new_heads(
     Ok(())
 }
 
+const RPC_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Verifies execution for a single block
 async fn verify_block(
     block_number: u64,
@@ -412,21 +415,94 @@ async fn verify_block(
     tracing::debug!("verify_block({}) stage 2 prepared", block_number);
 
     // Fetch parent block
-    let parent_block = provider
-        .get_block_by_number((block_number - 1).into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
-        .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+    let parent_block = {
+        match timeout(RPC_TIMEOUT, provider.get_block_by_number((block_number - 1).into())).await {
+            Ok(Ok(Some(b))) => b,
+            Ok(Ok(None)) => {
+                let e = anyhow::anyhow!("Parent block {} not found", block_number - 1);
+                tracing::debug!(
+                    "debug::verify_block::error parent block {} not found",
+                    block_number - 1
+                );
+                return Err(e);
+            }
+            Ok(Err(e)) => {
+                let e = anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e);
+                tracing::debug!(
+                    "debug::verify_block::error RPC error when getting parent block {}: {}",
+                    block_number - 1,
+                    e
+                );
+                return Err(e);
+            }
+            Err(elapsed) => {
+                let e = anyhow::anyhow!(
+                    "get_block_by_number({}) timed out after {:?}",
+                    block_number - 1,
+                    RPC_TIMEOUT
+                );
+                tracing::debug!(
+                    "debug::verify_block::error timeout when getting parent block {}, duration={}",
+                    block_number - 1,
+                    elapsed
+                );
+                return Err(e);
+            }
+        }
+    };
+
+    // let parent_block = provider
+    //     .get_block_by_number((block_number - 1).into())
+    //     .await
+    //     .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
+    //     .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
+
     tracing::debug!("verify_block({}) stage 3 fetched parent block", block_number);
     let parent_header = parent_block.header.inner.seal_slow();
     tracing::debug!("verify_block({}) stage 4 got parent header", block_number);
 
     // Fetch executing block
-    let executing_block = provider
-        .get_block_by_number(block_number.into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
+    let executing_block = {
+        match timeout(RPC_TIMEOUT, provider.get_block_by_number(block_number.into())).await {
+            Ok(Ok(Some(b))) => b,
+            Ok(Ok(None)) => {
+                let e = anyhow::anyhow!("Executing block {} not found", block_number);
+                tracing::debug!(
+                    "debug::verify_block::error executing block {} not found",
+                    block_number
+                );
+                return Err(e);
+            }
+            Ok(Err(e)) => {
+                let e = anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e);
+                tracing::debug!(
+                    "debug::verify_block::error RPC error when getting executing block {}: {}",
+                    block_number,
+                    e
+                );
+                return Err(e);
+            }
+            Err(elapsed) => {
+                let e = anyhow::anyhow!(
+                    "get_block_by_number({}) timed out after {:?}",
+                    block_number,
+                    RPC_TIMEOUT
+                );
+                tracing::debug!(
+                    "debug::verify_block::error timeout when getting executing block {}, duration={}",
+                    block_number,
+                    elapsed
+                );
+                return Err(e);
+            }
+        }
+    };
+
+    // let executing_block = provider
+    //     .get_block_by_number(block_number.into())
+    //     .await
+    //     .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
+    //     .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
 
     tracing::debug!("verify_block({}) stage 5 fetched target block", block_number);
 
