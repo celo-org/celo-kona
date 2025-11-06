@@ -511,11 +511,55 @@ async fn verify_block(
         BlockTransactions::Hashes(transactions) => {
             let mut encoded_transactions = Vec::with_capacity(transactions.len());
             for tx_hash in transactions {
-                let tx = provider
-                    .client()
-                    .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
+                let tx = {
+                    match timeout(
+                        RPC_TIMEOUT,
+                        provider
+                            .client()
+                            .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash]),
+                    )
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}: {e}"))?;
+                    {
+                        Ok(Ok(b)) => b,
+                        Ok(Err(e)) => {
+                            let e = anyhow::anyhow!(
+                                "Failed to get transaction block={}, tx={}: {}",
+                                block_number,
+                                tx_hash,
+                                e
+                            );
+                            tracing::debug!(
+                                "debug::verify_block::error RPC error when getting transaction, block={}, tx={}: {}",
+                                block_number,
+                                tx_hash,
+                                e
+                            );
+                            return Err(e);
+                        }
+                        Err(elapsed) => {
+                            let e = anyhow::anyhow!(
+                                "debug_getRawTransaction({}) timed out after {:?}, block={}",
+                                tx_hash,
+                                RPC_TIMEOUT,
+                                block_number,
+                            );
+                            tracing::debug!(
+                                "debug::verify_block::error timeout when getting transaction, block={}, tx_hash={}, duration={}",
+                                block_number,
+                                tx_hash,
+                                elapsed
+                            );
+                            return Err(e);
+                        }
+                    }
+                };
+
+                // let tx = provider
+                //     .client()
+                //     .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
+                //     .await
+                //     .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}:
+                // {e}"))?;
                 encoded_transactions.push(tx);
             }
             encoded_transactions
@@ -857,12 +901,49 @@ impl TrieProvider for &Trie<'_> {
         // Fetch the preimage from the L2 chain provider.
         let preimage: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_dbGet", &[key])
+                let preimage = {
+                    match timeout(
+                        RPC_TIMEOUT,
+                        self
+                        .provider
+                        .client()
+                        .request("debug_dbGet", &[key])
+                    )
                     .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
+                    {
+                        Ok(Ok(Some(b))) => b,
+                        Ok(Ok(None)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 1 TrieNode not found, key={}",
+                                key,
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 1 RPC error when getting TrieNode, key={}: {}",
+                                key,
+                                e
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                        Err(elapsed) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 1 timeout when getting TrieNode key={}, duration={}",
+                                key,
+                                elapsed
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                    }
+                };
+
+                // let preimage: Bytes = self
+                //     .provider
+                //     .client()
+                //     .request("debug_dbGet", &[key])
+                //     .await
+                //     .map_err(|_| TrieError::PreimageNotFound)?;
 
                 Ok(preimage)
             })
@@ -883,23 +964,73 @@ impl TrieDBProvider for &Trie<'_> {
             Handle::current().block_on(async {
                 // Attempt to fetch the code from the L2 chain provider.
                 let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
-                let code = self
+
+                let code: Result<Bytes, TrieError> = match timeout(RPC_TIMEOUT, self
                     .provider
                     .client()
                     .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    .await;
+                    ).await {
+                        Ok(Ok(b)) => Ok(b),
+                        Ok(Err(e)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 2 in TrieDBProvider RPC error when getting TrieNode: {}",
+                                e,
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        },
+                        Err(elapsed) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 2 in TrieDBProvider timeout when getting TrieNode, duration={}",
+                                elapsed
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        },
+                };
+
+
+                // let code = self
+                //     .provider
+                //     .client()
+                //     .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
+                //     .await;
 
                 // Check if the first attempt to fetch the code failed. If it did, try fetching the
                 // code hash preimage without the geth hashdb scheme prefix.
                 let code = match code {
                     Ok(code) => code,
-                    Err(_) => self
-                        .provider
-                        .client()
-                        .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                        .await
-                        .map_err(|_| TrieError::PreimageNotFound)?,
+                    Err(_) => match timeout(RPC_TIMEOUT, self
+                    .provider
+                    .client()
+                    .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash]),
+                    ).await {
+                        Ok(Ok(b)) => b,
+                        Ok(Err(e)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 3 in TrieDBProvider RPC error when getting TrieNode: {}",
+                                e,
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        },
+                        Err(elapsed) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 3 in TrieDBProvider timeout when getting TrieNode, duration={}",
+                                elapsed
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        },
+                    }
                 };
+
+
+                // let code = match code {
+                //     Ok(code) => code,
+                //     Err(_) => self
+                //         .provider
+                //         .client()
+                //         .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
+                //         .await
+                //         .map_err(|_| TrieError::PreimageNotFound)?,
+                // };
 
                 Ok(code)
             })
@@ -911,12 +1042,49 @@ impl TrieDBProvider for &Trie<'_> {
     fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
         let encoded_header: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_getRawHeader", &[hash])
+                let preimage = {
+                    match timeout(
+                        RPC_TIMEOUT,
+                        self
+                        .provider
+                        .client()
+                        .request("debug_getRawHeader", &[hash])
+                    )
                     .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
+                    {
+                        Ok(Ok(Some(b))) => b,
+                        Ok(Ok(None)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 4 in TrieDBProvider  3 TrieNode not found, key={}",
+                                hash,
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 4 in TrieDBProvider  3 RPC error when getting TrieNode, key={}: {}",
+                                hash,
+                                e
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                        Err(elapsed) => {
+                            tracing::debug!(
+                                "debug::TrieProvider::error 4 in TrieDBProvider  3 timeout when getting TrieNode key={}, duration={}",
+                                hash,
+                                elapsed
+                            );
+                            return Err(TrieError::PreimageNotFound);
+                        }
+                    }
+                };
+
+                // let preimage: Bytes = self
+                //     .provider
+                //     .client()
+                //     .request("debug_getRawHeader", &[hash])
+                //     .await
+                //     .map_err(|_| TrieError::PreimageNotFound)?;
 
                 Ok(preimage)
             })
