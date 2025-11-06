@@ -48,10 +48,13 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
-use rpc_timeout::RpcTimeoutLayer;
+use rpc_timeout::{RetryConfig, RpcTimeoutLayer};
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const RPC_MAX_RETRIES: u32 = 5;
+const RPC_BACKOFF_MULTIPLIER: f64 = 1.5;
+const RPC_MAX_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// the version string injected by Cargo at compile time
 pub const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -155,12 +158,20 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     tracing::info!(start_block_number = start_block, "Using start-block");
 
+    // Create retry configuration for RPC timeout layer
+    let retry_config = RetryConfig::new(
+        RPC_TIMEOUT,
+        RPC_MAX_RETRIES,
+        RPC_BACKOFF_MULTIPLIER,
+        Some(RPC_MAX_TIMEOUT),
+    );
+
     // Check if l2_rpc is a URL or a file path and create client with timeout layer
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
             let ws_connect = alloy_transport_ws::WsConnect::new(url);
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::new(RPC_TIMEOUT))
+                .layer(RpcTimeoutLayer::with_retry_config(retry_config))
                 .ws(ws_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()
@@ -174,7 +185,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
             let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::new(RPC_TIMEOUT))
+                .layer(RpcTimeoutLayer::with_retry_config(retry_config))
                 .ipc(ipc_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()
