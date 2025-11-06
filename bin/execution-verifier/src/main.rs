@@ -915,9 +915,8 @@ impl TrieDBProvider for &Trie<'_> {
                 )
                 .await
                 .inspect_err(|e| {
-                    tracing::debug!("debug::TrieDBProvider::bytecode_by_hash debug_dbGet returned an error, key={}: {}", hash, e);
-                })
-                .map_err(|_| TrieError::PreimageNotFound)?;
+                    tracing::debug!("debug::TrieDBProvider::bytecode_by_hash 1 debug_dbGet returned an error, key={}: {}", hash, e);
+                });
 
                 // let code = self
                 //     .provider
@@ -925,27 +924,32 @@ impl TrieDBProvider for &Trie<'_> {
                 //     .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
                 //     .await;
 
+                
+
                 // Check if the first attempt to fetch the code failed. If it did, try fetching the
                 // code hash preimage without the geth hashdb scheme prefix.
-                let code = run_with_retry_and_timeout(
-                    "debug_dbGet",
-                    MAX_RETRIES,
-                    BASE_TIMEOUT,
-                    BASE_BACKOFF,
-                    MAX_BACKOFF,
-                    || async {
-                        self
-                    .provider
-                    .client()
-                    .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                .await.map_err(Into::into)
-                    },
-                )
-                .await
-                .inspect_err(|e| {
-                    tracing::debug!("debug::TrieDBProvider::bytecode_by_hash debug_dbGet returned an error, key={}: {}", hash, e);
-                })
-                .map_err(|_| TrieError::PreimageNotFound)?;
+                let code = match code {
+                    Ok(code) => code,
+                    Err(_) => run_with_retry_and_timeout(
+                        "debug_dbGet",
+                        MAX_RETRIES,
+                        BASE_TIMEOUT,
+                        BASE_BACKOFF,
+                        MAX_BACKOFF,
+                        || async {
+                            self
+                            .provider
+                            .client()
+                            .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
+                            .await.map_err(Into::into)
+                            },
+                        )
+                        .await
+                        .inspect_err(|e| {
+                            tracing::debug!("debug::TrieDBProvider::bytecode_by_hash 2 debug_dbGet returned an error, key={}: {}", hash, e);
+                        })
+                        .map_err(|_| TrieError::PreimageNotFound)?
+                };
 
                 // let code = match code {
                 //     Ok(code) => code,
