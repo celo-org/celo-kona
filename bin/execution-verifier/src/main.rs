@@ -39,7 +39,7 @@ use tokio::{
     runtime::Handle,
     sync::{RwLock, mpsc},
     task::JoinSet,
-    time::{Duration, Instant, error::Elapsed, interval, timeout},
+    time::{Duration, Instant, error::Elapsed, interval, sleep, timeout},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -416,41 +416,26 @@ async fn verify_block(
     tracing::debug!("verify_block({}) stage 2 prepared", block_number);
 
     // Fetch parent block
-    let parent_block = {
-        match timeout(RPC_TIMEOUT, provider.get_block_by_number((block_number - 1).into())).await {
-            Ok(Ok(Some(b))) => b,
-            Ok(Ok(None)) => {
-                let e = anyhow::anyhow!("Parent block {} not found", block_number - 1);
-                tracing::debug!(
-                    "debug::verify_block::error parent block {} not found",
-                    block_number - 1
-                );
-                return Err(e);
-            }
-            Ok(Err(e)) => {
-                let e = anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e);
-                tracing::debug!(
-                    "debug::verify_block::error RPC error when getting parent block {}: {}",
-                    block_number - 1,
-                    e
-                );
-                return Err(e);
-            }
-            Err(elapsed) => {
-                let e = anyhow::anyhow!(
-                    "get_block_by_number({}) timed out after {:?}",
-                    block_number - 1,
-                    RPC_TIMEOUT
-                );
-                tracing::debug!(
-                    "debug::verify_block::error timeout when getting parent block {}, duration={}",
-                    block_number - 1,
-                    elapsed
-                );
-                return Err(e);
-            }
-        }
-    };
+    let parent_block = run_with_retry_and_timeout(
+        "eth_blockByNumber",
+        MAX_RETRIES,
+        BASE_TIMEOUT,
+        BASE_BACKOFF,
+        MAX_BACKOFF,
+        || async {
+            provider.get_block_by_number((block_number - 1).into()).await.map_err(Into::into)
+        },
+    )
+    .await
+    .inspect_err(|e| {
+        tracing::debug!(
+            "debug::verify_block eth_blockByNumber 1 returned an error, block={}: {}",
+            block_number - 1,
+            e
+        );
+    })
+    .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
+    .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
 
     // let parent_block = provider
     //     .get_block_by_number((block_number - 1).into())
@@ -463,41 +448,24 @@ async fn verify_block(
     tracing::debug!("verify_block({}) stage 4 got parent header", block_number);
 
     // Fetch executing block
-    let executing_block = {
-        match timeout(RPC_TIMEOUT, provider.get_block_by_number(block_number.into())).await {
-            Ok(Ok(Some(b))) => b,
-            Ok(Ok(None)) => {
-                let e = anyhow::anyhow!("Executing block {} not found", block_number);
-                tracing::debug!(
-                    "debug::verify_block::error executing block {} not found",
-                    block_number
-                );
-                return Err(e);
-            }
-            Ok(Err(e)) => {
-                let e = anyhow::anyhow!("Failed to get executing block {}: {}", block_number, e);
-                tracing::debug!(
-                    "debug::verify_block::error RPC error when getting executing block {}: {}",
-                    block_number,
-                    e
-                );
-                return Err(e);
-            }
-            Err(elapsed) => {
-                let e = anyhow::anyhow!(
-                    "get_block_by_number({}) timed out after {:?}",
-                    block_number,
-                    RPC_TIMEOUT
-                );
-                tracing::debug!(
-                    "debug::verify_block::error timeout when getting executing block {}, duration={}",
-                    block_number,
-                    elapsed
-                );
-                return Err(e);
-            }
-        }
-    };
+    let executing_block = run_with_retry_and_timeout(
+        "eth_blockByNumber",
+        MAX_RETRIES,
+        BASE_TIMEOUT,
+        BASE_BACKOFF,
+        MAX_BACKOFF,
+        || async { provider.get_block_by_number(block_number.into()).await.map_err(Into::into) },
+    )
+    .await
+    .inspect_err(|e| {
+        tracing::debug!(
+            "debug::verify_block eth_blockByNumber 2 returned an error, block={}: {}",
+            block_number,
+            e
+        );
+    })
+    .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
+    .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
 
     // let executing_block = provider
     //     .get_block_by_number(block_number.into())
@@ -511,48 +479,30 @@ async fn verify_block(
         BlockTransactions::Hashes(transactions) => {
             let mut encoded_transactions = Vec::with_capacity(transactions.len());
             for tx_hash in transactions {
-                let tx = {
-                    match timeout(
-                        RPC_TIMEOUT,
+                let tx = run_with_retry_and_timeout(
+                    "debug_getRawTransaction",
+                    MAX_RETRIES,
+                    BASE_TIMEOUT,
+                    BASE_BACKOFF,
+                    MAX_BACKOFF,
+                    || async {
                         provider
                             .client()
-                            .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash]),
-                    )
-                    .await
-                    {
-                        Ok(Ok(b)) => b,
-                        Ok(Err(e)) => {
-                            let e = anyhow::anyhow!(
-                                "Failed to get transaction block={}, tx={}: {}",
-                                block_number,
-                                tx_hash,
-                                e
-                            );
-                            tracing::debug!(
-                                "debug::verify_block::error RPC error when getting transaction, block={}, tx={}: {}",
-                                block_number,
-                                tx_hash,
-                                e
-                            );
-                            return Err(e);
-                        }
-                        Err(elapsed) => {
-                            let e = anyhow::anyhow!(
-                                "debug_getRawTransaction({}) timed out after {:?}, block={}",
-                                tx_hash,
-                                RPC_TIMEOUT,
-                                block_number,
-                            );
-                            tracing::debug!(
-                                "debug::verify_block::error timeout when getting transaction, block={}, tx_hash={}, duration={}",
-                                block_number,
-                                tx_hash,
-                                elapsed
-                            );
-                            return Err(e);
-                        }
-                    }
-                };
+                            .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
+                            .await
+                            .map_err(Into::into)
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!(
+                        "debug::verify_block debug_getRawTransaction returned an error, block={}, tx={}: {}",
+                        block_number,
+                        tx_hash,
+                        e
+                    );
+                })
+                .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}: {e}"))?;
 
                 // let tx = provider
                 //     .client()
@@ -714,7 +664,7 @@ async fn verify_block_range(
 
             handles.spawn(async move {
                 let out = tokio::time::timeout(
-                    Duration::from_secs(120),
+                    Duration::from_secs(300),
                     AssertUnwindSafe(verify_block(
                         block,
                         provider.as_ref(),
@@ -777,7 +727,7 @@ async fn verify_block_range(
             tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
                 let out = tokio::time::timeout(
-                    Duration::from_secs(120),
+                    Duration::from_secs(300),
                     AssertUnwindSafe(verify_block(
                         block,
                         provider.as_ref(),
@@ -901,42 +851,26 @@ impl TrieProvider for &Trie<'_> {
         // Fetch the preimage from the L2 chain provider.
         let preimage: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage = {
-                    match timeout(
-                        RPC_TIMEOUT,
+                let preimage = run_with_retry_and_timeout(
+                    "debug_dbGet",
+                    MAX_RETRIES,
+                    BASE_TIMEOUT,
+                    BASE_BACKOFF,
+                    MAX_BACKOFF,
+                    || async {
+                        let key = key.clone();
                         self
                         .provider
                         .client()
                         .request("debug_dbGet", &[key])
-                    )
-                    .await
-                    {
-                        Ok(Ok(Some(b))) => b,
-                        Ok(Ok(None)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 1 TrieNode not found, key={}",
-                                key,
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 1 RPC error when getting TrieNode, key={}: {}",
-                                key,
-                                e
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                        Err(elapsed) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 1 timeout when getting TrieNode key={}, duration={}",
-                                key,
-                                elapsed
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                    }
-                };
+                        .await.map_err(Into::into)
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!("debug::TrieDBProvider::trie_node_by_hash debug_dbGet returned an error, key={}: {}", key, e);
+                })
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
                 // let preimage: Bytes = self
                 //     .provider
@@ -965,28 +899,25 @@ impl TrieDBProvider for &Trie<'_> {
                 // Attempt to fetch the code from the L2 chain provider.
                 let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
 
-                let code: Result<Bytes, TrieError> = match timeout(RPC_TIMEOUT, self
-                    .provider
-                    .client()
-                    .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    ).await {
-                        Ok(Ok(b)) => Ok(b),
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 2 in TrieDBProvider RPC error when getting TrieNode: {}",
-                                e,
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        },
-                        Err(elapsed) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 2 in TrieDBProvider timeout when getting TrieNode, duration={}",
-                                elapsed
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        },
-                };
-
+                let code = run_with_retry_and_timeout(
+                    "debug_dbGet",
+                    MAX_RETRIES,
+                    BASE_TIMEOUT,
+                    BASE_BACKOFF,
+                    MAX_BACKOFF,
+                    || async {
+                        let code_hash = code_hash.clone();
+                        self
+                        .provider
+                        .client()
+                        .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()]).await.map_err(Into::into)
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!("debug::TrieDBProvider::bytecode_by_hash debug_dbGet returned an error, key={}: {}", hash, e);
+                })
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
                 // let code = self
                 //     .provider
@@ -996,31 +927,25 @@ impl TrieDBProvider for &Trie<'_> {
 
                 // Check if the first attempt to fetch the code failed. If it did, try fetching the
                 // code hash preimage without the geth hashdb scheme prefix.
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_) => match timeout(RPC_TIMEOUT, self
+                let code = run_with_retry_and_timeout(
+                    "debug_dbGet",
+                    MAX_RETRIES,
+                    BASE_TIMEOUT,
+                    BASE_BACKOFF,
+                    MAX_BACKOFF,
+                    || async {
+                        self
                     .provider
                     .client()
-                    .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash]),
-                    ).await {
-                        Ok(Ok(b)) => b,
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 3 in TrieDBProvider RPC error when getting TrieNode: {}",
-                                e,
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        },
-                        Err(elapsed) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 3 in TrieDBProvider timeout when getting TrieNode, duration={}",
-                                elapsed
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        },
-                    }
-                };
-
+                    .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
+                .await.map_err(Into::into)
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!("debug::TrieDBProvider::bytecode_by_hash debug_dbGet returned an error, key={}: {}", hash, e);
+                })
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
                 // let code = match code {
                 //     Ok(code) => code,
@@ -1042,42 +967,21 @@ impl TrieDBProvider for &Trie<'_> {
     fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
         let encoded_header: Bytes = tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
-                let preimage = {
-                    match timeout(
-                        RPC_TIMEOUT,
-                        self
-                        .provider
-                        .client()
-                        .request("debug_getRawHeader", &[hash])
-                    )
-                    .await
-                    {
-                        Ok(Ok(Some(b))) => b,
-                        Ok(Ok(None)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 4 in TrieDBProvider  3 TrieNode not found, key={}",
-                                hash,
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                        Ok(Err(e)) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 4 in TrieDBProvider  3 RPC error when getting TrieNode, key={}: {}",
-                                hash,
-                                e
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                        Err(elapsed) => {
-                            tracing::debug!(
-                                "debug::TrieProvider::error 4 in TrieDBProvider  3 timeout when getting TrieNode key={}, duration={}",
-                                hash,
-                                elapsed
-                            );
-                            return Err(TrieError::PreimageNotFound);
-                        }
-                    }
-                };
+                let preimage = run_with_retry_and_timeout(
+                    "debug_getRawHeader",
+                    MAX_RETRIES,
+                    BASE_TIMEOUT,
+                    BASE_BACKOFF,
+                    MAX_BACKOFF,
+                    || async {
+                        self.provider.client().request("debug_getRawHeader", &[hash]).await.map_err(Into::into)
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!("debug::TrieDBProvider::header_by_hash debug_getRawHeader returned an error, key={}: {}", hash, e);
+                })
+                .map_err(|_| TrieError::PreimageNotFound)?;
 
                 // let preimage: Bytes = self
                 //     .provider
@@ -1107,4 +1011,65 @@ pub enum TrieError {
     /// Failed to write back to the key-value store.
     #[error("Failed to write back to key value store")]
     KVStore,
+}
+
+const MAX_RETRIES: usize = 10;
+const BASE_TIMEOUT: Duration = Duration::from_secs(30);
+const BASE_BACKOFF: Duration = Duration::from_secs(5);
+const MAX_BACKOFF: Duration = Duration::from_secs(5 * 60);
+
+fn backoff(base_backoff: Duration, max_backoff: Duration, attempt: usize) -> Duration {
+    let shift = ((attempt.saturating_sub(1)) as u32).min(31);
+    let mul: u32 = 1u32 << shift;
+    let exp = base_backoff.saturating_mul(mul);
+    exp.min(max_backoff)
+}
+
+pub async fn run_with_retry_and_timeout<T, F, Fut>(
+    name: &str,
+    max_retries: usize,
+    base_timeout: Duration,
+    base_backoff: Duration,
+    max_backoff: Duration,
+    f: F,
+) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    for attempt in 1..=max_retries {
+        match timeout(base_timeout, f()).await {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
+                if attempt == max_retries {
+                    return Err(e);
+                }
+
+                tracing::warn!(
+                    op = name,
+                    attempt,
+                    max_retries,
+                    remaining_retries = max_retries.saturating_sub(attempt),
+                    %e,
+                    "RPC error (non-timeout); retrying"
+                );
+            }
+            Err(_elapsed) => {
+                if attempt == max_retries {
+                    return Err(TrieError::PreimageNotFound.into());
+                }
+                tracing::warn!(
+                    op = name,
+                    attempt,
+                    max_retries,
+                    remaining_retries = max_retries.saturating_sub(attempt),
+                    timeout_ms = base_timeout.as_millis() as u64,
+                    "RPC timeout; retrying"
+                );
+            }
+        }
+
+        sleep(backoff(base_backoff, max_backoff, attempt)).await;
+    }
+    unreachable!()
 }
