@@ -664,7 +664,7 @@ async fn verify_block_range(
 
             handles.spawn(async move {
                 let out = tokio::time::timeout(
-                    Duration::from_secs(300),
+                    Duration::from_secs(60 * 30),
                     AssertUnwindSafe(verify_block(
                         block,
                         provider.as_ref(),
@@ -727,7 +727,7 @@ async fn verify_block_range(
             tracing::debug!("debug::verify_block_range spawning {}", block);
             handles.spawn(async move {
                 let out = tokio::time::timeout(
-                    Duration::from_secs(300),
+                    Duration::from_secs(60 * 30),
                     AssertUnwindSafe(verify_block(
                         block,
                         provider.as_ref(),
