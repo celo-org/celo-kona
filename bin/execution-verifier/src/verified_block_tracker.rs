@@ -123,111 +123,111 @@ impl VerifiedBlockTracker {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_no_verified_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
+    #[tokio::test]
+    async fn test_no_verified_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
         assert_eq!(tracker.highest(), None);
 
-        let mut tracker = VerifiedBlockTracker::new(None);
+        let tracker = VerifiedBlockTracker::new(None);
         assert_eq!(tracker.highest(), None);
     }
 
-    #[test]
-    fn test_single_block() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified(1);
+    #[tokio::test]
+    async fn test_single_block() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
         assert_eq!(tracker.highest(), Some(1));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified(1);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
         assert_eq!(tracker.highest(), Some(1));
     }
-    #[test]
-    fn test_single_block_not_at_start() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified(2);
+    #[tokio::test]
+    async fn test_single_block_not_at_start() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(2).await;
         assert_eq!(tracker.highest(), None);
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified(2);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(2).await;
         assert_eq!(tracker.highest(), Some(2));
     }
 
-    #[test]
-    fn test_consecutive_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(3);
-        tracker.mark_verified(4);
+    #[tokio::test]
+    async fn test_consecutive_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(4).await;
         assert_eq!(tracker.highest(), Some(4));
 
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified_many(1..=4);
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified_many(1..=4).await;
         assert_eq!(tracker.highest(), Some(4));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(3);
-        tracker.mark_verified(4);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(4).await;
         assert_eq!(tracker.highest(), Some(4));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified_many(1..=4);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified_many(1..=4).await;
         assert_eq!(tracker.highest(), Some(4));
     }
 
-    #[test]
-    fn test_out_of_order_insertion() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified(3);
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(5);
+    #[tokio::test]
+    async fn test_out_of_order_insertion() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(5).await;
         assert_eq!(tracker.highest(), Some(3));
 
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified(3);
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(5);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(3).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(5).await;
         assert_eq!(tracker.highest(), Some(3));
     }
 
-    #[test]
-    fn test_duplicate_blocks() {
-        let mut tracker = VerifiedBlockTracker::new(Some(1));
-        tracker.mark_verified(1);
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(2);
+    #[tokio::test]
+    async fn test_duplicate_blocks() {
+        let tracker = VerifiedBlockTracker::new(Some(1));
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(2).await;
         assert_eq!(tracker.highest(), Some(2));
     }
 
-    #[test]
+    #[tokio::test]
     async fn test_verified_blocks_removed() {
-        let mut tracker = VerifiedBlockTracker::new(None);
-        tracker.mark_verified(1);
-        tracker.mark_verified(2);
-        tracker.mark_verified(4);
-        tracker.mark_verified(5);
+        let tracker = VerifiedBlockTracker::new(None);
+        tracker.mark_verified(1).await;
+        tracker.mark_verified(2).await;
+        tracker.mark_verified(4).await;
+        tracker.mark_verified(5).await;
 
         assert_eq!(tracker.highest(), Some(2));
 
         let verified_blocks: Vec<u64> = {
-            let set = pending.lock().await;
+            let set = tracker.pending.lock().await;
             set.iter().copied().collect()
         };
         // Only blocks 4 and 5 should remain (after the gap at 3)
         assert_eq!(verified_blocks, vec![4u64, 5u64]);
 
         // Add block 3 to fill the gap
-        tracker.mark_verified(3);
+        tracker.mark_verified(3).await;
         assert_eq!(tracker.highest(), Some(5));
 
         let verified_blocks_empty: Vec<u64> = {
-            let set = pending.lock().await;
+            let set = tracker.pending.lock().await;
             set.iter().copied().collect()
         };
         // All blocks should be removed now as they're all consecutive
