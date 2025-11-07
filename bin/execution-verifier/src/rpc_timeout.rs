@@ -68,12 +68,12 @@ impl RetryConfig {
 
 /// Custom timeout layer that properly maps errors for alloy transports
 #[derive(Clone)]
-pub(crate) struct RpcTimeoutLayer {
+pub(crate) struct RpcRetryLayer {
     retry_config: RetryConfig,
     metrics: Option<Arc<RpcMetrics>>,
 }
 
-impl RpcTimeoutLayer {
+impl RpcRetryLayer {
     /// Create a new RpcTimeoutLayer with optional retry configuration and metrics
     ///
     /// # Arguments
@@ -84,7 +84,7 @@ impl RpcTimeoutLayer {
     }
 }
 
-impl<S> Layer<S> for RpcTimeoutLayer {
+impl<S> Layer<S> for RpcRetryLayer {
     type Service = RpcRetryService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {

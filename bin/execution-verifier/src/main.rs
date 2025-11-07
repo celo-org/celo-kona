@@ -48,7 +48,7 @@ use tracing_subscriber::EnvFilter;
 mod verified_block_tracker;
 use verified_block_tracker::VerifiedBlockTracker;
 
-use rpc_timeout::{RetryConfig, RpcTimeoutLayer};
+use rpc_timeout::{RetryConfig, RpcRetryLayer};
 
 const PERSISTANCE_INTERVAL: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -174,7 +174,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
             let ws_connect = alloy_transport_ws::WsConnect::new(url);
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::new(
+                .layer(RpcRetryLayer::new(
                     Some(retry_config),
                     Some(rpc_metrics.clone()),
                 ))
@@ -191,7 +191,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
             let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::new(
+                .layer(RpcRetryLayer::new(
                     Some(retry_config),
                     Some(rpc_metrics.clone()),
                 ))
