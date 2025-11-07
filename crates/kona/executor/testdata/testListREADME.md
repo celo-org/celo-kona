@@ -68,3 +68,9 @@
 * Network: Celo Sepolia
 * File: sepolia-transfer_precompile_warm_from-tx_block-6750121.tar.gz  
 * Explorer: https://celo-sepolia.blockscout.com/block/6750121
+
+## Missing rate for whitelisted currencies
+* Testcase: Block without a rate from one of the whitelisted currencies (avoid failure from the block context)
+* Network: Celo Mainnet
+* File: mainnet-missing_rate_from_whitelisted_currency-block-47668860.tar.gz  
+* Explorer: https://celo.blockscout.com/block/47668860
