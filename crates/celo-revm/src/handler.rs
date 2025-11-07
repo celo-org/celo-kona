@@ -1039,10 +1039,12 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.l1_base_fee = U256::from(1_000);
-        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
-        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+        let l1_block_info = L1BlockInfo {
+            l1_base_fee: U256::from(1_000),
+            l1_fee_overhead: Some(U256::from(1_000)),
+            l1_base_fee_scalar: U256::from(1_000),
+            ..Default::default()
+        };
 
         let mut ctx = Context::celo()
             .with_db(db)
@@ -1083,10 +1085,12 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.l1_base_fee = U256::from(1_000);
-        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
-        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+        let l1_block_info = L1BlockInfo {
+            l1_base_fee: U256::from(1_000),
+            l1_fee_overhead: Some(U256::from(1_000)),
+            l1_base_fee_scalar: U256::from(1_000),
+            ..Default::default()
+        };
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1129,11 +1133,13 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.l1_base_fee = U256::from(1_000);
-        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
-        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
-        l1_block_info.l2_block = Some(U256::from(0));
+        let l1_block_info = L1BlockInfo {
+            l1_base_fee: U256::from(1_000),
+            l1_fee_overhead: Some(U256::from(1_000)),
+            l1_base_fee_scalar: U256::from(1_000),
+            l2_block: Some(U256::from(0)),
+            ..Default::default()
+        };
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1175,10 +1181,12 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.operator_fee_scalar = Some(U256::from(10_000_000));
-        l1_block_info.operator_fee_constant = Some(U256::from(50));
-        l1_block_info.l2_block = Some(U256::from(0));
+        let l1_block_info = L1BlockInfo {
+            operator_fee_scalar: Some(U256::from(10_000_000)),
+            operator_fee_constant: Some(U256::from(50)),
+            l2_block: Some(U256::from(0)),
+            ..Default::default()
+        };
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1220,10 +1228,12 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.operator_fee_scalar = Some(U256::from(2));
-        l1_block_info.operator_fee_constant = Some(U256::from(50));
-        l1_block_info.l2_block = Some(U256::from(0));
+        let l1_block_info = L1BlockInfo {
+            operator_fee_scalar: Some(U256::from(2)),
+            operator_fee_constant: Some(U256::from(50)),
+            l2_block: Some(U256::from(0)),
+            ..Default::default()
+        };
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1264,11 +1274,13 @@ mod tests {
             },
         );
 
-        let mut l1_block_info = L1BlockInfo::default();
-        l1_block_info.l1_base_fee = U256::from(1_000);
-        l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
-        l1_block_info.l1_base_fee_scalar = U256::from(1_000);
-        l1_block_info.l2_block = Some(U256::from(0));
+        let l1_block_info = L1BlockInfo {
+            l1_base_fee: U256::from(1_000),
+            l1_fee_overhead: Some(U256::from(1_000)),
+            l1_base_fee_scalar: U256::from(1_000),
+            l2_block: Some(U256::from(0)),
+            ..Default::default()
+        };
 
         let ctx = Context::celo()
             .with_db(db)
