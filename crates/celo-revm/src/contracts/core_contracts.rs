@@ -141,13 +141,13 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
-            debug!(target: "celo_core_contracts", "get_currencies: failed to call: {}", e);
+            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{}: {}", hex::encode(fee_curr_dir), e);
             return Vec::<Address>::new();
         }
     };
 
     if output_bytes.is_empty() {
-        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{}", hex::encode(fee_curr_dir));
+        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_curr_dir);
         return Vec::<Address>::new();
     }
 
@@ -186,7 +186,7 @@ where
         let output_bytes = match call_result {
             Ok((bytes, _, _, _)) => bytes,
             Err(e) => {
-                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to call for token 0x{}: {}", hex::encode(token), e);
+                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to call for token 0x{:x}: {}", token, e);
                 continue;
             }
         };
@@ -195,7 +195,7 @@ where
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
             Err(e) => {
-                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to decode for token 0x{} (bytes: 0x{}): {}", hex::encode(token), hex::encode(output_bytes), e);
+                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to decode for token 0x{:x} (bytes: 0x{:x}): {}", token, output_bytes, e);
                 continue;
             }
         };
