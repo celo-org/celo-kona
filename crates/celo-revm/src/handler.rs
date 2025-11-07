@@ -1133,6 +1133,7 @@ mod tests {
         l1_block_info.l1_base_fee = U256::from(1_000);
         l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
         l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+        l1_block_info.l2_block = Some(U256::from(0));
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1159,11 +1160,11 @@ mod tests {
 
         // Check the account balance is updated.
         let account = evm.ctx().journal_mut().load_account(caller).unwrap();
-        assert_eq!(account.data.info.balance, U256::from(1));
+        assert_eq!(account.info.balance, U256::from(1));
     }
 
     #[test]
-    fn test_remove_operator_cost() {
+    fn test_remove_operator_cost_isthmus() {
         let caller = Address::ZERO;
         let mut db = InMemoryDB::default();
         db.insert_account_info(
@@ -1177,6 +1178,7 @@ mod tests {
         let mut l1_block_info = L1BlockInfo::default();
         l1_block_info.operator_fee_scalar = Some(U256::from(10_000_000));
         l1_block_info.operator_fee_constant = Some(U256::from(50));
+        l1_block_info.l2_block = Some(U256::from(0));
 
         let ctx = Context::celo()
             .with_db(db)
@@ -1195,7 +1197,7 @@ mod tests {
         let handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
-        // operator fee cost is operator_fee_scalar * gas_limit / 1e6 + operator_fee_constant
+        // Under Isthmus the operator fee cost is operator_fee_scalar * gas_limit / 1e6 + operator_fee_constant
         // 10_000_000 * 10 / 1_000_000 + 50 = 150
         handler
             .validate_against_state_and_deduct_caller(&mut evm)
@@ -1203,7 +1205,51 @@ mod tests {
 
         // Check the account balance is updated.
         let account = evm.ctx().journal_mut().load_account(caller).unwrap();
-        assert_eq!(account.data.info.balance, U256::from(1));
+        assert_eq!(account.info.balance, U256::from(1));
+    }
+
+    #[test]
+    fn test_remove_operator_cost_jovian() {
+        let caller = Address::ZERO;
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            caller,
+            AccountInfo {
+                balance: U256::from(2_051),
+                ..Default::default()
+            },
+        );
+
+        let mut l1_block_info = L1BlockInfo::default();
+        l1_block_info.operator_fee_scalar = Some(U256::from(2));
+        l1_block_info.operator_fee_constant = Some(U256::from(50));
+        l1_block_info.l2_block = Some(U256::from(0));
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .with_chain(CeloBlockEnv {
+                l1_block_info,
+                ..CeloBlockEnv::default()
+            })
+            .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::JOVIAN)
+            .modify_tx_chained(|celo_tx| {
+                let tx = &mut celo_tx.op_tx;
+                tx.base.gas_limit = 10;
+                tx.enveloped_tx = Some(bytes!("FACADE"));
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        // Under Jovian the operator fee cost is operator_fee_scalar * gas_limit * 100 + operator_fee_constant
+        // 2 * 10 * 100 + 50 = 2_050
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .unwrap();
+
+        let account = evm.ctx().journal_mut().load_account(caller).unwrap();
+        assert_eq!(account.info.balance, U256::from(1));
     }
 
     #[test]
@@ -1222,6 +1268,7 @@ mod tests {
         l1_block_info.l1_base_fee = U256::from(1_000);
         l1_block_info.l1_fee_overhead = Some(U256::from(1_000));
         l1_block_info.l1_base_fee_scalar = U256::from(1_000);
+        l1_block_info.l2_block = Some(U256::from(0));
 
         let ctx = Context::celo()
             .with_db(db)
