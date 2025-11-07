@@ -79,35 +79,28 @@ impl RpcTimeoutLayer {
     /// # Arguments
     /// * `retry_config` - Optional retry configuration. If None, uses default configuration.
     /// * `metrics` - Optional metrics collector. If None, no metrics will be collected.
-    pub(crate) fn new(
-        retry_config: Option<RetryConfig>,
-        metrics: Option<Arc<RpcMetrics>>,
-    ) -> Self {
+    pub(crate) fn new(retry_config: Option<RetryConfig>, metrics: Option<Arc<RpcMetrics>>) -> Self {
         Self { retry_config: retry_config.unwrap_or_default(), metrics }
     }
 }
 
 impl<S> Layer<S> for RpcTimeoutLayer {
-    type Service = RpcTimeoutService<S>;
+    type Service = RpcRetryService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        RpcTimeoutService {
-            inner,
-            retry_config: self.retry_config,
-            metrics: self.metrics.clone(),
-        }
+        RpcRetryService { inner, retry_config: self.retry_config, metrics: self.metrics.clone() }
     }
 }
 
 /// Service that wraps an inner service with timeout functionality
 #[derive(Clone)]
-pub(crate) struct RpcTimeoutService<S> {
+pub(crate) struct RpcRetryService<S> {
     inner: S,
     retry_config: RetryConfig,
     metrics: Option<Arc<RpcMetrics>>,
 }
 
-impl<S> Service<RequestPacket> for RpcTimeoutService<S>
+impl<S> Service<RequestPacket> for RpcRetryService<S>
 where
     S: Service<RequestPacket, Response = ResponsePacket, Error = TransportError>
         + Send
@@ -133,8 +126,7 @@ where
         // heap allocation and pin memory
         Box::pin(async move {
             // Extract method names for metrics and logging
-            let method_names: Vec<String> =
-                request.method_names().map(|s| s.to_string()).collect();
+            let method_names: Vec<String> = request.method_names().map(|s| s.to_string()).collect();
             let method_name_for_log = if method_names.len() == 1 {
                 method_names[0].clone()
             } else {
