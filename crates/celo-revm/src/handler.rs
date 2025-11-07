@@ -18,9 +18,9 @@ use op_revm::{
 };
 use revm::{
     Database, Inspector,
-    context::{journaled_state::JournalCheckpoint, result::InvalidTransaction, LocalContextTr},
+    context::{LocalContextTr, journaled_state::JournalCheckpoint, result::InvalidTransaction},
     context_interface::{
-        Block, Cfg, ContextTr, JournalTr, Transaction, ContextSetters,
+        Block, Cfg, ContextSetters, ContextTr, JournalTr, Transaction,
         result::{ExecutionResult, FromStringError},
     },
     handler::{
@@ -506,10 +506,10 @@ where
             // compute operator fee
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                 let gas_limit = U256::from(ctx.tx().gas_limit());
-                let operator_fee_charge = ctx
-                    .chain()
-                    .l1_block_info
-                    .operator_fee_charge(&enveloped_tx, gas_limit, spec);
+                let operator_fee_charge =
+                    ctx.chain()
+                        .l1_block_info
+                        .operator_fee_charge(&enveloped_tx, gas_limit, spec);
                 additional_cost = additional_cost.saturating_add(operator_fee_charge);
             }
         }

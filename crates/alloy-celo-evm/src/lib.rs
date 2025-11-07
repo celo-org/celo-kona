@@ -110,6 +110,7 @@ where
     type Error = EVMError<DB::Error, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
+    type BlockEnv = BlockEnv;
     type Precompiles = CeloPrecompiles;
     type Inspector = I;
 
@@ -278,6 +279,7 @@ impl EvmFactory for CeloEvmFactory {
         EVMError<DBError, OpTransactionError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
+    type BlockEnv = BlockEnv;
     type Precompiles = CeloPrecompiles;
 
     fn create_evm<DB: Database>(

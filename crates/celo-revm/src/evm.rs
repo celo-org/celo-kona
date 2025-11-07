@@ -1,16 +1,14 @@
 use crate::{CeloContext, CeloPrecompiles};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
+    Database, Inspector,
     context::{ContextError, Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
     handler::{
-        evm::FrameTr,
-        instructions::EthInstructions,
-        EvmTr, FrameInitOrResult, ItemOrResult,
+        EvmTr, FrameInitOrResult, ItemOrResult, evm::FrameTr, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
     interpreter::interpreter::EthInterpreter,
-    Database, Inspector,
 };
 
 pub struct CeloEvm<DB: Database, INSP>(
@@ -126,35 +124,35 @@ where
     }
 
     fn frame_init(
-      &mut self,
-      frame_input: <Self::Frame as FrameTr>::FrameInit,
-  ) -> Result<
-      ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
-      ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
-  > {
-      self.0.frame_init(frame_input)
-  }
+        &mut self,
+        frame_input: <Self::Frame as FrameTr>::FrameInit,
+    ) -> Result<
+        ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.0.frame_init(frame_input)
+    }
 
-  fn frame_run(
-      &mut self,
-  ) -> Result<
-      FrameInitOrResult<Self::Frame>,
-      ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
-  > {
-      self.0.frame_run()
-  }
+    fn frame_run(
+        &mut self,
+    ) -> Result<
+        FrameInitOrResult<Self::Frame>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.0.frame_run()
+    }
 
-  #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
-  #[doc = " Consumes the frame result or returns it if there is more frames to run."]
-  fn frame_return_result(
-      &mut self,
-      result: <Self::Frame as FrameTr>::FrameResult,
-  ) -> Result<
-      Option<<Self::Frame as FrameTr>::FrameResult>,
-      ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
-  > {
-      self.0.frame_return_result(result)
-  }
+    #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
+    #[doc = " Consumes the frame result or returns it if there is more frames to run."]
+    fn frame_return_result(
+        &mut self,
+        result: <Self::Frame as FrameTr>::FrameResult,
+    ) -> Result<
+        Option<<Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.0.frame_return_result(result)
+    }
 }
 
 #[cfg(test)]

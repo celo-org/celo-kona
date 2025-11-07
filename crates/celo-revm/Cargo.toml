@@ -39,6 +39,7 @@ alloy-evm.workspace = true
 # OP Alloy
 op-alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
+alloy-op-evm = { workspace = true, optional = true }
 
 # misc
 auto_impl.workspace = true
@@ -56,12 +57,14 @@ alloy-eips.workspace = true
 revm-handler.workspace = true
 
 [features]
-default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst", "alloy-op-evm"]
 std = [
     "serde?/std",
     "revm/std",
     "tracing/std",
+    "alloy-op-evm?/std",
 ]
+alloy-op-evm = ["dep:alloy-op-evm"]
 hashbrown = ["revm/hashbrown"]
 serde = [
     "dep:serde",

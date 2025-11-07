@@ -1889,6 +1889,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
+ "alloy-op-evm",
  "alloy-primitives",
  "alloy-sol-types",
  "auto_impl",

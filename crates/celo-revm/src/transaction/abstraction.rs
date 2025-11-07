@@ -177,6 +177,13 @@ impl<T: Transaction> CeloTxTr for CeloTransaction<T> {
     }
 }
 
+#[cfg(feature = "alloy-op-evm")]
+impl alloy_op_evm::block::OpTxEnv for CeloTransaction<TxEnv> {
+    fn encoded_bytes(&self) -> Option<&Bytes> {
+        self.enveloped_tx()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

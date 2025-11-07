@@ -49,8 +49,7 @@ where
         if inputs.target_address == TRANSFER_ADDRESS {
             transfer_run(context, inputs)
         } else {
-            self.op_precompiles
-                .run(context, inputs)
+            self.op_precompiles.run(context, inputs)
         }
     }
 
@@ -159,10 +158,7 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.chain_id = CELO_MAINNET_CHAIN_ID)
             .with_db(db);
 
-        let res = precompiles.run(
-            &mut ctx,
-            &inputs,
-        );
+        let res = precompiles.run(&mut ctx, &inputs);
         assert!(res.is_ok());
 
         let state = ctx.journal_mut().finalize();
@@ -175,10 +171,7 @@ mod tests {
         assert_eq!(to_account.info.balance, U256::from(value));
 
         // Test calling with too little gas
-        let res = precompiles.run(
-            &mut ctx,
-            &inputs,
-        );
+        let res = precompiles.run(&mut ctx, &inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -193,10 +186,7 @@ mod tests {
             input: short_input,
             ..inputs.clone()
         };
-        let res = precompiles.run(
-            &mut ctx,
-            &bad_input,
-        );
+        let res = precompiles.run(&mut ctx, &bad_input);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -210,10 +200,7 @@ mod tests {
             caller: Address::with_last_byte(3),
             ..inputs.clone()
         };
-        let res = precompiles.run(
-            &mut ctx,
-            &wrong_inputs,
-        );
+        let res = precompiles.run(&mut ctx, &wrong_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -228,11 +215,11 @@ mod tests {
         input_vec[63] = 2;
         input_vec[95] = initial_balance + 10;
         let input = CallInput::Bytes(Bytes::from(input_vec));
-        let big_value_input = CallInputs { input, ..inputs.clone() };
-        let res = precompiles.run(
-            &mut ctx,
-            &big_value_input,
-        );
+        let big_value_input = CallInputs {
+            input,
+            ..inputs.clone()
+        };
+        let res = precompiles.run(&mut ctx, &big_value_input);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -242,10 +229,7 @@ mod tests {
         ));
 
         // Test calling in static context (STATICCALL)
-        let res = precompiles.run(
-            &mut ctx,
-            &inputs,
-        );
+        let res = precompiles.run(&mut ctx, &inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
