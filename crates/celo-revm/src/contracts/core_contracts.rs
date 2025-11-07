@@ -21,6 +21,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
+use tracing::debug;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -124,40 +125,49 @@ where
     }
 }
 
-pub fn get_currencies<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
-) -> Result<Vec<Address>, CoreContractError>
+pub fn get_currencies<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> Vec<Address>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
-    let (output_bytes, _, _, _) = call(
+    let call_result = call(
         evm,
         fee_curr_dir,
         getCurrenciesCall {}.abi_encode().into(),
         None,
-    )?;
+    );
+
+    let output_bytes = match call_result {
+        Ok((bytes, _, _, _)) => bytes,
+        Err(e) => {
+            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_curr_dir, e);
+            return Vec::new();
+        }
+    };
 
     if output_bytes.is_empty() {
-        return Err(CoreContractError::CoreContractMissing(fee_curr_dir));
+        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_curr_dir);
+        return Vec::new();
     }
 
     // Decode the output
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
-        Ok(decoded_return) => Ok(decoded_return),
-        Err(e) => Err(CoreContractError::ExecutionFailed(format!(
-            "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
-            hex::encode(output_bytes),
-            e
-        ))),
+        Ok(decoded_return) => decoded_return,
+        Err(e) => {
+            debug!(target: "celo_core_contracts",  "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
+                hex::encode(output_bytes),
+                e
+            );
+            Vec::new()
+        }
     }
 }
 
 pub fn get_exchange_rates<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
-) -> Result<HashMap<Address, (U256, U256)>, CoreContractError>
+) -> HashMap<Address, (U256, U256)>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -166,30 +176,34 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _, _) = call(
+        let call_result = call(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
             None,
-        )?;
+        );
+
+        let output_bytes = match call_result {
+            Ok((bytes, _, _, _)) => bytes,
+            Err(e) => {
+                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to call for token 0x{:x}: {}", token, e);
+                continue;
+            }
+        };
 
         // Decode the output
         let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
             Err(e) => {
-                return Err(CoreContractError::ExecutionFailed(format!(
-                    "Failed to decode getExchangeRateCall return for token 0x{} (bytes: 0x{}): {}",
-                    hex::encode(token),
-                    hex::encode(output_bytes),
-                    e
-                )));
+                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to decode for token 0x{:x} (bytes: 0x{:x}): {}", token, output_bytes, e);
+                continue;
             }
         };
 
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
 
-    Ok(exchange_rates)
+    exchange_rates
 }
 
 pub fn get_intrinsic_gas<DB, INSP>(
@@ -349,7 +363,7 @@ pub(crate) mod tests {
     fn test_get_currencies() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let currencies = get_currencies(&mut evm).unwrap();
+        let currencies = get_currencies(&mut evm);
 
         assert_eq!(
             currencies,
@@ -364,8 +378,7 @@ pub(crate) mod tests {
         let exchange_rates = get_exchange_rates(
             &mut evm,
             &[address!("0x1111111111111111111111111111111111111111")],
-        )
-        .unwrap();
+        );
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
