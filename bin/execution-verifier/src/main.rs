@@ -174,9 +174,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
             let ws_connect = alloy_transport_ws::WsConnect::new(url);
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::with_retry_config_and_metrics(
-                    retry_config,
-                    rpc_metrics.clone(),
+                .layer(RpcTimeoutLayer::new(
+                    Some(retry_config),
+                    Some(rpc_metrics.clone()),
                 ))
                 .ws(ws_connect)
                 .await?;
@@ -191,9 +191,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
             let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::with_retry_config_and_metrics(
-                    retry_config,
-                    rpc_metrics.clone(),
+                .layer(RpcTimeoutLayer::new(
+                    Some(retry_config),
+                    Some(rpc_metrics.clone()),
                 ))
                 .ipc(ipc_connect)
                 .await?;

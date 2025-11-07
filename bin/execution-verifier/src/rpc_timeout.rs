@@ -74,31 +74,16 @@ pub(crate) struct RpcTimeoutLayer {
 }
 
 impl RpcTimeoutLayer {
-    /// Create a new RpcTimeoutLayer with the specified timeout duration (no retries)
-    #[allow(dead_code)]
-    pub(crate) fn new(timeout: Duration) -> Self {
-        Self {
-            retry_config: RetryConfig {
-                initial_timeout: timeout,
-                max_retries: 0,
-                backoff_multiplier: 1.0,
-                max_timeout: None,
-            },
-            metrics: None,
-        }
-    }
-
-    /// Create a new RpcTimeoutLayer with retry configuration
-    pub(crate) fn with_retry_config(retry_config: RetryConfig) -> Self {
-        Self { retry_config, metrics: None }
-    }
-
-    /// Create a new RpcTimeoutLayer with retry configuration and metrics
-    pub(crate) fn with_retry_config_and_metrics(
-        retry_config: RetryConfig,
-        metrics: Arc<RpcMetrics>,
+    /// Create a new RpcTimeoutLayer with optional retry configuration and metrics
+    ///
+    /// # Arguments
+    /// * `retry_config` - Optional retry configuration. If None, uses default configuration.
+    /// * `metrics` - Optional metrics collector. If None, no metrics will be collected.
+    pub(crate) fn new(
+        retry_config: Option<RetryConfig>,
+        metrics: Option<Arc<RpcMetrics>>,
     ) -> Self {
-        Self { retry_config, metrics: Some(metrics) }
+        Self { retry_config: retry_config.unwrap_or_default(), metrics }
     }
 }
 
