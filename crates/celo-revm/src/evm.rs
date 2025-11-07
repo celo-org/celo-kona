@@ -286,7 +286,7 @@ mod tests {
         ));
     }
 
-    fn bn128_pair_test_tx(
+    fn bn254_pair_test_tx(
         spec: OpSpecId,
     ) -> Context<
         BlockEnv,
@@ -310,8 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn test_halted_tx_call_bn128_pair_fjord() {
-        let ctx = bn128_pair_test_tx(OpSpecId::FJORD);
+    fn test_halted_tx_call_bn254_pair_fjord() {
+        let ctx = bn254_pair_test_tx(OpSpecId::FJORD);
 
         let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
@@ -327,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn test_halted_tx_call_bn128_pair_granite() {
-        let ctx = bn128_pair_test_tx(OpSpecId::GRANITE);
+    fn test_halted_tx_call_bn254_pair_granite() {
+        let ctx = bn254_pair_test_tx(OpSpecId::GRANITE);
 
         let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
@@ -337,9 +337,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bn254 invalid pair length"
         ));
     }
 
@@ -390,9 +390,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g1 add input length error"
         ));
     }
 
@@ -440,9 +440,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g1 msm input length error"
         ));
     }
 
@@ -474,9 +474,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -528,9 +528,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g2 add input length error"
         ));
     }
 
@@ -578,9 +578,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g2 msm input length error"
         ));
     }
 
@@ -612,9 +612,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -660,9 +660,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 pairing input length error"
         ));
     }
 
@@ -694,9 +694,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -756,9 +756,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 map fp to g1 input length error"
         ));
     }
 
@@ -818,9 +818,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 map fp2 to g2 input length error"
         ));
     }
 }

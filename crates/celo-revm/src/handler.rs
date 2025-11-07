@@ -103,7 +103,6 @@ where
             // Apply storage changes (iterate by reference to avoid moving)
             for (key, value) in &account.storage {
                 loaded_account.set_storage(*key, value);
-                // loaded_account.storage.insert(*key, value.clone());
             }
         }
         Ok(())
@@ -695,11 +694,11 @@ where
                 .l1_block_info
                 .operator_fee_refund(exec_result.gas(), spec);
 
-            let mut caller_account = evm.ctx().journal_mut().load_account_mut(caller)?;
-
             // In additional to the normal transaction fee, additionally refund the caller
             // for the operator fee.
-            caller_account.incr_balance(operator_fee_refund);
+            evm.ctx()
+                .journal_mut()
+                .balance_incr(caller, operator_fee_refund)?;
         }
 
         Ok(())
@@ -732,7 +731,7 @@ where
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
-        if is_deposit {
+        if is_deposit || evm.ctx().tx().fee_currency().is_some() {
             return Ok(());
         }
 
