@@ -133,7 +133,7 @@ fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    if was_cold && let Ok(mut account) = context.journal_mut().load_account(address) {
+    if was_cold && let Ok(mut account) = context.journal_mut().load_account_mut(address) {
         account.mark_cold();
     }
 }

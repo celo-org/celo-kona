@@ -134,16 +134,16 @@ op-alloy-rpc-types = { version = "0.22.0", default-features = false }
 op-alloy-rpc-types-engine = { version = "0.22.0", default-features = false }
 
 # Execution
-revm = { version = "31.0.0", default-features = false }
-op-revm = { version = "12.0.0", default-features = false }
+revm = { git = "https://github.com/seolaoh/revm", rev = "c0e2637a18f2f360fa87a08f3e0c5ac8494266ad", default-features = false }
+op-revm = { git = "https://github.com/seolaoh/revm", rev = "c0e2637a18f2f360fa87a08f3e0c5ac8494266ad", default-features = false }
 alloy-evm = { version = "0.23.1", default-features = false }
 alloy-op-evm = { version = "0.23.1", default-features = false }
 
 # Dependencies not in upstream kona-client
 # These are kept separately to make it easier to compare and update the versions above
-revm-context-interface = { version = "12.0.0", default-features = false }
-revm-handler = { version = "12.0.0", default-features = false }
-revm-context = { version = "11.0.0", default-features = false }
+revm-context-interface = { git = "https://github.com/seolaoh/revm", rev = "c0e2637a18f2f360fa87a08f3e0c5ac8494266ad", default-features = false }
+revm-handler = { git = "https://github.com/seolaoh/revm", rev = "c0e2637a18f2f360fa87a08f3e0c5ac8494266ad", default-features = false }
+revm-context = { git = "https://github.com/seolaoh/revm", rev = "c0e2637a18f2f360fa87a08f3e0c5ac8494266ad", default-features = false }
 alloy-signer = { version = "1.0.38", default-features = false }
 
 # Hokulea
