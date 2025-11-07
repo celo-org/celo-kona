@@ -36,7 +36,6 @@ use std::{
 };
 use tokio::{
     runtime::Handle,
-    sync::Mutex,
     sync::mpsc,
     task::JoinSet,
     time::{Duration, Instant, interval},
@@ -174,10 +173,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
             let ws_connect = alloy_transport_ws::WsConnect::new(url);
             let client = ClientBuilder::default()
-                .layer(RpcRetryLayer::new(
-                    Some(retry_config),
-                    Some(rpc_metrics.clone()),
-                ))
+                .layer(RpcRetryLayer::new(Some(retry_config), Some(rpc_metrics.clone())))
                 .ws(ws_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()
@@ -191,10 +187,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
             let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
             let client = ClientBuilder::default()
-                .layer(RpcRetryLayer::new(
-                    Some(retry_config),
-                    Some(rpc_metrics.clone()),
-                ))
+                .layer(RpcRetryLayer::new(Some(retry_config), Some(rpc_metrics.clone())))
                 .ipc(ipc_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()
@@ -257,7 +250,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
         });
     });
-    let metrics = Arc::new(Mutex::new(Metrics::new(Some(tracker.clone()))));
+    let metrics = Arc::new(Metrics::new(Some(tracker.clone())));
     if let (Some(start_block), Some(end_block)) = (start_block, cli.end_block) {
         handles.spawn(verify_block_range(
             start_block,
@@ -357,7 +350,7 @@ async fn verify_new_heads(
     subscription: Subscription<Header>,
     cancel_token: CancellationToken,
     first_head_tx: Option<mpsc::Sender<u64>>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<Metrics>,
     tracker: Arc<VerifiedBlockTracker>,
     concurrency: Arc<AtomicUsize>,
 ) -> Result<()> {
@@ -395,7 +388,6 @@ async fn verify_new_heads(
             );
         }
 
-        // XXX: why clone here?
         let result = verify_block_range(
             start_block,
             end_block,
@@ -426,7 +418,7 @@ async fn verify_block(
     block_number: u64,
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: Arc<celo_registry::CeloRollupConfig>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<Metrics>,
     tracker: Arc<VerifiedBlockTracker>,
 ) -> Result<u64> {
     let start = Instant::now();
@@ -512,11 +504,9 @@ async fn verify_block(
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
-        //OPTIM: sync barrier
-        metrics.lock().await.block_verification_completed(false, start.elapsed());
+        metrics.block_verification_completed(false, start.elapsed());
     } else {
-        //OPTIM: sync barrier
-        metrics.lock().await.block_verification_completed(true, start.elapsed());
+        metrics.block_verification_completed(true, start.elapsed());
     }
     // TODO: result logging?
     tracker.mark_verified(block_number).await;
@@ -530,7 +520,7 @@ async fn verify_task_and_log(
     block_number: u64,
     provider: Arc<RootProvider<Ethereum>>,
     rollup_config: Arc<celo_registry::CeloRollupConfig>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<Metrics>,
     tracker: Arc<VerifiedBlockTracker>,
 ) {
     match verify_block(block_number, provider, rollup_config, metrics, tracker).await {
@@ -550,7 +540,7 @@ async fn verify_block_range(
     rollup_config: Arc<celo_registry::CeloRollupConfig>,
     concurrency: usize,
     cancel_token: CancellationToken,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<Metrics>,
     tracker: Arc<VerifiedBlockTracker>,
 ) -> Result<()> {
     let mut handles = JoinSet::new();

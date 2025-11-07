@@ -42,7 +42,7 @@ impl Metrics {
         }
     }
 
-    pub(crate) fn block_verification_completed(&mut self, success: bool, duration: Duration) {
+    pub(crate) fn block_verification_completed(&self, success: bool, duration: Duration) {
         let result = KeyValue::new("result", if success { "success" } else { "failed" });
         self.block_verification_count.add(1, std::slice::from_ref(&result));
         self.duration_verification.record(duration.as_secs_f64() * 1000.0, &[result])
@@ -102,10 +102,8 @@ impl RpcMetrics {
             RpcRequestResult::Timeout => "timeout",
         };
 
-        let attrs = [
-            KeyValue::new("method", method.to_string()),
-            KeyValue::new("result", result_str),
-        ];
+        let attrs =
+            [KeyValue::new("method", method.to_string()), KeyValue::new("result", result_str)];
 
         self.rpc_request_duration.record(duration.as_secs_f64() * 1000.0, &attrs);
         self.rpc_request_count.add(1, &attrs);
@@ -117,10 +115,8 @@ impl RpcMetrics {
 
     /// Record a retry attempt for an RPC request
     pub(crate) fn record_retry(&self, method: &str, attempt: u32) {
-        let attrs = [
-            KeyValue::new("method", method.to_string()),
-            KeyValue::new("attempt", attempt as i64),
-        ];
+        let attrs =
+            [KeyValue::new("method", method.to_string()), KeyValue::new("attempt", attempt as i64)];
         self.rpc_retry_count.add(1, &attrs);
     }
 }
