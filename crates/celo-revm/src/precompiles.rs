@@ -171,7 +171,11 @@ mod tests {
         assert_eq!(to_account.info.balance, U256::from(value));
 
         // Test calling with too little gas
-        let res = precompiles.run(&mut ctx, &inputs);
+        let low_gas_inputs = CallInputs {
+            gas_limit: TRANSFER_GAS_COST - 1000,
+            ..inputs.clone()
+        };
+        let res = precompiles.run(&mut ctx, &low_gas_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -229,7 +233,11 @@ mod tests {
         ));
 
         // Test calling in static context (STATICCALL)
-        let res = precompiles.run(&mut ctx, &inputs);
+        let static_inputs = CallInputs {
+            is_static: true,
+            ..inputs.clone()
+        };
+        let res = precompiles.run(&mut ctx, &static_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
