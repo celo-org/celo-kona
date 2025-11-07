@@ -89,22 +89,22 @@ where
         state: EvmState,
     ) -> Result<(), ERROR> {
         for (address, account) in state {
-            let mut loaded_account = evm.ctx().journal_mut().load_account(address)?;
+            let mut loaded_account = evm.ctx().journal_mut().load_account_mut(address)?.data;
 
             // Apply the account changes to the loaded account
-            loaded_account.data.info.balance = account.info.balance;
-            loaded_account.data.info.nonce = account.info.nonce;
-            loaded_account.data.info.code_hash = account.info.code_hash;
-            loaded_account.data.info.code = account.info.code;
+            loaded_account.set_balance(account.info.balance);
+            let before_nonce = loaded_account.nonce();
+            let after_nonce = account.info.nonce;
+            for _ in before_nonce..after_nonce {
+                loaded_account.bump_nonce();
+            }
+            loaded_account.set_code_and_hash_slow(account.info.code.unwrap_or_default());
 
             // Apply storage changes (iterate by reference to avoid moving)
             for (key, value) in &account.storage {
-                loaded_account.data.storage.insert(*key, value.clone());
+                // TODO: can't access the account field directly, and there's no way to change the storage with a function of JournaledAccount
+                loaded_account.account.storage.insert(*key, value.clone());
             }
-
-            // Always mark the account as touched since we've modified its state
-            // This ensures it will be included in the final transaction state
-            loaded_account.mark_touch();
         }
         Ok(())
     }
@@ -485,7 +485,7 @@ where
         if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
-            if ctx.chain().l1_block_info.l2_block != block_number {
+            if ctx.chain().l1_block_info.l2_block != Some(block_number) {
                 ctx.chain_mut().l1_block_info =
                     L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
@@ -509,7 +509,7 @@ where
                 let operator_fee_charge = ctx
                     .chain()
                     .l1_block_info
-                    .operator_fee_charge(&enveloped_tx, gas_limit);
+                    .operator_fee_charge(&enveloped_tx, gas_limit, spec);
                 additional_cost = additional_cost.saturating_add(operator_fee_charge);
             }
         }
@@ -519,12 +519,12 @@ where
         }
         let (tx, journal) = evm.ctx().tx_journal_mut();
 
-        let caller_account = journal.load_account_code(tx.caller())?.data;
+        let caller_account = journal.load_account_with_code(tx.caller())?.data;
 
         if !is_deposit {
             // validates account nonce and code
             validate_account_nonce_and_code(
-                &mut caller_account.info,
+                &caller_account.info,
                 tx.nonce(),
                 is_eip3607_disabled,
                 is_nonce_check_disabled,

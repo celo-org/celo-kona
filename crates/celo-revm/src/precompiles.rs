@@ -8,7 +8,7 @@ use revm::{
     context::Cfg,
     context_interface::ContextTr,
     handler::PrecompileProvider,
-    interpreter::{InputsImpl, InterpreterResult},
+    interpreter::{CallInputs, InterpreterResult},
     primitives::Address,
 };
 use std::{boxed::Box, string::String};
@@ -44,16 +44,13 @@ where
     fn run(
         &mut self,
         context: &mut CTX,
-        address: &Address,
-        inputs: &InputsImpl,
-        is_static: bool,
-        gas_limit: u64,
+        inputs: &CallInputs,
     ) -> Result<Option<Self::Output>, String> {
-        if *address == TRANSFER_ADDRESS {
-            transfer_run(context, inputs, is_static, gas_limit)
+        if inputs.target_address == TRANSFER_ADDRESS {
+            transfer_run(context, inputs)
         } else {
             self.op_precompiles
-                .run(context, address, inputs, is_static, gas_limit)
+                .run(context, inputs)
         }
     }
 
@@ -94,7 +91,7 @@ mod tests {
         Context, ExecuteEvm,
         context::{JournalTr, TxEnv, result::ExecutionResult},
         database::{EmptyDB, in_memory_db::InMemoryDB},
-        interpreter::{CallInput, InstructionResult},
+        interpreter::{CallInput, CallScheme, CallValue, InstructionResult},
         primitives::Bytes,
         state::{AccountInfo, Bytecode},
     };
@@ -130,13 +127,18 @@ mod tests {
         input_vec[95] = value;
         let input = Bytes::from(input_vec);
 
-        let inputs = InputsImpl {
+        let inputs = CallInputs {
             target_address: TRANSFER_ADDRESS,
-            bytecode_address: None,
+            bytecode_address: TRANSFER_ADDRESS,
             // Mainnet address for the CELO token
-            caller_address: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
+            caller: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
             input: CallInput::Bytes(input),
-            call_value: U256::from(value),
+            value: CallValue::Transfer(U256::from(value)),
+            return_memory_offset: 0..0,
+            gas_limit: TRANSFER_GAS_COST,
+            known_bytecode: None,
+            scheme: CallScheme::Call,
+            is_static: false,
         };
 
         let initial_balance = 100;
@@ -159,10 +161,7 @@ mod tests {
 
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &inputs,
-            false,
-            TRANSFER_GAS_COST,
         );
         assert!(res.is_ok());
 
@@ -178,10 +177,7 @@ mod tests {
         // Test calling with too little gas
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &inputs,
-            false,
-            TRANSFER_GAS_COST - 1_000,
         );
         assert!(matches!(
             res,
@@ -193,16 +189,13 @@ mod tests {
 
         // Test calling with too short input
         let short_input = CallInput::Bytes(Bytes::from(vec![0; 63]));
-        let bad_input = InputsImpl {
+        let bad_input = CallInputs {
             input: short_input,
-            ..inputs
+            ..inputs.clone()
         };
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &bad_input,
-            false,
-            TRANSFER_GAS_COST,
         );
         assert!(matches!(
             res,
@@ -213,16 +206,13 @@ mod tests {
         ));
 
         // Test calling from the wrong address
-        let wrong_inputs = InputsImpl {
-            caller_address: Address::with_last_byte(3),
+        let wrong_inputs = CallInputs {
+            caller: Address::with_last_byte(3),
             ..inputs.clone()
         };
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &wrong_inputs,
-            false,
-            TRANSFER_GAS_COST,
         );
         assert!(matches!(
             res,
@@ -238,13 +228,10 @@ mod tests {
         input_vec[63] = 2;
         input_vec[95] = initial_balance + 10;
         let input = CallInput::Bytes(Bytes::from(input_vec));
-        let big_value_input = InputsImpl { input, ..inputs };
+        let big_value_input = CallInputs { input, ..inputs.clone() };
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &big_value_input,
-            false,
-            TRANSFER_GAS_COST,
         );
         assert!(matches!(
             res,
@@ -257,10 +244,7 @@ mod tests {
         // Test calling in static context (STATICCALL)
         let res = precompiles.run(
             &mut ctx,
-            &TRANSFER_ADDRESS,
             &inputs,
-            true,
-            TRANSFER_GAS_COST,
         );
         assert!(matches!(
             res,

@@ -5,7 +5,7 @@ use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
     context::{Cfg, ContextTr, JournalTr},
-    interpreter::{Gas, InputsImpl, InstructionResult, InterpreterResult},
+    interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
 };
@@ -23,16 +23,14 @@ pub const TRANSFER_GAS_COST: u64 = 9_000;
 /// Run `transfer` precompile.
 pub fn transfer_run<CTX>(
     context: &mut CTX,
-    inputs: &InputsImpl,
-    is_static: bool,
-    gas_limit: u64,
+    inputs: &CallInputs,
 ) -> Result<Option<InterpreterResult>, String>
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     let mut result = InterpreterResult {
         result: InstructionResult::Return,
-        gas: Gas::new(gas_limit),
+        gas: Gas::new(inputs.gas_limit),
         output: Bytes::new(),
     };
 
@@ -40,9 +38,9 @@ where
     match run(
         context,
         &input_bytes,
-        inputs.caller_address,
-        is_static,
-        gas_limit,
+        inputs.caller,
+        inputs.is_static,
+        inputs.gas_limit,
     ) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);

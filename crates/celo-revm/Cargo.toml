@@ -8,6 +8,7 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
+rust-version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -26,7 +27,7 @@ all = "warn"
 celo-alloy-consensus.workspace = true
 
 # revm
-revm = { workspace = true }
+revm.workspace = true
 op-revm = { workspace = true, features = ["serde"] }
 revm-context-interface.workspace = true
 
@@ -85,8 +86,6 @@ optional_no_base_fee = ["revm/optional_no_base_fee"]
 # See comments in `revm-precompile`
 secp256k1 = ["revm/secp256k1"]
 c-kzg = ["revm/c-kzg"]
-# `kzg-rs` is not audited but useful for `no_std` environment, use it with causing and default to `c-kzg` if possible.
-kzg-rs = ["revm/kzg-rs"]
 blst = ["revm/blst"]
 bn = ["revm/bn"]
 serde-bincode-compat = [
