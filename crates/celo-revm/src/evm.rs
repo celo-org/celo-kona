@@ -1,15 +1,17 @@
 use crate::{CeloContext, CeloPrecompiles};
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
-    Inspector,
-    context::{Evm, FrameStack},
+    Database, Inspector,
+    context::{ContextError, Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
-    handler::{EvmTr, instructions::EthInstructions},
+    handler::{
+        EvmTr, FrameInitOrResult, ItemOrResult, evm::FrameTr, instructions::EthInstructions,
+    },
     inspector::InspectorEvmTr,
     interpreter::interpreter::EthInterpreter,
 };
 
-pub struct CeloEvm<DB: revm::Database, INSP>(
+pub struct CeloEvm<DB: Database, INSP>(
     pub  OpEvm<
         CeloContext<DB>,
         INSP,
@@ -20,7 +22,7 @@ pub struct CeloEvm<DB: revm::Database, INSP>(
 
 impl<DB, INSP> CeloEvm<DB, INSP>
 where
-    DB: revm::Database,
+    DB: Database,
 {
     pub fn new(ctx: CeloContext<DB>, inspector: INSP) -> Self {
         Self(OpEvm(Evm {
@@ -50,40 +52,41 @@ where
 
 impl<DB, INSP> InspectorEvmTr for CeloEvm<DB, INSP>
 where
-    DB: revm::Database,
+    DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
 {
     type Inspector = INSP;
 
-    fn inspector(&mut self) -> &mut Self::Inspector {
-        self.0.inspector()
+    #[inline]
+    fn all_inspector(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+        &Self::Inspector,
+    ) {
+        self.0.all_inspector()
     }
 
-    fn ctx_inspector(&mut self) -> (&mut Self::Context, &mut Self::Inspector) {
-        self.0.ctx_inspector()
-    }
-
-    fn ctx_inspector_frame(
-        &mut self,
-    ) -> (&mut Self::Context, &mut Self::Inspector, &mut Self::Frame) {
-        self.0.ctx_inspector_frame()
-    }
-
-    fn ctx_inspector_frame_instructions(
+    #[inline]
+    fn all_mut_inspector(
         &mut self,
     ) -> (
         &mut Self::Context,
-        &mut Self::Inspector,
-        &mut Self::Frame,
         &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+        &mut Self::Inspector,
     ) {
-        self.0.ctx_inspector_frame_instructions()
+        self.0.all_mut_inspector()
     }
 }
 
 impl<DB, INSP> EvmTr for CeloEvm<DB, INSP>
 where
-    DB: revm::Database,
+    DB: Database,
     CeloContext<DB>: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     type Context = CeloContext<DB>;
@@ -96,63 +99,57 @@ where
         CeloPrecompiles,
     > as EvmTr>::Frame;
 
-    fn ctx(&mut self) -> &mut Self::Context {
-        self.0.ctx()
+    #[inline]
+    fn all(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+    ) {
+        self.0.all()
     }
 
-    fn ctx_ref(&self) -> &Self::Context {
-        self.0.ctx_ref()
-    }
-
-    fn ctx_instructions(&mut self) -> (&mut Self::Context, &mut Self::Instructions) {
-        self.0.ctx_instructions()
-    }
-
-    fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
-        self.0.ctx_precompiles()
-    }
-
-    fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
-        self.0.frame_stack()
+    #[inline]
+    fn all_mut(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+    ) {
+        self.0.all_mut()
     }
 
     fn frame_init(
         &mut self,
-        frame_init: <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
+        frame_input: <Self::Frame as FrameTr>::FrameInit,
     ) -> Result<
-        revm::handler::ItemOrResult<
-            &mut Self::Frame,
-            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
-        >,
-        revm::context_interface::context::ContextError<
-            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
-        >,
+        ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
-        self.0.frame_init(frame_init)
+        self.0.frame_init(frame_input)
     }
 
     fn frame_run(
         &mut self,
     ) -> Result<
-        revm::handler::ItemOrResult<
-            <Self::Frame as revm::handler::evm::FrameTr>::FrameInit,
-            <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
-        >,
-        revm::context_interface::context::ContextError<
-            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
-        >,
+        FrameInitOrResult<Self::Frame>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
         self.0.frame_run()
     }
 
+    #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
+    #[doc = " Consumes the frame result or returns it if there is more frames to run."]
     fn frame_return_result(
         &mut self,
-        result: <Self::Frame as revm::handler::evm::FrameTr>::FrameResult,
+        result: <Self::Frame as FrameTr>::FrameResult,
     ) -> Result<
-        Option<<Self::Frame as revm::handler::evm::FrameTr>::FrameResult>,
-        revm::context_interface::context::ContextError<
-            <<<Self as EvmTr>::Context as ContextTr>::Db as revm::Database>::Error,
-        >,
+        Option<<Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
         self.0.frame_return_result(result)
     }
@@ -289,7 +286,7 @@ mod tests {
         ));
     }
 
-    fn bn128_pair_test_tx(
+    fn bn254_pair_test_tx(
         spec: OpSpecId,
     ) -> Context<
         BlockEnv,
@@ -313,8 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn test_halted_tx_call_bn128_pair_fjord() {
-        let ctx = bn128_pair_test_tx(OpSpecId::FJORD);
+    fn test_halted_tx_call_bn254_pair_fjord() {
+        let ctx = bn254_pair_test_tx(OpSpecId::FJORD);
 
         let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
@@ -330,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn test_halted_tx_call_bn128_pair_granite() {
-        let ctx = bn128_pair_test_tx(OpSpecId::GRANITE);
+    fn test_halted_tx_call_bn254_pair_granite() {
+        let ctx = bn254_pair_test_tx(OpSpecId::GRANITE);
 
         let mut evm = ctx.build_celo();
         let output = evm.replay().unwrap();
@@ -340,9 +337,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bn254 invalid pair length"
         ));
     }
 
@@ -393,9 +390,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g1 add input length error"
         ));
     }
 
@@ -443,9 +440,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g1 msm input length error"
         ));
     }
 
@@ -477,9 +474,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -531,9 +528,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g2 add input length error"
         ));
     }
 
@@ -581,9 +578,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 g2 msm input length error"
         ));
     }
 
@@ -615,9 +612,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -663,9 +660,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 pairing input length error"
         ));
     }
 
@@ -697,9 +694,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
         ));
     }
 
@@ -759,9 +756,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 map fp to g1 input length error"
         ));
     }
 
@@ -821,9 +818,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileError),
+                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
                 ..
-            }
+            } if msg == "bls12-381 map fp2 to g2 input length error"
         ));
     }
 }

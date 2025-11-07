@@ -53,6 +53,7 @@ impl HintHandler for CeloSingleChainHintHandler {
                     &SingleChainHostWithEigenDA {
                         kona_cfg: cfg.kona_cfg.clone(),
                         eigenda_proxy_address: cfg.eigenda_proxy_address.clone(),
+                        recency_window: 0,
                         verbose: cfg.verbose,
                     },
                     &SingleChainProvidersWithEigenDA {

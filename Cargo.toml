@@ -83,29 +83,29 @@ celo-revm = { version = "0.1.0", path = "crates/celo-revm", default-features = f
 celo-otel = { version = "0.1.0", path = "crates/celo-otel", default-features = false }
 
 # Binaries
-kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
+kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-client = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
 
 # Protocol
-kona-driver = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
+kona-driver = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-derive = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-genesis = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-protocol = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-registry = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
 
 # Providers
-kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
+kona-providers-alloy = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
 
 # Proof
-kona-mpt = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-proof = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-executor = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-std-fpvm = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-preimage = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
-kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
+kona-mpt = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-proof = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-executor = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-std-fpvm = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-preimage = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
+kona-std-fpvm-proc = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
 
 # Utilities
-kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.6", default-features = false }
+kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.1.7", default-features = false }
 
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
@@ -115,41 +115,41 @@ alloy-serde = { version = "1.0.38", default-features = false }
 alloy-chains = { version = "0.2.7", default-features = false }
 alloy-network = { version = "1.0.38", default-features = false }
 alloy-provider = { version = "1.0.38", default-features = false }
-alloy-hardforks = { version = "0.3.5", default-features = false }
-alloy-sol-types = { version = "1.3.1", default-features = false }
+alloy-hardforks = { version = "0.4.4", default-features = false }
+alloy-sol-types = { version = "1.4.1", default-features = false }
 alloy-consensus = { version = "1.0.38", default-features = false }
 alloy-transport = { version = "1.0.38", default-features = false }
 alloy-rpc-types = { version = "1.0.38", default-features = false }
 alloy-rpc-client = { version = "1.0.38", default-features = false }
-alloy-primitives = { version = "1.3.1", default-features = false }
+alloy-primitives = { version = "1.4.1", default-features = false }
 alloy-rpc-types-eth = { version = "1.0.38", default-features = false }
 alloy-transport-http = { version = "1.0.38", default-features = false }
 alloy-rpc-types-engine = { version = "1.0.38", default-features = false }
 alloy-network-primitives = { version = "1.0.38", default-features = false }
 
 # OP Alloy
-alloy-op-hardforks = { version = "0.3.5", default-features = false }
-op-alloy-consensus = { version = "0.20.0", default-features = false }
-op-alloy-rpc-types = { version = "0.20.0", default-features = false }
-op-alloy-rpc-types-engine = { version = "0.20.0", default-features = false }
+alloy-op-hardforks = { version = "0.4.4", default-features = false }
+op-alloy-consensus = { version = "0.22.0", default-features = false }
+op-alloy-rpc-types = { version = "0.22.0", default-features = false }
+op-alloy-rpc-types-engine = { version = "0.22.0", default-features = false }
 
 # Execution
-revm = { version = "29.0.1", default-features = false }
-op-revm = { version = "10.1.0", default-features = false }
-alloy-evm = { version = "0.21.0", default-features = false }
-alloy-op-evm = { version = "0.21.0", default-features = false }
+revm = { version = "31.0.0", default-features = false }
+op-revm = { version = "12.0.0", default-features = false }
+alloy-evm = { version = "0.23.1", default-features = false }
+alloy-op-evm = { version = "0.23.1", default-features = false }
 
 # Dependencies not in upstream kona-client
 # These are kept separately to make it easier to compare and update the versions above
-revm-context-interface = { version = "10.2.0", default-features = false }
-revm-handler = { version = "10.0.0", default-features = false }
-revm-context = { version = "9.0.2", default-features = false }
+revm-context-interface = { version = "12.0.0", default-features = false }
+revm-handler = { version = "12.0.0", default-features = false }
+revm-context = { version = "11.0.0", default-features = false }
 alloy-signer = { version = "1.0.38", default-features = false }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "90404fb", default-features = false}
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "90404fb", default-features = false}
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "90404fb", default-features = false}
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93", default-features = false}
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93", default-features = false}
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "ede4e93", default-features = false}
 
 # General
 url = "2.5.4"
@@ -206,18 +206,33 @@ opentelemetry-appender-tracing = "0.30.1"
 uuid = { version = "1", features = ["v4"] }
 
 [patch."https://github.com/op-rs/kona"]
-kona-host = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-client = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-driver   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-derive   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-protocol = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-registry = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-proof      = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-executor   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
-kona-cli   = { git = "https://github.com/celo-org/kona", rev = "2c33430" }
+kona-host = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-client = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-driver   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-derive   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-protocol = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-registry = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-proof      = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-executor   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+kona-cli   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
+
+[patch.crates-io]
+revm = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-primitives = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-bytecode = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-interpreter = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-database = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-database-interface = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-state = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-context-interface = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-context = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-handler = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-inspector = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-precompile = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+op-revm = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
