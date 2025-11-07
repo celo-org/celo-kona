@@ -141,7 +141,7 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
-            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{}: {}", hex::encode(fee_curr_dir), e);
+            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_curr_dir, e);
             return Vec::<Address>::new();
         }
     };
