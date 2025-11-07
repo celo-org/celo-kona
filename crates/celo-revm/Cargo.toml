@@ -38,6 +38,7 @@ alloy-evm.workspace = true
 # OP Alloy
 op-alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
+alloy-op-evm = { workspace = true, optional = true }
 
 # misc
 auto_impl.workspace = true
@@ -55,12 +56,14 @@ alloy-eips.workspace = true
 revm-handler.workspace = true
 
 [features]
-default = ["std", "c-kzg", "secp256k1", "portable", "blst"]
+default = ["std", "c-kzg", "secp256k1", "portable", "blst", "alloy-op-evm"]
 std = [
     "serde?/std",
     "revm/std",
     "tracing/std",
+    "alloy-op-evm?/std",
 ]
+alloy-op-evm = ["dep:alloy-op-evm"]
 hashbrown = ["revm/hashbrown"]
 serde = [
     "dep:serde",
@@ -85,8 +88,7 @@ optional_no_base_fee = ["revm/optional_no_base_fee"]
 # See comments in `revm-precompile`
 secp256k1 = ["revm/secp256k1"]
 c-kzg = ["revm/c-kzg"]
-# `kzg-rs` is not audited but useful for `no_std` environment, use it with causing and default to `c-kzg` if possible.
-kzg-rs = ["revm/kzg-rs"]
+# `kzg-rs` feature has been removed from revm 30.2.0+, use `c-kzg` instead
 blst = ["revm/blst"]
 bn = ["revm/bn"]
 serde-bincode-compat = [

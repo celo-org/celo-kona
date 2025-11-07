@@ -482,7 +482,7 @@ where
         if !is_deposit && !ctx.cfg().is_fee_charge_disabled() {
             // L1 block info is stored in the context for later use.
             // and it will be reloaded from the database if it is not for the current block.
-            if ctx.chain().l2_block != block_number {
+            if ctx.chain().l2_block != Some(block_number) {
                 *ctx.chain_mut() = L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
@@ -499,7 +499,7 @@ where
             // compute operator fee
             if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                 let gas_limit = U256::from(ctx.tx().gas_limit());
-                let operator_fee_charge = ctx.chain().operator_fee_charge(&enveloped_tx, gas_limit);
+                let operator_fee_charge = ctx.chain().operator_fee_charge(&enveloped_tx, gas_limit, spec);
                 additional_cost = additional_cost.saturating_add(operator_fee_charge);
             }
         }
@@ -676,6 +676,7 @@ where
                 operator_fee_cost = l1_block_info.operator_fee_charge(
                     enveloped_tx,
                     U256::from(exec_result.gas().spent_sub_refunded()),
+                    spec,
                 );
             }
             // Send the L1 cost of the transaction to the L1 Fee Vault.
