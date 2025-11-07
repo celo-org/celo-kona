@@ -40,19 +40,34 @@ pub enum HostMode {
     Single(celo_host::single::CeloSingleChainHost),
 }
 
-#[tokio::main(flavor = "multi_thread")]
 #[allow(unreachable_code, unused_variables)]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cfg = HostCli::parse();
     LogConfig::new(cfg.log_args).init_tracing_subscriber(None::<EnvFilter>)?;
 
-    match cfg.mode {
-        #[cfg(feature = "single")]
-        HostMode::Single(cfg) => {
-            cfg.start().await?;
-        }
-    }
+    let use_limited_runtime = true;
 
-    info!("Exiting host program.");
-    Ok(())
+    let runtime = if use_limited_runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .thread_stack_size(1024 * 1024)
+            .enable_all()
+            .build()?
+    } else {
+        // Default multi-threaded runtime
+        tokio::runtime::Builder::new_multi_thread().enable_all().build()?
+    };
+
+    runtime.block_on(async {
+        match cfg.mode {
+            #[cfg(feature = "single")]
+            HostMode::Single(cfg) => {
+                cfg.start().await?;
+            }
+        }
+
+        info!("Exiting host program.");
+        Ok(())
+    })
 }
