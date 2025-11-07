@@ -142,13 +142,13 @@ where
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_curr_dir, e);
-            return Vec::<Address>::new();
+            return Vec::new();
         }
     };
 
     if output_bytes.is_empty() {
         debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_curr_dir);
-        return Vec::<Address>::new();
+        return Vec::new();
     }
 
     // Decode the output
@@ -159,7 +159,7 @@ where
                 hex::encode(output_bytes),
                 e
             );
-            Vec::<Address>::new()
+            Vec::new()
         }
     }
 }
