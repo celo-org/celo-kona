@@ -223,16 +223,16 @@ kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "b0ea596"
 kona-cli   = { git = "https://github.com/celo-org/kona", rev = "b0ea596" }
 
 [patch.crates-io]
-revm = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-primitives = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-bytecode = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-interpreter = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-database = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-database-interface = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-state = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-context-interface = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-context = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-handler = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-inspector = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-revm-precompile = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
-op-revm = { git = "https://github.com/seolaoh/revm", rev = "e17ba75", default-features = false }
+revm = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-primitives = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-bytecode = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-interpreter = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-database = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-database-interface = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-state = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-context-interface = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-context = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-handler = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-inspector = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+revm-precompile = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
+op-revm = { git = "https://github.com/celo-org/revm", rev = "e17ba75", default-features = false }
