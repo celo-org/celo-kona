@@ -27,7 +27,7 @@ use clap::{ArgAction, Parser};
 use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
-use metrics::Metrics;
+use metrics::{Metrics, RpcMetrics};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use std::{
@@ -158,6 +158,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     tracing::info!(start_block_number = start_block, "Using start-block");
 
+    // Create RPC metrics
+    let rpc_metrics = Arc::new(RpcMetrics::new());
+
     // Create retry configuration for RPC timeout layer
     let retry_config = RetryConfig::new(
         RPC_TIMEOUT,
@@ -171,7 +174,10 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         url if url.starts_with("ws://") || url.starts_with("wss://") => {
             let ws_connect = alloy_transport_ws::WsConnect::new(url);
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::with_retry_config(retry_config))
+                .layer(RpcTimeoutLayer::with_retry_config_and_metrics(
+                    retry_config,
+                    rpc_metrics.clone(),
+                ))
                 .ws(ws_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()
@@ -185,7 +191,10 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             }
             let ipc_connect = alloy_transport_ipc::IpcConnect::new(file_path.to_string());
             let client = ClientBuilder::default()
-                .layer(RpcTimeoutLayer::with_retry_config(retry_config))
+                .layer(RpcTimeoutLayer::with_retry_config_and_metrics(
+                    retry_config,
+                    rpc_metrics.clone(),
+                ))
                 .ipc(ipc_connect)
                 .await?;
             ProviderBuilder::new().connect_client(client).root().clone()

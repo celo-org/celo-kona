@@ -7,9 +7,12 @@ use alloy_json_rpc::{RequestPacket, ResponsePacket};
 use alloy_transport::{TransportError, TransportErrorKind};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 use tower::{Layer, Service};
+
+use crate::metrics::{RpcMetrics, RpcRequestResult};
 
 /// Configuration for retry behavior with exponential backoff
 #[derive(Debug, Clone, Copy)]
@@ -64,9 +67,10 @@ impl RetryConfig {
 }
 
 /// Custom timeout layer that properly maps errors for alloy transports
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct RpcTimeoutLayer {
     retry_config: RetryConfig,
+    metrics: Option<Arc<RpcMetrics>>,
 }
 
 impl RpcTimeoutLayer {
@@ -80,12 +84,21 @@ impl RpcTimeoutLayer {
                 backoff_multiplier: 1.0,
                 max_timeout: None,
             },
+            metrics: None,
         }
     }
 
     /// Create a new RpcTimeoutLayer with retry configuration
     pub(crate) fn with_retry_config(retry_config: RetryConfig) -> Self {
-        Self { retry_config }
+        Self { retry_config, metrics: None }
+    }
+
+    /// Create a new RpcTimeoutLayer with retry configuration and metrics
+    pub(crate) fn with_retry_config_and_metrics(
+        retry_config: RetryConfig,
+        metrics: Arc<RpcMetrics>,
+    ) -> Self {
+        Self { retry_config, metrics: Some(metrics) }
     }
 }
 
@@ -93,15 +106,20 @@ impl<S> Layer<S> for RpcTimeoutLayer {
     type Service = RpcTimeoutService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        RpcTimeoutService { inner, retry_config: self.retry_config }
+        RpcTimeoutService {
+            inner,
+            retry_config: self.retry_config,
+            metrics: self.metrics.clone(),
+        }
     }
 }
 
 /// Service that wraps an inner service with timeout functionality
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct RpcTimeoutService<S> {
     inner: S,
     retry_config: RetryConfig,
+    metrics: Option<Arc<RpcMetrics>>,
 }
 
 impl<S> Service<RequestPacket> for RpcTimeoutService<S>
@@ -123,9 +141,22 @@ where
     fn call(&mut self, request: RequestPacket) -> Self::Future {
         let retry_config = self.retry_config;
         let mut inner = self.inner.clone();
+        let metrics = self.metrics.clone();
 
+        // FIXME: is this really required?
+        //
         // heap allocation and pin memory
         Box::pin(async move {
+            // Extract method names for metrics and logging
+            let method_names: Vec<String> =
+                request.method_names().map(|s| s.to_string()).collect();
+            let method_name_for_log = if method_names.len() == 1 {
+                method_names[0].clone()
+            } else {
+                format!("batch({})", method_names.join(", "))
+            };
+
+            let start_time = Instant::now();
             let mut last_error = None;
 
             for attempt in 0..=retry_config.max_retries {
@@ -139,30 +170,71 @@ where
                     Ok(Ok(response)) => {
                         // Success - log retry info if this wasn't the first attempt
                         if attempt > 0 {
-                            tracing::debug!(
+                            tracing::info!(
+                                method = %method_name_for_log,
                                 attempt = attempt + 1,
                                 total_attempts = retry_config.max_retries + 1,
                                 timeout_ms = timeout.as_millis(),
                                 "RPC request succeeded after retry"
                             );
                         }
+
+                        // Record success metrics for all methods in the request
+                        // Divide duration by number of methods for batch requests
+                        if let Some(ref metrics) = metrics {
+                            let total_duration = start_time.elapsed();
+                            let per_method_duration = total_duration / method_names.len() as u32;
+                            for method in &method_names {
+                                metrics.record_request(
+                                    method,
+                                    per_method_duration,
+                                    RpcRequestResult::Success,
+                                );
+                            }
+                        }
+
                         return Ok(response);
                     }
                     Ok(Err(e)) => {
                         // Non-timeout error from the inner service - don't retry
                         tracing::debug!(
+                            method = %method_name_for_log,
                             attempt = attempt + 1,
                             error = %e,
                             "RPC request failed with non-timeout error"
                         );
+
+                        // Record error metrics with divided duration
+                        if let Some(ref metrics) = metrics {
+                            let total_duration = start_time.elapsed();
+                            let per_method_duration = total_duration / method_names.len() as u32;
+                            for method in &method_names {
+                                metrics.record_request(
+                                    method,
+                                    per_method_duration,
+                                    RpcRequestResult::Error,
+                                );
+                            }
+                        }
+
                         return Err(e);
                     }
                     Err(_timeout_elapsed) => {
                         // Timeout occurred
                         last_error = Some(timeout);
 
+                        // Record retry metrics (not on the first attempt, only on retries)
+                        if attempt > 0 {
+                            if let Some(ref metrics) = metrics {
+                                for method in &method_names {
+                                    metrics.record_retry(method, attempt);
+                                }
+                            }
+                        }
+
                         if attempt < retry_config.max_retries {
                             tracing::debug!(
+                                method = %method_name_for_log,
                                 attempt = attempt + 1,
                                 total_attempts = retry_config.max_retries + 1,
                                 timeout_ms = timeout.as_millis(),
@@ -175,7 +247,15 @@ where
                 }
             }
 
-            // All retries exhausted
+            // All retries exhausted - record timeout metrics with divided duration
+            if let Some(ref metrics) = metrics {
+                let total_duration = start_time.elapsed();
+                let per_method_duration = total_duration / method_names.len() as u32;
+                for method in &method_names {
+                    metrics.record_request(method, per_method_duration, RpcRequestResult::Timeout);
+                }
+            }
+
             let final_timeout = last_error.unwrap_or(retry_config.initial_timeout);
             Err(TransportErrorKind::custom_str(&format!(
                 "RPC request timed out after {} attempts (final timeout: {:?})",
