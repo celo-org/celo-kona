@@ -1,8 +1,7 @@
-//! This module contains all CLI-specific code for the single chain entrypoint.
+//! This module is copied from https://github.com/Layr-Labs/hokulea/blob/ede4e93969fa3e181093c8807576afb85c60cb0e/bin/host/src/cfg.rs and https://github.com/op-rs/kona/blob/kona-client/v1.1.7/bin/host/src/single/cfg.rs.
 
 use crate::single::CeloSingleChainHintHandler;
-use alloy_provider::RootProvider;
-use celo_alloy_network::Celo;
+use anyhow::Result;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
 use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
@@ -10,29 +9,27 @@ use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
     OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
-    SharedKeyValueStore,
-    eth::http_provider,
-    single::{SingleChainHost, SingleChainHostError},
+    single::{SingleChainHostError, SingleChainProviders},
 };
 use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
 };
 use kona_proof::HintType;
-use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
 use kona_std_fpvm::{FileChannel, FileDescriptor};
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::task::{self, JoinHandle};
+use tracing::warn;
 
-/// The host binary CLI application arguments.
+/// The host Eigenda binary CLI application arguments. Replacing SingleChainHostWithEigenDA in hokulea
 #[derive(Default, Parser, Serialize, Clone, Debug)]
 #[command(styles = cli_styles())]
 pub struct CeloSingleChainHost {
     /// Inherited kona_host::SingleChainHost CLI arguments.
     #[clap(flatten)]
-    pub kona_cfg: SingleChainHost,
+    pub kona_cfg: kona_host::single::SingleChainHost,
 
-    /// URL of the EigenDA Proxy endpoint.
+    /// URL of the EigenDA RPC endpoint.
     #[clap(
         long,
         visible_alias = "eigenda",
@@ -43,7 +40,16 @@ pub struct CeloSingleChainHost {
     )]
     pub eigenda_proxy_address: Option<String>,
 
+    /// Recency window determining if an EigenDA certificate
+    /// is stale. It is VERY CRITICAL!!! to ensure the same value
+    /// is used by proxy connecting this host. Currently, the
+    /// only valid value is the seq_window_size in the
+    /// L2 rollup config.
+    #[arg(long, visible_alias = "recency_window", env)]
+    pub recency_window: u64,
+
     /// Verbosity level (-v, -vv, -vvv, etc.)
+    /// TODO: think this should be upstreamed to kona_cfg
     #[clap(
         short,
         long,
@@ -54,8 +60,12 @@ pub struct CeloSingleChainHost {
 }
 
 impl CeloSingleChainHost {
-    /// Starts the [CeloSingleChainHost] application.
+    /// Starts the [CeloSingleChainHost] application. This is copy from
+    /// <https://github.com/op-rs/kona/blob/b3eef14771015f6f7427f4f05cf70e508b641802/bin/host/src/single/cfg.rs#L133-L143>
     pub async fn start(self) -> Result<(), SingleChainHostError> {
+        warn!("please ensure the configured recency window is equal to the recency window on the eigenda proxy. Inconsistent
+                values can lead to halting");
+
         if self.kona_cfg.server {
             let hint = FileChannel::new(FileDescriptor::HintRead, FileDescriptor::HintWrite);
             let preimage =
@@ -76,7 +86,7 @@ impl CeloSingleChainHost {
     where
         C: Channel + Send + Sync + 'static,
     {
-        let kv_store = self.create_key_value_store()?;
+        let kv_store = self.kona_cfg.create_key_value_store()?;
 
         let task_handle = if self.is_offline() {
             task::spawn(async {
@@ -121,6 +131,8 @@ impl CeloSingleChainHost {
         let preimage = BidirectionalChannel::new()?;
 
         let server_task = self.start_server(hint.host, preimage.host).await?;
+        // Start the client program in a separate child process.
+
         let client_task = task::spawn(celo_client::single::run(
             OracleReader::new(preimage.client),
             HintWriter::new(hint.client),
@@ -134,7 +146,7 @@ impl CeloSingleChainHost {
 
     /// Returns `true` if the host is running in offline mode.
     pub const fn is_offline(&self) -> bool {
-        self.kona_cfg.is_offline()
+        self.kona_cfg.is_offline() && self.eigenda_proxy_address.is_none()
     }
 
     /// Reads the [CeloRollupConfig] from the file system and returns it as a string.
@@ -144,44 +156,21 @@ impl CeloSingleChainHost {
         Ok(celo_rollup_config)
     }
 
-    /// Creates the key-value store for the host backend.
-    pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
-        self.kona_cfg.create_key_value_store()
-    }
-
-    /// Creates the providers required for the host backend.
+    /// Creates the providers with eigenda
     pub async fn create_providers(&self) -> Result<CeloSingleChainProviders, SingleChainHostError> {
-        let l1_provider = http_provider(
-            self.kona_cfg
-                .l1_node_address
-                .as_ref()
-                .ok_or(SingleChainHostError::Other("Provider must be set"))?,
-        );
-        let blob_provider = OnlineBlobProvider::init(OnlineBeaconClient::new_http(
-            self.kona_cfg
-                .l1_beacon_address
-                .clone()
-                .ok_or(SingleChainHostError::Other("Beacon API URL must be set"))?,
-        ))
-        .await;
-        let l2_provider = http_provider::<Celo>(
-            self.kona_cfg
-                .l2_node_address
-                .as_ref()
-                .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
-        );
-        let eigen_da_preimage_provider =
-            self.eigenda_proxy_address.clone().map(OnlineEigenDAPreimageProvider::new_http);
+        let kona_providers = self.kona_cfg.create_providers().await?;
 
-        Ok(CeloSingleChainProviders {
-            l1: l1_provider,
-            blobs: blob_provider,
-            l2: l2_provider,
-            eigenda_preimage_provider: eigen_da_preimage_provider,
-        })
+        let eigenda_preimage_provider = OnlineEigenDAPreimageProvider::new_http(
+            self.eigenda_proxy_address
+                .clone()
+                .ok_or(SingleChainHostError::Other("EigenDA API URL must be set"))?,
+        );
+
+        Ok(CeloSingleChainProviders { kona_providers, eigenda_preimage_provider })
     }
 }
 
+/// Specify the wrapper type
 impl OnlineHostBackendCfg for CeloSingleChainHost {
     type HintType = ExtendedHintType;
     type Providers = CeloSingleChainProviders;
@@ -190,120 +179,8 @@ impl OnlineHostBackendCfg for CeloSingleChainHost {
 /// The providers required for the single chain host.
 #[derive(Debug, Clone)]
 pub struct CeloSingleChainProviders {
-    /// The L1 EL provider.
-    pub l1: RootProvider,
-    /// The L1 beacon node provider.
-    pub blobs: OnlineBlobProvider<OnlineBeaconClient>,
-    /// The L2 EL provider.
-    pub l2: RootProvider<Celo>,
-    /// The EigenDA blob provider
-    pub eigenda_preimage_provider: Option<OnlineEigenDAPreimageProvider>,
-}
-
-#[cfg(test)]
-mod test {
-    use crate::single::CeloSingleChainHost;
-    use alloy_primitives::B256;
-    use clap::Parser;
-
-    #[test]
-    fn test_flags() {
-        let zero_hash_str = &B256::ZERO.to_string();
-        let default_flags = [
-            "single",
-            "--l1-head",
-            zero_hash_str,
-            "--l2-head",
-            zero_hash_str,
-            "--l2-output-root",
-            zero_hash_str,
-            "--l2-claim",
-            zero_hash_str,
-            "--l2-block-number",
-            "0",
-        ];
-
-        let cases = [
-            // valid
-            (["--server", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(), true),
-            (["--server", "--rollup-config-path", "dummy", "--data-dir", "dummy"].as_slice(), true),
-            (["--native", "--l2-chain-id", "0", "--data-dir", "dummy"].as_slice(), true),
-            (["--native", "--rollup-config-path", "dummy", "--data-dir", "dummy"].as_slice(), true),
-            (
-                [
-                    "--l1-node-address",
-                    "dummy",
-                    "--l2-node-address",
-                    "dummy",
-                    "--l1-beacon-address",
-                    "dummy",
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                ]
-                .as_slice(),
-                true,
-            ),
-            (
-                [
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                    "--data-dir",
-                    "dummy",
-                    "--enable-experimental-witness-endpoint",
-                ]
-                .as_slice(),
-                true,
-            ),
-            (
-                [
-                    "--eigenda-proxy-address",
-                    "dummy",
-                    "--l1-node-address",
-                    "dummy",
-                    "--l2-node-address",
-                    "dummy",
-                    "--l1-beacon-address",
-                    "dummy",
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                ]
-                .as_slice(),
-                true,
-            ),
-            // invalid
-            (["--server", "--native", "--l2-chain-id", "0"].as_slice(), false),
-            (["--l2-chain-id", "0", "--rollup-config-path", "dummy", "--server"].as_slice(), false),
-            (["--server"].as_slice(), false),
-            (["--native"].as_slice(), false),
-            (["--rollup-config-path", "dummy"].as_slice(), false),
-            (["--l2-chain-id", "0"].as_slice(), false),
-            (["--l1-node-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
-            (["--l2-node-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
-            (["--l1-beacon-address", "dummy", "--server", "--l2-chain-id", "0"].as_slice(), false),
-            ([].as_slice(), false),
-            (
-                [
-                    "--eigenda-proxy-address",
-                    "dummy",
-                    "--server",
-                    "--rollup-config-path",
-                    "dummy",
-                    "--data-dir",
-                    "dummy",
-                ]
-                .as_slice(),
-                false,
-            ),
-        ];
-
-        for (args_ext, valid) in cases.into_iter() {
-            let args = default_flags.iter().chain(args_ext.iter()).cloned().collect::<Vec<_>>();
-
-            let parsed = CeloSingleChainHost::try_parse_from(args);
-            assert_eq!(parsed.is_ok(), valid);
-        }
-    }
+    /// The Kona providers
+    pub kona_providers: SingleChainProviders,
+    /// The EigenDA preimage provider
+    pub eigenda_preimage_provider: OnlineEigenDAPreimageProvider,
 }
