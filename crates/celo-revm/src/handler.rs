@@ -32,7 +32,6 @@ use revm::{
         InitialAndFloorGas, gas::calculate_initial_tx_gas_for_tx, interpreter::EthInterpreter,
     },
     primitives::{U256, hardfork::SpecId},
-    state::EvmState,
 };
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
@@ -81,32 +80,6 @@ where
             }
         }
 
-        Ok(())
-    }
-
-    /// Apply state changes from an EvmState to the current execution journal.
-    fn apply_state_to_journal(
-        &self,
-        evm: &mut CeloEvm<DB, INSP>,
-        state: EvmState,
-    ) -> Result<(), ERROR> {
-        for (address, account) in state {
-            let mut loaded_account = evm.ctx().journal_mut().load_account_mut(address)?.data;
-
-            // Apply the account changes to the loaded account
-            loaded_account.set_balance(account.info.balance);
-            let pre_nonce = loaded_account.nonce();
-            let post_nonce = account.info.nonce;
-            for _ in pre_nonce..post_nonce {
-                loaded_account.bump_nonce();
-            }
-            loaded_account.set_code_and_hash_slow(account.info.code.unwrap_or_default());
-
-            // Apply storage changes (iterate by reference to avoid moving)
-            for (key, value) in &account.storage {
-                loaded_account.set_storage(*key, value);
-            }
-        }
         Ok(())
     }
 
@@ -204,7 +177,7 @@ where
                     .actual_intrinsic_gas_used,
             );
 
-        let (state, logs, gas_used) = erc20::credit_gas_fees(
+        let (logs, gas_used) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -217,8 +190,6 @@ where
         )
         .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {e}")))?;
 
-        // Apply the state changes from the system call to the current execution context
-        self.apply_state_to_journal(evm, state)?;
         // Collect logs from the system call to be included in the final receipt
         let mut tx = evm.ctx().tx().clone();
         let old_cip64_tx_info = tx.cip64_tx_info.as_ref().unwrap();
@@ -316,9 +287,9 @@ where
         }
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
+
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        // The state changes from this call will be part of the transaction execution
-        let (state, logs, gas_used) = erc20::debit_gas_fees(
+        let (logs, gas_used) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
             caller_addr,
@@ -327,8 +298,6 @@ where
         )
         .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {e}")))?;
 
-        // Apply the state changes from the system call to the current execution context
-        self.apply_state_to_journal(evm, state)?;
         // Store CIP64 transaction information by modifying the transaction
         let mut tx = evm.ctx().tx().clone();
         tx.cip64_tx_info = Some(Cip64Info {
