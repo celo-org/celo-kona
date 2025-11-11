@@ -1531,7 +1531,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -1540,7 +1540,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
@@ -1556,7 +1556,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -2410,7 +2410,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -2977,7 +2977,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -2998,7 +2998,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-evm",
  "alloy-op-evm",
@@ -3018,7 +3018,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -3033,7 +3033,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -3060,7 +3060,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=ede4e93#ede4e93969fa3e181093c8807576afb85c60cb0e"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=c07bb19#c07bb195fd6b8f2bef4c716906f450338af9e484"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
