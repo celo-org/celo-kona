@@ -56,12 +56,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     }
 
     /// Creates a FeeCurrencyContext from the current EVM state.
-    pub fn create_fee_currency_context(
-        &mut self,
-    ) -> Result<
-        celo_revm::FeeCurrencyContext,
-        celo_revm::contracts::core_contracts::CoreContractError,
-    >
+    pub fn create_fee_currency_context(&mut self) -> celo_revm::FeeCurrencyContext
     where
         I: Inspector<CeloContext<DB>>,
     {
