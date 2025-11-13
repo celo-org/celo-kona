@@ -501,23 +501,20 @@ where
 
         let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
 
-        // old balance is journaled before mint is incremented.
-        let old_balance = caller_account.info.balance;
-
         // If the transaction is a deposit with a `mint` value, add the mint value
         // in wei to the caller's balance. This should be persisted to the database
         // prior to the rest of execution.
-        let mut new_balance = caller_account.info.balance.saturating_add(U256::from(mint));
+        let mut balance = caller_account.info.balance.saturating_add(U256::from(mint));
 
         if fees_in_celo {
             // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
             // Transfer will be done inside `*_inner` functions.
-            if !is_deposit && max_balance_spending > new_balance && !is_balance_check_disabled {
+            if !is_deposit && max_balance_spending > balance && !is_balance_check_disabled {
                 // skip max balance check for deposit transactions.
                 // this check for deposit was skipped previously in `validate_tx_against_state` function
                 return Err(InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(max_balance_spending),
-                    balance: Box::new(new_balance),
+                    balance: Box::new(balance),
                 }
                 .into());
             }
@@ -537,17 +534,17 @@ where
             // In case of deposit additional cost will be zero.
             let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
 
-            new_balance = new_balance.saturating_sub(op_gas_balance_spending);
+            balance = balance.saturating_sub(op_gas_balance_spending);
         } else {
             // Check CELO balance for value transfer (value is always in CELO)
             assert!(
                 !is_deposit,
                 "gas for deposit txs can't be paid in erc20 tokens"
             );
-            if tx.value() > new_balance && !is_balance_check_disabled {
+            if tx.value() > balance && !is_balance_check_disabled {
                 return Err(ERROR::from_string(format!(
                     "lack of funds ({}) for value payment ({})",
-                    new_balance,
+                    balance,
                     tx.value()
                 )));
             }
@@ -556,16 +553,14 @@ where
         if is_balance_check_disabled {
             // Make sure the caller's balance is at least the value of the transaction.
             // this is not consensus critical, and it is used in testing.
-            new_balance = new_balance.max(tx.value());
+            balance = balance.max(tx.value());
         }
 
-        // Bump the nonce for calls. Nonce for CREATE will be bumped in `handle_create`.
+        // make changes to the account
+        //(for cip64, the set balance won't journal if the balance is the same)
+        caller_account.set_balance(balance);
         if tx.kind().is_call() {
             caller_account.bump_nonce();
-        }
-
-        if old_balance != new_balance {
-            caller_account.set_balance(new_balance);
         }
 
         Ok(())
