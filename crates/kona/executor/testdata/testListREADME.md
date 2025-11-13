@@ -74,3 +74,10 @@
 * Network: Celo Mainnet
 * File: mainnet-missing_rate_from_whitelisted_currency-block-47668860.tar.gz  
 * Explorer: https://celo.blockscout.com/block/47668860
+
+## Uncategorized Blocks that failed (scenarios to be defined)
+- Failed for 1.0.0-rc4, fixed after 1.0.0-rc5 
+  * Testcase: -
+  * Network: Celo Mainnet
+  * File: mainnet-failed_uncategorized_1-block-49847887.tar.gz
+  * Explorer: https://celo.blockscout.com/block/49847887
