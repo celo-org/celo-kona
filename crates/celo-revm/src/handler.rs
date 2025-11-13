@@ -558,11 +558,8 @@ where
             caller_account.bump_nonce();
         }
 
-        // Touch account and journal it only if some change was performed.
-        if old_balance != new_balance || tx.kind().is_call() {
-            // NOTE: all changes to the caller account should journaled so in case of error
-            // we can revert the changes.
-            journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+        if old_balance != new_balance {
+            caller_account.set_balance(new_balance);
         }
 
         Ok(())
