@@ -559,8 +559,6 @@ where
             new_balance = new_balance.max(tx.value());
         }
 
-        caller_account.set_balance(new_balance);
-
         // Bump the nonce for calls. Nonce for CREATE will be bumped in `handle_create`.
         if tx.kind().is_call() {
             caller_account.bump_nonce();
