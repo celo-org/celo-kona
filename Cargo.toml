@@ -147,9 +147,9 @@ revm-context = { version = "11.0.1", default-features = false }
 alloy-signer = { version = "1.0.38", default-features = false }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19", default-features = false}
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19", default-features = false}
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "c07bb19", default-features = false}
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.0.2", default-features = false }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.0.2", default-features = false }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.0.2", default-features = false }
 
 # General
 url = "2.5.4"
