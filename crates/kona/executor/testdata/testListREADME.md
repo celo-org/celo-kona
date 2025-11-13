@@ -30,7 +30,7 @@
 - Reverted tx
   * Testcase: Block with cip64 tx that reverts
   * Network: Mainnet
-  * File: sepolia-revert_deposit-tx_block-9558619.tar.gz
+  * File: mainnet-cip64-reverted-tx_block-31071493.tar.gz
   * Explorer: https://celo.blockscout.com/block/31071493
 
 ## L1 to L2 bridge transaction
@@ -42,7 +42,7 @@
 - Revert deposit
   * Testcase: Block with a reverted deposit
   * Network: Celo Sepolia
-  *
+  * File: sepolia-revert_deposit-tx_block-9558619.tar.gz
   * Explorer: https://celo-sepolia.blockscout.com/block/9558619
 
 ## FeeCurrencyContext maintained for the whole block
