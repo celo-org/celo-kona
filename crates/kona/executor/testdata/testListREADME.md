@@ -34,10 +34,16 @@
   * Explorer: https://celo.blockscout.com/block/31071493
 
 ## L1 to L2 bridge transaction
-* Testcase: Block with deposit tx
-* Network: Celo Sepolia
-* File: sepolia-l1-to-l2-bridge-tx_block-1022860.tar.gz
-* Explorer: https://celo-sepolia.blockscout.com/block/1022860
+- Successful deposit
+  * Testcase: Block with deposit tx
+  * Network: Celo Sepolia
+  * File: sepolia-l1-to-l2-bridge-tx_block-1022860.tar.gz
+  * Explorer: https://celo-sepolia.blockscout.com/block/1022860
+- Revert deposit
+  * Testcase: Block with a reverted deposit
+  * Network: Celo Sepolia
+  * File: sepolia-revert_deposit-tx_block-9558619.tar.gz
+  * Explorer: https://celo-sepolia.blockscout.com/block/9558619
 
 ## FeeCurrencyContext maintained for the whole block
 * Testcase: Block with cip64 txs paid in erc20 + rate change of that erc20 + more cip64 txs paid in the same erc20
@@ -74,3 +80,10 @@
 * Network: Celo Mainnet
 * File: mainnet-missing_rate_from_whitelisted_currency-block-47668860.tar.gz  
 * Explorer: https://celo.blockscout.com/block/47668860
+
+## Uncategorized Blocks that failed (scenarios to be defined)
+- Failed for 1.0.0-rc4, fixed after 1.0.0-rc5 
+  * Testcase: -
+  * Network: Celo Mainnet
+  * File: mainnet-failed_uncategorized_1-block-49847887.tar.gz
+  * Explorer: https://celo.blockscout.com/block/49847887
