@@ -1,13 +1,18 @@
-//! Core contract interactions for Celo system calls.
+//! # System calls for interacting with Celo core contracts
 //!
-//! System calls are executed WITHOUT calling `finalize()`, keeping state changes in the EVM's journal.
-//! If the main transaction reverts, debit changes persist the main tx is executed in a subcall.
+//! System calls are executed without calling `finalize()`, using a "keep by default" approach
+//! where state changes (accounts, storage) remain in the EVM's journal. This avoids needing
+//! `set_storage` (which is not in upstream revm) to manually merge state back after system calls.
 //!
-//! Key behaviors:
-//! - State changes remain in the journal (accounts, storage, etc.)
-//! - Logs are extracted and cleared from the journal
-//! - Transient storage is cleared (EIP-1153)
-//! - `transaction_id` is restored for correct warm/cold accounting
+//! When the main transaction reverts, fee debit changes persist because the main
+//! transaction is executed as a subcall with automatic checkpoint/revert handling (see
+//! [`make_call_frame`](https://github.com/bluealloy/revm/blob/main/crates/handler/src/frame.rs)).
+//!
+//! # Key Behaviors
+//! - **State changes**: Remain in the journal (accounts, storage, etc.)
+//! - **Logs**: Extracted and cleared from journal during `ExecutionResult` creation
+//! - **Transient storage**: Explicitly cleared after each system call (EIP-1153 requirement)
+//! - **transaction_id**: Restored to keep warmed addresses from system call
 
 use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
@@ -107,7 +112,7 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Preserve the tx and transaction_id to restore it afterwards
+    // Preserve the tx and transaction_id to restore afterwards
     let prev_tx = evm.ctx().tx().clone();
     let prev_transaction_id = evm.ctx().journal_ref().transaction_id;
 
