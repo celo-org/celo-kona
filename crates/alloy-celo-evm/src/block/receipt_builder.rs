@@ -11,6 +11,7 @@ use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
 use crate::cip64_storage::{Cip64Storage, get_tx_identifier, none_tx_identifier};
+use revm::context_interface::Block;
 
 /// Receipt builder operating on celo-alloy types.
 #[derive(Debug, Clone, Default)]
@@ -47,7 +48,7 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
     ) -> Result<Self::Receipt, ReceiptBuilderCtx<'a, CeloTxEnvelope, E>> {
         match ctx.tx.tx_type() {
             CeloTxType::Cip64 => {
-                let base_fee = ctx.evm.block().basefee as u128;
+                let base_fee = ctx.evm.block().basefee() as u128;
                 // For CIP-64 transactions, calculate the base fee in ERC20
                 let base_fee_in_erc20 = if let CeloTxEnvelope::Cip64(cip64) = ctx.tx {
                     if cip64.tx().fee_currency.is_none() {

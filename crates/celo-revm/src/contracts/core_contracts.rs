@@ -1,3 +1,19 @@
+//! # System calls for interacting with Celo core contracts
+//!
+//! System calls are executed without calling `finalize()`, using a "keep by default" approach
+//! where state changes (accounts, storage) remain in the EVM's journal. This avoids needing
+//! `set_storage` (which is not in upstream revm) to manually merge state back after system calls.
+//!
+//! When the main transaction reverts, fee debit changes persist because the main
+//! transaction is executed as a subcall with automatic checkpoint/revert handling (see
+//! [`make_call_frame`](https://github.com/bluealloy/revm/blob/main/crates/handler/src/frame.rs)).
+//!
+//! # Key Behaviors
+//! - **State changes**: Remain in the journal (accounts, storage, etc.)
+//! - **Logs**: Extracted and cleared from journal during `ExecutionResult` creation
+//! - **Transient storage**: Explicitly cleared after each system call (EIP-1153 requirement)
+//! - **transaction_id**: Restored to keep warmed addresses from system call
+
 use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
@@ -5,12 +21,11 @@ use alloy_primitives::{
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
-    Database, ExecuteEvm,
+    Database,
     context_interface::ContextTr,
     handler::{EvmTr, SystemCallEvm},
     inspector::Inspector,
     primitives::Log,
-    state::EvmState,
 };
 use revm_context_interface::{
     ContextSetters,
@@ -69,19 +84,37 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-/// Call a core contract function and return the result.
+/// Call a core contract in read-only mode (checkpoint/revert to discard state changes).
+pub fn call_read_only<DB, INSP>(
+    evm: &mut CeloEvm<DB, INSP>,
+    address: Address,
+    calldata: Bytes,
+    gas_limit: Option<u64>,
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+{
+    let checkpoint = evm.ctx().journal_mut().checkpoint();
+    let result = call(evm, address, calldata, gas_limit);
+    evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+    result
+}
+
+/// Call a core contract function. State changes remain in the EVM's journal.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, EvmState, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    // Preserve the tx set in the evm before the call to restore it afterwards
+    // Preserve the tx and transaction_id to restore afterwards
     let prev_tx = evm.ctx().tx().clone();
+    let prev_transaction_id = evm.ctx().journal_ref().transaction_id;
 
     let call_result = if let Some(limit) = gas_limit {
         evm.transact_system_call_with_gas_limit(address, calldata, limit)
@@ -91,27 +124,24 @@ where
 
     // Restore the original transaction context
     evm.ctx().set_tx(prev_tx);
+    // Clear transient storage (EIP-1153)
+    evm.ctx().journal_mut().transient_storage.clear();
+    // Restore transaction_id for correct warm/cold accounting
+    evm.ctx().journal_mut().transaction_id = prev_transaction_id;
 
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o,
     };
 
-    // Get logs from the execution result
-    let logs_from_call = match &exec_result {
-        ExecutionResult::Success { logs, .. } => logs.clone(),
-        _ => Vec::new(),
-    };
-
-    let state = evm.finalize();
-
     // Check success
     match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
             gas_used,
+            logs,
             ..
-        } => Ok((bytes, state, logs_from_call, gas_used)),
+        } => Ok((bytes, logs, gas_used)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),
@@ -131,7 +161,7 @@ where
     INSP: Inspector<CeloContext<DB>>,
 {
     let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
-    let call_result = call(
+    let call_result = call_read_only(
         evm,
         fee_curr_dir,
         getCurrenciesCall {}.abi_encode().into(),
@@ -139,7 +169,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _, _)) => bytes,
+        Ok((bytes, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_curr_dir, e);
             return Vec::new();
@@ -176,7 +206,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let call_result = call(
+        let call_result = call_read_only(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getExchangeRateCall { token: *token }.abi_encode().into(),
@@ -184,7 +214,7 @@ where
         );
 
         let output_bytes = match call_result {
-            Ok((bytes, _, _, _)) => bytes,
+            Ok((bytes, _, _)) => bytes,
             Err(e) => {
                 debug!(target: "celo_core_contracts", "get_exchange_rates: failed to call for token 0x{:x}: {}", token, e);
                 continue;
@@ -218,7 +248,7 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _, _) = call(
+        let (output_bytes, _, _) = call_read_only(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
