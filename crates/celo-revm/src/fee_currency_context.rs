@@ -1,8 +1,6 @@
 use crate::{
     CeloContext, CeloEvm,
-    contracts::core_contracts::{
-        CoreContractError, get_currencies, get_exchange_rates, get_intrinsic_gas,
-    },
+    contracts::core_contracts::{get_currencies, get_exchange_rates, get_intrinsic_gas},
 };
 use alloy_primitives::map::HashMap;
 use revm::{
@@ -35,22 +33,22 @@ impl FeeCurrencyContext {
     }
 
     /// Initialize with values read from the EVM
-    pub fn new_from_evm<DB, INSP>(
-        evm: &mut CeloEvm<DB, INSP>,
-    ) -> Result<FeeCurrencyContext, CoreContractError>
+    pub fn new_from_evm<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> FeeCurrencyContext
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
         let currencies = &get_currencies(evm);
-        let exchange_rates = get_exchange_rates(evm, currencies);
-        let intrinsic_gas = get_intrinsic_gas(evm, currencies)?;
+        let mut exchange_rates = get_exchange_rates(evm, currencies);
+        let mut intrinsic_gas = get_intrinsic_gas(evm, currencies);
+
+        // Ensure consistency: only keep currencies that have BOTH exchange rate AND intrinsic gas.
+        // This prevents validation failures where a currency exists in one map but not the other.
+        exchange_rates.retain(|addr, _| intrinsic_gas.contains_key(addr));
+        intrinsic_gas.retain(|addr, _| exchange_rates.contains_key(addr));
+
         let current_block_number = evm.ctx().block().number;
-        Ok(FeeCurrencyContext::new(
-            exchange_rates,
-            intrinsic_gas,
-            Some(current_block_number),
-        ))
+        FeeCurrencyContext::new(exchange_rates, intrinsic_gas, Some(current_block_number))
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<u64, String> {
@@ -136,17 +134,18 @@ mod tests {
     fn test_new_from_evm() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let fee_currency_context = FeeCurrencyContext::new_from_evm(&mut evm).unwrap();
+        let fee_currency_context = FeeCurrencyContext::new_from_evm(&mut evm);
 
+        let test_currency = address!("0x1111111111111111111111111111111111111111");
+
+        // Verify that the currency has BOTH exchange rate and intrinsic gas
         let exchange_rate = fee_currency_context
-            .currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111")))
+            .currency_exchange_rate(Some(test_currency))
             .unwrap();
         assert_eq!(exchange_rate, (U256::from(20), U256::from(10)));
 
         let intrinsic_gas_cost = fee_currency_context
-            .currency_intrinsic_gas_cost(Some(address!(
-                "0x1111111111111111111111111111111111111111"
-            )))
+            .currency_intrinsic_gas_cost(Some(test_currency))
             .unwrap();
         assert_eq!(intrinsic_gas_cost, 50_000);
 

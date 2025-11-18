@@ -230,6 +230,12 @@ where
             }
         };
 
+        // Validate that neither numerator nor denominator is zero
+        if rate.numerator.is_zero() || rate.denominator.is_zero() {
+            debug!(target: "celo_core_contracts", "get_exchange_rates: invalid rate for token 0x{:x} (numerator: {}, denominator: {})", token, rate.numerator, rate.denominator);
+            continue;
+        }
+
         _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
 
@@ -239,7 +245,7 @@ where
 pub fn get_intrinsic_gas<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
-) -> Result<HashMap<Address, u64>, CoreContractError>
+) -> HashMap<Address, u64>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -248,36 +254,43 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        let (output_bytes, _, _) = call_read_only(
+        let call_result = call_read_only(
             evm,
             get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
             getCurrencyConfigCall { token: *token }.abi_encode().into(),
             None,
-        )?;
+        );
+
+        let output_bytes = match call_result {
+            Ok((bytes, _, _)) => bytes,
+            Err(e) => {
+                debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to call for token 0x{:x}: {}", token, e);
+                continue;
+            }
+        };
 
         // Decode the output
         let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
             Ok(decoded_return) => decoded_return,
             Err(e) => {
-                return Err(CoreContractError::ExecutionFailed(format!(
-                    "Failed to decode getCurrencyConfigCall return for token 0x{} (bytes: 0x{}): {}",
-                    hex::encode(token),
-                    hex::encode(output_bytes),
-                    e
-                )));
+                debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to decode for token 0x{:x} (bytes: 0x{}): {}", token, hex::encode(output_bytes), e);
+                continue;
             }
         };
 
-        _ = intrinsic_gas.insert(
-            *token,
-            curr_conf
-                .intrinsicGas
-                .try_into()
-                .expect("Failed to convert U256 to u64: value exceeds u64 range"),
-        );
+        // Convert U256 to u64, capping at u64::MAX if the value is too large
+        let intrinsic_gas_value = curr_conf
+            .intrinsicGas
+            .try_into()
+            .unwrap_or_else(|_| {
+                debug!(target: "celo_core_contracts", "get_intrinsic_gas: value exceeds u64::MAX for token 0x{:x}, capping at u64::MAX", token);
+                u64::MAX
+            });
+
+        _ = intrinsic_gas.insert(*token, intrinsic_gas_value);
     }
 
-    Ok(intrinsic_gas)
+    intrinsic_gas
 }
 
 #[cfg(test)]
@@ -425,8 +438,7 @@ pub(crate) mod tests {
         let intrinsic_gas = get_intrinsic_gas(
             &mut evm,
             &[address!("0x1111111111111111111111111111111111111111")],
-        )
-        .unwrap();
+        );
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
