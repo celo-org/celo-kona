@@ -39,8 +39,14 @@ impl FeeCurrencyContext {
         INSP: Inspector<CeloContext<DB>>,
     {
         let currencies = &get_currencies(evm);
-        let exchange_rates = get_exchange_rates(evm, currencies);
-        let intrinsic_gas = get_intrinsic_gas(evm, currencies);
+        let mut exchange_rates = get_exchange_rates(evm, currencies);
+        let mut intrinsic_gas = get_intrinsic_gas(evm, currencies);
+
+        // Ensure consistency: only keep currencies that have BOTH exchange rate AND intrinsic gas.
+        // This prevents validation failures where a currency exists in one map but not the other.
+        exchange_rates.retain(|addr, _| intrinsic_gas.contains_key(addr));
+        intrinsic_gas.retain(|addr, _| exchange_rates.contains_key(addr));
+
         let current_block_number = evm.ctx().block().number;
         FeeCurrencyContext::new(exchange_rates, intrinsic_gas, Some(current_block_number))
     }
@@ -130,15 +136,16 @@ mod tests {
         let mut evm = ctx.build_celo();
         let fee_currency_context = FeeCurrencyContext::new_from_evm(&mut evm);
 
+        let test_currency = address!("0x1111111111111111111111111111111111111111");
+
+        // Verify that the currency has BOTH exchange rate and intrinsic gas
         let exchange_rate = fee_currency_context
-            .currency_exchange_rate(Some(address!("0x1111111111111111111111111111111111111111")))
+            .currency_exchange_rate(Some(test_currency))
             .unwrap();
         assert_eq!(exchange_rate, (U256::from(20), U256::from(10)));
 
         let intrinsic_gas_cost = fee_currency_context
-            .currency_intrinsic_gas_cost(Some(address!(
-                "0x1111111111111111111111111111111111111111"
-            )))
+            .currency_intrinsic_gas_cost(Some(test_currency))
             .unwrap();
         assert_eq!(intrinsic_gas_cost, 50_000);
 
