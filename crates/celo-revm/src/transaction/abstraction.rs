@@ -36,6 +36,11 @@ pub struct CeloTransaction<T: Transaction> {
     pub op_tx: OpTransaction<T>,
     pub fee_currency: Option<Address>,
     pub cip64_tx_info: Option<Cip64Info>,
+    /// Pre-computed effective gas price for CIP-64 transactions.
+    /// This is calculated using the base fee converted to the fee currency.
+    /// When set, this value is returned by `effective_gas_price()` instead of
+    /// computing it from the native base fee.
+    pub effective_gas_price: Option<u128>,
 }
 
 impl<T: Transaction> CeloTransaction<T> {
@@ -44,6 +49,7 @@ impl<T: Transaction> CeloTransaction<T> {
             op_tx,
             fee_currency: None,
             cip64_tx_info: None,
+            effective_gas_price: None,
         }
     }
 }
@@ -54,6 +60,7 @@ impl Default for CeloTransaction<TxEnv> {
             op_tx: OpTransaction::default(),
             fee_currency: None,
             cip64_tx_info: None,
+            effective_gas_price: None,
         }
     }
 }
@@ -153,6 +160,12 @@ impl<T: Transaction> Transaction for CeloTransaction<T> {
     }
 
     fn effective_gas_price(&self, base_fee: u128) -> u128 {
+        // For CIP-64 transactions, return the pre-computed effective gas price
+        // that was calculated using the base fee converted to the fee currency.
+        // This ensures the GASPRICE opcode returns the correct value.
+        if let Some(egp) = self.effective_gas_price {
+            return egp;
+        }
         self.op_tx.effective_gas_price(base_fee)
     }
 
@@ -218,6 +231,7 @@ mod tests {
             },
             fee_currency: Some(Address::with_last_byte(1)),
             cip64_tx_info: None,
+            effective_gas_price: None,
         };
         // Verify transaction type
         assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);

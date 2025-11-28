@@ -305,6 +305,9 @@ where
             logs_pre: logs,
             logs_post: Vec::new(),
         });
+        // Store the effective gas price for the GASPRICE opcode.
+        // This is calculated using the base fee converted to the fee currency.
+        tx.effective_gas_price = Some(effective_gas_price);
         evm.ctx().set_tx(tx);
 
         Ok(())
