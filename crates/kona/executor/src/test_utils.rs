@@ -61,6 +61,35 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
 
     let outcome = executor.build_block(fixture.executing_payload).unwrap();
 
+    if outcome.header.hash() != fixture.op_executor_test_fixture.expected_block_hash {
+        println!("=== HEADER MISMATCH DETAILS ===");
+        println!("Expected hash: {:?}", fixture.op_executor_test_fixture.expected_block_hash);
+        println!("Produced hash: {:?}", outcome.header.hash());
+        println!("\nProduced header:");
+        println!("  gas_used: {}", outcome.header.gas_used);
+        println!("  receipts_root: {:?}", outcome.header.receipts_root);
+        println!("  logs_bloom: {:?}", outcome.header.logs_bloom);
+        println!("  state_root: {:?}", outcome.header.state_root);
+        println!("\nExecution result:");
+        println!("  gas_used: {}", outcome.execution_result.gas_used);
+        println!("  receipts count: {}", outcome.execution_result.receipts.len());
+        let mut prev_cumulative: u64 = 0;
+        for (i, receipt) in outcome.execution_result.receipts.iter().enumerate() {
+            let curr_cumulative = receipt.cumulative_gas_used();
+            let tx_gas = curr_cumulative - prev_cumulative;
+            println!("  Receipt {}: cumulative={} tx_gas={} logs={} type={:?}",
+                i, curr_cumulative, tx_gas, receipt.logs().len(), receipt.tx_type());
+            // Print detailed logs for receipt 25 (the divergent one in block 32713950)
+            if i == 25 || (i == 39 && outcome.execution_result.receipts.len() == 40) {
+                println!("    === Detailed logs for divergent receipt {} ===", i);
+                for (j, log) in receipt.logs().iter().enumerate() {
+                    println!("      Log {}: addr={:?} topics={}", j, log.address, log.topics().len());
+                }
+            }
+            prev_cumulative = curr_cumulative;
+        }
+    }
+
     assert_eq!(
         outcome.header.hash(),
         fixture.op_executor_test_fixture.expected_block_hash,
