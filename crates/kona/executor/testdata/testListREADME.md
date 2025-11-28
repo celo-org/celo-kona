@@ -32,6 +32,11 @@
   * Network: Mainnet
   * File: mainnet-cip64-reverted-tx_block-31071493.tar.gz
   * Explorer: https://celo.blockscout.com/block/31071493
+- GASPRICE opcode (DEX vault skim)
+  * Testcase: Block with CIP-64 tx (TX 25) calling a DEX vault skimmer contract. The contract uses the GASPRICE opcode which must return the effective gas price (not maxFeePerGas) for CIP-64 transactions.
+  * Network: Celo Mainnet
+  * File: mainnet-cip64-gasprice-opcode_block-32713950.tar.gz
+  * Explorer: https://celo.blockscout.com/block/32713950
 
 ## L1 to L2 bridge transaction
 - Successful deposit
