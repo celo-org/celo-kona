@@ -477,6 +477,24 @@ where
         if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
+
+        // Update TxEnv.gas_price to effective gas price for GASPRICE opcode
+        // For CIP-64 transactions with fee currency, we need to use the converted base fee
+        if !fees_in_celo && !is_deposit {
+            let fee_currency = evm.ctx().tx().fee_currency();
+            let basefee_u64 = basefee
+                .try_into()
+                .expect("base fee should never exceed u64::MAX");
+            let base_fee_in_erc20 =
+                self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee_u64)?;
+            let effective_gas_price_erc20 = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
+
+            // Update the transaction context with the effective gas price
+            let mut tx = evm.ctx().tx().clone();
+            tx.op_tx.base.gas_price = effective_gas_price_erc20;
+            evm.ctx().set_tx(tx);
+        }
+
         let (tx, journal) = evm.ctx().tx_journal_mut();
 
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
