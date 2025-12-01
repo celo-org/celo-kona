@@ -149,7 +149,14 @@ where
 
         // Convert costs to fee currency
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
-        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
+        // Use the pre-computed effective gas price stored during validation.
+        // This avoids calling effective_gas_price() with base_fee_in_erc20 which would
+        // fail the native basefee validation in CeloTransaction::effective_gas_price().
+        let effective_gas_price = evm
+            .ctx()
+            .tx()
+            .effective_gas_price
+            .expect("CIP-64 transaction should have pre-computed effective_gas_price");
         let tip_gas_price = effective_gas_price
             .checked_sub(base_fee_in_erc20)
             .expect("tip_gas_price is positive because the effective_gas_price was validated before to be greater or equal than the base_fee_in_erc20");
@@ -310,6 +317,8 @@ where
         // Store the effective gas price for the GASPRICE opcode.
         // This is calculated using the base fee converted to the fee currency.
         tx.effective_gas_price = Some(effective_gas_price);
+        // Store native basefee for validation when GASPRICE opcode is called.
+        tx.native_basefee = Some(basefee);
         evm.ctx().set_tx(tx);
 
         Ok(())
