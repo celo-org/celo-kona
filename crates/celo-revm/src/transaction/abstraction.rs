@@ -41,6 +41,9 @@ pub struct CeloTransaction<T: Transaction> {
     /// When set, this value is returned by `effective_gas_price()` instead of
     /// computing it from the native base fee.
     pub effective_gas_price: Option<u128>,
+    /// Native basefee used when computing effective_gas_price.
+    /// Used to validate consistency when the GASPRICE opcode is invoked.
+    pub native_basefee: Option<u64>,
 }
 
 impl<T: Transaction> CeloTransaction<T> {
@@ -50,6 +53,7 @@ impl<T: Transaction> CeloTransaction<T> {
             fee_currency: None,
             cip64_tx_info: None,
             effective_gas_price: None,
+            native_basefee: None,
         }
     }
 }
@@ -61,6 +65,7 @@ impl Default for CeloTransaction<TxEnv> {
             fee_currency: None,
             cip64_tx_info: None,
             effective_gas_price: None,
+            native_basefee: None,
         }
     }
 }
@@ -152,6 +157,15 @@ impl<T: Transaction> Transaction for CeloTransaction<T> {
         // that was calculated using the base fee converted to the fee currency.
         // This ensures the GASPRICE opcode returns the correct value.
         if let Some(egp) = self.effective_gas_price {
+            // Validate that the basefee passed to us matches what we used to compute egp.
+            // This check ensures the block context hasn't changed between when we computed
+            // the effective gas price and when the GASPRICE opcode is invoked.
+            if let Some(native_basefee) = self.native_basefee {
+                debug_assert_eq!(
+                    base_fee, native_basefee as u128,
+                    "GASPRICE opcode called with unexpected basefee"
+                );
+            }
             return egp;
         }
         self.op_tx.effective_gas_price(base_fee)
@@ -220,6 +234,7 @@ mod tests {
             fee_currency: Some(Address::with_last_byte(1)),
             cip64_tx_info: None,
             effective_gas_price: None,
+            native_basefee: None,
         };
         // Verify transaction type
         assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);

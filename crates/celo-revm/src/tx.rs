@@ -99,6 +99,7 @@ impl FromTxWithEncoded<CeloTxEnvelope> for CeloTransaction<TxEnv> {
             fee_currency,
             cip64_tx_info: None,
             effective_gas_price: None,
+            native_basefee: None,
         }
     }
 }
