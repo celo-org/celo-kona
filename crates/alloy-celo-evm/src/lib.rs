@@ -184,6 +184,7 @@ where
             },
             fee_currency: None,
             cip64_tx_info: None,
+            effective_gas_price: None,
         };
 
         let mut gas_limit = tx.op_tx.base.gas_limit;
