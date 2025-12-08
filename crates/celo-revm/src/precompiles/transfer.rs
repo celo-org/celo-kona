@@ -5,9 +5,10 @@ use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
     context::{Cfg, ContextTr, JournalTr},
-    interpreter::{Gas, InputsImpl, InstructionResult, InterpreterResult},
+    interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
+    state::Account,
 };
 use std::{
     format,
@@ -23,16 +24,14 @@ pub const TRANSFER_GAS_COST: u64 = 9_000;
 /// Run `transfer` precompile.
 pub fn transfer_run<CTX>(
     context: &mut CTX,
-    inputs: &InputsImpl,
-    is_static: bool,
-    gas_limit: u64,
+    inputs: &CallInputs,
 ) -> Result<Option<InterpreterResult>, String>
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     let mut result = InterpreterResult {
         result: InstructionResult::Return,
-        gas: Gas::new(gas_limit),
+        gas: Gas::new(inputs.gas_limit),
         output: Bytes::new(),
     };
 
@@ -40,9 +39,9 @@ where
     match run(
         context,
         &input_bytes,
-        inputs.caller_address,
-        is_static,
-        gas_limit,
+        inputs.caller,
+        inputs.is_static,
+        inputs.gas_limit,
     ) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
@@ -135,7 +134,20 @@ fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    if was_cold && let Ok(mut account) = context.journal_mut().load_account(address) {
-        account.mark_cold();
+    if was_cold {
+        if let Ok(journaled_account) = context.journal_mut().load_account_mut(address) {
+            // SAFETY: JournaledAccount implements Deref<Target = Account> and internally holds
+            // &'a mut Account. We have exclusive mutable access to the journal through context,
+            // so casting the dereferenced immutable reference back to mutable is sound.
+            //
+            // This is a temporary workaround to access Account::mark_cold() until the
+            // JournaledAccount::mark_cold() method is added to upstream REVM or Celo has removed
+            // the requirement to not warm accounts in the Celo transfer precompile.
+            let account_ref: &Account = &journaled_account;
+            let account_ptr = account_ref as *const Account as *mut Account;
+            unsafe {
+                (*account_ptr).mark_cold();
+            }
+        }
     }
 }
