@@ -33,7 +33,7 @@
   * File: mainnet-cip64-reverted-tx_block-31071493.tar.gz
   * Explorer: https://celo.blockscout.com/block/31071493
 - GASPRICE opcode
-  * Testcase: A CIP-64 tx that calls the GASPRICE opcode and emits an event with the result. The tx does this inside a contract constructor witht the CIP-64 equivalent of `cast send --create 0x3a60005260206000a0`. The bycode is `GASPRICE, PUSH1 0, MSTORE, PUSH1 32, PUSH1 0, LOG0`.
+  * Testcase: A CIP-64 tx that calls the GASPRICE opcode and emits an event with the result. The tx does this inside a contract constructor with the CIP-64 equivalent of `cast send --create 0x3a60005260206000a0`. The bytecode is `GASPRICE, PUSH1 0, MSTORE, PUSH1 32, PUSH1 0, LOG0`.
   * Network: Celo Sepolia
   * File: sepolia-cip64-gasprice-opcode_block-11462516.tar.gz
   * Explorer: https://celo-sepolia.blockscout.com/block/11462516
