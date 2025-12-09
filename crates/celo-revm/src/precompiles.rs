@@ -46,7 +46,7 @@ where
         context: &mut CTX,
         inputs: &CallInputs,
     ) -> Result<Option<Self::Output>, String> {
-        if inputs.target_address == TRANSFER_ADDRESS {
+        if inputs.bytecode_address == TRANSFER_ADDRESS {
             transfer_run(context, inputs)
         } else {
             self.op_precompiles.run(context, inputs)
@@ -159,6 +159,23 @@ mod tests {
             .with_db(db);
 
         let res = precompiles.run(&mut ctx, &inputs);
+        assert!(res.is_ok());
+
+        let state = ctx.journal_mut().finalize();
+        let from_account = state.get(&from).unwrap();
+        let to_account = state.get(&to).unwrap();
+        assert_eq!(
+            from_account.info.balance,
+            U256::from(initial_balance - value)
+        );
+        assert_eq!(to_account.info.balance, U256::from(value));
+
+        // Test calling with different target address
+        let different_target_addr_inputs = CallInputs {
+            target_address: Address::with_last_byte(3),
+            ..inputs.clone()
+        };
+        let res = precompiles.run(&mut ctx, &different_target_addr_inputs);
         assert!(res.is_ok());
 
         let state = ctx.journal_mut().finalize();
