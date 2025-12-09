@@ -1,7 +1,4 @@
-use crate::{
-    CeloContext, CeloEvm,
-    contracts::core_contracts::{get_currencies, get_currency_info},
-};
+use crate::{CeloContext, CeloEvm, contracts::core_contracts::get_currency_info};
 use alloy_primitives::map::HashMap;
 use revm::{
     Database, Inspector,
@@ -45,8 +42,7 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
-        let currency_addresses = &get_currencies(evm);
-        let currencies = get_currency_info(evm, currency_addresses);
+        let currencies = get_currency_info(evm);
         let current_block_number = evm.ctx().block().number;
         FeeCurrencyContext::new(currencies, Some(current_block_number))
     }

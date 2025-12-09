@@ -157,12 +157,15 @@ where
     }
 }
 
-pub fn get_currencies<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> Vec<Address>
+/// Fetches the list of registered fee currencies from the FeeCurrencyDirectory contract.
+fn get_currencies<DB, INSP>(
+    evm: &mut CeloEvm<DB, INSP>,
+    fee_currency_directory: Address,
+) -> Vec<Address>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
     let call_result = call_read_only(
         evm,
         fee_currency_directory,
@@ -187,46 +190,41 @@ where
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
         Ok(decoded_return) => decoded_return,
         Err(e) => {
-            debug!(target: "celo_core_contracts",  "Failed to decode getCurrenciesCall return (bytes: 0x{}): {}",
-                hex::encode(output_bytes),
-                e
-            );
+            debug!(target: "celo_core_contracts", "get_currencies: failed to decode (bytes: 0x{}): {}", hex::encode(output_bytes), e);
             Vec::new()
         }
     }
 }
 
-/// Fetches complete currency info (exchange rate + intrinsic gas) for each currency.
+/// Fetches complete currency info (exchange rate + intrinsic gas) for all registered currencies.
 /// A currency is only included if BOTH pieces of data are successfully fetched.
 /// This ensures no partial/inconsistent currency data can exist.
-pub fn get_currency_info<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
-    currencies: &[Address],
-) -> HashMap<Address, FeeCurrencyInfo>
+pub fn get_currency_info<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> HashMap<Address, FeeCurrencyInfo>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
+    let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
+    let currencies = get_currencies(evm, fee_currency_directory);
     let mut currency_info =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
-    let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
 
     for token in currencies {
         // Fetch exchange rate
-        let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, *token) {
+        let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, token) {
             Some(rate) => rate,
             None => continue,
         };
 
         // Fetch intrinsic gas
-        let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, *token) {
+        let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, token) {
             Some(gas) => gas,
             None => continue,
         };
 
         // Only insert if BOTH succeeded
         _ = currency_info.insert(
-            *token,
+            token,
             FeeCurrencyInfo {
                 exchange_rate,
                 intrinsic_gas,
@@ -431,25 +429,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_get_currencies() {
-        let ctx = Context::celo().with_db(make_celo_test_db());
-        let mut evm = ctx.build_celo();
-        let currencies = get_currencies(&mut evm);
-
-        assert_eq!(
-            currencies,
-            vec![address!("0x1111111111111111111111111111111111111111")]
-        );
-    }
-
-    #[test]
     fn test_get_currency_info() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let currency_info = get_currency_info(
-            &mut evm,
-            &[address!("0x1111111111111111111111111111111111111111")],
-        );
+        let currency_info = get_currency_info(&mut evm);
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
