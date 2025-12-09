@@ -1,6 +1,6 @@
 use crate::{
     CeloContext, CeloEvm,
-    contracts::core_contracts::{get_currencies, get_exchange_rates, get_intrinsic_gas},
+    contracts::core_contracts::{get_currencies, get_currency_info},
 };
 use alloy_primitives::map::HashMap;
 use revm::{
@@ -12,22 +12,29 @@ use revm::{
 
 use std::{format, string::String};
 
+/// Complete fee currency information for a registered currency.
+/// Both exchange rate and intrinsic gas are required - partial data is rejected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FeeCurrencyInfo {
+    /// Exchange rate as (numerator, denominator) for converting from native to fee currency
+    pub exchange_rate: (U256, U256),
+    /// Additional intrinsic gas cost for transactions using this fee currency
+    pub intrinsic_gas: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FeeCurrencyContext {
-    exchange_rates: HashMap<Address, (U256, U256)>,
-    intrinsic_gas: HashMap<Address, u64>,
+    currencies: HashMap<Address, FeeCurrencyInfo>,
     pub updated_at_block: Option<U256>,
 }
 
 impl FeeCurrencyContext {
     pub fn new(
-        exchange_rates: HashMap<Address, (U256, U256)>,
-        intrinsic_gas: HashMap<Address, u64>,
+        currencies: HashMap<Address, FeeCurrencyInfo>,
         updated_at_block: Option<U256>,
     ) -> Self {
         Self {
-            exchange_rates,
-            intrinsic_gas,
+            currencies,
             updated_at_block,
         }
     }
@@ -38,17 +45,10 @@ impl FeeCurrencyContext {
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
     {
-        let currencies = &get_currencies(evm);
-        let mut exchange_rates = get_exchange_rates(evm, currencies);
-        let mut intrinsic_gas = get_intrinsic_gas(evm, currencies);
-
-        // Ensure consistency: only keep currencies that have BOTH exchange rate AND intrinsic gas.
-        // This prevents validation failures where a currency exists in one map but not the other.
-        exchange_rates.retain(|addr, _| intrinsic_gas.contains_key(addr));
-        intrinsic_gas.retain(|addr, _| exchange_rates.contains_key(addr));
-
+        let currency_addresses = &get_currencies(evm);
+        let currencies = get_currency_info(evm, currency_addresses);
         let current_block_number = evm.ctx().block().number;
-        FeeCurrencyContext::new(exchange_rates, intrinsic_gas, Some(current_block_number))
+        FeeCurrencyContext::new(currencies, Some(current_block_number))
     }
 
     pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<u64, String> {
@@ -57,8 +57,8 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.intrinsic_gas.get(&currency_addr) {
-            Some(gas_cost) => Ok(*gas_cost),
+        match self.currencies.get(&currency_addr) {
+            Some(info) => Ok(info.intrinsic_gas),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }
@@ -84,8 +84,8 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.exchange_rates.get(&currency_addr) {
-            Some(exchange_rate) => Ok(*exchange_rate),
+        match self.currencies.get(&currency_addr) {
+            Some(info) => Ok(info.exchange_rate),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }
@@ -100,8 +100,8 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.exchange_rates.get(&currency_addr) {
-            Some(rate) => Ok(amount.saturating_mul(rate.0) / rate.1),
+        match self.currencies.get(&currency_addr) {
+            Some(info) => Ok(amount.saturating_mul(info.exchange_rate.0) / info.exchange_rate.1),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }
@@ -116,8 +116,8 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.exchange_rates.get(&currency_addr) {
-            Some(rate) => Ok(amount.saturating_mul(rate.1) / rate.0),
+        match self.currencies.get(&currency_addr) {
+            Some(info) => Ok(amount.saturating_mul(info.exchange_rate.1) / info.exchange_rate.0),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }

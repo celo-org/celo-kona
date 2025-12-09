@@ -14,7 +14,9 @@
 //! - **Transient storage**: Explicitly cleared after each system call (EIP-1153 requirement)
 //! - **transaction_id**: Restored to keep warmed addresses from system call
 
-use crate::{CeloContext, constants::get_addresses, evm::CeloEvm};
+use crate::{
+    CeloContext, constants::get_addresses, evm::CeloEvm, fee_currency_context::FeeCurrencyInfo,
+};
 use alloy_primitives::{
     Address, Bytes, U256, hex,
     map::{DefaultHashBuilder, HashMap},
@@ -160,10 +162,10 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let fee_curr_dir = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
+    let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
     let call_result = call_read_only(
         evm,
-        fee_curr_dir,
+        fee_currency_directory,
         getCurrenciesCall {}.abi_encode().into(),
         None,
     );
@@ -171,13 +173,13 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _)) => bytes,
         Err(e) => {
-            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_curr_dir, e);
+            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
             return Vec::new();
         }
     };
 
     if output_bytes.is_empty() {
-        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_curr_dir);
+        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_currency_directory);
         return Vec::new();
     }
 
@@ -194,103 +196,129 @@ where
     }
 }
 
-pub fn get_exchange_rates<DB, INSP>(
+/// Fetches complete currency info (exchange rate + intrinsic gas) for each currency.
+/// A currency is only included if BOTH pieces of data are successfully fetched.
+/// This ensures no partial/inconsistent currency data can exist.
+pub fn get_currency_info<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     currencies: &[Address],
-) -> HashMap<Address, (U256, U256)>
+) -> HashMap<Address, FeeCurrencyInfo>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let mut exchange_rates =
+    let mut currency_info =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
+    let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
 
     for token in currencies {
-        let call_result = call_read_only(
-            evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
-            getExchangeRateCall { token: *token }.abi_encode().into(),
-            None,
+        // Fetch exchange rate
+        let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, *token) {
+            Some(rate) => rate,
+            None => continue,
+        };
+
+        // Fetch intrinsic gas
+        let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, *token) {
+            Some(gas) => gas,
+            None => continue,
+        };
+
+        // Only insert if BOTH succeeded
+        _ = currency_info.insert(
+            *token,
+            FeeCurrencyInfo {
+                exchange_rate,
+                intrinsic_gas,
+            },
         );
-
-        let output_bytes = match call_result {
-            Ok((bytes, _, _)) => bytes,
-            Err(e) => {
-                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to call for token 0x{:x}: {}", token, e);
-                continue;
-            }
-        };
-
-        // Decode the output
-        let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
-            Ok(decoded_return) => decoded_return,
-            Err(e) => {
-                debug!(target: "celo_core_contracts", "get_exchange_rates: failed to decode for token 0x{:x} (bytes: 0x{:x}): {}", token, output_bytes, e);
-                continue;
-            }
-        };
-
-        // Validate that neither numerator nor denominator is zero
-        if rate.numerator.is_zero() || rate.denominator.is_zero() {
-            debug!(target: "celo_core_contracts", "get_exchange_rates: invalid rate for token 0x{:x} (numerator: {}, denominator: {})", token, rate.numerator, rate.denominator);
-            continue;
-        }
-
-        _ = exchange_rates.insert(*token, (rate.numerator, rate.denominator))
     }
 
-    exchange_rates
+    currency_info
 }
 
-pub fn get_intrinsic_gas<DB, INSP>(
+/// Fetches the exchange rate for a single token. Returns None on any failure.
+fn get_exchange_rate<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
-    currencies: &[Address],
-) -> HashMap<Address, u64>
+    fee_currency_directory: Address,
+    token: Address,
+) -> Option<(U256, U256)>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
 {
-    let mut intrinsic_gas =
-        HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
+    let call_result = call_read_only(
+        evm,
+        fee_currency_directory,
+        getExchangeRateCall { token }.abi_encode().into(),
+        None,
+    );
 
-    for token in currencies {
-        let call_result = call_read_only(
-            evm,
-            get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory,
-            getCurrencyConfigCall { token: *token }.abi_encode().into(),
-            None,
-        );
+    let output_bytes = match call_result {
+        Ok((bytes, _, _)) => bytes,
+        Err(e) => {
+            debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
+            return None;
+        }
+    };
 
-        let output_bytes = match call_result {
-            Ok((bytes, _, _)) => bytes,
-            Err(e) => {
-                debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to call for token 0x{:x}: {}", token, e);
-                continue;
-            }
-        };
+    let rate = match getExchangeRateCall::abi_decode_returns(output_bytes.as_ref()) {
+        Ok(decoded_return) => decoded_return,
+        Err(e) => {
+            debug!(target: "celo_core_contracts", "get_exchange_rate: failed to decode exchange rate for token 0x{:x} (bytes: 0x{:x}): {}", token, output_bytes, e);
+            return None;
+        }
+    };
 
-        // Decode the output
-        let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
-            Ok(decoded_return) => decoded_return,
-            Err(e) => {
-                debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to decode for token 0x{:x} (bytes: 0x{}): {}", token, hex::encode(output_bytes), e);
-                continue;
-            }
-        };
-
-        // Convert U256 to u64, capping at u64::MAX if the value is too large
-        let intrinsic_gas_value = curr_conf
-            .intrinsicGas
-            .try_into()
-            .unwrap_or_else(|_| {
-                debug!(target: "celo_core_contracts", "get_intrinsic_gas: value exceeds u64::MAX for token 0x{:x}, capping at u64::MAX", token);
-                u64::MAX
-            });
-
-        _ = intrinsic_gas.insert(*token, intrinsic_gas_value);
+    // Validate that neither numerator nor denominator is zero
+    if rate.numerator.is_zero() || rate.denominator.is_zero() {
+        debug!(target: "celo_core_contracts", "get_exchange_rate: invalid exchange rate for token 0x{:x} (numerator: {}, denominator: {})", token, rate.numerator, rate.denominator);
+        return None;
     }
 
-    intrinsic_gas
+    Some((rate.numerator, rate.denominator))
+}
+
+/// Fetches the intrinsic gas for a single token. Returns None on any failure.
+fn get_intrinsic_gas<DB, INSP>(
+    evm: &mut CeloEvm<DB, INSP>,
+    fee_currency_directory: Address,
+    token: Address,
+) -> Option<u64>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+{
+    let call_result = call_read_only(
+        evm,
+        fee_currency_directory,
+        getCurrencyConfigCall { token }.abi_encode().into(),
+        None,
+    );
+
+    let output_bytes = match call_result {
+        Ok((bytes, _, _)) => bytes,
+        Err(e) => {
+            debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
+            return None;
+        }
+    };
+
+    let curr_conf = match getCurrencyConfigCall::abi_decode_returns(output_bytes.as_ref()) {
+        Ok(decoded_return) => decoded_return,
+        Err(e) => {
+            debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to decode intrinsic gas for token 0x{:x} (bytes: 0x{}): {}", token, hex::encode(output_bytes), e);
+            return None;
+        }
+    };
+
+    // Convert U256 to u64, capping at u64::MAX if the value is too large
+    let intrinsic_gas_value = curr_conf.intrinsicGas.try_into().unwrap_or_else(|_| {
+        debug!(target: "celo_core_contracts", "get_intrinsic_gas: intrinsic gas exceeds u64::MAX for token 0x{:x}, capping at u64::MAX", token);
+        u64::MAX
+    });
+
+    Some(intrinsic_gas_value)
 }
 
 #[cfg(test)]
@@ -415,10 +443,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_get_exchange_rates() {
+    fn test_get_currency_info() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let exchange_rates = get_exchange_rates(
+        let currency_info = get_currency_info(
             &mut evm,
             &[address!("0x1111111111111111111111111111111111111111")],
         );
@@ -426,25 +454,11 @@ pub(crate) mod tests {
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
             address!("0x1111111111111111111111111111111111111111"),
-            (U256::from(20), U256::from(10)),
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(20), U256::from(10)),
+                intrinsic_gas: 50_000,
+            },
         );
-        assert_eq!(exchange_rates, expected);
-    }
-
-    #[test]
-    fn test_get_intrinsic_gas() {
-        let ctx = Context::celo().with_db(make_celo_test_db());
-        let mut evm = ctx.build_celo();
-        let intrinsic_gas = get_intrinsic_gas(
-            &mut evm,
-            &[address!("0x1111111111111111111111111111111111111111")],
-        );
-
-        let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
-        _ = expected.insert(
-            address!("0x1111111111111111111111111111111111111111"),
-            50_000,
-        );
-        assert_eq!(intrinsic_gas, expected);
+        assert_eq!(currency_info, expected);
     }
 }
