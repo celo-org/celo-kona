@@ -6,7 +6,7 @@ use crate::{
     contracts::erc20,
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
-    transaction::{CeloTxTr, abstraction::Cip64Info},
+    transaction::{CeloTxTr, Cip64Info},
 };
 use alloy_primitives::Address;
 use celo_alloy_consensus::CeloTxType;

@@ -16,7 +16,6 @@ pub mod fee_currency_context;
 pub mod handler;
 pub mod precompiles;
 pub mod transaction;
-pub mod tx;
 
 pub use api::{
     builder::CeloBuilder,
@@ -25,4 +24,4 @@ pub use api::{
 pub use evm::CeloEvm;
 pub use fee_currency_context::FeeCurrencyContext;
 pub use precompiles::CeloPrecompiles;
-pub use transaction::CeloTransaction;
+pub use transaction::{CeloTransaction, CeloTxTr, Cip64Info};

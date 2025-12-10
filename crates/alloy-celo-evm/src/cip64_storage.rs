@@ -5,7 +5,7 @@
 
 use alloc::sync::Arc;
 use alloy_primitives::{Address, keccak256};
-use celo_revm::transaction::abstraction::Cip64Info;
+use celo_revm::Cip64Info;
 use revm::primitives::{B256, HashMap};
 use spin::Mutex;
 
