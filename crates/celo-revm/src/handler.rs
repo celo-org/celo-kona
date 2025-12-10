@@ -3,7 +3,7 @@
 use crate::{
     CeloContext,
     constants::get_addresses,
-    contracts::{core_contracts::CoreContractError, erc20},
+    contracts::erc20,
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, abstraction::Cip64Info},
@@ -65,19 +65,10 @@ where
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
         if evm.fee_currency_context.updated_at_block != Some(current_block) {
-            // Update the fee currency context
-            match FeeCurrencyContext::new_from_evm(evm) {
-                Ok(fee_currency_context) => {
-                    evm.fee_currency_context = fee_currency_context;
-                }
-                Err(CoreContractError::CoreContractMissing(_)) => {
-                    // If core contracts are missing, we are probably in a non-celo test env.
-                    // TODO: log a debug message here.
-                }
-                Err(e) => {
-                    return Err(ERROR::from_string(e.to_string()));
-                }
-            }
+            // Update the chain with the new fee currency context.
+            // If core contracts are missing, we'll get an empty context (for non-celo test environments).
+            let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
+            evm.fee_currency_context = fee_currency_context;
         }
 
         Ok(())
