@@ -1,13 +1,12 @@
 //! Contains utilities for the L2 executor.
 
-use crate::constants::HOLOCENE_EXTRA_DATA_VERSION;
-use alloc::vec::Vec;
-use alloy_consensus::Header;
+use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::eip1559::BaseFeeParams;
-use alloy_primitives::{B64, Bytes};
+use alloy_primitives::Bytes;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
-use kona_executor::{ExecutorError, ExecutorResult};
+use kona_executor::{Eip1559ValidationError, ExecutorError, ExecutorResult};
+use op_alloy_consensus::{decode_holocene_extra_data, encode_holocene_extra_data};
 
 /// Parse Holocene [Header] extra data.
 ///
@@ -18,39 +17,17 @@ use kona_executor::{ExecutorError, ExecutorResult};
 /// - `Ok(BaseFeeParams)`: The EIP-1559 parameters.
 /// - `Err(ExecutorError::InvalidExtraData)`: If the extra data is invalid.
 pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult<BaseFeeParams> {
-    use op_alloy_consensus::eip1559::EIP1559ParamError;
-
-    // Check the extra data length.
-    if header.extra_data.len() != 1 + 8 {
-        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::InvalidExtraDataLength));
-    }
-
-    // Check the extra data version byte.
-    if header.extra_data[0] != HOLOCENE_EXTRA_DATA_VERSION {
-        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::InvalidVersion(
-            header.extra_data[0],
-        )));
-    }
-
-    // Parse the EIP-1559 parameters.
-    let data = &header.extra_data[1..];
-    let denominator = u32::from_be_bytes(
-        data[..4]
-            .try_into()
-            .map_err(|_| ExecutorError::InvalidExtraData(EIP1559ParamError::DenominatorOverflow))?,
-    ) as u128;
-    let elasticity = u32::from_be_bytes(
-        data[4..]
-            .try_into()
-            .map_err(|_| ExecutorError::InvalidExtraData(EIP1559ParamError::ElasticityOverflow))?,
-    ) as u128;
+    let (elasticity, denominator) = decode_holocene_extra_data(header.extra_data())?;
 
     // Check for potential division by zero.
     if denominator == 0 {
-        return Err(ExecutorError::InvalidExtraData(EIP1559ParamError::DenominatorOverflow));
+        return Err(ExecutorError::InvalidExtraData(Eip1559ValidationError::ZeroDenominator));
     }
 
-    Ok(BaseFeeParams { elasticity_multiplier: elasticity, max_change_denominator: denominator })
+    Ok(BaseFeeParams {
+        elasticity_multiplier: elasticity.into(),
+        max_change_denominator: denominator.into(),
+    })
 }
 
 /// Encode Holocene [Header] extra data.
@@ -66,38 +43,18 @@ pub(crate) fn encode_holocene_eip_1559_params(
     config: &CeloRollupConfig,
     attributes: &CeloPayloadAttributes,
 ) -> ExecutorResult<Bytes> {
-    let payload_params = attributes
-        .op_payload_attributes
-        .eip_1559_params
-        .ok_or(ExecutorError::MissingEIP1559Params)?;
-    let params = if payload_params == B64::ZERO {
-        encode_canyon_base_fee_params(config)
-    } else {
-        payload_params
-    };
-
-    let mut data = Vec::with_capacity(1 + 8);
-    data.push(HOLOCENE_EXTRA_DATA_VERSION);
-    data.extend_from_slice(params.as_ref());
-    Ok(data.into())
-}
-
-/// Encodes the canyon base fee parameters, per Holocene spec.
-///
-/// <https://specs.optimism.io/protocol/holocene/exec-engine.html#eip1559params-encoding>
-pub(crate) fn encode_canyon_base_fee_params(config: &CeloRollupConfig) -> B64 {
-    let params = config.chain_op_config.as_canyon_base_fee_params();
-
-    let mut buf = B64::ZERO;
-    buf[..4].copy_from_slice(&(params.max_change_denominator as u32).to_be_bytes());
-    buf[4..].copy_from_slice(&(params.elasticity_multiplier as u32).to_be_bytes());
-    buf
+    Ok(encode_holocene_extra_data(
+        attributes
+            .op_payload_attributes
+            .eip_1559_params
+            .ok_or(ExecutorError::MissingEIP1559Params)?,
+        config.chain_op_config.as_base_fee_params(),
+    )?)
 }
 
 #[cfg(test)]
 mod test {
-    use super::decode_holocene_eip_1559_params;
-    use crate::util::{encode_canyon_base_fee_params, encode_holocene_eip_1559_params};
+    use super::{decode_holocene_eip_1559_params, encode_holocene_eip_1559_params};
     use alloy_consensus::Header;
     use alloy_primitives::{B64, b64, hex};
     use alloy_rpc_types_engine::PayloadAttributes;
@@ -205,18 +162,5 @@ mod test {
             encode_holocene_eip_1559_params(&cfg, &attrs).unwrap(),
             hex!("000000004000000060").to_vec()
         );
-    }
-
-    #[test]
-    fn test_encode_canyon_1559_params() {
-        let cfg = CeloRollupConfig(RollupConfig {
-            chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
-            },
-            ..Default::default()
-        });
-        assert_eq!(encode_canyon_base_fee_params(&cfg), b64!("0000002000000040"));
     }
 }
