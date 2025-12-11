@@ -32,13 +32,15 @@ run-client-native block_number l1_rpc l1_beacon_rpc l2_rpc rollup_node_rpc eigen
   AGREED_L2_OUTPUT_ROOT=$(cast rpc --rpc-url $OP_NODE_ADDRESS "optimism_outputAtBlock" $(cast 2h $((CLAIMED_L2_BLOCK_NUMBER - 1))) | jq -r .outputRoot)
   AGREED_L2_HEAD_HASH=$(cast block --rpc-url $L2_NODE_ADDRESS $((CLAIMED_L2_BLOCK_NUMBER - 1)) --json | jq -r .hash)
   L1_ORIGIN_NUM=$(cast rpc --rpc-url $OP_NODE_ADDRESS "optimism_outputAtBlock" $(cast 2h $((CLAIMED_L2_BLOCK_NUMBER - 1))) | jq -r .blockRef.l1origin.number)
-  L1_HEAD=$(cast block --rpc-url $L1_NODE_ADDRESS $((L1_ORIGIN_NUM + 30)) --json | jq -r .hash)
+  # Since Celo is using relatively old L1 origin, need to add sufficient blocks to the L1 origin number to be able to find the batch data
+  L1_HEAD=$(cast block --rpc-url $L1_NODE_ADDRESS $((L1_ORIGIN_NUM + 150)) --json | jq -r .hash)
 
   # Move to the workspace root
   cd $(git rev-parse --show-toplevel)
 
   echo "Running host program with native client program..."
   cargo r --bin celo-host --release -- \
+    {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
     --agreed-l2-head-hash $AGREED_L2_HEAD_HASH \
@@ -51,8 +53,7 @@ run-client-native block_number l1_rpc l1_beacon_rpc l2_rpc rollup_node_rpc eigen
     --eigenda-proxy-address $EIGENDA_PROXY_ADDRESS \
     --native \
     --data-dir ./data \
-    $CHAIN_ID_OR_ROLLUP_CONFIG_ARG \
-    {{verbosity}}
+    $CHAIN_ID_OR_ROLLUP_CONFIG_ARG
 
 # Run the client program natively with the host program attached, in offline mode.
 run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l2_chain_id verbosity='':
@@ -66,10 +67,11 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
   L2_CHAIN_ID={{l2_chain_id}}
 
   # Move to the workspace root
-  cd $(git rev-parse --show-toplevel) || exit
+  cd $(git rev-parse --show-toplevel)
 
   echo "Running host program with native client program..."
   cargo r --bin celo-host -- \
+    {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
     --agreed-l2-head-hash $AGREED_L2_HEAD_HASH \
@@ -78,5 +80,4 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
     --claimed-l2-block-number $CLAIMED_L2_BLOCK_NUMBER \
     --l2-chain-id $L2_CHAIN_ID \
     --native \
-    --data-dir ./data \
-    {{verbosity}}
+    --data-dir ./data

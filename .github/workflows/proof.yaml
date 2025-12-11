@@ -1,11 +1,9 @@
 name: Proof
 on:
-# TODO: Enable this workflow and add witness file when Baklava has Eigen v2 activated
-#  push:
-#    branches: [ main ]
-#  merge_group:
-#  pull_request:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  merge_group:
+  pull_request:
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,29 +13,30 @@ jobs:
     name: FPP e2e - ${{ matrix.target}} | ${{ matrix.name }}
     strategy:
       matrix:
-        target: [ "native" ]
-        name: [ "Celo Baklava (Isthmus) - Block #41325014" ]
+        target: ["native"]
+        name: ["Celo Sepolia (Isthmus) - Block #12177762"]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: ./.github/actions/setup
         with:
           components: llvm-tools-preview
           prefix-key: ${{ matrix.target }}-${{ matrix.name }}
       - uses: taiki-e/install-action@cargo-llvm-cov
+      # Below variables can be retrieved by running `just run-client-native`, and witness tar file can be created by compressing the generated data directory after running the command.
       - name: Set run environment
         run: |
-          if [[ ${{ contains(matrix.name, 41325014) }} == true ]]; then
-            BLOCK_NUMBER=41325014
+          if [[ ${{ contains(matrix.name, 12177762) }} == true ]]; then
+            BLOCK_NUMBER=12177762
             echo "BLOCK_NUMBER=$BLOCK_NUMBER" >> $GITHUB_ENV
-            echo "L2_CLAIM=0xdd5e8181a24d701c647d19cb6c6fdfd2e22d4cd43f92872a498517666759e121" >> $GITHUB_ENV
-            echo "L2_OUTPUT_ROOT=0x4b04d3aca926e537251010da2be41f8af95bce21878aefba3a771a6ba84178e3" >> $GITHUB_ENV
-            echo "L2_HEAD=0x3ff9c2d9cd5d5902f9e4a84f7b958d8f455fa7a460aaa3461df2a6ca7f032245" >> $GITHUB_ENV
-            echo "L1_HEAD=0x0cbc875f1763a936cbba96ec282fa7977cfdb2825f23a8dc90068b0722e450b0" >> $GITHUB_ENV
-            echo "L2_CHAIN_ID=62320" >> $GITHUB_ENV
-            echo "WITNESS_TAR_NAME=isthmus-celo-baklava-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
+            echo "L2_CLAIM=0x5783aab680c0aabfae6d633a465d02da922247c8e8adf8c9a18f6caa9da3b40a" >> $GITHUB_ENV
+            echo "L2_OUTPUT_ROOT=0xf23a74d78b68d441fde3c2be42df34844bdd13f7c47db912946b2ba120f2cd79" >> $GITHUB_ENV
+            echo "L2_HEAD=0x594061d8101caba769b5047325840b806aaa1ab26c655a3ba0c3c878a09318b4" >> $GITHUB_ENV
+            echo "L1_HEAD=0xf56e3e0b057a7b841b06598b37b2bc99fd119224fa4328913a085d4c49efe344" >> $GITHUB_ENV
+            echo "L2_CHAIN_ID=11142220" >> $GITHUB_ENV
+            echo "WITNESS_TAR_NAME=isthmus-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
           fi
       - name: Decompress witness data directory
         run: |
