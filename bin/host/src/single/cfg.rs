@@ -43,13 +43,8 @@ pub struct CeloSingleChainHost {
     )]
     pub eigenda_proxy_address: Option<String>,
 
-    /// Verbosity level (-v, -vv, -vvv, etc.)
-    #[clap(
-        short,
-        long,
-        action = clap::ArgAction::Count,
-        default_value_t = 0
-    )]
+    /// Verbosity level (0-5). Use --verbose N to set the level, e.g., --verbose 3
+    #[clap(long, default_value = "0")]
     pub verbose: u8,
 }
 
