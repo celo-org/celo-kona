@@ -48,7 +48,7 @@ pub(crate) fn encode_holocene_eip_1559_params(
             .op_payload_attributes
             .eip_1559_params
             .ok_or(ExecutorError::MissingEIP1559Params)?,
-        config.chain_op_config.as_base_fee_params(),
+        config.chain_op_config.as_canyon_base_fee_params(),
     )?)
 }
 
@@ -130,19 +130,22 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_default() {
+        // Use different values for pre-canyon and canyon denominators to verify
+        // we're using the canyon params (0x30) not pre-canyon (0x20)
         let cfg = CeloRollupConfig(RollupConfig {
             chain_op_config: BaseFeeConfig {
-                eip1559_denominator: 32,
-                eip1559_elasticity: 64,
-                eip1559_denominator_canyon: 32,
+                eip1559_denominator: 32,        // 0x20 - pre-canyon
+                eip1559_elasticity: 64,         // 0x40
+                eip1559_denominator_canyon: 48, // 0x30 - canyon
             },
             ..Default::default()
         });
         let attrs = mock_payload(Some(B64::ZERO));
 
+        // Should use canyon denominator (0x30), not pre-canyon (0x20)
         assert_eq!(
             encode_holocene_eip_1559_params(&cfg, &attrs).unwrap(),
-            hex!("000000002000000040").to_vec()
+            hex!("000000003000000040").to_vec()
         );
     }
 
