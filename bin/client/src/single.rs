@@ -6,7 +6,7 @@ use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
-use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
+use celo_proof::{CeloOracleL2ChainProvider, executor::CeloExecutor};
 use celo_protocol::CeloToOpProviderAdapter;
 use core::fmt::Debug;
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
@@ -16,7 +16,7 @@ use kona_derive::EthereumDataSource;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
-    CachingOracle, HintType,
+    BootInfo, CachingOracle, HintType,
     errors::OracleProviderError,
     l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
     sync::new_oracle_pipeline_cursor,
@@ -38,17 +38,16 @@ where
 
     let oracle =
         Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
-    let boot = CeloBootInfo::load(oracle.as_ref()).await?;
+    let boot = BootInfo::load(oracle.as_ref()).await?;
 
     // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config = CeloRollupConfig(boot.op_boot_info.rollup_config.clone());
+    let celo_rollup_config = CeloRollupConfig(boot.rollup_config.clone());
     let celo_rollup_config = Arc::new(celo_rollup_config);
 
-    let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
-    let safe_head_hash =
-        fetch_safe_head_hash(oracle.as_ref(), boot.op_boot_info.agreed_l2_output_root).await?;
+    let rollup_config = Arc::new(boot.rollup_config);
+    let safe_head_hash = fetch_safe_head_hash(oracle.as_ref(), boot.agreed_l2_output_root).await?;
 
-    let mut l1_provider = OracleL1ChainProvider::new(boot.op_boot_info.l1_head, oracle.clone());
+    let mut l1_provider = OracleL1ChainProvider::new(boot.l1_head, oracle.clone());
     let mut l2_provider =
         CeloOracleL2ChainProvider::new(safe_head_hash, rollup_config.clone(), oracle.clone());
     let beacon = OracleBlobProvider::new(oracle.clone());
@@ -60,22 +59,22 @@ where
 
     // If the claimed L2 block number is less than the safe head of the L2 chain, the claim is
     // invalid.
-    if boot.op_boot_info.claimed_l2_block_number < safe_head.number {
+    if boot.claimed_l2_block_number < safe_head.number {
         error!(
             target: "client",
-            claimed = boot.op_boot_info.claimed_l2_block_number,
+            claimed = boot.claimed_l2_block_number,
             safe = safe_head.number,
             "Claimed L2 block number is less than the safe head",
         );
         return Err(FaultProofProgramError::InvalidClaim(
-            boot.op_boot_info.agreed_l2_output_root,
-            boot.op_boot_info.claimed_l2_output_root,
+            boot.agreed_l2_output_root,
+            boot.claimed_l2_output_root,
         ));
     }
 
     // In the case where the agreed upon L2 output root is the same as the claimed L2 output root,
     // trace extension is detected and we can skip the derivation and execution steps.
-    if boot.op_boot_info.agreed_l2_output_root == boot.op_boot_info.claimed_l2_output_root {
+    if boot.agreed_l2_output_root == boot.claimed_l2_output_root {
         info!(
             target: "client",
             "Trace extension detected. State transition is already agreed upon.",
@@ -107,7 +106,7 @@ where
     let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
     let da_provider = EigenDADataSource::new(eth_data_source, eigenda_preimage_source);
 
-    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+    let l1_config = Arc::new(boot.l1_config);
 
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),
@@ -131,27 +130,21 @@ where
     // Run the derivation pipeline until we are able to produce the output root of the claimed
     // L2 block.
     let (safe_head, output_root) = driver
-        .advance_to_target(
-            celo_rollup_config.as_ref(),
-            Some(boot.op_boot_info.claimed_l2_block_number),
-        )
+        .advance_to_target(celo_rollup_config.as_ref(), Some(boot.claimed_l2_block_number))
         .await?;
 
     ////////////////////////////////////////////////////////////////
     //                          EPILOGUE                          //
     ////////////////////////////////////////////////////////////////
 
-    if output_root != boot.op_boot_info.claimed_l2_output_root {
+    if output_root != boot.claimed_l2_output_root {
         error!(
             target: "client",
             number = safe_head.block_info.number,
             output_root = ?output_root,
             "Failed to validate L2 block",
         );
-        return Err(FaultProofProgramError::InvalidClaim(
-            output_root,
-            boot.op_boot_info.claimed_l2_output_root,
-        ));
+        return Err(FaultProofProgramError::InvalidClaim(output_root, boot.claimed_l2_output_root));
     }
 
     info!(
@@ -165,7 +158,7 @@ where
 }
 
 /// Fetches the safe head hash of the L2 chain based on the agreed upon L2 output root in the
-/// [CeloBootInfo].
+/// [BootInfo].
 pub async fn fetch_safe_head_hash<O>(
     caching_oracle: &O,
     agreed_l2_output_root: B256,

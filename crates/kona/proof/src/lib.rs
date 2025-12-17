@@ -6,8 +6,5 @@ extern crate alloc;
 
 pub mod executor;
 
-pub mod boot;
-pub use boot::CeloBootInfo;
-
 mod l2;
 pub use l2::CeloOracleL2ChainProvider;
