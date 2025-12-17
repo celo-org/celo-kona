@@ -10,7 +10,7 @@ pub use alloy_primitives::map::{DefaultHashBuilder, HashMap};
 pub use celo_genesis::CeloRollupConfig;
 pub use kona_genesis::ChainConfig;
 
-pub use kona_registry::chain_list::{Chain, ChainList};
+pub use kona_genesis::{Chain, ChainList};
 
 pub mod superchain;
 pub use superchain::Registry;

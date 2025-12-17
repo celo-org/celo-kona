@@ -14,13 +14,10 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
-use hokulea_host_bin::{
-    cfg::{SingleChainHostWithEigenDA, SingleChainProvidersWithEigenDA},
-    handler::fetch_eigenda_hint,
-};
+use hokulea_host_bin::{cfg::SingleChainProvidersWithEigenDA, handler::fetch_eigenda_hint};
 use hokulea_proof::hint::ExtendedHintType;
 use kona_host::{
-    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::http_provider,
+    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::rpc_provider,
     single::SingleChainProviders,
 };
 use kona_preimage::{PreimageKey, PreimageKeyType};
@@ -50,21 +47,16 @@ impl HintHandler for CeloSingleChainHintHandler {
             ExtendedHintType::EigenDACert => {
                 fetch_eigenda_hint(
                     hint,
-                    &SingleChainHostWithEigenDA {
-                        kona_cfg: cfg.kona_cfg.clone(),
-                        eigenda_proxy_address: cfg.eigenda_proxy_address.clone(),
-                        recency_window: 0,
-                        verbose: cfg.verbose,
-                    },
                     &SingleChainProvidersWithEigenDA {
                         kona_providers: SingleChainProviders {
                             l1: providers.l1.clone(),
-                            l2: http_provider(
+                            l2: rpc_provider(
                                 &cfg.kona_cfg
                                     .l2_node_address
                                     .clone()
                                     .ok_or(anyhow!("L2 node address must be set"))?,
-                            ),
+                            )
+                            .await,
                             blobs: providers.blobs.clone(),
                         },
                         eigenda_preimage_provider: providers

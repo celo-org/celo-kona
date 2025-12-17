@@ -20,7 +20,6 @@ celo-genesis = { workspace = true, features = ["serde"] }
 
 # Kona
 kona-genesis = { workspace = true, features = ["serde"] }
-kona-registry = { workspace = true }
 
 # Alloy
 alloy-primitives = { workspace = true, features = ["map"] }

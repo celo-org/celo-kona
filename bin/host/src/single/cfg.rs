@@ -11,7 +11,7 @@ use kona_cli::cli_styles;
 use kona_host::{
     OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
     SharedKeyValueStore,
-    eth::http_provider,
+    eth::rpc_provider,
     single::{SingleChainHost, SingleChainHostError},
 };
 use kona_preimage::{
@@ -146,12 +146,13 @@ impl CeloSingleChainHost {
 
     /// Creates the providers required for the host backend.
     pub async fn create_providers(&self) -> Result<CeloSingleChainProviders, SingleChainHostError> {
-        let l1_provider = http_provider(
+        let l1_provider = rpc_provider(
             self.kona_cfg
                 .l1_node_address
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("Provider must be set"))?,
-        );
+        )
+        .await;
         let blob_provider = OnlineBlobProvider::init(OnlineBeaconClient::new_http(
             self.kona_cfg
                 .l1_beacon_address
@@ -159,12 +160,13 @@ impl CeloSingleChainHost {
                 .ok_or(SingleChainHostError::Other("Beacon API URL must be set"))?,
         ))
         .await;
-        let l2_provider = http_provider::<Celo>(
+        let l2_provider = rpc_provider::<Celo>(
             self.kona_cfg
                 .l2_node_address
                 .as_ref()
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
-        );
+        )
+        .await;
         let eigen_da_preimage_provider =
             self.eigenda_proxy_address.clone().map(OnlineEigenDAPreimageProvider::new_http);
 
