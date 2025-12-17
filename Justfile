@@ -7,7 +7,7 @@ alias f := fmt-native-fix
 alias b := build-native
 alias h := hack
 
-exclude_members := "--exclude celo-registry --exclude execution-fixture"
+exclude_members := "--exclude execution-fixture"
 
 # default recipe to display help information
 default:

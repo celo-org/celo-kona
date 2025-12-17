@@ -1707,7 +1707,6 @@ dependencies = [
  "celo-alloy-rpc-types-engine",
  "celo-executor",
  "celo-genesis",
- "celo-registry",
  "celo-revm",
  "kona-executor",
  "kona-genesis",
@@ -1816,7 +1815,6 @@ dependencies = [
  "celo-executor",
  "celo-genesis",
  "celo-protocol",
- "celo-registry",
  "kona-derive",
  "kona-driver",
  "kona-executor",
@@ -1868,20 +1866,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber 0.3.20",
  "unsigned-varint",
-]
-
-[[package]]
-name = "celo-registry"
-version = "0.1.0"
-dependencies = [
- "alloy-chains",
- "alloy-primitives",
- "celo-genesis",
- "kona-genesis",
- "kona-registry",
- "lazy_static",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2596,12 +2580,13 @@ dependencies = [
  "anyhow",
  "celo-alloy-rpc-types-engine",
  "celo-executor",
+ "celo-genesis",
  "celo-otel",
- "celo-registry",
  "clap",
  "futures",
  "kona-executor",
  "kona-mpt",
+ "kona-registry",
  "op-alloy-rpc-types-engine",
  "opentelemetry",
  "opentelemetry-otlp",

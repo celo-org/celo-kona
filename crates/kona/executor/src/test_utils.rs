@@ -8,7 +8,6 @@ use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
-use celo_registry::ROLLUP_CONFIGS;
 use kona_executor::{
     TrieDBProvider,
     test_utils::{
@@ -17,6 +16,7 @@ use kona_executor::{
     },
 };
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use kona_registry::ROLLUP_CONFIGS;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use rocksdb::{DB, Options};
 use serde::{Deserialize, Serialize};
@@ -170,7 +170,7 @@ impl ExecutorTestFixtureCreator {
         let fixture_path = self.op_executor_test_fixture_creator.data_dir.join("fixture.json");
         let fixture = ExecutorTestFixture {
             op_executor_test_fixture: OpExecutorTestFixture {
-                rollup_config: rollup_config.0.clone(),
+                rollup_config: rollup_config.clone(),
                 parent_header: parent_header.inner().clone(),
                 expected_block_hash: executing_header.hash_slow(),
                 executing_payload: payload_attrs.op_payload_attributes.clone(),
@@ -178,8 +178,9 @@ impl ExecutorTestFixtureCreator {
             executing_payload: payload_attrs.clone(),
         };
 
+        let celo_rollup_config = CeloRollupConfig(rollup_config.clone());
         let mut executor = CeloStatelessL2Builder::new(
-            rollup_config,
+            &celo_rollup_config,
             CeloEvmFactory::default(),
             self,
             NoopTrieHinter,

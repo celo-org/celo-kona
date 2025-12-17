@@ -4,7 +4,6 @@
 //! remove `CeloBootInfo`.
 
 use alloy_primitives::B256;
-use celo_registry::ROLLUP_CONFIGS;
 use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
     BootInfo,
@@ -15,6 +14,7 @@ use kona_proof::{
     errors::OracleProviderError,
 };
 use kona_registry::L1_CONFIGS;
+use kona_registry::ROLLUP_CONFIGS;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -78,7 +78,7 @@ impl CeloBootInfo {
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
         let rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
-            config.0.clone()
+            config.clone()
         } else {
             warn!(
                 target: "boot_loader",

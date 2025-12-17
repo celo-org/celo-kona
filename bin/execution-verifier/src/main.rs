@@ -18,12 +18,13 @@ use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
+use celo_genesis::CeloRollupConfig;
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
-use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
 use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use kona_registry::ROLLUP_CONFIGS;
 use metrics::Metrics;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
@@ -178,6 +179,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     let rollup_config = ROLLUP_CONFIGS
         .get(&chain_id)
         .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
+    let rollup_config = CeloRollupConfig(rollup_config.clone());
 
     let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
 
@@ -296,7 +298,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 #[allow(clippy::too_many_arguments)]
 async fn verify_new_heads(
     provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
+    rollup_config: celo_genesis::CeloRollupConfig,
     subscription: Subscription<Header>,
     cancel_token: CancellationToken,
     first_head_tx: Option<mpsc::Sender<u64>>,
@@ -367,7 +369,7 @@ async fn verify_new_heads(
 async fn verify_block(
     block_number: u64,
     provider: &RootProvider<Ethereum>,
-    rollup_config: &celo_registry::CeloRollupConfig,
+    rollup_config: &celo_genesis::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
@@ -462,7 +464,7 @@ async fn verify_block_range(
     start_block: u64,
     end_block: u64,
     provider: Arc<RootProvider<Ethereum>>,
-    rollup_config: celo_registry::CeloRollupConfig,
+    rollup_config: celo_genesis::CeloRollupConfig,
     concurrency: usize,
     cancel_token: CancellationToken,
     metrics: Arc<Mutex<Metrics>>,

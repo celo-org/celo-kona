@@ -18,7 +18,6 @@ celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
-celo-registry = { version = "0.1.0", path = "../registry" }
 celo-protocol.workspace = true
 
 # Kona
