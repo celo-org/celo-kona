@@ -1897,7 +1897,6 @@ dependencies = [
  "alloy-primitives",
  "celo-genesis",
  "kona-genesis",
- "kona-registry",
  "lazy_static",
  "serde",
  "serde_json",
