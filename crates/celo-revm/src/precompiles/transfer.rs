@@ -94,17 +94,20 @@ where
     let to = Address::from_slice(&input[44..64]);
     let value = U256::from_be_slice(&input[64..96]);
 
-    // Celo transfer precompile does not warm the either address, so we need to check if it they were cold initially
-    // to match original Celo implementation behavior, and make them cold again after the transfer.
-    let from_account_cold_status = account_cold_status(context, from);
-    let to_account_cold_status = account_cold_status(context, to);
+    // Before Jovian, the Celo transfer precompile does not warm either address, so we need to
+    // check if they were cold initially to match original Celo implementation behavior, and
+    // make them cold again after the transfer. Starting with Jovian, this quirk is removed.
+    let spec = context.cfg().spec();
+    let revert_cold_status = !spec.is_enabled_in(OpSpecId::JOVIAN);
+    let revert_from_cold = revert_cold_status && account_cold_status(context, from);
+    let revert_to_cold = revert_cold_status && account_cold_status(context, to);
 
     // Now do the transfer (which will load both accounts and warm them)
     let result = context.journal_mut().transfer(from, to, value);
 
-    // If the addresses were cold initially, make them cold again after the transfer.
-    revert_account_cold_status(context, from, from_account_cold_status);
-    revert_account_cold_status(context, to, to_account_cold_status);
+    // If the addresses were cold initially and we're pre-Jovian, make them cold again.
+    revert_account_cold_status(context, from, revert_from_cold);
+    revert_account_cold_status(context, to, revert_to_cold);
 
     if let Ok(Some(transfer_err)) = result {
         return Err(PrecompileError::Other(Cow::Owned(format!(
