@@ -8,7 +8,6 @@ use revm::{
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
-    state::Account,
 };
 use std::borrow::Cow;
 use std::{format, string::String};
@@ -95,17 +94,20 @@ where
     let to = Address::from_slice(&input[44..64]);
     let value = U256::from_be_slice(&input[64..96]);
 
-    // Celo transfer precompile does not warm the either address, so we need to check if it they were cold initially
-    // to match original Celo implementation behavior, and make them cold again after the transfer.
-    let from_account_cold_status = account_cold_status(context, from);
-    let to_account_cold_status = account_cold_status(context, to);
+    // Before Jovian, the Celo transfer precompile does not warm either address, so we need to
+    // check if they were cold initially to match original Celo implementation behavior, and
+    // make them cold again after the transfer. Starting with Jovian, this quirk is removed.
+    let spec = context.cfg().spec();
+    let revert_cold_status = !spec.is_enabled_in(OpSpecId::JOVIAN);
+    let revert_from_cold = revert_cold_status && account_cold_status(context, from);
+    let revert_to_cold = revert_cold_status && account_cold_status(context, to);
 
     // Now do the transfer (which will load both accounts and warm them)
     let result = context.journal_mut().transfer(from, to, value);
 
-    // If the addresses were cold initially, make them cold again after the transfer.
-    revert_account_cold_status(context, from, from_account_cold_status);
-    revert_account_cold_status(context, to, to_account_cold_status);
+    // If the addresses were cold initially and we're pre-Jovian, make them cold again.
+    revert_account_cold_status(context, from, revert_from_cold);
+    revert_account_cold_status(context, to, revert_to_cold);
 
     if let Ok(Some(transfer_err)) = result {
         return Err(PrecompileError::Other(Cow::Owned(format!(
@@ -135,19 +137,8 @@ where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     if was_cold {
-        if let Ok(journaled_account) = context.journal_mut().load_account_mut(address) {
-            // SAFETY: JournaledAccount implements Deref<Target = Account> and internally holds
-            // &'a mut Account. We have exclusive mutable access to the journal through context,
-            // so casting the dereferenced immutable reference back to mutable is sound.
-            //
-            // This is a temporary workaround to access Account::mark_cold() until the
-            // JournaledAccount::mark_cold() method is added to upstream REVM or Celo has removed
-            // the requirement to not warm accounts in the Celo transfer precompile.
-            let account_ref: &Account = &journaled_account;
-            let account_ptr = account_ref as *const Account as *mut Account;
-            unsafe {
-                (*account_ptr).mark_cold();
-            }
+        if let Ok(mut journaled_account) = context.journal_mut().load_account_mut(address) {
+            journaled_account.unsafe_mark_cold();
         }
     }
 }
