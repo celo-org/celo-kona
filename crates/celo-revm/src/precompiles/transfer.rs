@@ -8,7 +8,6 @@ use revm::{
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
-    state::Account,
 };
 use std::borrow::Cow;
 use std::{format, string::String};
@@ -135,19 +134,8 @@ where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     if was_cold {
-        if let Ok(journaled_account) = context.journal_mut().load_account_mut(address) {
-            // SAFETY: JournaledAccount implements Deref<Target = Account> and internally holds
-            // &'a mut Account. We have exclusive mutable access to the journal through context,
-            // so casting the dereferenced immutable reference back to mutable is sound.
-            //
-            // This is a temporary workaround to access Account::mark_cold() until the
-            // JournaledAccount::mark_cold() method is added to upstream REVM or Celo has removed
-            // the requirement to not warm accounts in the Celo transfer precompile.
-            let account_ref: &Account = &journaled_account;
-            let account_ptr = account_ref as *const Account as *mut Account;
-            unsafe {
-                (*account_ptr).mark_cold();
-            }
+        if let Ok(mut journaled_account) = context.journal_mut().load_account_mut(address) {
+            journaled_account.unsafe_mark_cold();
         }
     }
 }
