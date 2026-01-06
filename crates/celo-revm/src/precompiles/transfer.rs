@@ -10,10 +10,8 @@ use revm::{
     primitives::{Address, Bytes, U256},
     state::Account,
 };
-use std::{
-    format,
-    string::{String, ToString},
-};
+use std::borrow::Cow;
+use std::{format, string::String};
 
 /// Address of the `transfer` precompile.
 pub const TRANSFER_ADDRESS: Address = u64_to_address(0xff - 2);
@@ -72,9 +70,9 @@ where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     if is_static {
-        return Err(PrecompileError::Other(
-            "transfer precompile cannot be called in static context".to_string(),
-        ));
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "transfer precompile cannot be called in static context",
+        )));
     }
 
     if gas_limit < TRANSFER_GAS_COST {
@@ -82,13 +80,15 @@ where
     }
 
     if caller_address != constants::get_addresses(context.cfg().chain_id()).celo_token {
-        return Err(PrecompileError::Other(
-            "invalid caller for transfer precompile".to_string(),
-        ));
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "invalid caller for transfer precompile",
+        )));
     }
 
     if input.len() != 96 {
-        return Err(PrecompileError::Other("invalid input length".to_string()));
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "invalid input length",
+        )));
     }
 
     let from = Address::from_slice(&input[12..32]);
@@ -108,13 +108,13 @@ where
     revert_account_cold_status(context, to, to_account_cold_status);
 
     if let Ok(Some(transfer_err)) = result {
-        return Err(PrecompileError::Other(format!(
+        return Err(PrecompileError::Other(Cow::Owned(format!(
             "transfer error occurred: {transfer_err:?}"
-        )));
+        ))));
     } else if let Err(db_err) = result {
-        return Err(PrecompileError::Other(format!(
+        return Err(PrecompileError::Other(Cow::Owned(format!(
             "database error occurred: {db_err:?}"
-        )));
+        ))));
     }
 
     Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new()))

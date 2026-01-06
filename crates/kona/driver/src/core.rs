@@ -84,7 +84,7 @@ where
                 return Ok((tip_cursor.l2_safe_head, tip_cursor.l2_safe_head_output_root));
             }
 
-            let OpAttributesWithParent { inner: mut attributes, .. } = match self
+            let OpAttributesWithParent { mut attributes, .. } = match self
                 .pipeline
                 .produce_payload(tip_cursor.l2_safe_head)
                 .await
