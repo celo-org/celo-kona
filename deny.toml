@@ -68,7 +68,8 @@ allow-git = [
     "https://github.com/Layr-Labs/rust-kzg-bn254",
     "https://github.com/op-rs/kona",
     "https://github.com/celo-org/kona",
-    "https://github.com/celo-org/revm"
+    "https://github.com/celo-org/revm",
+    "https://github.com/celo-org/alloy"
 ]
 
 [sources.allow-org]
