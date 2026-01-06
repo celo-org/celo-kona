@@ -110,22 +110,23 @@ kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.2.5", 
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
 alloy-trie = { version = "0.9.1", default-features = false }
-alloy-eips = { version = "1.1.1", default-features = false }
-alloy-serde = { version = "1.1.1", default-features = false }
+# Need to pin alloy crates to the exactly same version with the patches to not ignore the patches unexpectedly
+alloy-eips = { version = "=1.1.1", default-features = false }
+alloy-serde = { version = "=1.1.1", default-features = false }
 alloy-chains = { version = "0.2.18", default-features = false }
-alloy-network = { version = "1.1.1", default-features = false }
-alloy-provider = { version = "1.1.1", default-features = false }
+alloy-network = { version = "=1.1.1", default-features = false }
+alloy-provider = { version = "=1.1.1", default-features = false }
 alloy-hardforks = { version = "0.4.4", default-features = false }
 alloy-sol-types = { version = "1.4.1", default-features = false }
-alloy-consensus = { version = "1.1.1", default-features = false }
-alloy-transport = { version = "1.1.1", default-features = false }
-alloy-rpc-types = { version = "1.1.1", default-features = false }
-alloy-rpc-client = { version = "1.1.1", default-features = false }
+alloy-consensus = { version = "=1.1.1", default-features = false }
+alloy-transport = { version = "=1.1.1", default-features = false }
+alloy-rpc-types = { version = "=1.1.1", default-features = false }
+alloy-rpc-client = { version = "=1.1.1", default-features = false }
 alloy-primitives = { version = "1.4.1", default-features = false }
-alloy-rpc-types-eth = { version = "1.1.1", default-features = false }
-alloy-transport-http = { version = "1.1.1", default-features = false }
-alloy-rpc-types-engine = { version = "1.1.1", default-features = false }
-alloy-network-primitives = { version = "1.1.1", default-features = false }
+alloy-rpc-types-eth = { version = "=1.1.1", default-features = false }
+alloy-transport-http = { version = "=1.1.1", default-features = false }
+alloy-rpc-types-engine = { version = "=1.1.1", default-features = false }
+alloy-network-primitives = { version = "=1.1.1", default-features = false }
 
 # OP Alloy
 alloy-op-hardforks = { version = "0.4.4", default-features = false }
@@ -207,10 +208,10 @@ uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
 # We patch alloy-eips to a version where fake_exponential does not overflow when provided with large inputs.
-alloy-eips = { git = "https://github.com/celo-org/alloy", tag = "v1.1.0-fix-fake-exponential", default-features = false }
+alloy-eips = { git = "https://github.com/celo-org/alloy", tag = "v1.1.1-fix-fake-exponential", default-features = false }
 # We also need to patch alloy-serde to this version since otherwise a different non patch version is also included in the project
 # which breaks trait bound satisfaction
-alloy-serde = { git = "https://github.com/celo-org/alloy", tag = "v1.1.0-fix-fake-exponential", default-features = false }
+alloy-serde = { git = "https://github.com/celo-org/alloy", tag = "v1.1.1-fix-fake-exponential", default-features = false }
 
 [patch."https://github.com/op-rs/kona"]
 kona-host = { git = "https://github.com/celo-org/kona", rev = "a00b895" }
