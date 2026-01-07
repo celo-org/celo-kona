@@ -1907,6 +1907,7 @@ dependencies = [
 name = "celo-revm"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.24.2",
  "alloy-op-evm",
