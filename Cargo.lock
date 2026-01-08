@@ -85,9 +85,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad704069c12f68d0c742d0cad7e0a03882b42767350584627fbf8a47b1bf1846"
+checksum = "2e318e25fb719e747a7e8db1654170fc185024f3ed5b10f86c08d448a912f6e2"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -113,9 +113,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus-any"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc374f640a5062224d7708402728e3d6879a514ba10f377da62e7dfb14c673e6"
+checksum = "364380a845193a317bcb7a5398fc86cdb66c47ebe010771dde05f6869bf9e64a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -174,8 +174,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "1.1.1"
-source = "git+https://github.com/celo-org/alloy?tag=v1.1.1-fix-fake-exponential#3f8f90fe38521a1cedb171c5890d59bc1ced5d5b"
+version = "1.1.3"
+source = "git+https://github.com/celo-org/alloy?rev=f88c10d3#f88c10d38df7e1247c8618abe0043516a14ee79f"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -240,9 +240,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-genesis"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90be17e9760a6ba6d13cebdb049cea405ebc8bf57d90664ed708cc5bc348342"
+checksum = "1ba4b1be0988c11f0095a2380aa596e35533276b8fa6c9e06961bbfe0aebcac5"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -296,9 +296,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "196d7fd3f5d414f7bbd5886a628b7c42bd98d1b126f9a7cff69dbfd72007b39c"
+checksum = "12aeb37b6f2e61b93b1c3d34d01ee720207c76fe447e2a2c217e433ac75b17f5"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -322,9 +322,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network-primitives"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d3ae2777e900a7a47ad9e3b8ab58eff3d93628265e73bbdee09acf90bf68f75"
+checksum = "abd29ace62872083e30929cd9b282d82723196d196db589f3ceda67edcc05552"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -397,9 +397,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-provider"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f9bf40c9b2a90c7677f9c39bccd9f06af457f35362439c0497a706f16557703"
+checksum = "9b710636d7126e08003b8217e24c09f0cca0b46d62f650a841736891b1ed1fc1"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -439,9 +439,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-pubsub"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acfdbe41e2ef1a7e79b5ea115baa750f9381ac9088fb600f4cedc731cf04a151"
+checksum = "cdd4c64eb250a18101d22ae622357c6b505e158e9165d4c7974d59082a600c5e"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -483,9 +483,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-client"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c2630fde9ff6033a780635e1af6ef40e92d74a9cacb8af3defc1b15cfebca5"
+checksum = "d0882e72d2c1c0c79dcf4ab60a67472d3f009a949f774d4c17d0bdb669cfde05"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -509,9 +509,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad098153a12382c22a597e865530033f5e644473742d6c733562d448125e02a2"
+checksum = "39cf1398cb33aacb139a960fa3d8cf8b1202079f320e77e952a0b95967bf7a9f"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-debug",
@@ -522,9 +522,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-any"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b8429b5b62d21bf3691eb1ae12aaae9bb496894d5a114e3cc73e27e6800ec8"
+checksum = "6a63fb40ed24e4c92505f488f9dd256e2afaed17faa1b7a221086ebba74f4122"
 dependencies = [
  "alloy-consensus-any",
  "alloy-rpc-types-eth",
@@ -533,9 +533,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-beacon"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f67f8269e8b5193a5328dd3ef4d60f93524071e53a993776e290581a59aa15fa"
+checksum = "16633087e23d8d75161c3a59aa183203637b817a5a8d2f662f612ccb6d129af0"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -561,9 +561,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-engine"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9981491bb98e76099983f516ec7de550db0597031f5828c994961eb4bb993cce"
+checksum = "4c60bdce3be295924122732b7ecd0b2495ce4790bedc5370ca7019c08ad3f26e"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -582,9 +582,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-eth"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29031a6bf46177d65efce661f7ab37829ca09dd341bc40afb5194e97600655cc"
+checksum = "9eae0c7c40da20684548cbc8577b6b7447f7bf4ddbac363df95e3da220e41e72"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -604,8 +604,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "1.1.1"
-source = "git+https://github.com/celo-org/alloy?tag=v1.1.1-fix-fake-exponential#3f8f90fe38521a1cedb171c5890d59bc1ced5d5b"
+version = "1.1.3"
+source = "git+https://github.com/celo-org/alloy?rev=f88c10d3#f88c10d38df7e1247c8618abe0043516a14ee79f"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
@@ -703,9 +703,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe215a2f9b51d5f1aa5c8cf22c8be8cdb354934de09c9a4e37aefb79b77552fd"
+checksum = "be98b07210d24acf5b793c99b759e9a696e4a2e67593aec0487ae3b3e1a2478c"
 dependencies = [
  "alloy-json-rpc",
  "auto_impl",
@@ -726,9 +726,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-http"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1b37b1a30d23deb3a8746e882c70b384c574d355bc2bbea9ea918b0c31366e"
+checksum = "4198a1ee82e562cab85e7f3d5921aab725d9bd154b6ad5017f82df1695877c97"
 dependencies = [
  "alloy-json-rpc",
  "alloy-rpc-types-engine",
@@ -747,9 +747,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-ipc"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52c81a4deeaa0d4b022095db17b286188d731e29ea141d4ec765e166732972e4"
+checksum = "d8db249779ebc20dc265920c7e706ed0d31dbde8627818d1cbde60919b875bb0"
 dependencies = [
  "alloy-json-rpc",
  "alloy-pubsub",
@@ -767,9 +767,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-ws"
-version = "1.1.1"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e9d6f5f304e8943afede2680e5fc7008780d4fc49387eafd53192ad95e20091"
+checksum = "5ad2344a12398d7105e3722c9b7a7044ea837128e11d453604dec6e3731a86e2"
 dependencies = [
  "alloy-pubsub",
  "alloy-transport",
@@ -1551,7 +1551,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -1560,7 +1560,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
@@ -1576,7 +1576,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -1740,7 +1740,7 @@ dependencies = [
  "rand 0.9.2",
  "revm 33.1.0",
  "rocksdb",
- "rstest",
+ "rstest 0.25.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -1920,7 +1920,7 @@ dependencies = [
  "revm 33.1.0",
  "revm-context-interface 13.1.0",
  "revm-handler 14.1.0",
- "rstest",
+ "rstest 0.25.0",
  "serde",
  "spin 0.10.0",
  "thiserror",
@@ -2430,7 +2430,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -2998,7 +2998,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -3019,7 +3019,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-evm 0.24.2",
  "alloy-op-evm",
@@ -3039,7 +3039,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -3054,7 +3054,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -3081,7 +3081,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?rev=4558b93c933a0144626a26513229e5854bf89e12#4558b93c933a0144626a26513229e5854bf89e12"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=1fc8586d904f48b3454410029ef379627f785d6d#1fc8586d904f48b3454410029ef379627f785d6d"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
@@ -3557,7 +3557,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -3577,7 +3577,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3616,7 +3616,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3637,7 +3637,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.24.2",
@@ -3658,7 +3658,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3683,7 +3683,7 @@ dependencies = [
  "rand 0.9.2",
  "revm 33.1.0",
  "rocksdb",
- "rstest",
+ "rstest 0.26.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -3695,7 +3695,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -3716,7 +3716,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -3727,7 +3727,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3775,7 +3775,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3797,12 +3797,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -3814,7 +3814,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -3827,7 +3827,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3863,7 +3863,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3895,7 +3895,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -3926,7 +3926,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3957,7 +3957,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "alloy-chains",
  "alloy-eips",
@@ -3976,7 +3976,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -3989,7 +3989,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/kona?rev=a00b895#a00b895891c61be277a4f12b4ec3f527aabc2325"
+source = "git+https://github.com/celo-org/kona?rev=ce6c778e#ce6c778ed1ff3bba3910bd116e0db2f4bfe51d3a"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",
@@ -4162,9 +4162,9 @@ dependencies = [
 
 [[package]]
 name = "metrics-exporter-prometheus"
-version = "0.17.2"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b166dea96003ee2531cf14833efedced545751d800f03535801d833313f8c15"
+checksum = "3589659543c04c7dc5526ec858591015b87cd8746583b51b48ef4353f99dbcda"
 dependencies = [
  "base64",
  "http-body-util",
@@ -4952,7 +4952,7 @@ version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219cb19e96be00ab2e37d6e299658a0cfa83e52429179969b0f0121b4ac46983"
 dependencies = [
- "toml_edit 0.23.10+spec-1.0.0",
+ "toml_edit",
 ]
 
 [[package]]
@@ -5983,8 +5983,19 @@ checksum = "6fc39292f8613e913f7df8fa892b8944ceb47c247b78e1b1ae2f09e019be789d"
 dependencies = [
  "futures-timer",
  "futures-util",
- "rstest_macros",
+ "rstest_macros 0.25.0",
  "rustc_version 0.4.1",
+]
+
+[[package]]
+name = "rstest"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5a3193c063baaa2a95a33f03035c8a72b83d97a54916055ba22d35ed3839d49"
+dependencies = [
+ "futures-timer",
+ "futures-util",
+ "rstest_macros 0.26.1",
 ]
 
 [[package]]
@@ -5992,6 +6003,24 @@ name = "rstest_macros"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f168d99749d307be9de54d23fd226628d99768225ef08f6ffb52e0182a27746"
+dependencies = [
+ "cfg-if",
+ "glob",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "relative-path",
+ "rustc_version 0.4.1",
+ "syn 2.0.113",
+ "unicode-ident",
+]
+
+[[package]]
+name = "rstest_macros"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c845311f0ff7951c5506121a9ad75aec44d083c31583b2ea5a30bcb0b0abba0"
 dependencies = [
  "cfg-if",
  "glob",
@@ -6392,11 +6421,11 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "0.6.9"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+checksum = "f8bbf91e5a4d6315eee45e704372590b30e260ee83af6639d64557f51b067776"
 dependencies = [
- "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -7012,23 +7041,15 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.8.23"
+version = "0.9.10+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+checksum = "0825052159284a1a8b4d6c0c86cbc801f2da5afd2b225fa548c72f2e74002f48"
 dependencies = [
- "serde",
+ "serde_core",
  "serde_spanned",
- "toml_datetime 0.6.11",
- "toml_edit 0.22.27",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
-dependencies = [
- "serde",
+ "toml_datetime",
+ "toml_parser",
+ "winnow",
 ]
 
 [[package]]
@@ -7042,25 +7063,12 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.22.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
-dependencies = [
- "indexmap 2.12.1",
- "serde",
- "serde_spanned",
- "toml_datetime 0.6.11",
- "winnow",
-]
-
-[[package]]
-name = "toml_edit"
 version = "0.23.10+spec-1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
 dependencies = [
  "indexmap 2.12.1",
- "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_datetime",
  "toml_parser",
  "winnow",
 ]
