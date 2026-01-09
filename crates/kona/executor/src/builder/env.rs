@@ -103,15 +103,15 @@ where
                     .is_holocene_active(parent_header.timestamp)
                     .then(|| decode_holocene_eip_1559_params(parent_header))
                     .transpose()?
-                    .unwrap_or(config.chain_op_config.as_canyon_base_fee_params())
+                    .unwrap_or(config.chain_op_config.post_canyon_params())
             } else if config.is_canyon_active(op_payload_attrs.payload_attributes.timestamp) {
                 // If the payload attribute timestamp is past canyon activation,
                 // use the canyon base fee params from the rollup config.
-                config.chain_op_config.as_canyon_base_fee_params()
+                config.chain_op_config.post_canyon_params()
             } else {
                 // If the payload attribute timestamp is prior to canyon activation,
                 // use the default base fee params from the rollup config.
-                config.chain_op_config.as_base_fee_params()
+                config.chain_op_config.pre_canyon_params()
             };
 
         Ok(base_fee_params)
