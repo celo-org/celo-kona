@@ -48,7 +48,7 @@ pub(crate) fn encode_holocene_eip_1559_params(
             .op_payload_attributes
             .eip_1559_params
             .ok_or(ExecutorError::MissingEIP1559Params)?,
-        config.chain_op_config.as_canyon_base_fee_params(),
+        config.chain_op_config.post_canyon_params(),
     )?)
 }
 
