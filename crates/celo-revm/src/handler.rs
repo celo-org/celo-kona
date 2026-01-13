@@ -40,15 +40,28 @@ use tracing::{info, warn};
 /// These transactions were included due to a bug in EIP-2930 sender recovery that used
 /// tx.ChainId() instead of the network's chain ID. We must accept them during historical
 /// sync to avoid a hard fork. See <https://github.com/celo-org/op-geth/issues/454>.
-const LEGACY_CHAIN_ID_EXCEPTIONS: [B256; 2] = [
+///
+/// Each entry contains (tx_hash, network_chain_id) to prevent replay attacks from other networks.
+const LEGACY_CHAIN_ID_EXCEPTIONS: [(B256, u64); 2] = [
     // Celo Sepolia block 12531083 - tx had chain_id 11162320 instead of 11142220
-    b256!("4564b9903cfe18814ffc2696e1ad141d9cc3a549dc4f5726e15f7be2e0ccaa25"),
+    (
+        b256!("4564b9903cfe18814ffc2696e1ad141d9cc3a549dc4f5726e15f7be2e0ccaa25"),
+        11142220, // Celo Sepolia chain ID
+    ),
     // Celo Mainnet block 53619115 - tx had chain_id 44787 instead of 42220
-    b256!("d6bdf3261df7e7a4db6bbc486bf091eb62dfd2883e335c31219b6a37d3febca1"),
+    (
+        b256!("d6bdf3261df7e7a4db6bbc486bf091eb62dfd2883e335c31219b6a37d3febca1"),
+        42220, // Celo Mainnet chain ID
+    ),
 ];
 
-fn is_legacy_chain_id_exception(enveloped_tx: Option<&[u8]>) -> bool {
-    enveloped_tx.is_some_and(|tx| LEGACY_CHAIN_ID_EXCEPTIONS.contains(&keccak256(tx)))
+fn is_legacy_chain_id_exception(enveloped_tx: Option<&[u8]>, network_chain_id: u64) -> bool {
+    enveloped_tx.is_some_and(|tx| {
+        let tx_hash = keccak256(tx);
+        LEGACY_CHAIN_ID_EXCEPTIONS
+            .iter()
+            .any(|(hash, chain_id)| *hash == tx_hash && *chain_id == network_chain_id)
+    })
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
@@ -434,8 +447,12 @@ where
             .tx()
             .chain_id()
             .is_some_and(|tx_chain_id| tx_chain_id != evm.ctx().cfg().chain_id());
+        let network_chain_id = evm.ctx().cfg().chain_id();
         if chain_id_mismatch
-            && is_legacy_chain_id_exception(evm.ctx().tx().enveloped_tx().map(|b| b.as_ref()))
+            && is_legacy_chain_id_exception(
+                evm.ctx().tx().enveloped_tx().map(|b| b.as_ref()),
+                network_chain_id,
+            )
         {
             // Temporarily disable chain ID check for these historical exception txs,
             // preserving the original value to restore afterward
@@ -1365,16 +1382,20 @@ mod tests {
     fn test_legacy_chain_id_exception_sepolia_tx_hash() {
         // Verify the encoded tx hashes to the expected exception hash
         let encoded = build_sepolia_exception_tx();
-        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[0]);
-        assert!(is_legacy_chain_id_exception(Some(&encoded)));
+        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[0].0);
+        assert!(is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
+        // Should not match on wrong network
+        assert!(!is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
     }
 
     #[test]
     fn test_legacy_chain_id_exception_mainnet_tx_hash() {
         // Verify the encoded tx hashes to the expected exception hash
         let encoded = build_mainnet_exception_tx();
-        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[1]);
-        assert!(is_legacy_chain_id_exception(Some(&encoded)));
+        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[1].0);
+        assert!(is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
+        // Should not match on wrong network
+        assert!(!is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
     }
 
     #[test]
