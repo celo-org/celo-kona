@@ -34,6 +34,11 @@ jobs:
           service-account: "celo-kona-gh@devopsre.iam.gserviceaccount.com"
           docker-gcp-registries: us-west1-docker.pkg.dev
 
+      - name: Install envsubst
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
+
       - name: Build, push and scan the container
         # TODO: pin to release 3.0.0 once approved and tagged
         uses: celo-org/reusable-workflows/.github/actions/build-container@ezdac/use-docker-metadata-action
