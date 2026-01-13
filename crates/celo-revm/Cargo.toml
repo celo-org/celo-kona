@@ -54,6 +54,7 @@ serde = { workspace = true, features = ["derive", "rc"], optional = true }
 [dev-dependencies]
 rstest.workspace = true
 alloy-eips.workspace = true
+alloy-consensus.workspace = true
 revm-handler.workspace = true
 
 [features]

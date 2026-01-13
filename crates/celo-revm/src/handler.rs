@@ -8,7 +8,7 @@ use crate::{
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256, b256, keccak256};
 use celo_alloy_consensus::CeloTxType;
 use op_revm::{
     L1BlockInfo, OpHaltReason, OpSpecId,
@@ -35,6 +35,34 @@ use revm::{
 };
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
+
+/// Transaction hashes that have wrong chain IDs but were accepted historically.
+/// These transactions were included due to a bug in EIP-2930 sender recovery that used
+/// tx.ChainId() instead of the network's chain ID. We must accept them during historical
+/// sync to avoid a hard fork. See <https://github.com/celo-org/op-geth/issues/454>.
+///
+/// Each entry contains (tx_hash, network_chain_id) to prevent replay attacks from other networks.
+const LEGACY_CHAIN_ID_EXCEPTIONS: [(B256, u64); 2] = [
+    // Celo Sepolia block 12531083 - tx had chain_id 11162320 instead of 11142220
+    (
+        b256!("4564b9903cfe18814ffc2696e1ad141d9cc3a549dc4f5726e15f7be2e0ccaa25"),
+        11142220, // Celo Sepolia chain ID
+    ),
+    // Celo Mainnet block 53619115 - tx had chain_id 44787 instead of 42220
+    (
+        b256!("d6bdf3261df7e7a4db6bbc486bf091eb62dfd2883e335c31219b6a37d3febca1"),
+        42220, // Celo Mainnet chain ID
+    ),
+];
+
+fn is_legacy_chain_id_exception(enveloped_tx: Option<&[u8]>, network_chain_id: u64) -> bool {
+    enveloped_tx.is_some_and(|tx| {
+        let tx_hash = keccak256(tx);
+        LEGACY_CHAIN_ID_EXCEPTIONS
+            .iter()
+            .any(|(hash, chain_id)| *hash == tx_hash && *chain_id == network_chain_id)
+    })
+}
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
@@ -410,6 +438,32 @@ where
                 // where not only those transactions are validated, but also the block specifics.
             }
         }
+
+        // Check for legacy chain ID exception before mainnet validation.
+        // These are historical transactions that were accepted with wrong chain IDs due to a bug.
+        // Only compute the tx hash if there's actually a chain ID mismatch to avoid unnecessary hashing.
+        let chain_id_mismatch = evm
+            .ctx()
+            .tx()
+            .chain_id()
+            .is_some_and(|tx_chain_id| tx_chain_id != evm.ctx().cfg().chain_id());
+        let network_chain_id = evm.ctx().cfg().chain_id();
+        if chain_id_mismatch
+            && is_legacy_chain_id_exception(
+                evm.ctx().tx().enveloped_tx().map(|b| b.as_ref()),
+                network_chain_id,
+            )
+        {
+            // Temporarily disable chain ID check for these historical exception txs,
+            // preserving the original value to restore afterward
+            let original_tx_chain_id_check = evm.ctx().cfg().tx_chain_id_check;
+            evm.ctx().modify_cfg(|cfg| cfg.tx_chain_id_check = false);
+            let result = self.mainnet.validate_env(evm);
+            evm.ctx()
+                .modify_cfg(|cfg| cfg.tx_chain_id_check = original_tx_chain_id_check);
+            return result;
+        }
+
         self.mainnet.validate_env(evm)
     }
 
@@ -1237,5 +1291,192 @@ mod tests {
         // Check that the caller was reimbursed the correct amount of ETH.
         let account = evm.ctx().journal_mut().load_account(SENDER).unwrap();
         assert_eq!(account.data.info.balance, expected_refund);
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception() {
+        // Test that transactions with wrong chain ID are rejected normally
+        let ctx = Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = TransactionType::Eip2930 as u8;
+                tx.op_tx.base.chain_id = Some(999999); // Wrong chain ID
+                tx.op_tx.enveloped_tx = Some(bytes!("deadbeef")); // Not an exception tx
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 42220; // Celo mainnet
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        // Should fail due to chain ID mismatch
+        assert_eq!(
+            handler.validate_env(&mut evm),
+            Err(EVMError::Transaction(
+                InvalidTransaction::InvalidChainId.into()
+            ))
+        );
+    }
+
+    /// Builds the EIP-2718 encoded Sepolia exception transaction.
+    /// Celo Sepolia block 12531083 - tx had chain_id 11162320 instead of 11142220
+    fn build_sepolia_exception_tx() -> Bytes {
+        use alloy_consensus::{SignableTransaction, TxEip2930};
+        use alloy_primitives::{Signature, U256, address};
+
+        let tx = TxEip2930 {
+            chain_id: 11162320, // Wrong chain ID (should be 11142220)
+            nonce: 0,
+            gas_price: 25001000000,
+            gas_limit: 21000,
+            to: address!("52BCbd8Bf68EE24A15adcD05951a49aE6c168A14").into(),
+            value: U256::from(1),
+            input: bytes!(""),
+            access_list: Default::default(),
+        };
+
+        let sig = Signature::from_scalars_and_parity(
+            b256!("c96e8be6c653d8eb6f03842ffdc29347745c8122893f9cc9b64809d1bc49302d"),
+            b256!("49b51c8d25cff880327495cb1f322ebfbcb42151e9b617466eee2c737737f259"),
+            false, // yParity: 0
+        );
+
+        let signed = tx.into_signed(sig);
+        let mut encoded = Vec::new();
+        signed.eip2718_encode(&mut encoded);
+        encoded.into()
+    }
+
+    /// Builds the EIP-2718 encoded Mainnet exception transaction.
+    /// Celo Mainnet block 53619115 - tx had chain_id 44787 instead of 42220
+    fn build_mainnet_exception_tx() -> Bytes {
+        use alloy_consensus::{SignableTransaction, TxEip2930};
+        use alloy_primitives::{Signature, U256, address};
+
+        let tx = TxEip2930 {
+            chain_id: 44787, // Wrong chain ID (should be 42220)
+            nonce: 5,
+            gas_price: 30000000000,
+            gas_limit: 30000,
+            to: address!("C04b2FFAcc30C7FE19741E27ea150ccCc212e072").into(),
+            value: U256::from(200000000000000_u64),
+            input: bytes!(""),
+            access_list: Default::default(),
+        };
+
+        let sig = Signature::from_scalars_and_parity(
+            b256!("197400aceb14cacc9a75710ebb4d3cba85538fc96a2b254d51a0db742c24ad08"),
+            b256!("2c18b58821fe02d107ff1fa9f4fd157bafb571bb83867d56618de3e1045141bb"),
+            true, // yParity: 1
+        );
+
+        let signed = tx.into_signed(sig);
+        let mut encoded = Vec::new();
+        signed.eip2718_encode(&mut encoded);
+        encoded.into()
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception_sepolia_tx_hash() {
+        // Verify the encoded tx hashes to the expected exception hash
+        let encoded = build_sepolia_exception_tx();
+        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[0].0);
+        assert!(is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
+        // Should not match on wrong network
+        assert!(!is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception_mainnet_tx_hash() {
+        // Verify the encoded tx hashes to the expected exception hash
+        let encoded = build_mainnet_exception_tx();
+        assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[1].0);
+        assert!(is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
+        // Should not match on wrong network
+        assert!(!is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception_sepolia_validate_env_passes() {
+        // Test that the Sepolia exception tx passes validate_env despite wrong chain ID
+        let encoded = build_sepolia_exception_tx();
+
+        let ctx = Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = TransactionType::Eip2930 as u8;
+                tx.op_tx.base.chain_id = Some(11162320); // Wrong chain ID in tx
+                tx.op_tx.base.gas_limit = 21000;
+                tx.op_tx.base.gas_price = 25001000000;
+                tx.op_tx.enveloped_tx = Some(encoded);
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 11142220; // Correct network chain ID
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        // Should pass validation because this is an exception tx
+        assert!(handler.validate_env(&mut evm).is_ok());
+
+        // Verify tx_chain_id_check is restored to true after validation
+        assert!(evm.ctx().cfg().tx_chain_id_check);
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception_mainnet_validate_env_passes() {
+        // Test that the Mainnet exception tx passes validate_env despite wrong chain ID
+        let encoded = build_mainnet_exception_tx();
+
+        let ctx = Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = TransactionType::Eip2930 as u8;
+                tx.op_tx.base.chain_id = Some(44787); // Wrong chain ID in tx
+                tx.op_tx.base.gas_limit = 30000;
+                tx.op_tx.base.gas_price = 30000000000;
+                tx.op_tx.enveloped_tx = Some(encoded);
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 42220; // Correct network chain ID
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        // Should pass validation because this is an exception tx
+        assert!(handler.validate_env(&mut evm).is_ok());
+
+        // Verify tx_chain_id_check is restored to true after validation
+        assert!(evm.ctx().cfg().tx_chain_id_check);
+    }
+
+    #[test]
+    fn test_legacy_chain_id_exception_correct_chain_id_still_works() {
+        // Test that a tx with matching chain ID still works (no exception needed)
+        let ctx = Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = TransactionType::Eip2930 as u8;
+                tx.op_tx.base.chain_id = Some(42220); // Correct chain ID
+                tx.op_tx.base.gas_limit = 21000;
+                tx.op_tx.base.gas_price = 1000000000;
+                tx.op_tx.enveloped_tx = Some(bytes!("deadbeef"));
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 42220;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        // Should pass - chain IDs match, no exception logic triggered
+        assert!(handler.validate_env(&mut evm).is_ok());
     }
 }
