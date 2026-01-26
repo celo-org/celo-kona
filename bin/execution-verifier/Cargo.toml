@@ -10,6 +10,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 exclude.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
 
 [dependencies]
 # local

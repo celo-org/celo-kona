@@ -9,6 +9,10 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 exclude.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
 
 [lints]
 workspace = true

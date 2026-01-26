@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
 
 [lints]
 workspace = true
