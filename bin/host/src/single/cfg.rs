@@ -20,6 +20,7 @@ use kona_preimage::{
 use kona_proof::HintType;
 use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
 use kona_std_fpvm::{FileChannel, FileDescriptor};
+use reqwest::Url;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::task::{self, JoinHandle};
@@ -167,14 +168,22 @@ impl CeloSingleChainHost {
                 .ok_or(SingleChainHostError::Other("L2 node address must be set"))?,
         )
         .await;
-        let eigen_da_preimage_provider =
-            self.eigenda_proxy_address.clone().map(OnlineEigenDAPreimageProvider::new_http);
+
+        let eigenda_preimage_provider = self
+            .eigenda_proxy_address
+            .as_ref()
+            .map(|url_str| {
+                Url::parse(url_str)
+                    .map_err(|_| SingleChainHostError::Other("Failed to parse EigenDA API URL"))
+                    .map(OnlineEigenDAPreimageProvider::new_http)
+            })
+            .transpose()?;
 
         Ok(CeloSingleChainProviders {
             l1: l1_provider,
             blobs: blob_provider,
             l2: l2_provider,
-            eigenda_preimage_provider: eigen_da_preimage_provider,
+            eigenda_preimage_provider,
         })
     }
 }
