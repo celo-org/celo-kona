@@ -110,23 +110,23 @@ kona-cli = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.2.7", 
 # Alloy
 alloy-rlp = { version = "0.3.12", default-features = false }
 alloy-trie = { version = "0.9.1", default-features = false }
-alloy-eips = { version = "=1.1.3", default-features = false }
-alloy-serde = { version = "=1.1.3", default-features = false }
+alloy-eips = { version = "1.1.3", default-features = false }
+alloy-serde = { version = "1.1.3", default-features = false }
 alloy-signer = { version = "1.1.3", default-features = false }
 alloy-chains = { version = "0.2.22", default-features = false }
-alloy-network = { version = "=1.1.3", default-features = false }
-alloy-genesis = { version = "=1.1.3", default-features = false }
-alloy-provider = { version = "=1.1.3", default-features = false }
+alloy-network = { version = "1.1.3", default-features = false }
+alloy-genesis = { version = "1.1.3", default-features = false }
+alloy-provider = { version = "1.1.3", default-features = false }
 alloy-hardforks = { version = "0.4.5", default-features = false }
 alloy-sol-types = { version = "1.4.1", default-features = false }
-alloy-consensus = { version = "=1.1.3", default-features = false }
-alloy-transport = { version = "=1.1.3", default-features = false }
-alloy-rpc-types = { version = "=1.1.3", default-features = false }
-alloy-rpc-client = { version = "=1.1.3", default-features = false }
+alloy-consensus = { version = "1.1.3", default-features = false }
+alloy-transport = { version = "1.1.3", default-features = false }
+alloy-rpc-types = { version = "1.1.3", default-features = false }
+alloy-rpc-client = { version = "1.1.3", default-features = false }
 alloy-primitives = { version = "1.4.1", default-features = false }
-alloy-rpc-types-eth = { version = "=1.1.3", default-features = false }
-alloy-transport-http = { version = "=1.1.3", default-features = false }
-alloy-rpc-types-engine = { version = "=1.1.3", default-features = false }
+alloy-rpc-types-eth = { version = "1.1.3", default-features = false }
+alloy-transport-http = { version = "1.1.3", default-features = false }
+alloy-rpc-types-engine = { version = "1.1.3", default-features = false }
 alloy-network-primitives = { version = "1.1.3", default-features = false }
 
 # OP Alloy
@@ -148,9 +148,9 @@ revm-handler = { version = "14.0.0", default-features = false }
 revm-context = { version = "12.0.0", default-features = false }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "1fc8586d904f48b3454410029ef379627f785d6d", default-features = false }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "1fc8586d904f48b3454410029ef379627f785d6d", default-features = false }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "1fc8586d904f48b3454410029ef379627f785d6d", default-features = false }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.4", default-features = false }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.4", default-features = false }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.4", default-features = false }
 
 # General
 url = "2.5.7"
@@ -173,6 +173,7 @@ lazy_static = { version = "1.5.0", default-features = false }
 auto_impl = "1.2.0"
 bincode = "2.0.1"
 similar-asserts = "1.7"
+reqwest = "0.12.19"
 
 # Compression
 miniz_oxide = "0.8.9"
