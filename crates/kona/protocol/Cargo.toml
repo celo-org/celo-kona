@@ -1,8 +1,7 @@
 [package]
 name = "celo-protocol"
-version = "0.1.0"
+version.workspace = true
 description = "Celo protocol-specific types"
-
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
