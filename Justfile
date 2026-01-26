@@ -52,6 +52,15 @@ build-native *args='':
 check-udeps:
   cargo +nightly udeps --workspace --all-features --all-targets
 
+# Release a new version (dry-run by default)
+# Requires: cargo install cargo-release@0.25.20 --locked
+release level='patch' *args='':
+  cargo release {{level}} {{args}}
+
+# Release a new version (execute)
+release-execute level='patch':
+  cargo release {{level}} --execute
+
 # Download resources/g1.point if it doesn't exist.
 download-srs:
   #!/usr/bin/env bash
