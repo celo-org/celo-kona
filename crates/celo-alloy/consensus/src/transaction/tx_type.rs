@@ -25,9 +25,3 @@ impl core::fmt::Display for CeloTxType {
         }
     }
 }
-
-impl Default for CeloTxType {
-    fn default() -> Self {
-        Self::Legacy
-    }
-}
