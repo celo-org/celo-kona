@@ -26,9 +26,6 @@ alloy-rpc-types-eth.workspace = true
 # OP Alloy
 op-alloy-consensus.workspace = true
 
-# misc
-derive_more = { workspace = true, features = ["display"] }
-
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 
@@ -48,7 +45,7 @@ op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["std"]
-std = ["alloy-eips/std", "alloy-consensus/std", "derive_more/std"]
+std = ["alloy-eips/std", "alloy-consensus/std"]
 k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
 kzg = ["alloy-eips/kzg", "alloy-consensus/kzg", "std"]
 arbitrary = [

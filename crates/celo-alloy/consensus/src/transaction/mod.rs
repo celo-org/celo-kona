@@ -2,12 +2,11 @@
 
 pub mod cip64;
 pub mod envelope;
-pub mod tx_type;
-pub mod typed;
+mod tx_type;
+mod typed;
 
-pub use envelope::CeloTxEnvelope;
-pub use tx_type::CeloTxType;
-pub use typed::CeloTypedTransaction;
+pub use cip64::TxCip64;
+pub use envelope::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction};
 
 #[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
 pub use envelope::serde_bincode_compat as envelope_serde_bincode_compat;
