@@ -6,7 +6,7 @@ authors = []
 homepage = "https://celo.org"
 repository = "https://github.com/celo-org/celo-kona"
 readme = "README.md"
-version = "0.1.0-alpha.1"
+version = "1.0.0"
 keywords = ["ethereum", "optimism", "celo", "crypto"]
 categories = ["cryptography", "cryptography::cryptocurrencies"]
 exclude = ["**/target"]
@@ -68,20 +68,20 @@ lto = "fat"
 
 [workspace.dependencies]
 # Workspace
-celo-client = { version = "0.1.0-alpha.1", path = "bin/client", default-features = false }
-celo-alloy-consensus = { version = "0.1.0-alpha.1", path = "crates/celo-alloy/consensus", default-features = false }
-celo-alloy-rpc-types-engine = { version = "0.1.0-alpha.1", path = "crates/celo-alloy/rpc-types-engine", default-features = false }
-celo-alloy-rpc-types = { version = "0.1.0-alpha.1", path = "crates/celo-alloy/rpc-types", default-features = false }
-celo-alloy-network = { version = "0.1.0-alpha.1", path = "crates/celo-alloy/network", default-features = false }
-alloy-celo-evm = { version = "0.1.0-alpha.1", path = "crates/alloy-celo-evm", default-features = false }
-celo-executor = { version = "0.1.0-alpha.1", path = "crates/kona/executor", default-features = false }
-celo-driver = { version = "0.1.0-alpha.1", path = "crates/kona/driver", default-features = false }
-celo-proof = { version = "0.1.0-alpha.1", path = "crates/kona/proof", default-features = false }
-celo-protocol = { version = "0.1.0-alpha.1", path = "crates/kona/protocol", default-features = false }
-celo-genesis = { version = "0.1.0-alpha.1", path = "crates/kona/genesis", default-features = false }
-celo-revm = { version = "0.1.0-alpha.1", path = "crates/celo-revm", default-features = false }
-celo-registry = { version = "0.1.0-alpha.1", path = "crates/kona/registry", default-features = false }
-celo-otel = { version = "0.1.0-alpha.1", path = "crates/celo-otel", default-features = false }
+celo-client = { version = "1.0.0", path = "bin/client", default-features = false }
+celo-alloy-consensus = { version = "1.0.0", path = "crates/celo-alloy/consensus", default-features = false }
+celo-alloy-rpc-types-engine = { version = "1.0.0", path = "crates/celo-alloy/rpc-types-engine", default-features = false }
+celo-alloy-rpc-types = { version = "1.0.0", path = "crates/celo-alloy/rpc-types", default-features = false }
+celo-alloy-network = { version = "1.0.0", path = "crates/celo-alloy/network", default-features = false }
+alloy-celo-evm = { version = "1.0.0", path = "crates/alloy-celo-evm", default-features = false }
+celo-executor = { version = "1.0.0", path = "crates/kona/executor", default-features = false }
+celo-driver = { version = "1.0.0", path = "crates/kona/driver", default-features = false }
+celo-proof = { version = "1.0.0", path = "crates/kona/proof", default-features = false }
+celo-protocol = { version = "1.0.0", path = "crates/kona/protocol", default-features = false }
+celo-genesis = { version = "1.0.0", path = "crates/kona/genesis", default-features = false }
+celo-revm = { version = "1.0.0", path = "crates/celo-revm", default-features = false }
+celo-registry = { version = "1.0.0", path = "crates/kona/registry", default-features = false }
+celo-otel = { version = "1.0.0", path = "crates/celo-otel", default-features = false }
 
 # Binaries
 kona-host = { git = "https://github.com/op-rs/kona", tag = "kona-client/v1.2.7", default-features = false }
