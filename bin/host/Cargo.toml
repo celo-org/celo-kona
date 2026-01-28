@@ -48,6 +48,8 @@ revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", 
 # Hokulea
 hokulea-proof.workspace = true
 hokulea-host-bin.workspace = true
+canoe-verifier-address-fetcher.workspace = true
+eigenda-cert.workspace = true
 
 # General
 anyhow.workspace = true

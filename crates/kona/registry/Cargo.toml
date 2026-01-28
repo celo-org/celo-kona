@@ -32,10 +32,6 @@ serde_json = { workspace = true, features = ["raw_value"] }
 # misc
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 
-# Hokulea
-canoe-verifier-address-fetcher.workspace = true
-eigenda-cert.workspace = true
-
 [build-dependencies]
 serde_json = { workspace = true, features = ["raw_value"] }
 kona-genesis = { workspace = true, features = ["serde"] }

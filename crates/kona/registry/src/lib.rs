@@ -12,9 +12,6 @@ pub use kona_genesis::ChainConfig;
 
 pub use kona_genesis::{Chain, ChainList};
 
-pub mod eigenda;
-pub use eigenda::CeloCanoeVerifierAddressFetcher;
-
 pub mod superchain;
 pub use superchain::Registry;
 

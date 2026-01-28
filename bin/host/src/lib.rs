@@ -3,6 +3,9 @@
 
 mod backend;
 
+pub mod eigenda;
+pub use eigenda::CeloCanoeVerifierAddressFetcher;
+
 pub mod eth;
 
 #[cfg(feature = "single")]
