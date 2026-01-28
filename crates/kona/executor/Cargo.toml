@@ -1,19 +1,23 @@
 [package]
 name = "celo-executor"
 description = "A no_std stateless block builder for Celo"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
 
 [lints]
 workspace = true
 
 [dependencies]
 # Workspace
-celo-registry = { version = "0.1.0", path = "../registry" }
+celo-registry.workspace = true
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["k256", "serde"] }

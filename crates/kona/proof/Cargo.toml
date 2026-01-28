@@ -1,12 +1,16 @@
 [package]
 name = "celo-proof"
 description = "Celo Proof SDK"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
 
 [lints]
 workspace = true
@@ -18,7 +22,7 @@ celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
-celo-registry = { version = "0.1.0", path = "../registry" }
+celo-registry.workspace = true
 celo-protocol.workspace = true
 
 # Kona
