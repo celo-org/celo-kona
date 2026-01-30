@@ -1,6 +1,6 @@
 //! Test utilities for the executor.
 
-use crate::CeloStatelessL2Builder;
+use crate::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, Sealable};
@@ -23,9 +23,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
-/// produced block hash matches the expected block hash.
-pub async fn run_test_fixture(fixture_path: PathBuf) {
+/// Loads and executes a test fixture from a tarball path.
+///
+/// Returns the execution outcome and the fixture data for further inspection.
+pub async fn load_and_execute_fixture(
+    fixture_path: PathBuf,
+) -> (CeloBlockBuildingOutcome, ExecutorTestFixture) {
     // First, untar the fixture.
     let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
     tokio::process::Command::new("tar")
@@ -49,17 +52,26 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
             .expect("Failed to deserialize fixture");
 
     // Wrap RollupConfig to CeloRollupConfig
-    let rollup_config = fixture.op_executor_test_fixture.rollup_config;
+    let rollup_config = fixture.op_executor_test_fixture.rollup_config.clone();
     let celo_rollup_config = CeloRollupConfig(rollup_config);
     let mut executor = CeloStatelessL2Builder::new(
         &celo_rollup_config,
         CeloEvmFactory::default(),
         provider,
         NoopTrieHinter,
-        fixture.op_executor_test_fixture.parent_header.seal_slow(),
+        fixture.op_executor_test_fixture.parent_header.clone().seal_slow(),
     );
 
-    let outcome = executor.build_block(fixture.executing_payload).unwrap();
+    let outcome =
+        executor.build_block(fixture.executing_payload.clone()).expect("Failed to execute block");
+
+    (outcome, fixture)
+}
+
+/// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
+/// produced block hash matches the expected block hash.
+pub async fn run_test_fixture(fixture_path: PathBuf) {
+    let (outcome, fixture) = load_and_execute_fixture(fixture_path).await;
 
     assert_eq!(
         outcome.header.hash(),
