@@ -86,13 +86,14 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-/// Call a core contract in read-only mode (checkpoint/revert to discard state changes).
+/// Call a core contract function in read-only mode (checkpoint/revert to discard state changes).
+/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn call_read_only<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -104,12 +105,13 @@ where
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
+/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn call<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -141,9 +143,10 @@ where
         ExecutionResult::Success {
             output: Output::Call(bytes),
             gas_used,
+            gas_refunded,
             logs,
             ..
-        } => Ok((bytes, logs, gas_used)),
+        } => Ok((bytes, logs, gas_used, gas_refunded)),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),
@@ -174,7 +177,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _)) => bytes,
+        Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
             return Vec::new();
@@ -253,7 +256,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _)) => bytes,
+        Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
             return None;
@@ -295,7 +298,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _)) => bytes,
+        Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
             return None;
