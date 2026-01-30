@@ -97,6 +97,12 @@ where
             // If core contracts are missing, we'll get an empty context (for non-celo test environments).
             let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
             evm.fee_currency_context = fee_currency_context;
+
+            // Reset warmness after context loading to match op-geth behavior.
+            // In op-geth, context loading uses a separate EVM instance, so no warmness
+            // is shared with subsequent transaction processing. This affects all
+            // transactions, not just CIP-64, ensuring consistent gas accounting.
+            self.reset_warmness_to_default(evm);
         }
 
         Ok(())
@@ -130,6 +136,33 @@ where
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?;
         Ok(max_allowed_gas_cost)
+    }
+
+    /// Reset account warmness to the default state after fee currency context loading.
+    ///
+    /// This marks all accounts in the journal state with `AccountStatus::Cold`,
+    /// effectively isolating the context loading phase from transaction processing.
+    /// This matches op-geth's behavior where context loading uses a separate EVM instance.
+    ///
+    /// After this reset, warmness is determined by:
+    /// - Precompiles: warm (via WarmAddresses.precompile_set)
+    /// - Coinbase: warm (via WarmAddresses.coinbase, set later by load_accounts)
+    /// - Access list entries: warm (set later by load_accounts from tx access list)
+    /// - All other accounts: cold (first access costs 2600 gas)
+    ///
+    /// This is called right after context loading, before any transaction processing
+    /// (including CIP-64 debit). The sender account becomes cold here, but:
+    /// - For CIP-64 debit/credit: sender is not directly accessed, only the fee
+    ///   currency contract is called (which reads sender's balance from its storage)
+    /// - For main transaction: load_accounts() runs after debit and sets up the
+    ///   access list properly, warming the sender
+    fn reset_warmness_to_default(&self, evm: &mut CeloEvm<DB, INSP>) {
+        use revm::state::AccountStatus;
+
+        // Mark all loaded accounts as cold
+        for account in evm.ctx().journal_mut().state.values_mut() {
+            account.status |= AccountStatus::Cold;
+        }
     }
 
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
@@ -304,25 +337,16 @@ where
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
 
-        let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {e}")))?;
-
         let gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
             .map(|gas_cost| U256::from(gas_cost))
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
 
-        if balance < gas_cost {
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(gas_cost),
-                balance: Box::new(balance),
-            }
-            .into());
-        }
-
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+        // Note: Warmness was already reset in load_fee_currency_context() after context loading,
+        // so accounts warmed during context loading are now cold.
         let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
