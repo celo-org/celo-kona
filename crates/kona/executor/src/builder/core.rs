@@ -2,7 +2,7 @@
 //! execution.
 
 use alloc::{string::ToString, vec::Vec};
-use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder};
+use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder, cip64_storage::Cip64Storage};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
     EvmFactory,
@@ -112,7 +112,7 @@ where
         let fee_currency_context = evm.create_fee_currency_context();
         let cip64_storage = evm.cip64_storage().clone();
         let updated_receipt_builder =
-            CeloAlloyReceiptBuilder::new(fee_currency_context, cip64_storage);
+            CeloAlloyReceiptBuilder::new(fee_currency_context, cip64_storage.clone());
         let factory = OpBlockExecutorFactory::<
             CeloAlloyReceiptBuilder,
             CeloRollupConfig,
@@ -160,7 +160,7 @@ where
 
         // Update the parent block hash in the state database, preparing for the next block.
         self.trie_db.set_parent_block_header(header.clone());
-        Ok((header, ex_result).into())
+        Ok(CeloBlockBuildingOutcome { header, execution_result: ex_result, cip64_storage })
     }
 }
 
@@ -172,16 +172,8 @@ pub struct CeloBlockBuildingOutcome {
     pub header: Sealed<Header>,
     /// The block execution result.
     pub execution_result: BlockExecutionResult<CeloReceiptEnvelope>,
-}
-
-impl From<(Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>)>
-    for CeloBlockBuildingOutcome
-{
-    fn from(
-        (header, execution_result): (Sealed<Header>, BlockExecutionResult<CeloReceiptEnvelope>),
-    ) -> Self {
-        Self { header, execution_result }
-    }
+    /// Storage containing CIP-64 transaction execution metrics (gas used, refunds, etc.)
+    pub cip64_storage: Cip64Storage,
 }
 
 #[cfg(test)]
@@ -198,5 +190,81 @@ mod test {
         path: PathBuf,
     ) {
         run_test_fixture(path).await;
+    }
+}
+
+/// Tests for CIP-64 gas calculation verification.
+///
+/// These tests verify that the gas costs for CIP-64 debit/credit operations
+/// match the expected values from op-geth for the same transactions.
+#[cfg(test)]
+mod cip64_gas_tests {
+    use crate::test_utils::load_and_execute_fixture;
+    use alloy_celo_evm::cip64_storage::get_tx_identifier;
+    use alloy_consensus::Transaction;
+    use celo_alloy_consensus::CeloTxType;
+    use celo_revm::Cip64Info;
+    use std::path::PathBuf;
+
+    /// Runs a test fixture by name and returns the CIP-64 gas metrics directly from execution.
+    async fn run_fixture_and_get_cip64_info(fixture_name: &str) -> Option<Cip64Info> {
+        // Find the fixture path
+        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let fixture_path = testdata_dir
+            .read_dir()
+            .ok()?
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().contains(fixture_name))?
+            .path();
+
+        let (outcome, fixture) = load_and_execute_fixture(fixture_path).await;
+
+        // Find the CIP-64 transaction and get its info from cip64_storage
+        for tx in fixture.executing_payload.recovered_transactions() {
+            let tx = tx.ok()?;
+            if tx.tx_type() == CeloTxType::Cip64 as u8 {
+                let tx_id = get_tx_identifier(tx.signer(), tx.nonce());
+                return outcome.cip64_storage.get_cip64_info(&tx_id);
+            }
+        }
+        None
+    }
+
+    /// Test that verifies the CIP-64 gas calculation matches op-geth for the
+    /// sepolia-cip64-erc20-transfer fixture.
+    ///
+    /// Expected values from op-geth (gas_used + gas_refunded):
+    /// - Debit: 47756
+    /// - Credit: 22997
+    /// These values are token from the call_tracer/celo-kona-comparison.json test in op-geth.
+    ///
+    /// op-geth calculates: `gasUsed = maxIntrinsicGasCost - leftoverGas`
+    /// which equals `gas_used + gas_refunded` in revm terminology.
+    #[tokio::test]
+    async fn test_cip64_gas_matches_opgeth_sepolia_erc20_transfer() {
+        let cip64_info = run_fixture_and_get_cip64_info("sepolia-cip64-erc20-transfer")
+            .await
+            .expect("Should get CIP-64 info from sepolia-cip64-erc20-transfer fixture");
+
+        // These values match op-geth's gas calculation for the same transaction
+        // See: https://github.com/celo-org/op-geth/blob/main/contracts/fee_currencies.go
+        //
+        // op-geth calculates: gasUsed = maxIntrinsicGasCost - leftoverGas
+        // which equals gas_used + gas_refunded in revm terminology
+        const EXPECTED_DEBIT_RAW_GAS: u64 = 47756;
+        const EXPECTED_CREDIT_RAW_GAS: u64 = 22997;
+
+        let debit_raw_gas = cip64_info.debit_gas_used + cip64_info.debit_gas_refunded;
+        let credit_raw_gas = cip64_info.credit_gas_used + cip64_info.credit_gas_refunded;
+
+        assert_eq!(
+            debit_raw_gas, EXPECTED_DEBIT_RAW_GAS,
+            "Debit raw gas (gas_used + gas_refunded) should match op-geth"
+        );
+
+        assert_eq!(
+            credit_raw_gas, EXPECTED_CREDIT_RAW_GAS,
+            "Credit raw gas (gas_used + gas_refunded) should match op-geth"
+        );
     }
 }
