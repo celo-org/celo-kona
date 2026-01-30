@@ -48,7 +48,8 @@ where
         .into();
 
     // Use the read-only call function to ensure no state changes
-    let (output_bytes, _, _) = core_contracts::call_read_only(evm, token_address, calldata, None)?;
+    let (output_bytes, _, _, _) =
+        core_contracts::call_read_only(evm, token_address, calldata, None)?;
 
     // Decode the balance
     IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output_bytes)
@@ -57,13 +58,14 @@ where
 
 /// Call debitGasFees to deduct gas fees from the fee currency.
 /// State changes remain in the EVM's journal for the main transaction to see.
+/// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn debit_gas_fees<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
     fee_currency_address: Address,
     from: Address,
     value: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -73,13 +75,14 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_used) =
+    let (_, logs, gas_used, gas_refunded) =
         core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
-    Ok((logs, gas_used))
+    Ok((logs, gas_used, gas_refunded))
 }
 
 /// Call creditGasFees to distribute gas fees.
 /// State changes remain in the EVM's journal for the main transaction to see.
+/// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
 #[allow(clippy::too_many_arguments)]
 pub fn credit_gas_fees<DB, INSP>(
     evm: &mut CeloEvm<DB, INSP>,
@@ -91,7 +94,7 @@ pub fn credit_gas_fees<DB, INSP>(
     tip_tx_fee: U256,
     base_tx_fee: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -110,9 +113,10 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_used) =
+    let (_, logs, gas_used, gas_refunded) =
         core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
-    Ok((logs, gas_used))
+
+    Ok((logs, gas_used, gas_refunded))
 }
 
 #[cfg(test)]

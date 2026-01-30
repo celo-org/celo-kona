@@ -193,10 +193,10 @@ where
                     .cip64_tx_info
                     .as_ref()
                     .unwrap()
-                    .actual_intrinsic_gas_used,
+                    .debit_gas_used,
             );
 
-        let (logs, gas_used) = erc20::credit_gas_fees(
+        let (logs, credit_gas_used, credit_gas_refunded) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -211,47 +211,62 @@ where
 
         // Collect logs from the system call to be included in the final receipt
         let mut tx = evm.ctx().tx().clone();
-        let old_cip64_tx_info = tx.cip64_tx_info.as_ref().unwrap();
-        tx.cip64_tx_info = Some(Cip64Info {
-            actual_intrinsic_gas_used: old_cip64_tx_info.actual_intrinsic_gas_used + gas_used,
-            logs_pre: old_cip64_tx_info.logs_pre.clone(),
-            logs_post: logs,
-        });
+        let info = tx.cip64_tx_info.as_mut().unwrap();
+        info.credit_gas_used = credit_gas_used;
+        info.credit_gas_refunded = credit_gas_refunded;
+        info.logs_post = logs;
         evm.ctx().set_tx(tx);
-        self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
+        self.log_and_warn_gas_cost(evm, fee_currency)?;
         Ok(())
     }
 
-    fn warn_if_gas_cost_exceeds_intrinsic_gas_cost(
+    /// Logs a summary of the CIP-64 gas costs and warns if they exceed the intrinsic gas cost.
+    fn log_and_warn_gas_cost(
         &self,
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
-        let gas_cost = evm
-            .ctx()
-            .tx()
-            .cip64_tx_info
-            .as_ref()
-            .unwrap()
-            .actual_intrinsic_gas_used;
+        let cip64_info = evm.ctx().tx().cip64_tx_info.clone().unwrap();
+
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| ERROR::from_string(e))?;
 
-        if gas_cost > intrinsic_gas_cost {
-            if gas_cost > intrinsic_gas_cost * 2 {
+        // Log the gas summary for debugging and verification
+        // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
+        info!(
+            target: "celo_handler",
+            "CIP-64 gas summary: fee_currency={:?}, \
+            debit(gas_used={}, gas_refunded={}), \
+            credit(gas_used={}, gas_refunded={}), \
+            intrinsic_gas={}",
+            fee_currency,
+            cip64_info.debit_gas_used,
+            cip64_info.debit_gas_refunded,
+            cip64_info.credit_gas_used,
+            cip64_info.credit_gas_refunded,
+            intrinsic_gas_cost
+        );
+
+        // Compare raw gas (before refunds) against intrinsic gas limit
+        let total_raw_gas = cip64_info.debit_gas_used
+            + cip64_info.debit_gas_refunded
+            + cip64_info.credit_gas_used
+            + cip64_info.credit_gas_refunded;
+        if total_raw_gas > intrinsic_gas_cost {
+            if total_raw_gas > intrinsic_gas_cost * 2 {
                 info!(
                     target: "celo_handler",
-                    "Gas usage for debit+credit exceeds intrinsic gas: {:} > {:}",
-                    gas_cost,
+                    "Gas usage for debit+credit exceeds intrinsic gas: {} > {}",
+                    total_raw_gas,
                     intrinsic_gas_cost
                 );
             } else {
                 warn!(
                     target: "celo_handler",
-                    "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2.: {:} > {:}",
-                    gas_cost,
+                    "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2: {} > {}",
+                    total_raw_gas,
                     intrinsic_gas_cost
                 );
             }
@@ -308,7 +323,7 @@ where
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        let (logs, gas_used) = erc20::debit_gas_fees(
+        let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
             caller_addr,
@@ -320,7 +335,10 @@ where
         // Store CIP64 transaction information by modifying the transaction
         let mut tx = evm.ctx().tx().clone();
         tx.cip64_tx_info = Some(Cip64Info {
-            actual_intrinsic_gas_used: gas_used,
+            debit_gas_used,
+            debit_gas_refunded,
+            credit_gas_used: 0,
+            credit_gas_refunded: 0,
             logs_pre: logs,
             logs_post: Vec::new(),
         });
