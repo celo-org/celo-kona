@@ -1582,13 +1582,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "canoe-bindings"
+version = "0.1.0"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+dependencies = [
+ "alloy-sol-types",
+ "serde",
+]
+
+[[package]]
 name = "canoe-verifier"
 version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
- "eigenda-cert",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "reth-chainspec",
  "reth-evm",
  "revm-primitives",
@@ -1603,7 +1612,17 @@ version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
 dependencies = [
  "alloy-primitives",
- "eigenda-cert",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
+ "thiserror",
+]
+
+[[package]]
+name = "canoe-verifier-address-fetcher"
+version = "0.1.0"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+dependencies = [
+ "alloy-primitives",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "thiserror",
 ]
 
@@ -1805,13 +1824,13 @@ dependencies = [
  "anyhow",
  "ark-ff 0.5.0",
  "async-trait",
- "canoe-verifier-address-fetcher",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
  "celo-client",
  "celo-genesis",
  "clap",
- "eigenda-cert",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "hokulea-host-bin",
  "hokulea-proof",
  "kona-cli",
@@ -2462,7 +2481,21 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "anyhow",
- "canoe-bindings",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
+ "rkyv",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "eigenda-cert"
+version = "0.1.0"
+source = "git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4#d29205481b372b867864fd9258c1aedef753dc6f"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "anyhow",
+ "canoe-bindings 0.1.0 (git+https://github.com/Layr-Labs/hokulea?rev=hokulea-client%2Fv1.1.4)",
  "rkyv",
  "serde",
  "thiserror",
@@ -3071,7 +3104,7 @@ source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4#d
 dependencies = [
  "alloy-primitives",
  "async-trait",
- "eigenda-cert",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "kona-derive",
  "kona-protocol",
  "rkyv",
@@ -3089,7 +3122,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "eigenda-cert",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "hokulea-client-bin",
  "hokulea-eigenda",
  "hokulea-proof",
@@ -3117,8 +3150,8 @@ dependencies = [
  "ark-ff 0.5.0",
  "async-trait",
  "canoe-verifier",
- "canoe-verifier-address-fetcher",
- "eigenda-cert",
+ "canoe-verifier-address-fetcher 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
+ "eigenda-cert 0.1.0 (git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.4)",
  "hokulea-eigenda",
  "kona-preimage",
  "kona-proof",
