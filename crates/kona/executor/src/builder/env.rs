@@ -1,9 +1,12 @@
 //! Environment utility functions for [CeloStatelessL2Builder].
 
 use super::CeloStatelessL2Builder;
-use crate::{constants::CELO_EIP_1559_BASE_FEE_FLOOR, util::decode_holocene_eip_1559_params};
+use crate::{
+    constants::CELO_EIP_1559_BASE_FEE_FLOOR,
+    util::{decode_holocene_eip_1559_params, decode_jovian_eip_1559_params_block_header},
+};
 use alloy_consensus::{BlockHeader, Header};
-use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
+use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::EvmEnv;
 use alloy_primitives::U256;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
@@ -15,6 +18,9 @@ use op_revm::OpSpecId;
 use revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
+    primitives::eip4844::{
+        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE,
+    },
 };
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
@@ -29,9 +35,15 @@ where
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
         base_fee_params: &BaseFeeParams,
+        min_base_fee: u64,
     ) -> ExecutorResult<EvmEnv<OpSpecId>> {
-        let block_env =
-            Self::prepare_block_env(spec_id, parent_header, payload_attrs, base_fee_params)?;
+        let block_env = self.prepare_block_env(
+            spec_id,
+            parent_header,
+            payload_attrs,
+            base_fee_params,
+            min_base_fee,
+        )?;
         let cfg_env =
             self.evm_cfg_env(payload_attrs.op_payload_attributes.payload_attributes.timestamp);
         Ok(EvmEnv::new(cfg_env, block_env))
@@ -46,35 +58,68 @@ where
         cfg_env
     }
 
+    fn next_block_base_fee(
+        &self,
+        params: BaseFeeParams,
+        parent: &Header,
+        min_base_fee: u64,
+    ) -> Option<u64> {
+        if !self.config.is_jovian_active(parent.timestamp()) {
+            let base_fee = parent.next_block_base_fee(params)?;
+            // Before Jovian: apply Celo's base fee floor
+            return Some(core::cmp::max(base_fee, min_base_fee));
+        }
+
+        // Starting from Jovian, we use the maximum of the gas used and the blob gas used to
+        // calculate the next base fee.
+        let gas_used = if parent.blob_gas_used().unwrap_or_default() > parent.gas_used() {
+            parent.blob_gas_used().unwrap_or_default()
+        } else {
+            parent.gas_used()
+        };
+
+        let mut next_block_base_fee = calc_next_block_base_fee(
+            gas_used,
+            parent.gas_limit(),
+            parent.base_fee_per_gas().unwrap_or_default(),
+            params,
+        );
+
+        // If the next block base fee is less than the min base fee, set it to the min base fee.
+        if next_block_base_fee < min_base_fee {
+            next_block_base_fee = min_base_fee;
+        }
+
+        Some(next_block_base_fee)
+    }
+
     /// Prepares a [BlockEnv] with the given [CeloPayloadAttributes].
     pub(crate) fn prepare_block_env(
+        &self,
         spec_id: OpSpecId,
         parent_header: &Header,
         payload_attrs: &CeloPayloadAttributes,
         base_fee_params: &BaseFeeParams,
+        min_base_fee: u64,
     ) -> ExecutorResult<BlockEnv> {
-        let blob_params = if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
-            Some(BlobParams::prague())
+        let (params, fraction) = if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
+            (Some(BlobParams::prague()), BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE)
         } else if spec_id.is_enabled_in(OpSpecId::ECOTONE) {
-            Some(BlobParams::cancun())
+            (Some(BlobParams::cancun()), BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN)
         } else {
-            None
+            (None, 0)
         };
 
         let blob_excess_gas_and_price = parent_header
-            .maybe_next_block_excess_blob_gas(blob_params)
+            .maybe_next_block_excess_blob_gas(params)
             .or_else(|| spec_id.is_enabled_in(OpSpecId::ECOTONE).then_some(0))
-            .map(|excess_blob_gas| {
-                let blob_base_fee_update_fraction =
-                    blob_params.map(|p| p.update_fraction as u64).unwrap_or(3338477); // BLOB_GASPRICE_UPDATE_FRACTION (Cancun default)
-                BlobExcessGasAndPrice::new(excess_blob_gas, blob_base_fee_update_fraction)
-            });
+            .map(|excess| BlobExcessGasAndPrice::new(excess, fraction));
 
-        let mut next_block_base_fee =
-            parent_header.next_block_base_fee(*base_fee_params).unwrap_or_default();
-        next_block_base_fee = core::cmp::max(next_block_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR);
+        let next_block_base_fee = self
+            .next_block_base_fee(*base_fee_params, parent_header, min_base_fee)
+            .unwrap_or_default();
 
-        let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
+        let op_payload_attrs = &payload_attrs.op_payload_attributes;
         Ok(BlockEnv {
             number: U256::from(parent_header.number + 1),
             beneficiary: op_payload_attrs.payload_attributes.suggested_fee_recipient,
@@ -87,33 +132,39 @@ where
         })
     }
 
-    /// Returns the active base fee parameters for the given payload attributes.
+    /// Returns the active base fee parameters for the parent header.
+    /// Returns the min-base-fee as the second element of the tuple.
+    ///
+    /// ## Note
+    /// Before Jovian activation, the min-base-fee is Celo's base fee floor (25 Gwei).
     pub(crate) fn active_base_fee_params(
         config: &CeloRollupConfig,
         parent_header: &Header,
-        payload_attrs: &CeloPayloadAttributes,
-    ) -> ExecutorResult<BaseFeeParams> {
-        let op_payload_attrs = &payload_attrs.op_payload_attributes.clone();
-        let base_fee_params =
-            if config.is_holocene_active(op_payload_attrs.payload_attributes.timestamp) {
-                // After Holocene activation, the base fee parameters are stored in the
-                // `extraData` field of the parent header. If Holocene wasn't active in the
-                // parent block, the default base fee parameters are used.
-                config
-                    .is_holocene_active(parent_header.timestamp)
-                    .then(|| decode_holocene_eip_1559_params(parent_header))
-                    .transpose()?
-                    .unwrap_or(config.chain_op_config.post_canyon_params())
-            } else if config.is_canyon_active(op_payload_attrs.payload_attributes.timestamp) {
-                // If the payload attribute timestamp is past canyon activation,
-                // use the canyon base fee params from the rollup config.
-                config.chain_op_config.post_canyon_params()
-            } else {
-                // If the payload attribute timestamp is prior to canyon activation,
+        payload_timestamp: u64,
+    ) -> ExecutorResult<(BaseFeeParams, u64)> {
+        match config {
+            // After Jovian activation, the base fee parameters are stored in the
+            // `extraData` field of the parent header, along with the min-base-fee.
+            _ if config.is_jovian_active(parent_header.timestamp) => {
+                decode_jovian_eip_1559_params_block_header(parent_header)
+            }
+            // After Holocene activation, the base fee parameters are stored in the
+            // `extraData` field of the parent header. If Holocene wasn't active in the
+            // parent block, the default base fee parameters are used.
+            _ if config.is_holocene_active(parent_header.timestamp) => {
+                decode_holocene_eip_1559_params(parent_header)
+                    .map(|base_fee_params| (base_fee_params, CELO_EIP_1559_BASE_FEE_FLOOR))
+            }
+            // If the next payload attribute timestamp is past canyon activation,
+            // use the canyon base fee params from the rollup config.
+            _ if config.is_canyon_active(payload_timestamp) => {
+                Ok((config.chain_op_config.post_canyon_params(), CELO_EIP_1559_BASE_FEE_FLOOR))
+            }
+            _ => {
+                // If the next payload attribute timestamp is prior to canyon activation,
                 // use the default base fee params from the rollup config.
-                config.chain_op_config.pre_canyon_params()
-            };
-
-        Ok(base_fee_params)
+                Ok((config.chain_op_config.pre_canyon_params(), CELO_EIP_1559_BASE_FEE_FLOOR))
+            }
+        }
     }
 }
