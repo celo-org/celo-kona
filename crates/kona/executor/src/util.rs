@@ -6,7 +6,9 @@ use alloy_primitives::Bytes;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{Eip1559ValidationError, ExecutorError, ExecutorResult};
-use op_alloy_consensus::{decode_holocene_extra_data, encode_holocene_extra_data};
+use op_alloy_consensus::{
+    decode_holocene_extra_data, decode_jovian_extra_data, encode_holocene_extra_data,
+};
 
 /// Parse Holocene [Header] extra data.
 ///
@@ -28,6 +30,27 @@ pub(crate) fn decode_holocene_eip_1559_params(header: &Header) -> ExecutorResult
         elasticity_multiplier: elasticity.into(),
         max_change_denominator: denominator.into(),
     })
+}
+
+pub(crate) fn decode_jovian_eip_1559_params_block_header(
+    header: &Header,
+) -> ExecutorResult<(BaseFeeParams, u64)> {
+    let (elasticity, denominator, min_base_fee) = decode_jovian_extra_data(header.extra_data())?;
+
+    // Check for potential division by zero.
+    // In the block header, the denominator is always non-zero.
+    // <https://github.com/ethereum-optimism/specs/blob/main/specs/protocol/holocene/exec-engine.md#eip-1559-parameters-in-block-header>
+    if denominator == 0 {
+        return Err(ExecutorError::InvalidExtraData(Eip1559ValidationError::ZeroDenominator));
+    }
+
+    Ok((
+        BaseFeeParams {
+            elasticity_multiplier: elasticity.into(),
+            max_change_denominator: denominator.into(),
+        },
+        min_base_fee,
+    ))
 }
 
 /// Encode Holocene [Header] extra data.
