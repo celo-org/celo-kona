@@ -18,6 +18,26 @@ use kona_registry::L1_CONFIGS;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+/// Returns the BPO activation block for a given chain ID.
+///
+/// BPO (Blob Parameter Only) hardforks introduce changes to blob gas pricing that require
+/// corresponding support in op-geth. For Celo chains, BPO must be disabled until the Jovian
+/// hardfork is activated, because Celo's op-geth did not support these L1 hardfork changes early
+/// enough. Enabling BPO prematurely would cause the derivation pipeline to use blob schedules and
+/// timestamps that op-geth ignored at the time.
+///
+/// Returns `None` if BPO is not yet scheduled for this chain (BPO will be stripped).
+/// Returns `Some(block)` to enable BPO at the specified L2 block number.
+/// Returns `Some(0)` for unknown chains to match upstream op-geth/op-node behavior.
+const fn bpo_activation_block(chain_id: u64) -> Option<u64> {
+    match chain_id {
+        42220 => None,    // Celo Mainnet - update when Jovian scheduled
+        11142220 => None, // Celo Sepolia - update when Jovian scheduled
+        11162320 => None, // Celo Chaos - update when Jovian scheduled
+        _ => Some(0),     // Unknown chains: enable BPO by default (upstream behavior)
+    }
+}
+
 /// The boot information for the client program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CeloBootInfo {
@@ -109,21 +129,25 @@ impl CeloBootInfo {
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
 
-        // Override the L1 config to remove the BPOs and OSAKA timestamp and blob schedule for Celo,
-        // until we're ready for Fusaka in op-geth.
-        // This is done independently of the chain id, because updates are
-        // required once Mainnet or Sepolia has further changes.
+        // Check if BPO should be enabled based on the claimed L2 block number.
+        // If the chain has a BPO activation block and we're at or past it, keep BPO enabled.
+        // Otherwise, strip BPO times and blob schedule entries for legacy behavior.
         // Also pay attention when bumping kona if there're any additions to
         // l1_config.blob_schedule. https://github.com/op-rs/kona/blob/kona-client/v1.1.6/crates/protocol/registry/src/l1/mod.rs#L63-L86
-        l1_config.osaka_time = None;
-        l1_config.bpo1_time = None;
-        l1_config.bpo2_time = None;
-        l1_config.bpo3_time = None;
-        l1_config.bpo4_time = None;
-        l1_config.bpo5_time = None;
-        l1_config.blob_schedule.remove("osaka");
-        l1_config.blob_schedule.remove("bpo1");
-        l1_config.blob_schedule.remove("bpo2");
+        let enable_bpo = bpo_activation_block(chain_id)
+            .is_some_and(|activation_block| l2_claim_block >= activation_block);
+
+        if !enable_bpo {
+            l1_config.osaka_time = None;
+            l1_config.bpo1_time = None;
+            l1_config.bpo2_time = None;
+            l1_config.bpo3_time = None;
+            l1_config.bpo4_time = None;
+            l1_config.bpo5_time = None;
+            l1_config.blob_schedule.remove("osaka");
+            l1_config.blob_schedule.remove("bpo1");
+            l1_config.blob_schedule.remove("bpo2");
+        }
 
         Ok(Self {
             op_boot_info: BootInfo {
