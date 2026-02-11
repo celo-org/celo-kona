@@ -287,14 +287,14 @@ where
             + cip64_info.credit_gas_refunded;
         if total_raw_gas > intrinsic_gas_cost {
             if total_raw_gas > intrinsic_gas_cost * 2 {
-                info!(
+                warn!(
                     target: "celo_handler",
                     "Gas usage for debit+credit exceeds intrinsic gas: {} > {}",
                     total_raw_gas,
                     intrinsic_gas_cost
                 );
             } else {
-                warn!(
+                info!(
                     target: "celo_handler",
                     "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2: {} > {}",
                     total_raw_gas,
