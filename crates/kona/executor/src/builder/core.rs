@@ -236,7 +236,7 @@ mod cip64_gas_tests {
     /// Expected values from op-geth (gas_used + gas_refunded):
     /// - Debit: 47756
     /// - Credit: 22997
-    /// These values are token from the call_tracer/celo-kona-comparison.json test in op-geth.
+    /// These values are taken from the call_tracer/celo-kona-comparison.json test in op-geth.
     ///
     /// op-geth calculates: `gasUsed = maxIntrinsicGasCost - leftoverGas`
     /// which equals `gas_used + gas_refunded` in revm terminology.
