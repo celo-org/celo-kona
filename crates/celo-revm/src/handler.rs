@@ -97,6 +97,12 @@ where
             // If core contracts are missing, we'll get an empty context (for non-celo test environments).
             let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
             evm.fee_currency_context = fee_currency_context;
+
+            // Reset warmness after context loading to match op-geth behavior.
+            // In op-geth, context loading uses a separate EVM instance, so no warmness
+            // is shared with subsequent transaction processing. This affects all
+            // transactions, not just CIP-64, ensuring consistent gas accounting.
+            self.reset_warmness_to_default(evm);
         }
 
         Ok(())
@@ -130,6 +136,33 @@ where
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(|e| ERROR::from_string(e))?;
         Ok(max_allowed_gas_cost)
+    }
+
+    /// Reset account warmness to the default state after fee currency context loading.
+    ///
+    /// This marks all accounts in the journal state with `AccountStatus::Cold`,
+    /// effectively isolating the context loading phase from transaction processing.
+    /// This matches op-geth's behavior where context loading uses a separate EVM instance.
+    ///
+    /// After this reset, warmness is determined by:
+    /// - Precompiles: warm (via WarmAddresses.precompile_set)
+    /// - Coinbase: warm (via WarmAddresses.coinbase, set later by load_accounts)
+    /// - Access list entries: warm (set later by load_accounts from tx access list)
+    /// - All other accounts: cold (first access costs 2600 gas)
+    ///
+    /// This is called right after context loading, before any transaction processing
+    /// (including CIP-64 debit). The sender account becomes cold here, but:
+    /// - For CIP-64 debit/credit: sender is not directly accessed, only the fee
+    ///   currency contract is called (which reads sender's balance from its storage)
+    /// - For main transaction: load_accounts() runs after debit and sets up the
+    ///   access list properly, warming the sender
+    fn reset_warmness_to_default(&self, evm: &mut CeloEvm<DB, INSP>) {
+        use revm::state::AccountStatus;
+
+        // Mark all loaded accounts as cold
+        for account in evm.ctx().journal_mut().state.values_mut() {
+            account.status |= AccountStatus::Cold;
+        }
     }
 
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
@@ -185,18 +218,16 @@ where
         let base_tx_charge =
             base_fee_in_erc20.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
 
+        // Subtract raw debit gas (before refunds) to match op-geth, which computes
+        // gasUsed = maxIntrinsicGasCost - leftoverGas (no refund adjustment).
+        let ctx = evm.ctx();
+        let cip64_info = ctx.tx().cip64_tx_info.as_ref().unwrap();
+        let debit_raw_gas = cip64_info.debit_gas_used + cip64_info.debit_gas_refunded;
         let max_allowed_gas_cost = self
             .cip64_max_allowed_gas_cost(evm, fee_currency)?
-            .saturating_sub(
-                evm.ctx()
-                    .tx()
-                    .cip64_tx_info
-                    .as_ref()
-                    .unwrap()
-                    .actual_intrinsic_gas_used,
-            );
+            .saturating_sub(debit_raw_gas);
 
-        let (logs, gas_used) = erc20::credit_gas_fees(
+        let (logs, credit_gas_used, credit_gas_refunded) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -211,47 +242,62 @@ where
 
         // Collect logs from the system call to be included in the final receipt
         let mut tx = evm.ctx().tx().clone();
-        let old_cip64_tx_info = tx.cip64_tx_info.as_ref().unwrap();
-        tx.cip64_tx_info = Some(Cip64Info {
-            actual_intrinsic_gas_used: old_cip64_tx_info.actual_intrinsic_gas_used + gas_used,
-            logs_pre: old_cip64_tx_info.logs_pre.clone(),
-            logs_post: logs,
-        });
+        let info = tx.cip64_tx_info.as_mut().unwrap();
+        info.credit_gas_used = credit_gas_used;
+        info.credit_gas_refunded = credit_gas_refunded;
+        info.logs_post = logs;
         evm.ctx().set_tx(tx);
-        self.warn_if_gas_cost_exceeds_intrinsic_gas_cost(evm, fee_currency)?;
+        self.log_and_warn_gas_cost(evm, fee_currency)?;
         Ok(())
     }
 
-    fn warn_if_gas_cost_exceeds_intrinsic_gas_cost(
+    /// Logs a summary of the CIP-64 gas costs and warns if they exceed the intrinsic gas cost.
+    fn log_and_warn_gas_cost(
         &self,
         evm: &mut CeloEvm<DB, INSP>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
-        let gas_cost = evm
-            .ctx()
-            .tx()
-            .cip64_tx_info
-            .as_ref()
-            .unwrap()
-            .actual_intrinsic_gas_used;
+        let cip64_info = evm.ctx().tx().cip64_tx_info.clone().unwrap();
+
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| ERROR::from_string(e))?;
 
-        if gas_cost > intrinsic_gas_cost {
-            if gas_cost > intrinsic_gas_cost * 2 {
-                info!(
+        // Log the gas summary for debugging and verification
+        // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
+        info!(
+            target: "celo_handler",
+            "CIP-64 gas summary: fee_currency={:?}, \
+            debit(gas_used={}, gas_refunded={}), \
+            credit(gas_used={}, gas_refunded={}), \
+            intrinsic_gas={}",
+            fee_currency,
+            cip64_info.debit_gas_used,
+            cip64_info.debit_gas_refunded,
+            cip64_info.credit_gas_used,
+            cip64_info.credit_gas_refunded,
+            intrinsic_gas_cost
+        );
+
+        // Compare raw gas (before refunds) against intrinsic gas limit
+        let total_raw_gas = cip64_info.debit_gas_used
+            + cip64_info.debit_gas_refunded
+            + cip64_info.credit_gas_used
+            + cip64_info.credit_gas_refunded;
+        if total_raw_gas > intrinsic_gas_cost {
+            if total_raw_gas > intrinsic_gas_cost * 2 {
+                warn!(
                     target: "celo_handler",
-                    "Gas usage for debit+credit exceeds intrinsic gas: {:} > {:}",
-                    gas_cost,
+                    "Gas usage for debit+credit exceeds intrinsic gas: {} > {}",
+                    total_raw_gas,
                     intrinsic_gas_cost
                 );
             } else {
-                warn!(
+                info!(
                     target: "celo_handler",
-                    "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2.: {:} > {:}",
-                    gas_cost,
+                    "Gas usage for debit+credit exceeds intrinsic gas, within a factor of 2: {} > {}",
+                    total_raw_gas,
                     intrinsic_gas_cost
                 );
             }
@@ -272,7 +318,7 @@ where
 
         let fee_currency_context = &evm.fee_currency_context;
 
-        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
+        // For CIP-64 transactions, debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
         if fee_currency_context
             .currency_exchange_rate(fee_currency)
@@ -289,26 +335,17 @@ where
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
 
-        let balance = erc20::get_balance(evm, fee_currency_addr, caller_addr)
-            .map_err(|e| ERROR::from_string(format!("Failed to get ERC20 balance: {e}")))?;
-
         let gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
             .map(|gas_cost| U256::from(gas_cost))
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
 
-        if balance < gas_cost {
-            return Err(InvalidTransaction::LackOfFundForMaxFee {
-                fee: Box::new(gas_cost),
-                balance: Box::new(balance),
-            }
-            .into());
-        }
-
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
         // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        let (logs, gas_used) = erc20::debit_gas_fees(
+        // Note: Warmness was already reset in load_fee_currency_context() after context loading,
+        // so accounts warmed during context loading are now cold.
+        let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
             caller_addr,
@@ -320,7 +357,10 @@ where
         // Store CIP64 transaction information by modifying the transaction
         let mut tx = evm.ctx().tx().clone();
         tx.cip64_tx_info = Some(Cip64Info {
-            actual_intrinsic_gas_used: gas_used,
+            debit_gas_used,
+            debit_gas_refunded,
+            credit_gas_used: 0,
+            credit_gas_refunded: 0,
             logs_pre: logs,
             logs_post: Vec::new(),
         });
