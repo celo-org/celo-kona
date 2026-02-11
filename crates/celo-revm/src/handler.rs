@@ -320,7 +320,7 @@ where
 
         let fee_currency_context = &evm.fee_currency_context;
 
-        // For CIP-64 transactions, check ERC20 balance AND debit the erc20 for fees before borrowing caller_account
+        // For CIP-64 transactions, debit the erc20 for fees before borrowing caller_account
         // Check if the fee currency is registered
         if fee_currency_context
             .currency_exchange_rate(fee_currency)
