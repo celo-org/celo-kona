@@ -52,7 +52,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alloy-celo-evm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "celo-alloy-consensus"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "celo-alloy-network"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -1666,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "celo-alloy-rpc-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "celo-alloy-rpc-types-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "celo-client"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "celo-driver"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "celo-executor"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "celo-genesis"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "celo-host"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "celo-otel"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "celo-proof"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "celo-protocol"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1929,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "celo-registry"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "celo-revm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "execution-verifier"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "alloy-celo-evm",
  "alloy-consensus",
