@@ -6,10 +6,13 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
+use alloy_evm::{Database, Evm, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
-use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo};
+use celo_revm::{
+    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo,
+    celo_precompiles_map,
+};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
@@ -19,7 +22,9 @@ use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
     context_interface::result::{EVMError, ResultAndState},
+    handler::PrecompileProvider,
     inspector::NoOpInspector,
+    interpreter::InterpreterResult,
 };
 
 pub mod block;
@@ -33,13 +38,13 @@ use cip64_storage::{Cip64Storage, CurrentCip64Context, get_tx_identifier};
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// [`CeloEvm`](celo_revm::CeloEvm) type.
 #[allow(missing_debug_implementations)] // missing celo_revm::CeloContext Debug impl
-pub struct CeloEvm<DB: Database, I> {
-    inner: celo_revm::CeloEvm<DB, I>,
+pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
+    inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
 }
 
-impl<DB: Database, I> CeloEvm<DB, I> {
+impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &CeloContext<DB> {
         &self.inner.inner.0.ctx
@@ -59,6 +64,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     pub fn create_fee_currency_context(&mut self) -> celo_revm::FeeCurrencyContext
     where
         I: Inspector<CeloContext<DB>>,
+        P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
         celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
@@ -69,17 +75,17 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> CeloEvm<DB, I> {
+impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// Creates a new Celo EVM instance.
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
-    pub fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
+    pub fn new(evm: celo_revm::CeloEvm<DB, I, P>, inspect: bool) -> Self {
         Self { inner: evm, inspect, cip64_storage: Cip64Storage::default() }
     }
 }
 
-impl<DB: Database, I> Deref for CeloEvm<DB, I> {
+impl<DB: Database, I, P> Deref for CeloEvm<DB, I, P> {
     type Target = CeloContext<DB>;
 
     #[inline]
@@ -88,17 +94,18 @@ impl<DB: Database, I> Deref for CeloEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> DerefMut for CeloEvm<DB, I> {
+impl<DB: Database, I, P> DerefMut for CeloEvm<DB, I, P> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
     }
 }
 
-impl<DB, I> Evm for CeloEvm<DB, I>
+impl<DB, I, P> Evm for CeloEvm<DB, I, P>
 where
     DB: Database,
     I: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type DB = DB;
     type Tx = CeloTransaction<TxEnv>;
@@ -106,7 +113,7 @@ where
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
-    type Precompiles = CeloPrecompiles;
+    type Precompiles = P;
     type Inspector = I;
 
     fn block(&self) -> &BlockEnv {
@@ -275,7 +282,8 @@ where
 pub struct CeloEvmFactory;
 
 impl EvmFactory for CeloEvmFactory {
-    type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I>;
+    type Evm<DB: Database, I: Inspector<CeloContext<DB>>> =
+        CeloEvm<DB, I, PrecompilesMap>;
     type Context<DB: Database> = CeloContext<DB>;
     type Tx = CeloTransaction<TxEnv>;
     type Error<DBError: core::error::Error + Send + Sync + 'static> =
@@ -283,7 +291,7 @@ impl EvmFactory for CeloEvmFactory {
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
-    type Precompiles = CeloPrecompiles;
+    type Precompiles = PrecompilesMap;
 
     fn create_evm<DB: Database>(
         &self,
@@ -297,7 +305,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
                 .build_celo_with_inspector(NoOpInspector {})
-                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
+                .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: false,
             cip64_storage: Cip64Storage::default(),
         }
@@ -316,7 +324,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
                 .build_celo_with_inspector(inspector)
-                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
+                .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: true,
             cip64_storage: Cip64Storage::default(),
         }

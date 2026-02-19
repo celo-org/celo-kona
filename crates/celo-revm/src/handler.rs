@@ -85,13 +85,14 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<ERROR, DB, INSP> CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
+impl<ERROR, DB, INSP, P> CeloHandler<CeloEvm<DB, INSP, P>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    P: revm::handler::PrecompileProvider<CeloContext<DB>, Output = revm::interpreter::InterpreterResult>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
-    fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP>) -> Result<(), ERROR> {
+    fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP, P>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
         if evm.fee_currency_context.updated_at_block != Some(current_block) {
             // Update the chain with the new fee currency context.
@@ -111,7 +112,7 @@ where
 
     fn cip64_get_base_fee_in_erc20(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
         basefee: u64,
     ) -> Result<u128, ERROR> {
@@ -129,7 +130,7 @@ where
 
     fn cip64_max_allowed_gas_cost(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
     ) -> Result<u64, ERROR> {
         let fee_currency_context = &evm.fee_currency_context;
@@ -157,7 +158,7 @@ where
     ///   currency contract is called (which reads sender's balance from its storage)
     /// - For main transaction: load_accounts() runs after debit and sets up the
     ///   access list properly, warming the sender
-    fn reset_warmness_to_default(&self, evm: &mut CeloEvm<DB, INSP>) {
+    fn reset_warmness_to_default(&self, evm: &mut CeloEvm<DB, INSP, P>) {
         use revm::state::AccountStatus;
 
         // Mark all loaded accounts as cold
@@ -174,7 +175,7 @@ where
     // - pay for l1 cost
     fn cip64_credit_fee_currency(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
         exec_result: &mut FrameResult,
     ) -> Result<(), ERROR> {
         let ctx = evm.ctx();
@@ -255,7 +256,7 @@ where
     /// Logs a summary of the CIP-64 gas costs and warns if they exceed the intrinsic gas cost.
     fn log_and_warn_gas_cost(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
         let cip64_info = evm.ctx().tx().cip64_tx_info.clone().unwrap();
@@ -308,7 +309,7 @@ where
 
     fn cip64_validate_erc20_and_debit_gas_fees(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
     ) -> Result<(), ERROR> {
         let ctx = evm.ctx();
         let tx = ctx.tx();
@@ -375,7 +376,7 @@ where
 
     fn validate_celo_initial_tx_gas(
         &self,
-        evm: &mut CeloEvm<DB, INSP>,
+        evm: &mut CeloEvm<DB, INSP, P>,
     ) -> Result<InitialAndFloorGas, ERROR> {
         // Extract needed values first to avoid borrowing conflicts
         let ctx = evm.ctx();
@@ -420,14 +421,15 @@ where
     }
 }
 
-impl<ERROR, DB, INSP> Handler
-    for CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
+impl<ERROR, DB, INSP, P> Handler
+    for CeloHandler<CeloEvm<DB, INSP, P>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    P: revm::handler::PrecompileProvider<CeloContext<DB>, Output = revm::interpreter::InterpreterResult>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
-    type Evm = CeloEvm<DB, INSP>;
+    type Evm = CeloEvm<DB, INSP, P>;
     type Error = ERROR;
     type HaltReason = OpHaltReason;
 
@@ -801,12 +803,13 @@ where
     }
 }
 
-impl<ERROR, DB, INSP> InspectorHandler
-    for CeloHandler<CeloEvm<DB, INSP>, ERROR, revm::handler::EthFrame<EthInterpreter>>
+impl<ERROR, DB, INSP, P> InspectorHandler
+    for CeloHandler<CeloEvm<DB, INSP, P>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP>> + From<OpTransactionError> + FromStringError + IsTxError,
+    P: revm::handler::PrecompileProvider<CeloContext<DB>, Output = revm::interpreter::InterpreterResult>,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
     type IT = EthInterpreter;
 }

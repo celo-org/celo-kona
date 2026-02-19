@@ -5,22 +5,24 @@ use revm::{
     context::{ContextError, Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
     handler::{
-        EvmTr, FrameInitOrResult, ItemOrResult, evm::FrameTr, instructions::EthInstructions,
+        EvmTr, FrameInitOrResult, ItemOrResult, PrecompileProvider, evm::FrameTr,
+        instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
-pub struct CeloEvm<DB: Database, INSP> {
+pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
     pub inner: OpEvm<
         CeloContext<DB>,
         INSP,
         EthInstructions<EthInterpreter, CeloContext<DB>>,
-        CeloPrecompiles,
+        P,
     >,
     pub fee_currency_context: FeeCurrencyContext,
 }
 
+/// Constructor for the default precompile type (CeloPrecompiles).
 impl<DB, INSP> CeloEvm<DB, INSP>
 where
     DB: Database,
@@ -37,18 +39,38 @@ where
             fee_currency_context: FeeCurrencyContext::default(),
         }
     }
+}
+
+/// Methods generic over any precompile provider.
+impl<DB, INSP, P> CeloEvm<DB, INSP, P>
+where
+    DB: Database,
+{
+    /// Creates a new CeloEvm with the given context, inspector, and precompiles.
+    pub fn new_with_precompiles(ctx: CeloContext<DB>, inspector: INSP, precompiles: P) -> Self {
+        Self {
+            inner: OpEvm(Evm {
+                ctx,
+                inspector,
+                instruction: EthInstructions::new_mainnet(),
+                precompiles,
+                frame_stack: FrameStack::new(),
+            }),
+            fee_currency_context: FeeCurrencyContext::default(),
+        }
+    }
 
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP> {
-        Self {
+    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> CeloEvm<DB, OINSP, P> {
+        CeloEvm {
             inner: OpEvm(self.inner.0.with_inspector(inspector)),
             fee_currency_context: self.fee_currency_context,
         }
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<DB, INSP> {
-        Self {
+    pub fn with_precompiles<OP>(self, precompiles: OP) -> CeloEvm<DB, INSP, OP> {
+        CeloEvm {
             inner: OpEvm(self.inner.0.with_precompiles(precompiles)),
             fee_currency_context: self.fee_currency_context,
         }
@@ -60,10 +82,11 @@ where
     }
 }
 
-impl<DB, INSP> InspectorEvmTr for CeloEvm<DB, INSP>
+impl<DB, INSP, P> InspectorEvmTr for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type Inspector = INSP;
 
@@ -94,19 +117,20 @@ where
     }
 }
 
-impl<DB, INSP> EvmTr for CeloEvm<DB, INSP>
+impl<DB, INSP, P> EvmTr for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     CeloContext<DB>: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type Context = CeloContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, CeloContext<DB>>;
-    type Precompiles = CeloPrecompiles;
+    type Precompiles = P;
     type Frame = <op_revm::OpEvm<
         CeloContext<DB>,
         INSP,
         EthInstructions<EthInterpreter, CeloContext<DB>>,
-        CeloPrecompiles,
+        P,
     > as EvmTr>::Frame;
 
     #[inline]
@@ -152,8 +176,6 @@ where
         self.inner.frame_run()
     }
 
-    #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
-    #[doc = " Consumes the frame result or returns it if there is more frames to run."]
     fn frame_return_result(
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,

@@ -1,7 +1,8 @@
 pub mod transfer;
 
-pub use transfer::{TRANSFER_ADDRESS, transfer_run};
+pub use transfer::{TRANSFER_ADDRESS, transfer_precompile_call, transfer_run};
 
+use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use core::iter;
 use op_revm::{OpSpecId, precompiles::OpPrecompiles};
 use revm::{
@@ -9,6 +10,7 @@ use revm::{
     context_interface::ContextTr,
     handler::PrecompileProvider,
     interpreter::{CallInputs, InterpreterResult},
+    precompile::PrecompileId,
     primitives::Address,
 };
 use std::{boxed::Box, string::String};
@@ -72,6 +74,22 @@ impl Default for CeloPrecompiles {
     fn default() -> Self {
         Self::new_with_spec(OpSpecId::ISTHMUS)
     }
+}
+
+/// Creates a [`PrecompilesMap`] containing all Celo precompiles for the given spec.
+///
+/// This builds on top of the OP precompiles and adds the Celo transfer precompile.
+/// Use this when constructing EVMs that require `PrecompilesMap` (e.g. for reth integration).
+pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
+    let mut map =
+        PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
+    map.apply_precompile(&TRANSFER_ADDRESS, |_| {
+        Some(DynPrecompile::new_stateful(
+            PrecompileId::Custom("celo-transfer".into()),
+            move |input| transfer_precompile_call(input, spec_id),
+        ))
+    });
+    map
 }
 
 #[cfg(test)]

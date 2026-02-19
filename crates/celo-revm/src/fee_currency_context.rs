@@ -37,10 +37,14 @@ impl FeeCurrencyContext {
     }
 
     /// Initialize with values read from the EVM
-    pub fn new_from_evm<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> FeeCurrencyContext
+    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> FeeCurrencyContext
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
+        P: revm::handler::PrecompileProvider<
+            CeloContext<DB>,
+            Output = revm::interpreter::InterpreterResult,
+        >,
     {
         let currencies = get_currency_info(evm);
         let current_block_number = evm.ctx().block().number;

@@ -10,6 +10,7 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
 };
+use alloy_evm::precompiles::PrecompileInput;
 use std::borrow::Cow;
 use std::{format, string::String};
 
@@ -109,6 +110,87 @@ where
     // If the addresses were cold initially and we're pre-Jovian, make them cold again.
     revert_account_cold_status(context, from, revert_from_cold);
     revert_account_cold_status(context, to, revert_to_cold);
+
+    if let Ok(Some(transfer_err)) = result {
+        return Err(PrecompileError::Other(Cow::Owned(format!(
+            "transfer error occurred: {transfer_err:?}"
+        ))));
+    } else if let Err(db_err) = result {
+        return Err(PrecompileError::Other(Cow::Owned(format!(
+            "database error occurred: {db_err:?}"
+        ))));
+    }
+
+    Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new()))
+}
+
+/// Implementation of the transfer precompile using the [`PrecompileInput`] API.
+/// This is used when the precompile is registered as a [`DynPrecompile`](alloy_evm::precompiles::DynPrecompile)
+/// in a [`PrecompilesMap`](alloy_evm::precompiles::PrecompilesMap).
+///
+/// The `spec` parameter must be captured at the time the precompile is created
+/// (e.g. at EVM factory construction time).
+pub fn transfer_precompile_call(
+    mut input: PrecompileInput<'_>,
+    spec: OpSpecId,
+) -> PrecompileResult {
+    if input.is_static {
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "transfer precompile cannot be called in static context",
+        )));
+    }
+
+    if input.gas < TRANSFER_GAS_COST {
+        return Err(PrecompileError::OutOfGas);
+    }
+
+    if input.caller != constants::get_addresses(input.internals.chain_id()).celo_token {
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "invalid caller for transfer precompile",
+        )));
+    }
+
+    if input.data.len() != 96 {
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "invalid input length",
+        )));
+    }
+
+    let from = Address::from_slice(&input.data[12..32]);
+    let to = Address::from_slice(&input.data[44..64]);
+    let value = U256::from_be_slice(&input.data[64..96]);
+
+    // Before Jovian, the Celo transfer precompile does not warm either address, so we need to
+    // check if they were cold initially to match original Celo implementation behavior, and
+    // make them cold again after the transfer. Starting with Jovian, this quirk is removed.
+    let revert_cold_status = !spec.is_enabled_in(OpSpecId::JOVIAN);
+    let revert_from_cold = revert_cold_status && {
+        match input.internals.load_account(from) {
+            Ok(account) => account.is_cold,
+            Err(_) => true,
+        }
+    };
+    let revert_to_cold = revert_cold_status && {
+        match input.internals.load_account(to) {
+            Ok(account) => account.is_cold,
+            Err(_) => true,
+        }
+    };
+
+    // Now do the transfer (which will load both accounts and warm them)
+    let result = input.internals.transfer(from, to, value);
+
+    // If the addresses were cold initially and we're pre-Jovian, make them cold again.
+    if revert_from_cold {
+        if let Ok(mut journaled_account) = input.internals.load_account_mut(from) {
+            journaled_account.data.unsafe_mark_cold();
+        }
+    }
+    if revert_to_cold {
+        if let Ok(mut journaled_account) = input.internals.load_account_mut(to) {
+            journaled_account.data.unsafe_mark_cold();
+        }
+    }
 
     if let Ok(Some(transfer_err)) = result {
         return Err(PrecompileError::Other(Cow::Owned(format!(
