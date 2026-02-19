@@ -277,6 +277,7 @@ mod tests {
                 nonce: 0,
                 code_hash: bytecode.hash_slow(),
                 code: Some(bytecode),
+                account_id: None,
             };
             db.insert_account_info(celo_address, account_info);
         }

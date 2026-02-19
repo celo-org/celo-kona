@@ -5,6 +5,7 @@ use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
     context::{Cfg, ContextTr, JournalTr},
+    context_interface::journaled_state::account::JournaledAccountTr,
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},

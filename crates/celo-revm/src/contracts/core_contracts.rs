@@ -349,6 +349,7 @@ pub(crate) mod tests {
                 nonce: 0,
                 code_hash: bytecode.hash_slow(),
                 code: Some(bytecode),
+                account_id: None,
             };
             db.insert_account_info(oracle_address, account_info);
         }
@@ -381,6 +382,7 @@ pub(crate) mod tests {
                 nonce: 0,
                 code_hash: bytecode.hash_slow(),
                 code: Some(bytecode),
+                account_id: None,
             };
             db.insert_account_info(get_addresses(0).fee_currency_directory, account_info);
         }
