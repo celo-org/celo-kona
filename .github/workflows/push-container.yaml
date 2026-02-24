@@ -1,0 +1,66 @@
+name: Push container
+on:
+  workflow_call:
+    inputs:
+      artifact-registry:
+        required: true
+        type: string
+      file:
+        required: true
+        type: string
+      workload-id-provider:
+        required: true
+        type: string
+      service-account:
+        required: true
+        type: string
+      concurrency-group:
+        required: false
+        type: string
+jobs:
+  infer_image_metadata:
+    name: Infer image tags from github ref type
+    runs-on: [self-hosted, org, 8-cpu]
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.artifact-registry }}
+          tags: |
+            type=semver,pattern={{version}},match=celo/v(.*)
+            type=semver,pattern=v{{major}},match=celo/v(\d+\.\d+\.\d+)$
+            type=edge
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            # pull request event
+            type=ref,event=pr
+  build_push_container:
+    needs: infer_image_metadata
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      security-events: write
+      attestations: write
+      id-token: write
+    concurrency:
+      group: ${{ inputs.concurrency-group != ''
+        && inputs.concurrency-group
+        || format('{0}-{1}', github.workflow, (github.head_ref != '' && github.head_ref || github.ref)) }}
+      cancel-in-progress: true
+    uses: celo-org/reusable-workflows/.github/workflows/docker-build.yaml@v3.1
+    with:
+      runs-on: '["self-hosted", "org", "8-cpu"]'
+      workload-id-provider: ${{ inputs.workload-id-provider }}
+      service-account: ${{ inputs.service-account }}
+      artifact-registry: ${{ inputs.artifact-registry}}
+      access-token-lifetime: 120m
+      timeout-minutes: 120
+      context: .
+      file: ${{ inputs.file }}
+      tags: ${{ needs.infer_image_metadata.outputs.tags }}
+      trivy-enabled: false
