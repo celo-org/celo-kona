@@ -214,7 +214,8 @@
             "fjord_time": 0,
             "granite_time": 0,
             "holocene_time": 0,
-            "isthmus_time": 0
+            "isthmus_time": 0,
+            "jovian_time": 1772107875
           },
           "optimism": {
             "eip1559Elasticity": 5,
@@ -243,7 +244,9 @@
               "scalar": "0x0100000000000000000000000000000000000000000000000000000000000000",
               "gasLimit": 30000000,
               "eip1559Params": "0x0000000000000000",
-              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000"
+              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "minBaseFee": 0,
+              "daFootprintGasScalar": 0
             }
           },
           "Addresses": {
