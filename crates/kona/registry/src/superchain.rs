@@ -1,7 +1,16 @@
 //! Contains the full superchain data.
 
 use super::ChainList;
-use alloy_primitives::map::HashMap;
+use alloy_primitives::{address, map::HashMap};
+
+const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
+const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
+const CELO_MAINNET_CHAIN_ID: u64 = 42220;
+
+// The pre-Granite channel timeout for Celo Mainnet, as configured in the node RPC rollup config.
+// chain_config.as_rollup_config() defaults to 300, but Celo Mainnet uses 50.
+const CELO_MAINNET_CHANNEL_TIMEOUT: u64 = 50;
+
 use celo_genesis::CeloRollupConfig;
 use kona_genesis::{ChainConfig, Superchains};
 
@@ -49,6 +58,28 @@ impl Registry {
                     .protocol_versions_addr
                     .expect("Missing protocol versions address");
                 rollup.superchain_config_address = superchain.config.superchain_config_addr;
+
+                // Override rollup config for Chaos, Celo Sepolia, and Celo Mainnet to match
+                // the rollup config returned by node RPC.
+                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID {
+                    // protocol_versions_address inherits from the superchain config (Sepolia has
+                    // a single value), but Chaos and Celo Sepolia have a different address.
+                    rollup.protocol_versions_address =
+                        address!("0x433a83893dda68b941d4aefa908ded9c599522ad");
+                } else if rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID {
+                    // chain_config.as_rollup_config() defaults channel_timeout to 300, but the
+                    // node RPC rollup config for Celo Mainnet uses CELO_MAINNET_CHANNEL_TIMEOUT.
+                    rollup.channel_timeout = CELO_MAINNET_CHANNEL_TIMEOUT;
+                }
+
+                // chain_config.as_rollup_config() copies da_challenge_address from
+                // alt_da_config.da_challenge_address, but the node RPC rollup config does not.
+                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID ||
+                    rollup.l2_chain_id == CELO_SEPOLIA_CHAIN_ID ||
+                    rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID
+                {
+                    rollup.da_challenge_address = None;
+                }
                 // Wrap RollupConfig to CeloRollupConfig
                 let celo_rollup = CeloRollupConfig(rollup);
                 rollup_configs.insert(chain_config.chain_id, celo_rollup);
