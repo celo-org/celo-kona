@@ -18,8 +18,7 @@
           "holocene_time": 1736445601,
           "isthmus_time": 1746806401
         },
-        "protocol_versions_addr": "0x8062abc286f5e7d9428a0ccb9abd71e50d93b935",
-        "superchain_config_addr": "0x95703e0982140d16f8eba6d158fccede42f04a4c",
+        "protocol_versions_addr": "0x1b6deb2197418075ab314ac4d52ca1d104a8f663",
         "op_contracts_manager_proxy_addr": null
       },
       "chains": [
@@ -38,13 +37,15 @@
           "max_sequencer_drift": 2892,
           "GasPayingToken": "0x057898f3C43F129a17517B9056D23851F124b19f",
           "hardfork_configuration": {
+            "regolith_time": 0,
             "canyon_time": 0,
             "delta_time": 0,
             "ecotone_time": 0,
             "fjord_time": 0,
             "granite_time": 0,
             "holocene_time": 1752073200,
-            "isthmus_time": 1752073200
+            "isthmus_time": 1752073200,
+            "pectra_blob_schedule_time": 1752073200
           },
           "optimism": {
             "eip1559Elasticity": 5,
@@ -52,6 +53,7 @@
             "eip1559DenominatorCanyon": 400
           },
           "alt_da": {
+            "da_challenge_address": "0x0000000000000000000000000000000000000000",
             "da_challenge_window": 1,
             "da_resolve_window": 1,
             "da_commitment_type": "GenericCommitment"
@@ -70,7 +72,9 @@
               "batcherAddress": "0x0cd08c7f7A96AA9635f761b49216B9eA74C5cA60",
               "overhead": "0x0000000000000000000000000000000000000000000000000000000000000000",
               "scalar": "0x0100000000000000000000000000000000000000000000000000000000000000",
-              "gasLimit": 30000000
+              "gasLimit": 30000000,
+              "eip1559Params": "0x0000000000000000",
+              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000"
             }
           },
           "Roles": {
@@ -114,8 +118,7 @@
           "explorer": "https://sepolia.etherscan.io"
         },
         "hardforks": {},
-        "protocol_versions_addr": "0x8062AbC286f5e7D9428a0Ccb9AbD71e50d93b935",
-        "superchain_config_addr": "0x95703e0982140D16f8ebA6d158FccEde42f04a4C",
+        "protocol_versions_addr": "0x0e2d45f3393c3a02ebf285f998c5bf990a1541cd",
         "op_contracts_manager_proxy_addr": null
       },
       "chains": [
@@ -135,6 +138,7 @@
           "max_sequencer_drift": 600,
           "GasPayingToken": "0x44ae3d41a335a7d05eb533029917aad35662dcc2",
           "hardfork_configuration": {
+            "regolith_time": 0,
             "canyon_time": 0,
             "delta_time": 0,
             "ecotone_time": 0,
@@ -149,6 +153,7 @@
             "eip1559DenominatorCanyon": 250
           },
           "alt_da": {
+            "da_challenge_address": "0x0000000000000000000000000000000000000000",
             "da_challenge_window": 1,
             "da_resolve_window": 1,
             "da_commitment_type": "GenericCommitment"
@@ -209,7 +214,8 @@
             "fjord_time": 0,
             "granite_time": 0,
             "holocene_time": 0,
-            "isthmus_time": 0
+            "isthmus_time": 0,
+            "jovian_time": 1772107875
           },
           "optimism": {
             "eip1559Elasticity": 5,
@@ -217,6 +223,7 @@
             "eip1559DenominatorCanyon": 250
           },
           "alt_da": {
+            "da_challenge_address": "0x0000000000000000000000000000000000000000",
             "da_commitment_type": "GenericCommitment",
             "da_challenge_window": 1,
             "da_resolve_window": 1
@@ -237,7 +244,9 @@
               "scalar": "0x0100000000000000000000000000000000000000000000000000000000000000",
               "gasLimit": 30000000,
               "eip1559Params": "0x0000000000000000",
-              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000"
+              "operatorFeeParams": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "minBaseFee": 0,
+              "daFootprintGasScalar": 0
             }
           },
           "Addresses": {
