@@ -7,7 +7,8 @@ use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{Eip1559ValidationError, ExecutorError, ExecutorResult};
 use op_alloy_consensus::{
-    decode_holocene_extra_data, decode_jovian_extra_data, encode_holocene_extra_data,
+    EIP1559ParamError, decode_holocene_extra_data, decode_jovian_extra_data,
+    encode_holocene_extra_data, encode_jovian_extra_data,
 };
 
 /// Parse Holocene [Header] extra data.
@@ -72,6 +73,35 @@ pub(crate) fn encode_holocene_eip_1559_params(
             .eip_1559_params
             .ok_or(ExecutorError::MissingEIP1559Params)?,
         config.chain_op_config.post_canyon_params(),
+    )?)
+}
+
+/// Encode Jovian [Header] extra data.
+///
+/// ## Takes
+/// - `config`: The [CeloRollupConfig] for the chain.
+/// - `attributes`: The [CeloPayloadAttributes] for the block.
+///
+/// ## Returns
+/// - `Ok(data)`: The encoded extra data (17 bytes: version + eip1559 params + min base fee).
+/// - `Err(ExecutorError::MissingEIP1559Params)`: If the EIP-1559 parameters or min base fee are
+///   missing.
+pub(crate) fn encode_jovian_eip_1559_params(
+    config: &CeloRollupConfig,
+    attributes: &CeloPayloadAttributes,
+) -> ExecutorResult<Bytes> {
+    Ok(encode_jovian_extra_data(
+        attributes
+            .op_payload_attributes
+            .eip_1559_params
+            .ok_or(ExecutorError::MissingEIP1559Params)?,
+        config.chain_op_config.post_canyon_params(),
+        attributes
+            .op_payload_attributes
+            .min_base_fee
+            .ok_or(ExecutorError::InvalidExtraData(
+                Eip1559ValidationError::Decode(EIP1559ParamError::MinBaseFeeNotSet),
+            ))?,
     )?)
 }
 
