@@ -175,15 +175,15 @@ impl ExecutorTestFixtureCreator {
                             .expect("Invalid header format for Holocene")
                     },
                 ),
-                min_base_fee: rollup_config
-                    .is_jovian_active(executing_header.timestamp)
-                    .then(|| {
+                min_base_fee: rollup_config.is_jovian_active(executing_header.timestamp).then(
+                    || {
                         // The min base fee is the bytes 9-17 of the extra data.
                         executing_header.extra_data[9..17]
                             .try_into()
                             .map(u64::from_be_bytes)
                             .expect("Invalid header format for Jovian")
-                    }),
+                    },
+                ),
             },
         };
 

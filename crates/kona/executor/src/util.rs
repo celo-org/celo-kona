@@ -96,12 +96,9 @@ pub(crate) fn encode_jovian_eip_1559_params(
             .eip_1559_params
             .ok_or(ExecutorError::MissingEIP1559Params)?,
         config.chain_op_config.post_canyon_params(),
-        attributes
-            .op_payload_attributes
-            .min_base_fee
-            .ok_or(ExecutorError::InvalidExtraData(
-                Eip1559ValidationError::Decode(EIP1559ParamError::MinBaseFeeNotSet),
-            ))?,
+        attributes.op_payload_attributes.min_base_fee.ok_or(ExecutorError::InvalidExtraData(
+            Eip1559ValidationError::Decode(EIP1559ParamError::MinBaseFeeNotSet),
+        ))?,
     )?)
 }
 
