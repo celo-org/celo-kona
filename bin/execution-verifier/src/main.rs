@@ -422,10 +422,14 @@ async fn verify_block(
             no_tx_pool: None,
             eip_1559_params: rollup_config
                 .is_holocene_active(executing_header.timestamp)
-                .then(|| executing_header.extra_data[1..].try_into())
+                .then(|| executing_header.extra_data[1..9].try_into())
                 .transpose()
                 .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
-            min_base_fee: None,
+            min_base_fee: rollup_config
+                .is_jovian_active(executing_header.timestamp)
+                .then(|| executing_header.extra_data[9..17].try_into().map(u64::from_be_bytes))
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("Invalid header format for Jovian"))?,
         },
     };
 
