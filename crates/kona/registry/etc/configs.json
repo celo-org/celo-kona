@@ -200,7 +200,7 @@
           "SuperchainLevel": 0,
           "GovernedByOptimism": false,
           "DataAvailabilityType": "alt-da",
-          "GasPayingToken": "0x24AB1e36289BA2689Cb346e628431e353457471C",
+          "GasPayingToken": "0x894afac3694c29b506d012e32b3d07aaa027a854",
           "l2_chain_id": 11162320,
           "batch_inbox_address": "0x00ff59048b8ce3179c1c007e31227b1b8bb50b65",
           "block_time": 1,
@@ -230,14 +230,14 @@
           },
           "genesis": {
             "l1": {
-              "hash": "0x30516c3a57ffd51129a708c07ba3e61bbc1e745fe551e464849accbc78fb6344",
-              "number": 9382986
+              "hash": "0x93497fa13b9a4ba0de8a85b1dc6de2553aa234fc6be712030a3431855b18acfd",
+              "number": 10369105
             },
             "l2": {
-              "hash": "0x43f8e3e854a2d58f0ddfca69c233ee7674111cb7bbfddffc1661ea0ce5e72cfb",
+              "hash": "0xea6de4783693009b8e6626c737b2a483828b1305751bbee6e78bd4c721b8572c",
               "number": 0
             },
-            "l2_time": 1760106420,
+            "l2_time": 1772461740,
             "system_config": {
               "batcherAddr": "0x80a5f6d9334a81a5c57dde37b919fa6345d4befe",
               "overhead": "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -250,17 +250,17 @@
             }
           },
           "Addresses": {
-            "ProxyAdmin": "0x6151d1cc7724ee7594f414c152320757c9c5844e",
-            "AddressManager": "0xfc7950601fd0b3d07fcb8899a6dfaf578eac8fec",
-            "L1ERC721BridgeProxy": "0xe9b3351f4632df6609ab6434c17667ecb97a5f6d",
-            "SystemConfigProxy": "0x624ce254d4d0e84e4179897c9e9b97784f37f6fd",
-            "OptimismMintableERC20FactoryProxy": "0x80a8c6c150bdbd0f0c6ac7fc71c42fd6523f8284",
-            "L1StandardBridgeProxy": "0xb2f2468d0ab462da6cab2ef547fefd3511e33d14",
-            "L1CrossDomainMessengerProxy": "0x88bc63f650a49a5b3d10035cd5bdab036da0e3d8",
-            "OptimismPortalProxy": "0x37e3521cc2c2e3fc12ad4adc36aa8f6b6b686473",
-            "DisputeGameFactoryProxy": "0xc0215f0202418568c06b899f5e11245dbf717802",
-            "AnchorStateRegistryProxy": "0x06ec7ffc5ec88b750152bc26e4a456345a57c286",
-            "PermissionedDisputeGame": "0x60b2a0ccd7b1d7536ad328ebf483a61d01a58a4f"
+            "ProxyAdmin": "0xb2a0c2b49cdc2d3f0a0a291be0a6c20559ec053e",
+            "AddressManager": "0xe79a9c96f2ea3340add851f83dbfdc2ff4ceb838",
+            "L1ERC721BridgeProxy": "0x493ec8a8956d1239d01450a6adb6f7f091d2a81f",
+            "SystemConfigProxy": "0x6baf5959cc06a39793c338e6586f49473c731b4c",
+            "OptimismMintableERC20FactoryProxy": "0x92fa5b9a26580b7ecc495ffab4cbc0d995be5b5a",
+            "L1StandardBridgeProxy": "0x95f39a9dd86e4c777fd6dc4404d94fd32c23ea30",
+            "L1CrossDomainMessengerProxy": "0x8627c42d20358d7064f3776c0a543195db8d5b22",
+            "OptimismPortalProxy": "0x101f7d8038beb55d92919e9f944feb0faf211a9b",
+            "DisputeGameFactoryProxy": "0x338ac809e6a045cfc8aeb16ff8a4329147b61afb",
+            "AnchorStateRegistryProxy": "0x7a7d0d1b0114e8a5a489f488b9ccab0611333687",
+            "PermissionedDisputeGame": "0xcfecebaccf68662ad5be900a28d338730b091f27"
           }
         }
       ]
