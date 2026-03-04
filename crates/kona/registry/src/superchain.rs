@@ -74,9 +74,9 @@ impl Registry {
 
                 // chain_config.as_rollup_config() copies da_challenge_address from
                 // alt_da_config.da_challenge_address, but the node RPC rollup config does not.
-                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID
-                    || rollup.l2_chain_id == CELO_SEPOLIA_CHAIN_ID
-                    || rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID
+                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID ||
+                    rollup.l2_chain_id == CELO_SEPOLIA_CHAIN_ID ||
+                    rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID
                 {
                     rollup.da_challenge_address = None;
                 }
