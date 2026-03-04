@@ -65,7 +65,7 @@ impl Registry {
                     // protocol_versions_address inherits from the superchain config (Sepolia has
                     // a single value), but Chaos and Celo Sepolia have a different address.
                     rollup.protocol_versions_address =
-                        address!("0x433a83893dda68b941d4aefa908ded9c599522ad");
+                        address!("0xbca7e7eeddd0a7d5892ed7c4fa4a4cd4047bfdd7");
                 } else if rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID {
                     // chain_config.as_rollup_config() defaults channel_timeout to 300, but the
                     // node RPC rollup config for Celo Mainnet uses CELO_MAINNET_CHANNEL_TIMEOUT.
