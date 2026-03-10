@@ -2,10 +2,7 @@
 
 use crate::{backend::util::store_ordered_trie, single::CeloSingleChainHost};
 use alloy_consensus::Header;
-use alloy_eips::{
-    eip2718::Encodable2718,
-    eip4844::{FIELD_ELEMENTS_PER_BLOB, IndexedBlobHash},
-};
+use alloy_eips::{eip2718::Encodable2718, eip4844::FIELD_ELEMENTS_PER_BLOB};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
@@ -123,26 +120,29 @@ impl CeloSingleChainHintHandler {
                 ensure!(hint.data.len() == 48, "Invalid hint data length");
 
                 let hash_data_bytes: [u8; 32] = hint.data[0..32].try_into()?;
-                let index_data_bytes: [u8; 8] = hint.data[32..40].try_into()?;
+                // Bytes 32..40 are the legacy blob index, no longer used by
+                // fetch_blobs_with_proofs which looks up blobs by hash directly.
                 let timestamp_data_bytes: [u8; 8] = hint.data[40..48].try_into()?;
 
                 let hash: B256 = hash_data_bytes.into();
-                let index = u64::from_be_bytes(index_data_bytes);
                 let timestamp = u64::from_be_bytes(timestamp_data_bytes);
 
                 let partial_block_ref = BlockInfo { timestamp, ..Default::default() };
-                let indexed_hash = IndexedBlobHash { index, hash };
 
-                // Fetch the blob sidecar from the blob provider.
-                let mut sidecars = providers
+                // Fetch the blob with proof from the blob provider.
+                let mut blobs = providers
                     .blobs
-                    .fetch_filtered_blob_sidecars(&partial_block_ref, &[indexed_hash])
+                    .fetch_blobs_with_proofs(&partial_block_ref, &[hash])
                     .await
-                    .map_err(|e| anyhow!("Failed to fetch blob sidecars: {e}"))?;
-                if sidecars.len() != 1 {
-                    anyhow::bail!("Expected 1 sidecar, got {}", sidecars.len());
+                    .map_err(|e| anyhow!("Failed to fetch blobs with proofs: {e}"))?;
+                if blobs.len() != 1 {
+                    anyhow::bail!("Expected 1 blob, got {}", blobs.len());
                 }
-                let sidecar = sidecars.remove(0);
+                let kona_providers_alloy::BlobWithCommitmentAndProof {
+                    blob,
+                    kzg_proof: proof,
+                    kzg_commitment: commitment,
+                } = blobs.pop().expect("Expected 1 blob");
 
                 // Acquire a lock on the key-value store and set the preimages.
                 let mut kv_lock = kv.write().await;
@@ -150,14 +150,14 @@ impl CeloSingleChainHintHandler {
                 // Set the preimage for the blob commitment.
                 kv_lock.set(
                     PreimageKey::new(*hash, PreimageKeyType::Sha256).into(),
-                    sidecar.kzg_commitment.to_vec(),
+                    commitment.to_vec(),
                 )?;
 
                 // Write all the field elements to the key-value store. There should be 4096.
                 // The preimage oracle key for each field element is the keccak256 hash of
                 // `abi.encodePacked(sidecar.KZGCommitment, bytes32(ROOTS_OF_UNITY[i]))`.
                 let mut blob_key = [0u8; 80];
-                blob_key[..48].copy_from_slice(sidecar.kzg_commitment.as_ref());
+                blob_key[..48].copy_from_slice(commitment.as_ref());
                 for i in 0..FIELD_ELEMENTS_PER_BLOB {
                     blob_key[48..].copy_from_slice(
                         ROOTS_OF_UNITY[i as usize].into_bigint().to_bytes_be().as_ref(),
@@ -168,7 +168,7 @@ impl CeloSingleChainHintHandler {
                         .set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
                     kv_lock.set(
                         PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
-                        sidecar.blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
+                        blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
                     )?;
                 }
 
@@ -181,7 +181,7 @@ impl CeloSingleChainHintHandler {
                 kv_lock.set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
                 kv_lock.set(
                     PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
-                    sidecar.kzg_proof.to_vec(),
+                    proof.to_vec(),
                 )?;
             }
             HintType::L1Precompile => {

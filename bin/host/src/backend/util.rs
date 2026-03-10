@@ -23,7 +23,8 @@ pub(crate) async fn store_ordered_trie<KV: KeyValueStore + ?Sized, T: AsRef<[u8]
     // `ProofRetainer` in the event that there are no leaves inserted.
     if values.is_empty() {
         let empty_key = PreimageKey::new(*EMPTY_ROOT_HASH, PreimageKeyType::Keccak256);
-        return kv_write_lock.set(empty_key.into(), [EMPTY_STRING_CODE].into());
+        kv_write_lock.set(empty_key.into(), [EMPTY_STRING_CODE].into())?;
+        return Ok(());
     }
 
     let mut hb = kona_mpt::ordered_trie_with_encoder(values, |node, buf| {
