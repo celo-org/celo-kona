@@ -24,6 +24,13 @@ alloy-rpc-types-eth.workspace = true
 # OP Alloy
 op-alloy-consensus.workspace = true
 
+# Reth (optional, for InMemorySize + SignedTransaction impls)
+reth-primitives-traits = { workspace = true, optional = true }
+reth-codecs = { workspace = true, optional = true }
+reth-db-api = { workspace = true, optional = true }
+modular-bitfield = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 
@@ -43,7 +50,8 @@ op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["std"]
-std = ["alloy-eips/std", "alloy-consensus/std"]
+std = ["alloy-eips/std", "alloy-consensus/std", "reth-primitives-traits?/std"]
+reth = ["std", "dep:reth-primitives-traits", "reth-primitives-traits/op", "dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "dep:bytes", "k256"]
 k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
 kzg = ["alloy-eips/kzg", "alloy-consensus/kzg", "std"]
 arbitrary = [

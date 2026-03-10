@@ -5,6 +5,8 @@ use crate::{CeloContext, evm::CeloEvm};
 use alloy_sol_types::{SolCall, sol};
 use revm::{
     Database, Inspector,
+    handler::PrecompileProvider,
+    interpreter::InterpreterResult,
     primitives::{Address, Log, U256},
 };
 use std::vec::Vec;
@@ -33,14 +35,15 @@ sol! {
 }
 
 /// Get the balance of an account for a given ERC20 token
-pub fn get_balance<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+pub fn get_balance<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     token_address: Address,
     account: Address,
 ) -> Result<U256, CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     // Prepare the balanceOf call
     let calldata = IFeeCurrencyERC20::balanceOfCall { account }
@@ -59,8 +62,8 @@ where
 /// Call debitGasFees to deduct gas fees from the fee currency.
 /// State changes remain in the EVM's journal for the main transaction to see.
 /// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
-pub fn debit_gas_fees<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+pub fn debit_gas_fees<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_address: Address,
     from: Address,
     value: U256,
@@ -69,6 +72,7 @@ pub fn debit_gas_fees<DB, INSP>(
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let calldata = IFeeCurrencyERC20::debitGasFeesCall { from, value }
         .abi_encode()
@@ -84,8 +88,8 @@ where
 /// State changes remain in the EVM's journal for the main transaction to see.
 /// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
 #[allow(clippy::too_many_arguments)]
-pub fn credit_gas_fees<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+pub fn credit_gas_fees<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_address: Address,
     from: Address,
     fee_recipient: Address,
@@ -98,6 +102,7 @@ pub fn credit_gas_fees<DB, INSP>(
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let calldata = IFeeCurrencyERC20::creditGasFeesCall {
         from,

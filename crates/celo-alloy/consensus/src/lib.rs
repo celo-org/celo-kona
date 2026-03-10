@@ -15,6 +15,9 @@ pub use transaction::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::T
 mod block;
 pub use block::CeloBlock;
 
+#[cfg(feature = "reth")]
+mod reth_compat;
+
 /// Bincode-compatible serde implementations for consensus types.
 ///
 /// `bincode` crate doesn't work well with optionally serializable serde fields, but some of the

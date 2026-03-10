@@ -25,8 +25,9 @@ use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
     Database,
     context_interface::ContextTr,
-    handler::{EvmTr, SystemCallEvm},
+    handler::{EvmTr, PrecompileProvider, SystemCallEvm},
     inspector::Inspector,
+    interpreter::InterpreterResult,
     primitives::Log,
 };
 use revm_context_interface::{
@@ -88,8 +89,8 @@ pub fn get_revert_message(output: Bytes) -> String {
 
 /// Call a core contract function in read-only mode (checkpoint/revert to discard state changes).
 /// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
-pub fn call_read_only<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+pub fn call_read_only<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
@@ -97,6 +98,7 @@ pub fn call_read_only<DB, INSP>(
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let checkpoint = evm.ctx().journal_mut().checkpoint();
     let result = call(evm, address, calldata, gas_limit);
@@ -106,8 +108,8 @@ where
 
 /// Call a core contract function. State changes remain in the EVM's journal.
 /// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
-pub fn call<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+pub fn call<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
@@ -115,6 +117,7 @@ pub fn call<DB, INSP>(
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     // Preserve the tx and transaction_id to restore afterwards
     let prev_tx = evm.ctx().tx().clone();
@@ -161,13 +164,14 @@ where
 }
 
 /// Fetches the list of registered fee currencies from the FeeCurrencyDirectory contract.
-fn get_currencies<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+fn get_currencies<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
 ) -> Vec<Address>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let call_result = call_read_only(
         evm,
@@ -202,10 +206,11 @@ where
 /// Fetches complete currency info (exchange rate + intrinsic gas) for all registered currencies.
 /// A currency is only included if BOTH pieces of data are successfully fetched.
 /// This ensures no partial/inconsistent currency data can exist.
-pub fn get_currency_info<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> HashMap<Address, FeeCurrencyInfo>
+pub fn get_currency_info<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> HashMap<Address, FeeCurrencyInfo>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
     let currencies = get_currencies(evm, fee_currency_directory);
@@ -239,14 +244,15 @@ where
 }
 
 /// Fetches the exchange rate for a single token. Returns None on any failure.
-fn get_exchange_rate<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+fn get_exchange_rate<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
     token: Address,
 ) -> Option<(U256, U256)>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let call_result = call_read_only(
         evm,
@@ -281,14 +287,15 @@ where
 }
 
 /// Fetches the intrinsic gas for a single token. Returns None on any failure.
-fn get_intrinsic_gas<DB, INSP>(
-    evm: &mut CeloEvm<DB, INSP>,
+fn get_intrinsic_gas<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
     token: Address,
 ) -> Option<u64>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let call_result = call_read_only(
         evm,
@@ -350,6 +357,7 @@ pub(crate) mod tests {
                 code_hash: bytecode.hash_slow(),
                 account_id: None,
                 code: Some(bytecode),
+                ..Default::default()
             };
             db.insert_account_info(oracle_address, account_info);
         }
@@ -383,6 +391,7 @@ pub(crate) mod tests {
                 code_hash: bytecode.hash_slow(),
                 account_id: None,
                 code: Some(bytecode),
+                ..Default::default()
             };
             db.insert_account_info(get_addresses(0).fee_currency_directory, account_info);
         }

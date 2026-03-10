@@ -278,6 +278,7 @@ mod tests {
                 code_hash: bytecode.hash_slow(),
                 account_id: None,
                 code: Some(bytecode),
+                ..Default::default()
             };
             db.insert_account_info(celo_address, account_info);
         }

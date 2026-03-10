@@ -5,18 +5,19 @@ use revm::{
     context::{ContextError, Evm, FrameStack},
     context_interface::{Cfg, ContextTr},
     handler::{
-        EvmTr, FrameInitOrResult, ItemOrResult, evm::FrameTr, instructions::EthInstructions,
+        EvmTr, FrameInitOrResult, ItemOrResult, PrecompileProvider, evm::FrameTr,
+        instructions::EthInstructions,
     },
-    inspector::InspectorEvmTr,
-    interpreter::interpreter::EthInterpreter,
+    inspector::{InspectorEvmTr, JournalExt},
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
-pub struct CeloEvm<DB: Database, INSP> {
+pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
     pub inner: OpEvm<
         CeloContext<DB>,
         INSP,
         EthInstructions<EthInterpreter, CeloContext<DB>>,
-        CeloPrecompiles,
+        P,
     >,
     pub fee_currency_context: FeeCurrencyContext,
 }
@@ -37,9 +38,14 @@ where
             fee_currency_context: FeeCurrencyContext::default(),
         }
     }
+}
 
+impl<DB, INSP, P> CeloEvm<DB, INSP, P>
+where
+    DB: Database,
+{
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP> {
+    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP, P> {
         Self {
             inner: OpEvm(self.inner.0.with_inspector(inspector)),
             fee_currency_context: self.fee_currency_context,
@@ -47,8 +53,8 @@ where
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: CeloPrecompiles) -> CeloEvm<DB, INSP> {
-        Self {
+    pub fn with_precompiles<Q>(self, precompiles: Q) -> CeloEvm<DB, INSP, Q> {
+        CeloEvm {
             inner: OpEvm(self.inner.0.with_precompiles(precompiles)),
             fee_currency_context: self.fee_currency_context,
         }
@@ -60,10 +66,12 @@ where
     }
 }
 
-impl<DB, INSP> InspectorEvmTr for CeloEvm<DB, INSP>
+impl<DB, INSP, P> InspectorEvmTr for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    CeloContext<DB>: ContextTr<Cfg: Cfg<Spec = OpSpecId>, Journal: JournalExt>,
 {
     type Inspector = INSP;
 
@@ -94,19 +102,20 @@ where
     }
 }
 
-impl<DB, INSP> EvmTr for CeloEvm<DB, INSP>
+impl<DB, INSP, P> EvmTr for CeloEvm<DB, INSP, P>
 where
     DB: Database,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     CeloContext<DB>: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     type Context = CeloContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, CeloContext<DB>>;
-    type Precompiles = CeloPrecompiles;
+    type Precompiles = P;
     type Frame = <op_revm::OpEvm<
         CeloContext<DB>,
         INSP,
         EthInstructions<EthInterpreter, CeloContext<DB>>,
-        CeloPrecompiles,
+        P,
     > as EvmTr>::Frame;
 
     #[inline]
