@@ -21,6 +21,7 @@ use revm::{
     context::{LocalContextTr, result::InvalidTransaction},
     context_interface::{
         Block, Cfg, ContextSetters, ContextTr, JournalTr, Transaction,
+        journaled_state::account::JournaledAccountTr,
         result::{ExecutionResult, FromStringError},
     },
     handler::{
@@ -380,7 +381,7 @@ where
         let ctx = evm.ctx();
         let fee_currency = ctx.tx().fee_currency();
         let gas_limit = ctx.tx().gas_limit();
-        let spec = ctx.cfg().spec();
+        let spec = *ctx.cfg().spec();
 
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
@@ -520,7 +521,7 @@ where
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fee_currency = ctx.tx().fee_currency();
         let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
-        let spec = ctx.cfg().spec();
+        let spec = *ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
@@ -572,7 +573,7 @@ where
         if !is_deposit {
             // validates account nonce and code
             validate_account_nonce_and_code(
-                &caller_account.info,
+                &caller_account.account().info,
                 tx.nonce(),
                 is_eip3607_disabled,
                 is_nonce_check_disabled,
@@ -584,7 +585,7 @@ where
         // If the transaction is a deposit with a `mint` value, add the mint value
         // in wei to the caller's balance. This should be persisted to the database
         // prior to the rest of execution.
-        let mut new_balance = caller_account.info.balance.saturating_add(U256::from(mint));
+        let mut new_balance = caller_account.balance().saturating_add(U256::from(mint));
 
         if fees_in_celo {
             // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
@@ -670,7 +671,7 @@ where
             && context.tx().fee_currency().is_none()
         {
             let caller = context.tx().caller();
-            let spec = context.cfg().spec();
+            let spec = *context.cfg().spec();
             let operator_fee_refund = context.chain().operator_fee_refund(exec_result.gas(), spec);
 
             // In additional to the normal transaction fee, additionally refund the caller
@@ -706,7 +707,7 @@ where
         // to both the Base Fee Vault as well as the L1 Fee Vault.
         let ctx = evm.ctx();
         let enveloped = ctx.tx().enveloped_tx().cloned();
-        let spec = ctx.cfg().spec();
+        let spec = *ctx.cfg().spec();
         let l1_block_info = &mut ctx.chain_mut();
 
         let Some(enveloped_tx) = &enveloped else {

@@ -25,7 +25,7 @@ use revm::{
 pub mod block;
 pub mod cip64_storage;
 
-use cip64_storage::{Cip64Storage, get_tx_identifier};
+use cip64_storage::Cip64Storage;
 
 /// Celo EVM implementation.
 ///
@@ -121,8 +121,8 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Get a transaction identifier for storage - use a combination of caller and nonce
-        let tx_identifier = get_tx_identifier(tx.op_tx.base.caller, tx.op_tx.base.nonce);
+        // Capture fee_currency before execution (it's consumed by transact)
+        let fee_currency = tx.fee_currency;
 
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
 
@@ -133,7 +133,7 @@ where
         // After execution, extract the UPDATED CIP-64 info from the context
         // The handler modifies this during execution to set the reverted flag
         if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
-            self.cip64_storage.store_cip64_info(tx_identifier, cip64_info);
+            self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
         }
 
         result

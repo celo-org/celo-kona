@@ -200,9 +200,6 @@ mod test {
 #[cfg(test)]
 mod cip64_gas_tests {
     use crate::test_utils::load_and_execute_fixture;
-    use alloy_celo_evm::cip64_storage::get_tx_identifier;
-    use alloy_consensus::Transaction;
-    use celo_alloy_consensus::CeloTxType;
     use celo_revm::Cip64Info;
     use std::path::PathBuf;
 
@@ -217,17 +214,10 @@ mod cip64_gas_tests {
             .find(|e| e.file_name().to_string_lossy().contains(fixture_name))?
             .path();
 
-        let (outcome, fixture) = load_and_execute_fixture(fixture_path).await;
+        let (outcome, _fixture) = load_and_execute_fixture(fixture_path).await;
 
-        // Find the CIP-64 transaction and get its info from cip64_storage
-        for tx in fixture.executing_payload.recovered_transactions() {
-            let tx = tx.ok()?;
-            if tx.tx_type() == CeloTxType::Cip64 as u8 {
-                let tx_id = get_tx_identifier(tx.signer(), tx.nonce());
-                return outcome.cip64_storage.get_cip64_info(&tx_id);
-            }
-        }
-        None
+        // Get the first CIP-64 entry from the accumulated storage
+        outcome.cip64_storage.all_entries().into_iter().next().map(|data| data.cip64_info)
     }
 
     /// Test that verifies the CIP-64 gas calculation matches op-geth for the
