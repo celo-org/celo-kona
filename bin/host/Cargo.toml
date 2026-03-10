@@ -45,9 +45,9 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 # Revm
 revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst"] }
 
-# Hokulea
-hokulea-proof.workspace = true
-hokulea-host-bin.workspace = true
+# Hokulea (optional – gated behind the `eigenda` feature)
+hokulea-proof = { workspace = true, optional = true }
+hokulea-host-bin = { workspace = true, optional = true }
 
 # General
 anyhow.workspace = true
@@ -66,6 +66,7 @@ ark-ff.workspace = true
 [features]
 default = ["single"]
 single = []
+eigenda = ["dep:hokulea-proof", "dep:hokulea-host-bin", "celo-client/eigenda"]
 
 [[bin]]
 name = "celo-host"

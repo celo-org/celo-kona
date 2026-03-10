@@ -11,12 +11,15 @@ use anyhow::{Result, anyhow, ensure};
 use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+#[cfg(feature = "eigenda")]
 use hokulea_host_bin::{cfg::SingleChainProvidersWithEigenDA, handler::fetch_eigenda_hint};
+#[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
-use kona_host::{
-    HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, eth::rpc_provider,
-    single::SingleChainProviders,
-};
+#[cfg(feature = "eigenda")]
+use kona_host::eth::rpc_provider;
+#[cfg(feature = "eigenda")]
+use kona_host::single::SingleChainProviders;
+use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
 use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
@@ -26,6 +29,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Copy)]
 pub struct CeloSingleChainHintHandler;
 
+#[cfg(feature = "eigenda")]
 #[async_trait]
 impl HintHandler for CeloSingleChainHintHandler {
     type Cfg = CeloSingleChainHost;
@@ -67,6 +71,21 @@ impl HintHandler for CeloSingleChainHintHandler {
                 .await
             }
         }
+    }
+}
+
+#[cfg(not(feature = "eigenda"))]
+#[async_trait]
+impl HintHandler for CeloSingleChainHintHandler {
+    type Cfg = CeloSingleChainHost;
+
+    async fn fetch_hint(
+        hint: Hint<<Self::Cfg as OnlineHostBackendCfg>::HintType>,
+        cfg: &Self::Cfg,
+        providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
+        kv: SharedKeyValueStore,
+    ) -> Result<()> {
+        Self::fetch_original_hint(hint, cfg, providers, kv).await
     }
 }
 
