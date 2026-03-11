@@ -1,5 +1,5 @@
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::{resource::EnvResourceDetector, Resource};
 use uuid::Uuid;
 
 pub fn build_resource(service_name: String, version: String) -> Resource {
@@ -8,5 +8,6 @@ pub fn build_resource(service_name: String, version: String) -> Resource {
         .with_attribute(KeyValue::new("service.namespace", "celo-kona"))
         .with_attribute(KeyValue::new("service.version", version))
         .with_attribute(KeyValue::new("service.instance.id", Uuid::new_v4().to_string()))
+        .with_detector(Box::new(EnvResourceDetector::new()))
         .build()
 }
