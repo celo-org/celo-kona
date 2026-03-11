@@ -45,7 +45,8 @@
             "granite_time": 0,
             "holocene_time": 1752073200,
             "isthmus_time": 1752073200,
-            "pectra_blob_schedule_time": 1752073200
+            "pectra_blob_schedule_time": 1752073200,
+            "jovian_time": 1774958788
           },
           "optimism": {
             "eip1559Elasticity": 5,
@@ -145,7 +146,8 @@
             "fjord_time": 0,
             "granite_time": 0,
             "holocene_time": 0,
-            "isthmus_time": 0
+            "isthmus_time": 0,
+            "jovian_time": 1773749037
           },
           "optimism": {
             "eip1559Elasticity": 5,
