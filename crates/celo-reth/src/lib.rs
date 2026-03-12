@@ -128,19 +128,16 @@ impl<ChainSpec, N: NodePrimitives, R: Clone, EvmFactory: Clone> Clone
 impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
     /// Creates a new [`CeloEvmConfig`] with the given chain spec.
     pub fn celo(chain_spec: Arc<ChainSpec>) -> Self {
-        Self::new(chain_spec, CeloRethReceiptBuilder::default())
-    }
-}
-
-impl<ChainSpec: OpHardforks, N: NodePrimitives, R> CeloEvmConfig<ChainSpec, N, R> {
-    /// Creates a new [`CeloEvmConfig`] with the given chain spec and receipt builder.
-    pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
+        // Create a shared CIP-64 storage so the EVM and receipt builder can communicate.
+        let cip64_storage = alloy_celo_evm::cip64_storage::Cip64Storage::default();
+        let receipt_builder = CeloRethReceiptBuilder::new(cip64_storage.clone());
+        let evm_factory = CeloEvmFactory::with_cip64_storage(cip64_storage);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
             executor_factory: OpBlockExecutorFactory::new(
                 receipt_builder,
                 chain_spec,
-                CeloEvmFactory::default(),
+                evm_factory,
             ),
             _pd: core::marker::PhantomData,
         }

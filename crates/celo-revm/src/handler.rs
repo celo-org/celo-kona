@@ -367,6 +367,7 @@ where
             credit_gas_refunded: 0,
             logs_pre: logs,
             logs_post: Vec::new(),
+            base_fee_in_erc20: Some(base_fee_in_erc20),
         });
         // Store the effective gas price for the GASPRICE opcode.
         // This is calculated using the base fee converted to the fee currency.

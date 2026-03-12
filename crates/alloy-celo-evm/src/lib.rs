@@ -355,9 +355,19 @@ where
 }
 
 /// Factory producing [`CeloEvm`]s.
-#[derive(Debug, Default, Clone, Copy)]
-#[non_exhaustive]
-pub struct CeloEvmFactory;
+#[derive(Debug, Default, Clone)]
+pub struct CeloEvmFactory {
+    /// Shared CIP-64 storage. When set, all EVMs created by this factory will use this
+    /// storage instance, enabling the receipt builder to read CIP-64 data written by the EVM.
+    pub cip64_storage: Option<Cip64Storage>,
+}
+
+impl CeloEvmFactory {
+    /// Creates a new factory with shared CIP-64 storage.
+    pub fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
+        Self { cip64_storage: Some(cip64_storage) }
+    }
+}
 
 impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
@@ -385,7 +395,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(NoOpInspector {})
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: false,
-            cip64_storage: Cip64Storage::default(),
+            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
         }
     }
 
@@ -405,7 +415,7 @@ impl EvmFactory for CeloEvmFactory {
                 .build_celo_with_inspector(inspector)
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: true,
-            cip64_storage: Cip64Storage::default(),
+            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
         }
     }
 }

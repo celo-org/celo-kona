@@ -43,6 +43,8 @@ pub struct Cip64Info {
     /// Logs from system calls (debit/credit) that need to be merged into the final receipt
     pub logs_pre: Vec<Log>,
     pub logs_post: Vec<Log>,
+    /// Base fee converted to the ERC20 fee currency (set during handler execution)
+    pub base_fee_in_erc20: Option<u128>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
