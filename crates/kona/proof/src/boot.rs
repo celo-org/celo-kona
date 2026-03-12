@@ -119,7 +119,7 @@ impl CeloBootInfo {
         if matches!(chain_id, 42220 | 11142220 | 11162320) {
             // Celo Mainnet, Celo Sepolia, and Celo Chaos
             let l2_claim_block_timestamp =
-                rollup_config.genesis.l2_time + l2_claim_block * rollup_config.block_time;
+                rollup_config.genesis.l2_time + (l2_claim_block - rollup_config.genesis.l2.number) * rollup_config.block_time;
             if !rollup_config.is_jovian_active(l2_claim_block_timestamp) {
                 l1_config.osaka_time = None;
                 l1_config.bpo1_time = None;
