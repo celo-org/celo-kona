@@ -170,6 +170,7 @@ where
                 nonce = recovered.nonce(),
                 gas_limit = recovered.gas_limit(),
                 value = %recovered.value(),
+                input = ?recovered.input(),
                 "Recovered transaction"
             );
         }
