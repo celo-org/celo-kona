@@ -1,14 +1,16 @@
 //! The [CeloStatelessL2Builder] is a block builder that pulls state from a [TrieDB] during
 //! execution.
 
-use alloc::{string::ToString, vec::Vec};
+use alloc::{format, string::ToString, vec::Vec};
 use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder, cip64_storage::Cip64Storage};
-use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
+use alloy_consensus::{Header, Sealed, Transaction, crypto::RecoveryError};
+use alloy_eips::Typed2718;
 use alloy_evm::{
     EvmFactory,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
+use alloy_primitives::keccak256;
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
@@ -136,11 +138,59 @@ where
         let executor = factory.create_executor(evm, ctx);
 
         // Step 3. Execute the block containing the transactions within the payload attributes.
+        // Log raw transaction bytes hash for each transaction before execution.
+        if let Some(ref raw_txs) = op_attrs.transactions {
+            for (i, tx_bytes) in raw_txs.iter().enumerate() {
+                info!(
+                    target: "block_builder",
+                    tx_index = i,
+                    tx_bytes_len = tx_bytes.len(),
+                    tx_bytes_hash = ?keccak256(tx_bytes.as_ref()),
+                    tx_first_byte = tx_bytes.first().map(|b| format!("0x{:02x}", b)).unwrap_or_default(),
+                    "Raw transaction"
+                );
+            }
+        }
+
         let transactions = attrs
             .recovered_transactions_with_encoded()
             .collect::<Result<Vec<_>, RecoveryError>>()
             .map_err(ExecutorError::Recovery)?;
+
+        // Log recovered transaction details.
+        for (i, tx) in transactions.iter().enumerate() {
+            let recovered = &tx.1;
+            info!(
+                target: "block_builder",
+                tx_index = i,
+                tx_hash = ?recovered.tx_hash(),
+                tx_type = recovered.ty(),
+                from = ?recovered.signer(),
+                to = ?recovered.to(),
+                nonce = recovered.nonce(),
+                gas_limit = recovered.gas_limit(),
+                value = %recovered.value(),
+                "Recovered transaction"
+            );
+        }
+
         let ex_result = executor.execute_block(transactions.iter())?;
+
+        // Log per-transaction gas usage from receipts.
+        let mut prev_cumulative_gas = 0u64;
+        for (i, receipt) in ex_result.receipts.iter().enumerate() {
+            let cumulative = receipt.cumulative_gas_used();
+            let tx_gas = cumulative - prev_cumulative_gas;
+            info!(
+                target: "block_builder",
+                tx_index = i,
+                tx_gas_used = tx_gas,
+                cumulative_gas_used = cumulative,
+                tx_type = receipt.tx_type() as u8,
+                "Transaction receipt"
+            );
+            prev_cumulative_gas = cumulative;
+        }
 
         info!(
             target: "block_builder",
