@@ -95,6 +95,12 @@ where
             block_number = %block_env.number,
             block_timestamp = %block_env.timestamp,
             block_gas_limit = block_env.gas_limit,
+            basefee = block_env.basefee,
+            parent_hash = ?parent_hash,
+            parent_number = self.trie_db.parent_block_header().number,
+            parent_state_root = ?self.trie_db.parent_block_header().state_root,
+            eip_1559_params = ?op_attrs.eip_1559_params,
+            min_base_fee = ?op_attrs.min_base_fee,
             transactions = op_attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
             "Beginning block building."
         );

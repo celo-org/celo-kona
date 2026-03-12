@@ -15,6 +15,7 @@ use celo_revm::constants::CELO_MAX_CODE_SIZE;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_revm::OpSpecId;
+use tracing::info;
 use revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
@@ -119,6 +120,16 @@ where
             .next_block_base_fee(*base_fee_params, parent_header, min_base_fee)
             .unwrap_or_default();
 
+        info!(
+            target: "block_builder",
+            %next_block_base_fee,
+            parent_gas_used = parent_header.gas_used(),
+            parent_base_fee = ?parent_header.base_fee_per_gas(),
+            parent_blob_gas_used = ?parent_header.blob_gas_used(),
+            ?spec_id,
+            "Computed next block base fee"
+        );
+
         let op_payload_attrs = &payload_attrs.op_payload_attributes;
         Ok(BlockEnv {
             number: U256::from(parent_header.number + 1),
@@ -142,7 +153,16 @@ where
         parent_header: &Header,
         payload_timestamp: u64,
     ) -> ExecutorResult<(BaseFeeParams, u64)> {
-        match config {
+        info!(
+            target: "block_builder",
+            parent_timestamp = parent_header.timestamp(),
+            payload_timestamp,
+            jovian_active = config.is_jovian_active(parent_header.timestamp),
+            holocene_active = config.is_holocene_active(parent_header.timestamp),
+            parent_extra_data = ?parent_header.extra_data(),
+            "active_base_fee_params entry"
+        );
+        let result = match config {
             // After Jovian activation, the base fee parameters are stored in the
             // `extraData` field of the parent header, along with the min-base-fee.
             _ if config.is_jovian_active(parent_header.timestamp) => {
@@ -165,6 +185,16 @@ where
                 // use the default base fee params from the rollup config.
                 Ok((config.chain_op_config.pre_canyon_params(), CELO_EIP_1559_BASE_FEE_FLOOR))
             }
+        };
+        if let Ok((ref params, min_fee)) = result {
+            info!(
+                target: "block_builder",
+                elasticity = params.elasticity_multiplier,
+                denominator = params.max_change_denominator,
+                min_base_fee = min_fee,
+                "active_base_fee_params result"
+            );
         }
+        result
     }
 }
