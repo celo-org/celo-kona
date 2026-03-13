@@ -18,7 +18,10 @@ fn main() {
 
     if let Err(err) =
         Cli::<OpChainSpecParser, RollupArgs>::parse().run(async move |builder, rollup_args| {
-            let handle = builder.node(CeloNode::new(rollup_args)).launch().await?;
+            let handle = builder
+                .node(CeloNode::new(rollup_args))
+                .launch_with_debug_capabilities()
+                .await?;
             handle.node_exit_future.await
         })
     {

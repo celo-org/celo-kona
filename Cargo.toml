@@ -159,6 +159,7 @@ reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }

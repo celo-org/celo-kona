@@ -2322,6 +2322,7 @@ dependencies = [
  "reth-consensus",
  "reth-consensus-common",
  "reth-db-api",
+ "reth-engine-local",
  "reth-evm 1.11.0",
  "reth-execution-types 1.11.0",
  "reth-node-api",

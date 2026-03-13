@@ -21,6 +21,7 @@ path = "src/bin/celo_reth.rs"
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
+reth-engine-local.workspace = true
 reth-evm = { workspace = true, features = ["op"] }
 reth-execution-types.workspace = true
 reth-primitives-traits.workspace = true

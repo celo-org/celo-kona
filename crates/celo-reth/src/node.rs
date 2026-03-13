@@ -9,6 +9,7 @@ use crate::{
 use alloy_eips::eip1559::INITIAL_BASE_FEE;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
+use celo_alloy_consensus::CeloTxEnvelope;
 use op_alloy_consensus::OpPooledTransaction;
 use op_alloy_rpc_types_engine::{
     OpExecutionData, OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4,
@@ -18,9 +19,13 @@ use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, 
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_against_parent_timestamp,
 };
-use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, payload::PayloadTypes};
+use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_node_api::{
+    BuiltPayload, EngineTypes, FullNodeComponents, NodePrimitives, PayloadAttributesBuilder,
+    payload::PayloadTypes,
+};
 use reth_node_builder::{
-    BuilderContext, Node, NodeAdapter,
+    BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
     },
@@ -180,6 +185,27 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// DebugNode — enables `--dev` mode (auto-mining) for CeloNode
+// ---------------------------------------------------------------------------
+
+impl<N> DebugNode<N> for CeloNode
+where
+    N: FullNodeComponents<Types = Self>,
+{
+    type RpcBlock = alloy_rpc_types_eth::Block<CeloTxEnvelope>;
+
+    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_node_api::BlockTy<Self> {
+        rpc_block.into_consensus()
+    }
+
+    fn local_payload_attributes_builder(
+        chain_spec: &Self::ChainSpec,
+    ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
+        LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CeloExecutorBuilder
 // ---------------------------------------------------------------------------
 
@@ -310,16 +336,21 @@ where
                 .ethereum_fork_activation(EthereumHardfork::London)
                 .transitions_at_block(header.number())
             {
-                INITIAL_BASE_FEE
+                Some(INITIAL_BASE_FEE)
             } else {
                 celo_next_block_base_fee(self.chain_spec(), parent.header(), header.timestamp())
-                    .ok_or(ConsensusError::BaseFeeMissing)?
             };
-            if expected != base_fee {
-                return Err(ConsensusError::BaseFeeDiff(GotExpected {
-                    expected,
-                    got: base_fee,
-                }));
+            // If the expected base fee can be computed, validate it. When
+            // `celo_next_block_base_fee` returns `None` (e.g. dev mode with
+            // an empty genesis extra-data under Holocene), skip the check and
+            // fall back to OP's default behavior (trusted sequencer).
+            if let Some(expected) = expected {
+                if expected != base_fee {
+                    return Err(ConsensusError::BaseFeeDiff(GotExpected {
+                        expected,
+                        got: base_fee,
+                    }));
+                }
             }
         }
 
