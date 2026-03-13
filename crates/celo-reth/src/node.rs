@@ -9,8 +9,7 @@ use crate::{
 use alloy_eips::eip1559::INITIAL_BASE_FEE;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
-use celo_alloy_consensus::CeloTxEnvelope;
-use op_alloy_consensus::OpPooledTransaction;
+use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope};
 use op_alloy_rpc_types_engine::{
     OpExecutionData, OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4,
 };
@@ -128,7 +127,7 @@ where
 /// Pooled-transaction type used in the Celo transaction pool.
 type CeloPooledTx = reth_optimism_txpool::OpPooledTransaction<
     crate::primitives::CeloTransactionSigned,
-    OpPooledTransaction,
+    CeloPooledTransaction,
 >;
 
 impl<N> Node<N> for CeloNode

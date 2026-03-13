@@ -3,7 +3,10 @@
 //! Provides [`InMemorySize`], [`SignedTransaction`], [`Compact`], and
 //! [`SerdeBincodeCompat`] trait implementations required by reth's node framework.
 
-use crate::transaction::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64};
+use crate::transaction::{
+    CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
+    pooled::CeloPooledTransaction,
+};
 use alloy_consensus::{Sealed, crypto::RecoveryError, transaction::{SignerRecoverable, TxHashRef}};
 use alloy_primitives::B256;
 use op_alloy_consensus::{OpTransaction, TxDeposit};
@@ -106,36 +109,22 @@ impl SignerRecoverable for CeloTxEnvelope {
 impl SignedTransaction for CeloTxEnvelope {}
 
 // ---------------------------------------------------------------------------
-// Pool-related conversions: CeloTxEnvelope ↔ OpPooledTransaction
+// Pool-related: CeloPooledTransaction reth trait impls
 // ---------------------------------------------------------------------------
 
-impl From<op_alloy_consensus::OpPooledTransaction> for CeloTxEnvelope {
-    fn from(tx: op_alloy_consensus::OpPooledTransaction) -> Self {
-        match tx {
-            op_alloy_consensus::OpPooledTransaction::Legacy(tx) => Self::Legacy(tx),
-            op_alloy_consensus::OpPooledTransaction::Eip2930(tx) => Self::Eip2930(tx),
-            op_alloy_consensus::OpPooledTransaction::Eip1559(tx) => Self::Eip1559(tx),
-            op_alloy_consensus::OpPooledTransaction::Eip7702(tx) => Self::Eip7702(tx),
+impl InMemorySize for CeloPooledTransaction {
+    fn size(&self) -> usize {
+        match self {
+            Self::Legacy(tx) => tx.size(),
+            Self::Eip2930(tx) => tx.size(),
+            Self::Eip1559(tx) => tx.size(),
+            Self::Eip7702(tx) => tx.size(),
+            Self::Cip64(tx) => tx.size(),
         }
     }
 }
 
-impl TryFrom<CeloTxEnvelope> for op_alloy_consensus::OpPooledTransaction {
-    type Error = alloy_consensus::error::ValueError<CeloTxEnvelope>;
-
-    fn try_from(tx: CeloTxEnvelope) -> Result<Self, Self::Error> {
-        match tx {
-            CeloTxEnvelope::Legacy(tx) => Ok(Self::Legacy(tx)),
-            CeloTxEnvelope::Eip2930(tx) => Ok(Self::Eip2930(tx)),
-            CeloTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
-            CeloTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
-            other => Err(alloy_consensus::error::ValueError::new_static(
-                other,
-                "CIP-64 and Deposit transactions cannot be pooled",
-            )),
-        }
-    }
-}
+impl SignedTransaction for CeloPooledTransaction {}
 
 // ---------------------------------------------------------------------------
 // reth Compact encoding: CeloTxType, CeloTxEnvelope
