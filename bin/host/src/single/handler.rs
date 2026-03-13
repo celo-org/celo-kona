@@ -2,13 +2,12 @@
 
 use crate::{backend::util::store_ordered_trie, single::CeloSingleChainHost};
 use alloy_consensus::Header;
-use alloy_eips::{eip2718::Encodable2718, eip4844::FIELD_ELEMENTS_PER_BLOB};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use anyhow::{Result, anyhow, ensure};
-use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 #[cfg(feature = "eigenda")]
@@ -21,8 +20,8 @@ use kona_host::eth::rpc_provider;
 use kona_host::single::SingleChainProviders;
 use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
-use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
-use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
+use kona_proof::{Hint, HintType};
+use kona_protocol::{OutputRoot, Predeploys};
 use tracing::warn;
 
 /// The [HintHandler] for the [CeloSingleChainHost].
@@ -136,72 +135,9 @@ impl CeloSingleChainHintHandler {
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
             HintType::L1Blob => {
-                ensure!(hint.data.len() == 48, "Invalid hint data length");
-
-                let hash_data_bytes: [u8; 32] = hint.data[0..32].try_into()?;
-                // Bytes 32..40 are the legacy blob index, no longer used by
-                // fetch_blobs_with_proofs which looks up blobs by hash directly.
-                let timestamp_data_bytes: [u8; 8] = hint.data[40..48].try_into()?;
-
-                let hash: B256 = hash_data_bytes.into();
-                let timestamp = u64::from_be_bytes(timestamp_data_bytes);
-
-                let partial_block_ref = BlockInfo { timestamp, ..Default::default() };
-
-                // Fetch the blob with proof from the blob provider.
-                let mut blobs = providers
-                    .blobs
-                    .fetch_blobs_with_proofs(&partial_block_ref, &[hash])
-                    .await
-                    .map_err(|e| anyhow!("Failed to fetch blobs with proofs: {e}"))?;
-                if blobs.len() != 1 {
-                    anyhow::bail!("Expected 1 blob, got {}", blobs.len());
-                }
-                let kona_providers_alloy::BlobWithCommitmentAndProof {
-                    blob,
-                    kzg_proof: proof,
-                    kzg_commitment: commitment,
-                } = blobs.pop().expect("Expected 1 blob");
-
-                // Acquire a lock on the key-value store and set the preimages.
-                let mut kv_lock = kv.write().await;
-
-                // Set the preimage for the blob commitment.
-                kv_lock.set(
-                    PreimageKey::new(*hash, PreimageKeyType::Sha256).into(),
-                    commitment.to_vec(),
-                )?;
-
-                // Write all the field elements to the key-value store. There should be 4096.
-                // The preimage oracle key for each field element is the keccak256 hash of
-                // `abi.encodePacked(sidecar.KZGCommitment, bytes32(ROOTS_OF_UNITY[i]))`.
-                let mut blob_key = [0u8; 80];
-                blob_key[..48].copy_from_slice(commitment.as_ref());
-                for i in 0..FIELD_ELEMENTS_PER_BLOB {
-                    blob_key[48..].copy_from_slice(
-                        ROOTS_OF_UNITY[i as usize].into_bigint().to_bytes_be().as_ref(),
-                    );
-                    let blob_key_hash = keccak256(blob_key.as_ref());
-
-                    kv_lock
-                        .set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
-                    kv_lock.set(
-                        PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
-                        blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
-                    )?;
-                }
-
-                // Write the KZG Proof as the 4096th element.
-                // Note: This is not associated with a root of unity, as to be backwards compatible
-                // with ZK users of kona that use this proof for the overall blob.
-                blob_key[72..].copy_from_slice(FIELD_ELEMENTS_PER_BLOB.to_be_bytes().as_ref());
-                let blob_key_hash = keccak256(blob_key.as_ref());
-
-                kv_lock.set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
-                kv_lock.set(
-                    PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
-                    proof.to_vec(),
-                )?;
+                // Celo uses EigenDA (or calldata) for data availability, not EIP-4844
+                // blob transactions, so this hint type should never be sent.
+                anyhow::bail!("Celo does not use EIP-4844 blob transactions");
             }
             HintType::L1Precompile => {
                 ensure!(hint.data.len() >= 28, "Invalid hint data length");
