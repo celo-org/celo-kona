@@ -22,7 +22,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use op_revm::{
-    OpHaltReason, OpSpecId, OpTransaction, OpTransactionError,
+    L1BlockInfo, OpHaltReason, OpSpecId, OpTransaction, OpTransactionError,
     precompiles::OpPrecompiles,
 };
 use revm::{
@@ -39,6 +39,18 @@ pub mod block;
 pub mod cip64_storage;
 
 use cip64_storage::Cip64Storage;
+
+/// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
+/// them. Without this, `eth_call` panics on Isthmus+ because
+/// `operator_fee_scalar`/`operator_fee_constant` are `None`.
+fn default_l1_block_info(spec_id: OpSpecId) -> L1BlockInfo {
+    let mut info = L1BlockInfo::default();
+    if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
+        info.operator_fee_scalar = Some(U256::ZERO);
+        info.operator_fee_constant = Some(U256::ZERO);
+    }
+    info
+}
 
 /// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
 /// transfer precompile for the given spec.
@@ -392,6 +404,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_db(db)
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
+                .with_chain(default_l1_block_info(spec_id))
                 .build_celo_with_inspector(NoOpInspector {})
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: false,
@@ -412,6 +425,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_db(db)
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
+                .with_chain(default_l1_block_info(spec_id))
                 .build_celo_with_inspector(inspector)
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: true,

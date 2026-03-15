@@ -130,13 +130,91 @@ type CeloPooledTx = reth_optimism_txpool::OpPooledTransaction<
     CeloPooledTransaction,
 >;
 
+// ---------------------------------------------------------------------------
+// CeloPoolBuilder — OpPoolBuilder with CIP-64 tx type registered
+// ---------------------------------------------------------------------------
+
+/// Celo transaction pool builder.
+///
+/// Wraps [`OpPoolBuilder`] but registers CIP-64 (type `0x7b`) as an accepted
+/// transaction type so that the inner [`EthTransactionValidator`] doesn't reject it.
+#[derive(Debug, Default, Clone)]
+#[non_exhaustive]
+pub struct CeloPoolBuilder {
+    inner: OpPoolBuilder<CeloPooledTx>,
+}
+
+impl<Node, Evm> reth_node_builder::components::PoolBuilder<Node, Evm> for CeloPoolBuilder
+where
+    Node: reth_node_builder::node::FullNodeTypes<
+        Types: NodeTypes<
+            ChainSpec: reth_optimism_forks::OpHardforks,
+            Primitives = CeloPrimitives,
+        >,
+    >,
+    Evm: reth_evm::ConfigureEvm<Primitives = CeloPrimitives> + Clone + 'static,
+{
+    type Pool = reth_optimism_txpool::OpTransactionPool<
+        Node::Provider,
+        reth_transaction_pool::blobstore::DiskFileBlobStore,
+        Evm,
+        CeloPooledTx,
+    >;
+
+    async fn build_pool(
+        self,
+        ctx: &BuilderContext<Node>,
+        evm_config: Evm,
+    ) -> eyre::Result<Self::Pool> {
+        let pool_config_overrides = self.inner.pool_config_overrides;
+
+        let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
+        let validator =
+            reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
+                ctx.provider().clone(),
+                evm_config,
+            )
+            .no_eip4844()
+            .with_custom_tx_type(celo_alloy_consensus::CeloTxType::Cip64 as u8)
+            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+            .kzg_settings(ctx.kzg_settings()?)
+            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
+            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+            .with_additional_tasks(
+                pool_config_overrides
+                    .additional_validation_tasks
+                    .unwrap_or_else(|| ctx.config().txpool.additional_validation_tasks),
+            )
+            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone())
+            .map(|validator| {
+                reth_optimism_txpool::OpTransactionValidator::new(validator)
+                    // In --dev mode we can't require gas fees because we're unable to decode
+                    // the L1 block info
+                    .require_l1_data_gas_fee(!ctx.config().dev.dev)
+            });
+
+        let final_pool_config = pool_config_overrides.apply(ctx.pool_config());
+
+        let transaction_pool =
+            reth_node_builder::components::TxPoolBuilder::new(ctx)
+                .with_validator(validator)
+                .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
+
+        tracing::info!(target: "reth::cli", "Transaction pool initialized");
+        tracing::debug!(target: "reth::cli", "Spawned txpool maintenance task");
+
+        Ok(transaction_pool)
+    }
+}
+
 impl<N> Node<N> for CeloNode
 where
     N: FullNodeTypes<Types = Self>,
 {
     type ComponentsBuilder = ComponentsBuilder<
         N,
-        OpPoolBuilder<CeloPooledTx>,
+        CeloPoolBuilder,
         BasicPayloadServiceBuilder<OpPayloadBuilder>,
         OpNetworkBuilder,
         CeloExecutorBuilder,
@@ -155,7 +233,7 @@ where
         let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
         ComponentsBuilder::default()
             .node_types::<N>()
-            .pool(OpPoolBuilder::default())
+            .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder)
             .payload(BasicPayloadServiceBuilder::new(OpPayloadBuilder::new(false)))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))

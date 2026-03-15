@@ -37,7 +37,7 @@ fi
 # Pad a 20-byte address to 32 bytes (left-pad with zeros), lowercase.
 pad32() {
     local addr
-    addr=$(echo "$1" | tr -d '0x' | tr '[:upper:]' '[:lower:]')
+    addr=$(echo "$1" | sed 's/^0x//' | tr '[:upper:]' '[:lower:]')
     printf "0x%064s" "$addr" | tr ' ' '0'
 }
 
@@ -123,8 +123,11 @@ STRUCT_CE16_PLUS1=$(inc_hash "$STRUCT_CE16" 1)
 STRUCT_CE17=$(calc_map_addr "$SLOT_1" "$(pad32 "$FEE_CURRENCY2")")
 STRUCT_CE17_PLUS1=$(inc_hash "$STRUCT_CE17" 1)
 
-# Owner field: address at offset 0 in slot 0 (right-aligned in 32 bytes)
-OWNER_VALUE=$(pad32 "$DEV_ADDR")
+# Owner field: FeeCurrencyDirectory uses Solidity packed storage in slot 0.
+# Layout: [11 zero bytes][20-byte address][1-byte bool _initialized].
+# Shift the standard pad32 (address at bytes 12-31) left by 1 byte.
+OWNER_RAW=$(pad32 "$DEV_ADDR")
+OWNER_VALUE="0x${OWNER_RAW:4}00"
 
 # ---------------------------------------------------------------------------
 # Read bytecodes

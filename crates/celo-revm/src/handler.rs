@@ -122,7 +122,7 @@ where
         let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
             .celo_to_currency(fee_currency, U256::from(basefee))
-            .map_err(|e| ERROR::from_string(e))?;
+            .map_err(InvalidTransaction::from)?;
         // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
         let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
             .try_into()
@@ -138,7 +138,7 @@ where
         let fee_currency_context = &evm.fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
-            .map_err(|e| ERROR::from_string(e))?;
+            .map_err(InvalidTransaction::from)?;
         Ok(max_allowed_gas_cost)
     }
 
@@ -242,7 +242,7 @@ where
             U256::from(base_tx_charge),
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to credit gas fees: {e}")))?;
+        .map_err(|e| InvalidTransaction::from(format!("Failed to credit gas fees: {e}")))?;
 
         // Collect logs from the system call to be included in the final receipt
         let mut tx = evm.ctx().tx().clone();
@@ -266,7 +266,7 @@ where
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
-            .map_err(|e| ERROR::from_string(e))?;
+            .map_err(InvalidTransaction::from)?;
 
         // Log the gas summary for debugging and verification
         // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
@@ -328,9 +328,10 @@ where
             .currency_exchange_rate(fee_currency)
             .is_err()
         {
-            return Err(ERROR::from_string(
-                "unregistered fee-currency address".to_string(),
-            ));
+            return Err(InvalidTransaction::from(
+                "unregistered fee-currency address",
+            )
+            .into());
         }
 
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
@@ -356,7 +357,7 @@ where
             gas_cost,
             max_allowed_gas_cost,
         )
-        .map_err(|e| ERROR::from_string(format!("Failed to debit gas fees: {e}")))?;
+        .map_err(|e| InvalidTransaction::from(format!("Failed to debit gas fees: {e}")))?;
 
         // Store CIP64 transaction information by modifying the transaction
         let mut tx = evm.ctx().tx().clone();
@@ -393,7 +394,7 @@ where
             let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
-                .map_err(|e| ERROR::from_string(e))?;
+                .map_err(InvalidTransaction::from)?;
             // Adding only in the initial gas, and not the floor because we never addapted the
             // eip7623 to the cip64 (discussions being taken)
             gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20);
@@ -446,7 +447,7 @@ where
 
         let tx_type = evm.ctx().tx().tx_type();
 
-        match CeloTxType::try_from(tx_type).map_err(|e| ERROR::from_string(e.to_string()))? {
+        match CeloTxType::try_from(tx_type).map_err(|e| InvalidTransaction::from(e.to_string()))? {
             CeloTxType::Deposit => {
                 let is_system_transaction = evm.ctx().tx().is_system_transaction();
                 // Do not allow for a system transaction to be processed if Regolith is enabled.
@@ -628,11 +629,11 @@ where
                 "gas for deposit txs can't be paid in erc20 tokens"
             );
             if tx.value() > new_balance && !is_balance_check_disabled {
-                return Err(ERROR::from_string(format!(
-                    "lack of funds ({}) for value payment ({})",
-                    new_balance,
-                    tx.value()
-                )));
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(tx.value()),
+                    balance: Box::new(new_balance),
+                }
+                .into());
             }
         }
 
