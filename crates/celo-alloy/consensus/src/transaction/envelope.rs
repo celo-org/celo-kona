@@ -722,4 +722,5 @@ mod tests {
         assert!(!CeloTxType::Cip64.is_deposit());
         assert!(CeloTxType::Deposit.is_deposit());
     }
+
 }

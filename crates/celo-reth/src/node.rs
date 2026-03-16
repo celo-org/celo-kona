@@ -2,6 +2,7 @@
 
 use crate::{
     celo_next_block_base_fee,
+    pool::{CeloExchangeRateApplier, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
     CeloEvmConfig,
@@ -9,7 +10,7 @@ use crate::{
 use alloy_eips::eip1559::INITIAL_BASE_FEE;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
-use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope};
+use celo_alloy_consensus::CeloTxEnvelope;
 use op_alloy_rpc_types_engine::{
     OpExecutionData, OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4,
 };
@@ -124,24 +125,20 @@ where
     type ExecutionPayloadEnvelopeV6 = OpExecutionPayloadEnvelopeV4;
 }
 
-/// Pooled-transaction type used in the Celo transaction pool.
-type CeloPooledTx = reth_optimism_txpool::OpPooledTransaction<
-    crate::primitives::CeloTransactionSigned,
-    CeloPooledTransaction,
->;
-
 // ---------------------------------------------------------------------------
-// CeloPoolBuilder — OpPoolBuilder with CIP-64 tx type registered
+// CeloPoolBuilder — OpPoolBuilder with CIP-64 tx type + exchange rate support
 // ---------------------------------------------------------------------------
 
 /// Celo transaction pool builder.
 ///
-/// Wraps [`OpPoolBuilder`] but registers CIP-64 (type `0x7b`) as an accepted
-/// transaction type so that the inner [`EthTransactionValidator`] doesn't reject it.
+/// Wraps [`OpPoolBuilder`] but:
+/// - Registers CIP-64 (type `0x7b`) as an accepted transaction type.
+/// - Wraps the validator with [`CeloExchangeRateApplier`] so that CIP-64
+///   transactions have their fee values converted to native equivalents.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct CeloPoolBuilder {
-    inner: OpPoolBuilder<CeloPooledTx>,
+    inner: OpPoolBuilder<CeloPoolTx>,
 }
 
 impl<Node, Evm> reth_node_builder::components::PoolBuilder<Node, Evm> for CeloPoolBuilder
@@ -152,13 +149,18 @@ where
             Primitives = CeloPrimitives,
         >,
     >,
+    Node::Provider: core::fmt::Debug + Send + Sync + 'static,
     Evm: reth_evm::ConfigureEvm<Primitives = CeloPrimitives> + Clone + 'static,
 {
-    type Pool = reth_optimism_txpool::OpTransactionPool<
-        Node::Provider,
+    type Pool = reth_transaction_pool::Pool<
+        reth_transaction_pool::TransactionValidationTaskExecutor<
+            CeloExchangeRateApplier<
+                reth_optimism_txpool::OpTransactionValidator<Node::Provider, CeloPoolTx, Evm>,
+                Node::Provider,
+            >,
+        >,
+        reth_transaction_pool::CoinbaseTipOrdering<CeloPoolTx>,
         reth_transaction_pool::blobstore::DiskFileBlobStore,
-        Evm,
-        CeloPooledTx,
     >;
 
     async fn build_pool(
@@ -196,6 +198,11 @@ where
                     // In --dev mode we can't require gas fees because we're unable to decode
                     // the L1 block info
                     .require_l1_data_gas_fee(!ctx.config().dev.dev)
+            })
+            // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
+            // to native equivalents after validation.
+            .map(|validator| {
+                CeloExchangeRateApplier::new(validator, ctx.provider().clone())
             });
 
         let final_pool_config = pool_config_overrides.apply(ctx.pool_config());

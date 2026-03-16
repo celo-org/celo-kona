@@ -45,6 +45,9 @@ pub mod receipts;
 pub mod node;
 
 #[cfg(feature = "std")]
+pub mod pool;
+
+#[cfg(feature = "std")]
 pub mod rpc;
 
 pub use primitives::*;
