@@ -8,8 +8,8 @@ use crate::{primitives::CeloPrimitives, receipt::CeloReceipt};
 use alloy_consensus::{TxReceipt, error::ValueError};
 use alloy_evm::{env::BlockEnvironment, rpc::EthTxEnvError, EvmEnv};
 use alloy_network::TxSigner;
-use alloy_primitives::{Signature, U256};
-use alloy_rpc_types_eth::{Log, request::TransactionRequest};
+use alloy_primitives::{Address, Bytes, Signature, U256, keccak256};
+use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
 use celo_alloy_consensus::CeloTxEnvelope;
 use celo_revm::CeloTransaction;
 use op_alloy_consensus::OpReceipt;
@@ -34,6 +34,9 @@ use reth_rpc_eth_types::receipt::build_receipt;
 use reth_storage_api::BlockReader;
 use revm::context::TxEnv;
 use std::fmt::Debug;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helper: map OpTxEnvelope → CeloTxEnvelope
@@ -70,32 +73,67 @@ impl RpcTypes for CeloRpcTypes {
 // CeloTransactionRequest
 // ---------------------------------------------------------------------------
 
-/// Newtype around [`OpTransactionRequest`] for use with [`CeloRpcTypes`].
+/// Transaction request type for Celo RPC.
 ///
-/// This local type allows implementing foreign traits (e.g. [`SignableTxRequest`])
-/// for a combination of foreign trait + foreign type, working around the orphan rule.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct CeloTransactionRequest(pub OpTransactionRequest);
+/// Wraps [`OpTransactionRequest`] and adds Celo-specific fields like `feeCurrency`.
+/// Uses custom serde to capture the `feeCurrency` JSON field, which the standard
+/// `TransactionRequest` silently drops.
+#[derive(Debug, Clone)]
+pub struct CeloTransactionRequest {
+    /// The wrapped OP-stack transaction request.
+    pub inner: OpTransactionRequest,
+    /// Celo CIP-64 fee currency address (parsed from `feeCurrency` in JSON).
+    pub fee_currency: Option<alloy_primitives::Address>,
+}
+
+impl serde::Serialize for CeloTransactionRequest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value =
+            serde_json::to_value(&self.inner).map_err(serde::ser::Error::custom)?;
+        if let Some(fc) = self.fee_currency {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "feeCurrency".to_string(),
+                    serde_json::to_value(fc).map_err(serde::ser::Error::custom)?,
+                );
+            }
+        }
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CeloTransactionRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let fee_currency = value
+            .as_object_mut()
+            .and_then(|obj| obj.remove("feeCurrency"))
+            .and_then(|v| serde_json::from_value::<alloy_primitives::Address>(v).ok());
+        let inner: OpTransactionRequest =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self { inner, fee_currency })
+    }
+}
 
 impl AsRef<TransactionRequest> for CeloTransactionRequest {
     fn as_ref(&self) -> &TransactionRequest {
-        self.0.as_ref()
+        self.inner.as_ref()
     }
 }
 
 impl AsMut<TransactionRequest> for CeloTransactionRequest {
     fn as_mut(&mut self) -> &mut TransactionRequest {
-        self.0.as_mut()
+        self.inner.as_mut()
     }
 }
 
 impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
     fn try_into_sim_tx(self) -> Result<CeloTxEnvelope, ValueError<Self>> {
-        self.0
+        let fee_currency = self.fee_currency;
+        self.inner
             .try_into_sim_tx()
             .map(op_tx_to_celo)
-            .map_err(|e| e.map(CeloTransactionRequest))
+            .map_err(|e| e.map(|inner| CeloTransactionRequest { inner, fee_currency }))
     }
 }
 
@@ -108,8 +146,16 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
         self,
         evm_env: &EvmEnv<Spec, Block>,
     ) -> Result<CeloTransaction<TxEnv>, Self::Err> {
-        let op_tx: op_revm::OpTransaction<TxEnv> = self.0.try_into_tx_env(evm_env)?;
-        Ok(CeloTransaction::new(op_tx))
+        let fee_currency = self.fee_currency;
+        let mut op_tx: op_revm::OpTransaction<TxEnv> = self.inner.try_into_tx_env(evm_env)?;
+        // When fee_currency is set, ensure the tx_type is CIP-64 (0x7b) so the handler
+        // applies fee currency validation and intrinsic gas.
+        if fee_currency.is_some() {
+            op_tx.base.tx_type = celo_alloy_consensus::CeloTxType::Cip64 as u8;
+        }
+        let mut celo_tx = CeloTransaction::new(op_tx);
+        celo_tx.fee_currency = fee_currency;
+        Ok(celo_tx)
     }
 }
 
@@ -118,9 +164,11 @@ impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<CeloTxEnvelope, SignTxRequestError> {
-        SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(self.0, signer)
-            .await
-            .map(op_tx_to_celo)
+        SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(
+            self.inner, signer,
+        )
+        .await
+        .map(op_tx_to_celo)
     }
 }
 
@@ -304,5 +352,162 @@ where
         let eth_api = ctx.eth_api_builder().with_rpc_converter(rpc_converter).build_inner();
 
         Ok(OpEthApi::new(eth_api, None, U256::from(1_000_000_u64), None))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fee-currency-aware gas price RPCs
+// ---------------------------------------------------------------------------
+
+/// Well-known address of the Celo FeeCurrencyDirectory contract.
+const FEE_CURRENCY_DIRECTORY: Address = alloy_primitives::address!("15F344b9E6c3Cb6F0376A36A64928b13F62C6276");
+
+/// Type-erased wrapper for the parts of the Eth API we need in the gas price
+/// RPC overrides. This avoids leaking the heavily-parameterised [`EthApiServer`]
+/// types into the RPC module registration.
+pub struct CeloFeeApi {
+    gas_price: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
+    priority_fee: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
+    eth_call: Box<dyn Fn(CeloTransactionRequest) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<Bytes>> + Send>> + Send + Sync>,
+}
+
+impl Debug for CeloFeeApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CeloFeeApi").finish_non_exhaustive()
+    }
+}
+
+impl CeloFeeApi {
+    /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
+    ///
+    /// Returns `(numerator, denominator)`.
+    async fn exchange_rate(
+        &self,
+        fee_currency: Address,
+    ) -> Result<(U256, U256), jsonrpsee_types::ErrorObjectOwned> {
+        // getExchangeRate(address) → (uint256, uint256)
+        let selector = &keccak256("getExchangeRate(address)")[..4];
+        let mut calldata = Vec::with_capacity(36);
+        calldata.extend_from_slice(selector);
+        calldata.extend_from_slice(fee_currency.into_word().as_slice());
+
+        let request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(FEE_CURRENCY_DIRECTORY)
+                .input(TransactionInput::new(Bytes::from(calldata))),
+            fee_currency: None,
+        };
+
+        let result = (self.eth_call)(request).await?;
+
+        if result.len() < 64 {
+            return Err(jsonrpsee_types::ErrorObject::owned(
+                -32000,
+                format!(
+                    "Invalid exchange rate response for {fee_currency}: expected >=64 bytes, got {}",
+                    result.len()
+                ),
+                None::<()>,
+            ));
+        }
+
+        let numerator = U256::from_be_slice(&result[0..32]);
+        let denominator = U256::from_be_slice(&result[32..64]);
+
+        if denominator.is_zero() {
+            return Err(jsonrpsee_types::ErrorObject::owned(
+                -32000,
+                format!("Exchange rate denominator is zero for {fee_currency}"),
+                None::<()>,
+            ));
+        }
+
+        Ok((numerator, denominator))
+    }
+}
+
+/// Build a [`jsonrpsee::RpcModule`] with fee-currency-aware `eth_gasPrice` and
+/// `eth_maxPriorityFeePerGas` that accept an optional `feeCurrency` parameter.
+///
+/// When `feeCurrency` is absent the methods behave identically to the standard
+/// Ethereum RPCs. When present, the returned price is scaled by the on-chain
+/// exchange rate for that fee currency.
+pub fn celo_gas_price_module(api: CeloFeeApi) -> jsonrpsee::RpcModule<Arc<CeloFeeApi>> {
+    let ctx = Arc::new(api);
+    let mut module = jsonrpsee::RpcModule::new(ctx);
+
+    module
+        .register_async_method("eth_gasPrice", |params, ctx, _| async move {
+            let fee_currency: Option<Address> = params.sequence().optional_next()?;
+            let base_price = (ctx.gas_price)().await?;
+            match fee_currency {
+                Some(fc) => {
+                    let (num, denom) = ctx.exchange_rate(fc).await?;
+                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_price * num / denom)
+                }
+                None => Ok(base_price),
+            }
+        })
+        .expect("eth_gasPrice registration");
+
+    module
+        .register_async_method("eth_maxPriorityFeePerGas", |params, ctx, _| async move {
+            let fee_currency: Option<Address> = params.sequence().optional_next()?;
+            let base_tip = (ctx.priority_fee)().await?;
+            match fee_currency {
+                Some(fc) => {
+                    let (num, denom) = ctx.exchange_rate(fc).await?;
+                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_tip * num / denom)
+                }
+                None => Ok(base_tip),
+            }
+        })
+        .expect("eth_maxPriorityFeePerGas registration");
+
+    module
+}
+
+/// Create a [`CeloFeeApi`] from any type implementing the full Eth RPC API.
+///
+/// This is a generic constructor that captures the concrete [`EthApiServer`]
+/// implementor behind type-erased closures, allowing the resulting
+/// [`CeloFeeApi`] (and the [`jsonrpsee::RpcModule`] built from it) to be
+/// stored and used without propagating the complex generic bounds.
+pub fn make_celo_fee_api<Api>(eth_api: Api) -> CeloFeeApi
+where
+    Api: reth_rpc_eth_api::EthApiServer<
+            CeloTransactionRequest,
+            op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+            alloy_rpc_types_eth::Block<
+                op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+                alloy_rpc_types_eth::Header,
+            >,
+            OpTransactionReceipt,
+            alloy_rpc_types_eth::Header,
+            crate::primitives::CeloTransactionSigned,
+        > + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    use reth_rpc_eth_api::EthApiServer;
+
+    let ea1 = Arc::new(eth_api.clone());
+    let ea2 = ea1.clone();
+    let ea3 = ea1.clone();
+
+    CeloFeeApi {
+        gas_price: Box::new(move || {
+            let ea = ea1.clone();
+            Box::pin(async move { EthApiServer::gas_price(&*ea).await })
+        }),
+        priority_fee: Box::new(move || {
+            let ea = ea2.clone();
+            Box::pin(async move { EthApiServer::max_priority_fee_per_gas(&*ea).await })
+        }),
+        eth_call: Box::new(move |req| {
+            let ea = ea3.clone();
+            Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
+        }),
     }
 }

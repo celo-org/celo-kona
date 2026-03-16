@@ -73,6 +73,13 @@ HTTP_PORT="${HTTP_PORT:-8545}"
 AUTH_PORT="${AUTH_PORT:-8651}"
 P2P_PORT="${P2P_PORT:-30403}"
 
+# Kill any stale celo-reth instances on our ports to prevent conflicts.
+if lsof -ti :"$HTTP_PORT" &>/dev/null; then
+    echo "Killing stale process on port $HTTP_PORT..."
+    kill $(lsof -ti :"$HTTP_PORT") 2>/dev/null || true
+    sleep 1
+fi
+
 GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
 
 echo "Starting celo-reth in dev mode (datadir=$DATADIR)..."

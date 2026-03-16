@@ -185,8 +185,9 @@ where
         let fee_currency = ctx.tx().fee_currency();
         let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
+        let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
 
-        if is_deposit || fees_in_celo || is_balance_check_disabled {
+        if is_deposit || fees_in_celo || is_balance_check_disabled || is_base_fee_disabled {
             return Ok(());
         }
 
@@ -206,9 +207,9 @@ where
         // Convert costs to fee currency
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
-        let tip_gas_price = effective_gas_price
-            .checked_sub(base_fee_in_erc20)
-            .expect("tip_gas_price is positive because the effective_gas_price was validated before to be greater or equal than the base_fee_in_erc20");
+        // During eth_estimateGas the base fee check is disabled, so effective_gas_price
+        // may be lower than base_fee_in_erc20. Clamp to 0 in that case.
+        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20);
 
         let tx_fee_tip_in_erc20 = U256::from(
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
@@ -471,14 +472,26 @@ where
                     return Err(InvalidTransaction::InvalidChainId.into());
                 }
 
-                let base_fee_in_erc20 =
-                    self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?;
+                // Skip base fee check when disabled (e.g. during eth_estimateGas)
+                let base_fee_for_check =
+                    if evm.ctx().cfg().is_base_fee_check_disabled() {
+                        None
+                    } else {
+                        Some(
+                            self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?,
+                        )
+                    };
                 validate_priority_fee_tx(
                     max_fee,
                     max_priority_fee,
-                    Some(base_fee_in_erc20),
+                    base_fee_for_check,
                     false,
                 )?;
+                // Return early — CIP-64 validation is complete. The revm
+                // `validate_tx_env` would classify 0x7b as `Custom` and skip
+                // its base fee check, but we must not fall through because it
+                // would also bypass chain-ID enforcement for custom types.
+                return Ok(());
             }
             _ => {
                 // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
@@ -569,7 +582,8 @@ where
             }
         }
 
-        if !is_balance_check_disabled && !fees_in_celo && !is_deposit {
+        let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
+        if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
         let (tx, journal) = evm.ctx().tx_journal_mut();

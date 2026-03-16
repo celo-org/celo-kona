@@ -224,6 +224,10 @@ brotli = { version = "8.0.2", default-features = false }
 tracing-subscriber = { version = "0.3.22", features = ["fmt"] }
 tracing = { version = "0.1.44", default-features = false }
 
+# RPC
+jsonrpsee = "0.26.0"
+jsonrpsee-types = "0.26.0"
+
 # Serialization
 serde_repr = "0.1.20"
 serde = { version = "1.0.228", default-features = false }

@@ -2312,6 +2312,8 @@ dependencies = [
  "celo-revm",
  "clap",
  "eyre",
+ "jsonrpsee",
+ "jsonrpsee-types",
  "op-alloy-consensus 0.23.1",
  "op-alloy-rpc-types",
  "op-alloy-rpc-types-engine",
@@ -2347,6 +2349,7 @@ dependencies = [
  "reth-transaction-pool",
  "revm 34.0.0",
  "serde",
+ "serde_json",
  "tracing",
 ]
 
