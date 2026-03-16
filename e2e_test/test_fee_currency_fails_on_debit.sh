@@ -8,7 +8,9 @@ source debug-fee-currency/lib.sh
 # Expect that the debitGasFees fails during tx submission
 #
 fee_currency=$(deploy_fee_currency true false false)
-# this fails during the RPC call, since the DebitFees() is part of the pre-validation
-cip_64_tx $fee_currency 1 false 2 | assert_cip_64_tx false "fee-currency internal error"
+# In celo-reth the debit failure happens during EVM execution (not pool validation),
+# so the tx enters the pool but is skipped during block building. The result is
+# success=false with no specific error message from the RPC.
+cip_64_tx $fee_currency 1 true 2 | assert_cip_64_tx false
 
 cleanup_fee_currency $fee_currency
