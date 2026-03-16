@@ -1,1 +1,5 @@
 celo-reth.log
+js-tests/node_modules/
+debug-fee-currency/out/
+debug-fee-currency/cache/
+debug-fee-currency/*.log

@@ -3,13 +3,12 @@
 # E2E test runner for celo-reth.
 #
 # Starts celo-reth in --dev mode (auto-mining, chain ID 1337), funds the test
-# account, then runs the e2e test scripts from op-geth/e2e_test.
+# account, then runs the e2e test scripts.
 #
 # Usage:
 #   ./run_all_tests.sh [TEST_GLOB]
 #
 # Environment:
-#   OP_GETH_E2E  Path to op-geth/e2e_test (default: ~/op-geth/e2e_test)
 #   CELO_RETH    Path to celo-reth binary (default: auto-built from workspace)
 #   SKIP_BUILD   Set to 1 to skip cargo build
 #
@@ -17,18 +16,11 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-OP_GETH_E2E="${OP_GETH_E2E:-$HOME/op-geth/e2e_test}"
 TEST_GLOB="${1:-}"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
-
-if [[ ! -d "$OP_GETH_E2E" ]]; then
-    echo "ERROR: op-geth e2e_test directory not found at $OP_GETH_E2E"
-    echo "Set OP_GETH_E2E to the correct path."
-    exit 1
-fi
 
 for cmd in cast forge; do
     if ! command -v "$cmd" &>/dev/null; then
@@ -126,15 +118,13 @@ echo "Test account balance: $(cast balance 0x42cf1bbc38BaAA3c4898ce8790e21eD2738
 # Run tests
 # ---------------------------------------------------------------------------
 
-cd "$OP_GETH_E2E"
+cd "$SCRIPT_DIR"
 
 # Override SCRIPT_DIR before sourcing shared.sh, because shared.sh computes
-# it from $0 which points to our runner script, not to op-geth/e2e_test.
-export SCRIPT_DIR="$OP_GETH_E2E"
+# it from $0 which points to our runner script, not to the test directory.
+export SCRIPT_DIR="$SCRIPT_DIR"
 
 # Source shared env (sets ETH_RPC_URL, ACC_PRIVKEY, TOKEN_ADDR, etc.)
-# Use set +e temporarily because shared.sh's readlink -f may fail when
-# $0 doesn't resolve relative to the current directory.
 set +e
 source shared.sh
 set -e
