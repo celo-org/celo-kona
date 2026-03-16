@@ -36,8 +36,10 @@ use revm::{
 };
 
 pub mod block;
+pub mod blocklist;
 pub mod cip64_storage;
 
+use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
@@ -140,6 +142,7 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
+    blocklist: FeeCurrencyBlocklist,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -179,7 +182,12 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
     pub fn new(evm: celo_revm::CeloEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, cip64_storage: Cip64Storage::default() }
+        Self {
+            inner: evm,
+            inspect,
+            cip64_storage: Cip64Storage::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+        }
     }
 }
 
@@ -229,16 +237,38 @@ where
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
 
+        // Check if the fee currency is blocklisted — reject early without EVM execution.
+        if let Some(fc) = fee_currency {
+            if self.blocklist.is_blocked(fc) {
+                return Err(EVMError::Transaction(
+                    revm::context::result::InvalidTransaction::from(
+                        alloc::format!("fee currency {fc} is temporarily blocklisted"),
+                    )
+                    .into(),
+                ));
+            }
+        }
+
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
 
-        // CIP64 NOTE:
-        // Extract and store the cip64 info to a shared storage to be able to add the credit/debit
-        // logs when building the receipt in the receipts_builder (alloy-celo-evm)
-
-        // After execution, extract the UPDATED CIP-64 info from the context
-        // The handler modifies this during execution to set the reverted flag
-        if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
-            self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
+        match &result {
+            Ok(_) => {
+                // CIP64 NOTE:
+                // Extract and store the cip64 info to a shared storage to be able to add the
+                // credit/debit logs when building the receipt in the receipts_builder.
+                if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
+                    self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
+                }
+            }
+            Err(e) if fee_currency.is_some() => {
+                let fc = fee_currency.unwrap();
+                tracing::warn!(
+                    target: "celo",
+                    "fee-currency EVM execution error for {fc}: {e}"
+                );
+                self.blocklist.block_currency(fc);
+            }
+            _ => {}
         }
 
         result
@@ -372,12 +402,21 @@ pub struct CeloEvmFactory {
     /// Shared CIP-64 storage. When set, all EVMs created by this factory will use this
     /// storage instance, enabling the receipt builder to read CIP-64 data written by the EVM.
     pub cip64_storage: Option<Cip64Storage>,
+    /// Shared fee currency blocklist. When set, all EVMs created by this factory will use
+    /// this blocklist to reject CIP-64 transactions for blocklisted currencies.
+    pub blocklist: Option<FeeCurrencyBlocklist>,
 }
 
 impl CeloEvmFactory {
     /// Creates a new factory with shared CIP-64 storage.
     pub fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
-        Self { cip64_storage: Some(cip64_storage) }
+        Self { cip64_storage: Some(cip64_storage), blocklist: None }
+    }
+
+    /// Sets the shared fee currency blocklist.
+    pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
+        self.blocklist = Some(blocklist);
+        self
     }
 }
 
@@ -409,6 +448,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: false,
             cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
+            blocklist: self.blocklist.clone().unwrap_or_default(),
         }
     }
 
@@ -430,6 +470,7 @@ impl EvmFactory for CeloEvmFactory {
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect: true,
             cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
+            blocklist: self.blocklist.clone().unwrap_or_default(),
         }
     }
 }

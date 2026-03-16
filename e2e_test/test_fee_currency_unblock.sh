@@ -5,7 +5,7 @@ set -eo pipefail
 source shared.sh
 source debug-fee-currency/lib.sh
 
-tail -F -n0 geth.log >debug-fee-currency/geth.unblock_fee_currency.log & # start log capture
+tail -F -n0 celo-reth.log >debug-fee-currency/reth.unblock_fee_currency.log & # start log capture
 trap 'kill %%' EXIT # kill bg tail job on exit
 (
 	sleep 0.2
@@ -27,4 +27,4 @@ trap 'kill %%' EXIT # kill bg tail job on exit
 )
 sleep 0.5
 # expect the execution error to appear twice
-if [ "$(grep -Ec "fee-currency EVM execution error.+fee-currency contract error during internal EVM call: surpassed maximum allowed intrinsic gas for CreditFees\(\) in fee-currency" debug-fee-currency/geth.unblock_fee_currency.log)" -ne 2 ]; then exit 1; fi
+if [ "$(grep -Ec "fee-currency EVM execution error" debug-fee-currency/reth.unblock_fee_currency.log)" -ne 2 ]; then exit 1; fi

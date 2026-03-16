@@ -59,12 +59,20 @@ pub use reth_optimism_node::args::RollupArgs;
 pub struct CeloNode {
     /// The inner OP node (shared args, DA config, etc.).
     pub args: RollupArgs,
+    /// Shared fee currency blocklist for CIP-64 transactions.
+    pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
 }
 
 impl CeloNode {
     /// Creates a new instance with the given rollup args.
     pub fn new(args: RollupArgs) -> Self {
-        Self { args }
+        Self { args, blocklist: Default::default() }
+    }
+
+    /// Sets the shared fee currency blocklist.
+    pub fn with_blocklist(mut self, blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist) -> Self {
+        self.blocklist = blocklist;
+        self
     }
 }
 
@@ -245,7 +253,7 @@ where
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
-            .executor(CeloExecutorBuilder)
+            .executor(CeloExecutorBuilder { blocklist: self.blocklist.clone() })
             .payload(BasicPayloadServiceBuilder::new(OpPayloadBuilder::new(false)))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
@@ -359,9 +367,12 @@ where
 // ---------------------------------------------------------------------------
 
 /// Celo EVM and executor builder.
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub struct CeloExecutorBuilder;
+pub struct CeloExecutorBuilder {
+    /// Shared fee currency blocklist.
+    pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+}
 
 impl<Node> ExecutorBuilder<Node> for CeloExecutorBuilder
 where
@@ -373,7 +384,7 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(CeloEvmConfig::celo(ctx.chain_spec()))
+        Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist))
     }
 }
 

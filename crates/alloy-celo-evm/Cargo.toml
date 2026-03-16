@@ -27,6 +27,7 @@ revm.workspace = true
 op-revm.workspace = true
 celo-revm = { workspace = true, features = ["alloy-op-evm"] }
 spin.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true

@@ -102,6 +102,7 @@ dependencies = [
  "op-revm 15.0.0",
  "revm 34.0.0",
  "spin 0.10.0",
+ "tracing",
 ]
 
 [[package]]

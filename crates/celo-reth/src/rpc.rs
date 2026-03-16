@@ -511,3 +511,44 @@ where
         }),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Admin RPCs for fee currency blocklist management
+// ---------------------------------------------------------------------------
+
+/// Build a [`jsonrpsee::RpcModule`] with fee currency blocklist admin methods:
+/// - `admin_disableBlocklistFeeCurrencies`: Disable blocklisting for given currencies
+/// - `admin_enableBlocklistFeeCurrencies`: Re-enable blocklisting for given currencies
+/// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
+pub fn celo_admin_module(
+    blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+) -> jsonrpsee::RpcModule<Arc<alloy_celo_evm::blocklist::FeeCurrencyBlocklist>> {
+    let ctx = Arc::new(blocklist);
+    let mut module = jsonrpsee::RpcModule::new(ctx);
+
+    module
+        .register_method("admin_disableBlocklistFeeCurrencies", |params, ctx, _| {
+            let currencies: Vec<Address> = params.one()?;
+            ctx.disable_blocklist(&currencies);
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(true)
+        })
+        .expect("admin_disableBlocklistFeeCurrencies registration");
+
+    module
+        .register_method("admin_enableBlocklistFeeCurrencies", |params, ctx, _| {
+            let currencies: Vec<Address> = params.one()?;
+            ctx.enable_blocklist(&currencies);
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(true)
+        })
+        .expect("admin_enableBlocklistFeeCurrencies registration");
+
+    module
+        .register_method("admin_unblockFeeCurrency", |params, ctx, _| {
+            let currency: Address = params.one()?;
+            ctx.unblock_currency(currency);
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(true)
+        })
+        .expect("admin_unblockFeeCurrency registration");
+
+    module
+}
