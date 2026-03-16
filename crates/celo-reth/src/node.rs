@@ -180,7 +180,11 @@ where
             .kzg_settings(ctx.kzg_settings()?)
             .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-            .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
+            // Celo requires a minimum priority fee of 1 wei (matching op-geth's
+            // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
+            .with_minimum_priority_fee(Some(
+                ctx.config().txpool.minimum_priority_fee.unwrap_or(1),
+            ))
             .with_additional_tasks(
                 pool_config_overrides
                     .additional_validation_tasks

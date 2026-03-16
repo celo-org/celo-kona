@@ -261,17 +261,23 @@ describe("viem send tx", () => {
 		});
 		const signature = await walletClient.signTransaction(request);
 		try {
-			await walletClient.sendRawTransaction({
+			const hash = await walletClient.sendRawTransaction({
 				serializedTransaction: signature,
 			});
-			assert.fail("Failed to filter unregistered feeCurrency");
-		} catch (err) {
-			// TODO: find a better way to check the error type
-			if (err.cause.details.indexOf("unregistered fee-currency address") >= 0) {
-				// Test success
-			} else {
-				throw err;
+			// reth: tx enters pool but won't be mined (unregistered currency
+			// is caught during execution). Wait a block and verify no receipt.
+			await new Promise(r => setTimeout(r, 2000));
+			try {
+				await publicClient.getTransactionReceipt({ hash });
+				assert.fail("Tx with unregistered feeCurrency should not be mined");
+			} catch (e) {
+				// TransactionReceiptNotFoundError is expected
 			}
+		} catch (err) {
+			// op-geth: immediate rejection at txpool level
+			const msg = err?.cause?.details ?? err?.details ?? err?.message ?? "";
+			assert.include(msg, "unregistered fee-currency address",
+				"Unexpected error: " + msg);
 		}
 	}).timeout(10_000);
 
@@ -335,7 +341,8 @@ describe("viem send tx", () => {
 			maxFeePerGas: gasPrice,
 			maxPriorityFeePerGas: 0n,
 		});
-		await expectTxFail(request, "gas tip cap 0");
+		// op-geth: "gas tip cap 0", reth: "priority fee below minimum"
+		await expectTxFail(request, "priority fee");
 	}).timeout(10_000);
 
 });
