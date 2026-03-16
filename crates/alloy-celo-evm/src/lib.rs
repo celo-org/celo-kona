@@ -237,15 +237,21 @@ where
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
 
+        // Only apply blocklist during block building, not during RPC simulation
+        // (eth_call, eth_estimateGas). RPC simulation disables the base fee check.
+        let is_block_building = !self.ctx().cfg.disable_base_fee;
+
         // Check if the fee currency is blocklisted — reject early without EVM execution.
-        if let Some(fc) = fee_currency {
-            if self.blocklist.is_blocked(fc) {
-                return Err(EVMError::Transaction(
-                    revm::context::result::InvalidTransaction::from(
-                        alloc::format!("fee currency {fc} is temporarily blocklisted"),
-                    )
-                    .into(),
-                ));
+        if is_block_building {
+            if let Some(fc) = fee_currency {
+                if self.blocklist.is_blocked(fc) {
+                    return Err(EVMError::Transaction(
+                        revm::context::result::InvalidTransaction::from(
+                            alloc::format!("fee currency {fc} is temporarily blocklisted"),
+                        )
+                        .into(),
+                    ));
+                }
             }
         }
 
@@ -260,7 +266,7 @@ where
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
-            Err(e) if fee_currency.is_some() => {
+            Err(e) if is_block_building && fee_currency.is_some() => {
                 let fc = fee_currency.unwrap();
                 tracing::warn!(
                     target: "celo",
