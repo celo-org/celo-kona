@@ -75,6 +75,16 @@ pub struct CeloPoolTx {
     native_max_fee_per_gas: u128,
     /// Native-equivalent max_priority_fee_per_gas.
     native_max_priority_fee_per_gas: Option<u128>,
+    /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
+    fee_currency: Option<Address>,
+}
+
+/// Extract the fee currency address from a pool transaction without cloning.
+fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
+    match inner.clone_into_consensus().into_parts().0 {
+        CeloTxEnvelope::Cip64(signed) => signed.tx().fee_currency,
+        _ => None,
+    }
 }
 
 impl CeloPoolTx {
@@ -82,10 +92,12 @@ impl CeloPoolTx {
     pub fn new(inner: InnerPoolTx) -> Self {
         let native_max_fee_per_gas = inner.max_fee_per_gas();
         let native_max_priority_fee_per_gas = inner.max_priority_fee_per_gas();
+        let fee_currency = extract_fee_currency(&inner);
         Self {
             inner,
             native_max_fee_per_gas,
             native_max_priority_fee_per_gas,
+            fee_currency,
         }
     }
 
@@ -100,10 +112,7 @@ impl CeloPoolTx {
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
     pub fn fee_currency(&self) -> Option<Address> {
-        match self.inner.clone_into_consensus().into_parts().0 {
-            CeloTxEnvelope::Cip64(signed) => signed.tx().fee_currency,
-            _ => None,
-        }
+        self.fee_currency
     }
 }
 
@@ -320,9 +329,7 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
-/// Address of the FeeCurrencyDirectory contract.
-const FEE_CURRENCY_DIRECTORY: Address =
-    alloy_primitives::address!("15F344b9E6c3Cb6F0376A36A64928b13F62C6276");
+use crate::FEE_CURRENCY_DIRECTORY;
 
 /// Look up the exchange rate for a fee currency by reading contract storage directly.
 ///

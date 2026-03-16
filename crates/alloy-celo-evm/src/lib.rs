@@ -262,7 +262,7 @@ where
                 // CIP64 NOTE:
                 // Extract and store the cip64 info to a shared storage to be able to add the
                 // credit/debit logs when building the receipt in the receipts_builder.
-                if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
+                if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.take() {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }

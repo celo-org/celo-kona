@@ -54,6 +54,7 @@ fn main() {
                     .map(FeeCurrencyLimits::parse_limits)
                     .unwrap_or_default(),
                 default_limit: celo_args.fee_currency_default,
+                ..Default::default()
             };
 
             let blocklist = FeeCurrencyBlocklist::default();

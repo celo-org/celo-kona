@@ -29,6 +29,9 @@ pub struct FeeCurrencyLimits {
     pub limits: HashMap<Address, f64>,
     /// Default limit for currencies not explicitly listed.
     pub default_limit: f64,
+    /// Block gas limit used for computing per-currency gas caps.
+    /// Defaults to 30_000_000 (Celo's typical block gas limit).
+    pub block_gas_limit: u64,
 }
 
 impl Default for FeeCurrencyLimits {
@@ -36,6 +39,7 @@ impl Default for FeeCurrencyLimits {
         Self {
             limits: HashMap::new(),
             default_limit: 0.5,
+            block_gas_limit: 30_000_000,
         }
     }
 }
@@ -61,12 +65,12 @@ impl FeeCurrencyLimits {
         map
     }
 
-    /// Returns the gas limit for a given fee currency address, given the block gas limit.
+    /// Returns the gas limit for a given fee currency address.
     /// Returns `None` (unlimited) for native CELO.
-    fn max_gas_for_currency(&self, fee_currency: Option<Address>, block_gas_limit: u64) -> Option<u64> {
+    fn max_gas_for_currency(&self, fee_currency: Option<Address>) -> Option<u64> {
         let fc = fee_currency?;
         let fraction = self.limits.get(&fc).copied().unwrap_or(self.default_limit);
-        Some((block_gas_limit as f64 * fraction) as u64)
+        Some((self.block_gas_limit as f64 * fraction) as u64)
     }
 }
 
@@ -79,13 +83,12 @@ impl FeeCurrencyLimits {
 #[derive(Debug, Clone)]
 pub struct CeloPayloadTransactions {
     limits: FeeCurrencyLimits,
-    block_gas_limit: u64,
 }
 
 impl CeloPayloadTransactions {
-    /// Create a new instance with the given fee currency limits and block gas limit.
-    pub const fn new(limits: FeeCurrencyLimits, block_gas_limit: u64) -> Self {
-        Self { limits, block_gas_limit }
+    /// Create a new instance with the given fee currency limits.
+    pub const fn new(limits: FeeCurrencyLimits) -> Self {
+        Self { limits }
     }
 }
 
@@ -101,7 +104,6 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
         CeloFeeCurrencyFilter {
             inner: BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr)),
             limits: self.limits.clone(),
-            block_gas_limit: self.block_gas_limit,
             gas_used_per_currency: HashMap::new(),
         }
     }
@@ -120,7 +122,6 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
 struct CeloFeeCurrencyFilter<I> {
     inner: I,
     limits: FeeCurrencyLimits,
-    block_gas_limit: u64,
     /// Cumulative gas used per fee currency address.
     gas_used_per_currency: HashMap<Address, u64>,
 }
@@ -136,7 +137,7 @@ where
             let tx = self.inner.next(ctx)?;
             let fee_currency = tx.fee_currency();
 
-            if let Some(max_gas) = self.limits.max_gas_for_currency(fee_currency, self.block_gas_limit) {
+            if let Some(max_gas) = self.limits.max_gas_for_currency(fee_currency) {
                 let fc = fee_currency.unwrap(); // safe: max_gas is Some only when fee_currency is Some
                 let used = self.gas_used_per_currency.get(&fc).copied().unwrap_or(0);
                 if used + tx.gas_limit() > max_gas {
@@ -197,7 +198,7 @@ mod tests {
     fn test_max_gas_for_currency_native() {
         let limits = FeeCurrencyLimits::default();
         // Native CELO (None) should be unlimited
-        assert_eq!(limits.max_gas_for_currency(None, 30_000_000), None);
+        assert_eq!(limits.max_gas_for_currency(None), None);
     }
 
     #[test]
@@ -205,7 +206,7 @@ mod tests {
         let limits = FeeCurrencyLimits { default_limit: 0.5, ..Default::default() };
         let addr: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
         // Default 0.5 of 30M = 15M
-        assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(15_000_000));
+        assert_eq!(limits.max_gas_for_currency(Some(addr)), Some(15_000_000));
     }
 
     #[test]
@@ -213,8 +214,8 @@ mod tests {
         let addr: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
         let mut map = HashMap::new();
         map.insert(addr, 0.9);
-        let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5 };
+        let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5, ..Default::default() };
         // 0.9 of 30M = 27M
-        assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(27_000_000));
+        assert_eq!(limits.max_gas_for_currency(Some(addr)), Some(27_000_000));
     }
 }

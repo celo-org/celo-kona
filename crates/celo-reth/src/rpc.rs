@@ -359,8 +359,7 @@ where
 // Fee-currency-aware gas price RPCs
 // ---------------------------------------------------------------------------
 
-/// Well-known address of the Celo FeeCurrencyDirectory contract.
-const FEE_CURRENCY_DIRECTORY: Address = alloy_primitives::address!("15F344b9E6c3Cb6F0376A36A64928b13F62C6276");
+use crate::FEE_CURRENCY_DIRECTORY;
 
 /// Type-erased wrapper for the parts of the Eth API we need in the gas price
 /// RPC overrides. This avoids leaking the heavily-parameterised [`EthApiServer`]
@@ -522,9 +521,8 @@ where
 /// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
 pub fn celo_admin_module(
     blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
-) -> jsonrpsee::RpcModule<Arc<alloy_celo_evm::blocklist::FeeCurrencyBlocklist>> {
-    let ctx = Arc::new(blocklist);
-    let mut module = jsonrpsee::RpcModule::new(ctx);
+) -> jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist> {
+    let mut module = jsonrpsee::RpcModule::new(blocklist);
 
     module
         .register_method("admin_disableBlocklistFeeCurrencies", |params, ctx, _| {
