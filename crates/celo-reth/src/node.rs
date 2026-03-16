@@ -278,7 +278,68 @@ where
     fn local_payload_attributes_builder(
         chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
-        LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+        CeloLocalPayloadAttributesBuilder {
+            inner: LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone())),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CeloLocalPayloadAttributesBuilder — dev mode with zeroed L1 fees
+// ---------------------------------------------------------------------------
+
+/// Wraps [`LocalPayloadAttributesBuilder`] and replaces the OP-mainnet deposit
+/// transaction with one that has zeroed L1 fee scalars and base fees.
+///
+/// The standard OP dev mode injects a hardcoded deposit tx from OP mainnet block
+/// 124665056 which carries non-zero `baseFeeScalar`, `blobBaseFeeScalar`, and
+/// `l1BaseFee`. This causes all receipts to report a non-zero `l1Fee` even in a
+/// pure L2 dev environment. Celo's dev mode zeroes these fields so that `l1Fee`
+/// is always 0, matching the behaviour of op-geth's Celo fork.
+#[derive(Debug)]
+struct CeloLocalPayloadAttributesBuilder<CS> {
+    inner: LocalPayloadAttributesBuilder<CS>,
+}
+
+impl<CS> PayloadAttributesBuilder<op_alloy_rpc_types_engine::OpPayloadAttributes, CS::Header>
+    for CeloLocalPayloadAttributesBuilder<CS>
+where
+    CS: EthChainSpec + EthereumHardforks + 'static,
+{
+    fn build(
+        &self,
+        parent: &SealedHeader<CS::Header>,
+    ) -> op_alloy_rpc_types_engine::OpPayloadAttributes {
+        // Delegate to the standard OP builder, then replace the deposit tx.
+        let mut attrs: op_alloy_rpc_types_engine::OpPayloadAttributes =
+            PayloadAttributesBuilder::build(&self.inner, parent);
+
+        // L1 attributes deposit tx identical to the OP-mainnet one but with
+        // baseFeeScalar, blobBaseFeeScalar, basefee, and blobBaseFee zeroed.
+        //
+        // Original source: OP Mainnet block 124665056, tx 0.
+        // Function: setL1BlockValuesEcotone(0x440a5e20)
+        // Packed word: [baseFeeScalar=0, blobBaseFeeScalar=0, seq=4, ts, num]
+        // basefee=0, blobBaseFee=0, hash and batcherHash unchanged.
+        const ZERO_L1_FEE_DEPOSIT_TX: [u8; 251] = alloy_primitives::hex!(
+            // RLP envelope + source hash + from + to + mint + value + gas + isCreate + data-len
+            "7ef8f8a0683079df94aa5b9cf86687d739a60a9b4f0835e520ec4d664e2e415dca17a6df94deaddeaddeaddeaddeaddeaddeaddeaddead00019442000000000000000000000000000000000000158080830f424080b8a4"
+            // setL1BlockValuesEcotone selector
+            "440a5e20"
+            // baseFeeScalar(0) ++ blobBaseFeeScalar(0) ++ seqNum(4) ++ timestamp ++ l1Number
+            "0000000000000000000000000000000400000000" "66d052e700000000013ad8a3"
+            // basefee = 0
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // blobBaseFee = 0
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // l1 block hash
+            "2fdf87b89884a61e74b322bbcf60386f543bfae7827725efaaf0ab1de2294a59"
+            // batcher hash
+            "0000000000000000000000006887246668a3b87f54deb3b94ba47a6f63f32985"
+        );
+
+        attrs.transactions = Some(vec![ZERO_L1_FEE_DEPOSIT_TX.into()]);
+        attrs
     }
 }
 
