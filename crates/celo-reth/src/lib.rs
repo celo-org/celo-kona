@@ -48,6 +48,9 @@ pub mod node;
 pub mod pool;
 
 #[cfg(feature = "std")]
+pub mod payload;
+
+#[cfg(feature = "std")]
 pub mod rpc;
 
 pub use primitives::*;

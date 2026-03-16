@@ -2341,6 +2341,7 @@ dependencies = [
  "reth-optimism-rpc",
  "reth-optimism-storage",
  "reth-optimism-txpool",
+ "reth-payload-util",
  "reth-primitives-traits 1.11.0",
  "reth-provider",
  "reth-rpc-eth-api",

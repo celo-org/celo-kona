@@ -170,6 +170,7 @@ reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
+reth-payload-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 
 # OP Reth

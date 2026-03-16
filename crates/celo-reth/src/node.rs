@@ -2,6 +2,7 @@
 
 use crate::{
     celo_next_block_base_fee,
+    payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{CeloExchangeRateApplier, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
@@ -61,17 +62,34 @@ pub struct CeloNode {
     pub args: RollupArgs,
     /// Shared fee currency blocklist for CIP-64 transactions.
     pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+    /// Per-fee-currency block space limits.
+    pub fee_currency_limits: FeeCurrencyLimits,
+    /// Block gas limit used for computing per-currency gas caps.
+    /// Defaults to 30_000_000 (Celo's typical block gas limit).
+    pub block_gas_limit: u64,
 }
 
 impl CeloNode {
     /// Creates a new instance with the given rollup args.
     pub fn new(args: RollupArgs) -> Self {
-        Self { args, blocklist: Default::default() }
+        Self { args, blocklist: Default::default(), fee_currency_limits: Default::default(), block_gas_limit: 30_000_000 }
     }
 
     /// Sets the shared fee currency blocklist.
     pub fn with_blocklist(mut self, blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist) -> Self {
         self.blocklist = blocklist;
+        self
+    }
+
+    /// Sets the per-fee-currency block space limits.
+    pub fn with_fee_currency_limits(mut self, limits: FeeCurrencyLimits) -> Self {
+        self.fee_currency_limits = limits;
+        self
+    }
+
+    /// Sets the block gas limit used for computing per-currency gas caps.
+    pub fn with_block_gas_limit(mut self, gas_limit: u64) -> Self {
+        self.block_gas_limit = gas_limit;
         self
     }
 }
@@ -234,7 +252,7 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         CeloPoolBuilder,
-        BasicPayloadServiceBuilder<OpPayloadBuilder>,
+        BasicPayloadServiceBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
         OpNetworkBuilder,
         CeloExecutorBuilder,
         CeloConsensusBuilder,
@@ -250,11 +268,17 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
+        let celo_txs = CeloPayloadTransactions::new(
+            self.fee_currency_limits.clone(),
+            self.block_gas_limit,
+        );
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist: self.blocklist.clone() })
-            .payload(BasicPayloadServiceBuilder::new(OpPayloadBuilder::new(false)))
+            .payload(BasicPayloadServiceBuilder::new(
+                OpPayloadBuilder::new(false).with_transactions(celo_txs),
+            ))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
     }
