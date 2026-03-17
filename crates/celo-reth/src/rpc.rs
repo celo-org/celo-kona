@@ -359,8 +359,6 @@ where
 // Fee-currency-aware gas price RPCs
 // ---------------------------------------------------------------------------
 
-use crate::FEE_CURRENCY_DIRECTORY;
-
 /// Type-erased wrapper for the parts of the Eth API we need in the gas price
 /// RPC overrides. This avoids leaking the heavily-parameterised [`EthApiServer`]
 /// types into the RPC module registration.
@@ -368,6 +366,7 @@ pub struct CeloFeeApi {
     gas_price: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
     priority_fee: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
     eth_call: Box<dyn Fn(CeloTransactionRequest) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<Bytes>> + Send>> + Send + Sync>,
+    fee_currency_directory: Address,
 }
 
 impl Debug for CeloFeeApi {
@@ -392,7 +391,7 @@ impl CeloFeeApi {
 
         let request = CeloTransactionRequest {
             inner: OpTransactionRequest::default()
-                .to(FEE_CURRENCY_DIRECTORY)
+                .to(self.fee_currency_directory)
                 .input(TransactionInput::new(Bytes::from(calldata))),
             fee_currency: None,
         };
@@ -472,7 +471,7 @@ pub fn celo_gas_price_module(api: CeloFeeApi) -> jsonrpsee::RpcModule<Arc<CeloFe
 /// implementor behind type-erased closures, allowing the resulting
 /// [`CeloFeeApi`] (and the [`jsonrpsee::RpcModule`] built from it) to be
 /// stored and used without propagating the complex generic bounds.
-pub fn make_celo_fee_api<Api>(eth_api: Api) -> CeloFeeApi
+pub fn make_celo_fee_api<Api>(eth_api: Api, fee_currency_directory: Address) -> CeloFeeApi
 where
     Api: reth_rpc_eth_api::EthApiServer<
             CeloTransactionRequest,
@@ -508,6 +507,7 @@ where
             let ea = ea3.clone();
             Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
         }),
+        fee_currency_directory,
     }
 }
 

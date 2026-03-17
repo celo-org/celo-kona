@@ -219,7 +219,10 @@ where
             // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
             // to native equivalents after validation.
             .map(|validator| {
-                CeloExchangeRateApplier::new(validator, ctx.provider().clone())
+                let chain_id = ctx.chain_spec().chain().id();
+                let fee_currency_directory =
+                    celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
+                CeloExchangeRateApplier::new(validator, ctx.provider().clone(), fee_currency_directory)
             });
 
         let final_pool_config = pool_config_overrides.apply(ctx.pool_config());

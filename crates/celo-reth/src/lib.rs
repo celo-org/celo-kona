@@ -82,10 +82,6 @@ use {
 /// After Jovian, `min_base_fee` is read from the parent block's `extraData` instead.
 pub const CELO_BASE_FEE_FLOOR: u64 = 25_000_000_000;
 
-/// Address of the FeeCurrencyDirectory contract on Celo L2.
-pub const FEE_CURRENCY_DIRECTORY: alloy_primitives::Address =
-    alloy_primitives::address!("15F344b9E6c3Cb6F0376A36A64928b13F62C6276");
-
 /// Compute the next block's base fee for Celo.
 ///
 /// Pre-Jovian, applies the 25 Gwei base fee floor. Post-Jovian, the chain spec already

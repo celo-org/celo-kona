@@ -329,8 +329,6 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
-use crate::FEE_CURRENCY_DIRECTORY;
-
 /// Look up the exchange rate for a fee currency by reading contract storage directly.
 ///
 /// Reads:
@@ -339,6 +337,7 @@ use crate::FEE_CURRENCY_DIRECTORY;
 fn lookup_exchange_rate(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
+    fee_currency_directory: Address,
 ) -> Option<ExchangeRate> {
     use alloy_primitives::keccak256;
 
@@ -351,7 +350,7 @@ fn lookup_exchange_rate(
     let oracle_slot = keccak256(key_buf);
 
     let oracle_value = state
-        .storage(FEE_CURRENCY_DIRECTORY, oracle_slot.into())
+        .storage(fee_currency_directory, oracle_slot.into())
         .ok()??;
     let oracle_addr = Address::from_word(oracle_value.into());
 
@@ -414,6 +413,7 @@ impl PoolTransactionError for UnregisteredFeeCurrency {
 pub struct CeloExchangeRateApplier<V, P> {
     inner: V,
     provider: P,
+    fee_currency_directory: Address,
 }
 
 impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
@@ -426,8 +426,8 @@ impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
 
 impl<V, P> CeloExchangeRateApplier<V, P> {
     /// Create a new [`CeloExchangeRateApplier`].
-    pub fn new(inner: V, provider: P) -> Self {
-        Self { inner, provider }
+    pub fn new(inner: V, provider: P, fee_currency_directory: Address) -> Self {
+        Self { inner, provider, fee_currency_directory }
     }
 }
 
@@ -438,13 +438,14 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
 fn apply_exchange_rates_to_valid_tx(
     provider: &dyn StateProviderFactory,
     valid_tx: &mut ValidTransaction<CeloPoolTx>,
+    fee_currency_directory: Address,
 ) -> Result<(), Address> {
     let tx = match valid_tx {
         ValidTransaction::Valid(tx) => tx,
         ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
     };
     if let Some(fc) = tx.fee_currency() {
-        if let Some(rate) = lookup_exchange_rate(provider, fc) {
+        if let Some(rate) = lookup_exchange_rate(provider, fc, fee_currency_directory) {
             let old_fee = tx.inner.max_fee_per_gas();
             tx.apply_exchange_rate(rate);
             tracing::info!(
@@ -496,7 +497,7 @@ where
                     authorities,
                 } => {
                     if let Err(fc) =
-                        apply_exchange_rates_to_valid_tx(provider, &mut transaction)
+                        apply_exchange_rates_to_valid_tx(provider, &mut transaction, self.fee_currency_directory)
                     {
                         let tx = match transaction {
                             ValidTransaction::Valid(tx) => tx,

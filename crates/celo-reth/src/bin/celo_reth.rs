@@ -65,7 +65,10 @@ fn main() {
                         .with_fee_currency_limits(fee_currency_limits),
                 )
                 .extend_rpc_modules(move |ctx| {
-                    let fee_api = make_celo_fee_api(ctx.registry.eth_api().clone());
+                    let chain_id = ctx.config().chain.chain().id();
+                    let fee_currency_directory =
+                        celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
+                    let fee_api = make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
                     let gas_module = celo_gas_price_module(fee_api);
                     ctx.modules.replace_configured(gas_module)?;
 
