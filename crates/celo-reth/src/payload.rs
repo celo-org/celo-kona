@@ -46,6 +46,22 @@ impl Default for FeeCurrencyLimits {
 }
 
 impl FeeCurrencyLimits {
+    /// Returns the default per-currency gas limit fractions for Celo Mainnet.
+    ///
+    /// Matches op-geth's `miner/celo_defaults.go`:
+    /// - cUSD, USDT, USDC: 0.9 (high-confidence stablecoins)
+    /// - cEUR, cREAL: 0.5 (default)
+    pub fn mainnet_defaults() -> HashMap<Address, f64> {
+        use alloy_primitives::address;
+        HashMap::from([
+            (address!("765DE816845861e75A25fCA122bb6898B8B1282a"), 0.9), // cUSD
+            (address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e"), 0.9), // USDT
+            (address!("cebA9300f2b948710d2653dD7B07f33A8B32118C"), 0.9), // USDC
+            (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
+            (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
+        ])
+    }
+
     /// Parse the `--celo.feecurrency.limits` CLI value.
     ///
     /// Format: `address=fraction,address=fraction,...`
@@ -209,6 +225,39 @@ mod tests {
     fn test_parse_limits_empty() {
         let limits = FeeCurrencyLimits::parse_limits("");
         assert!(limits.is_empty());
+    }
+
+    #[test]
+    fn test_mainnet_defaults() {
+        let defaults = FeeCurrencyLimits::mainnet_defaults();
+        assert_eq!(defaults.len(), 5);
+        // cUSD, USDT, USDC = 0.9
+        assert_eq!(
+            defaults[&"0x765DE816845861e75A25fCA122bb6898B8B1282a".parse::<Address>().unwrap()],
+            0.9,
+            "cUSD should be 0.9"
+        );
+        assert_eq!(
+            defaults[&"0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e".parse::<Address>().unwrap()],
+            0.9,
+            "USDT should be 0.9"
+        );
+        assert_eq!(
+            defaults[&"0xcebA9300f2b948710d2653dD7B07f33A8B32118C".parse::<Address>().unwrap()],
+            0.9,
+            "USDC should be 0.9"
+        );
+        // cEUR, cREAL = 0.5
+        assert_eq!(
+            defaults[&"0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73".parse::<Address>().unwrap()],
+            0.5,
+            "cEUR should be 0.5"
+        );
+        assert_eq!(
+            defaults[&"0xe8537a3d056DA446677B9E9d6c5dB704EaAb4787".parse::<Address>().unwrap()],
+            0.5,
+            "cREAL should be 0.5"
+        );
     }
 
     #[test]

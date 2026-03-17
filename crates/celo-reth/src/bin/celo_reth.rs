@@ -47,12 +47,18 @@ fn main() {
             let rollup_args = celo_args.rollup;
 
             // Parse fee currency limits from CLI args.
+            // If no explicit limits are provided and the chain is Celo Mainnet,
+            // use the op-geth-matching defaults (cUSD/USDT/USDC=0.9, cEUR/cREAL=0.5).
+            let chain_id = builder.config().chain.chain().id();
+            let limits = match celo_args.fee_currency_limits.as_deref() {
+                Some(s) => FeeCurrencyLimits::parse_limits(s),
+                None if chain_id == celo_revm::constants::CELO_MAINNET_CHAIN_ID => {
+                    FeeCurrencyLimits::mainnet_defaults()
+                }
+                None => Default::default(),
+            };
             let fee_currency_limits = FeeCurrencyLimits {
-                limits: celo_args
-                    .fee_currency_limits
-                    .as_deref()
-                    .map(FeeCurrencyLimits::parse_limits)
-                    .unwrap_or_default(),
+                limits,
                 default_limit: celo_args.fee_currency_default,
                 ..Default::default()
             };

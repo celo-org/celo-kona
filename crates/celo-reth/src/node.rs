@@ -229,11 +229,14 @@ where
                 } else {
                     crate::CELO_BASE_FEE_FLOOR
                 };
+                let minimum_priority_fee =
+                    ctx.config().txpool.minimum_priority_fee.unwrap_or(1) as u128;
                 CeloExchangeRateApplier::new(
                     validator,
                     ctx.provider().clone(),
                     fee_currency_directory,
                     base_fee_floor,
+                    minimum_priority_fee,
                 )
             });
 

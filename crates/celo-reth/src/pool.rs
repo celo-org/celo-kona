@@ -56,6 +56,17 @@ impl ExchangeRate {
             .map(|v| v / self.numerator)
             .unwrap_or(u128::MAX)
     }
+
+    /// Convert a native amount to fee-currency equivalent.
+    pub fn to_fc(&self, native_amount: u128) -> u128 {
+        if self.denominator == 0 {
+            return native_amount;
+        }
+        native_amount
+            .checked_mul(self.numerator)
+            .map(|v| v / self.denominator)
+            .unwrap_or(u128::MAX)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -348,20 +359,26 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
-/// Look up the exchange rate and optionally the ERC20 balance for a fee currency.
+/// Result of looking up exchange rate, balance, and debit simulation for a fee currency.
+struct FcLookupResult {
+    rate: Option<ExchangeRate>,
+    balance_ok: Option<bool>,
+    debit_ok: Option<bool>,
+}
+
+/// Look up the exchange rate, check ERC20 balance, and simulate `debitGasFees`
+/// for a fee currency.
 ///
-/// Performs both queries in a single EVM instance to avoid duplicate state
+/// Performs all queries in a single EVM instance to avoid duplicate state
 /// provider and EVM construction on the pool validation hot path.
-///
-/// Returns `(Some(rate), balance_check)` where `balance_check` is:
-/// - `None` if no balance check was requested or the query failed
-/// - `Some(true/false)` for the balance comparison
+/// The EVM's in-memory journal is discarded when it drops, so the debit
+/// simulation causes no persistent state changes.
 fn lookup_rate_and_balance(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
-) -> (Option<ExchangeRate>, Option<bool>) {
+) -> FcLookupResult {
     use alloy_sol_types::SolCall;
     use celo_revm::{
         CeloBuilder, DefaultCelo,
@@ -372,7 +389,7 @@ fn lookup_rate_and_balance(
 
     let state = match provider.latest() {
         Ok(s) => s,
-        Err(_) => return (None, None),
+        Err(_) => return FcLookupResult { rate: None, balance_ok: None, debit_ok: None },
     };
     let db = StateProviderDatabase::new(state);
     let mut evm = Context::celo().with_db(db).build_celo();
@@ -396,10 +413,10 @@ fn lookup_rate_and_balance(
             Some(ExchangeRate { numerator, denominator })
         });
 
-    // 2. Check ERC20 balance (only if requested and rate lookup succeeded)
-    let balance_result = balance_check.and_then(|(sender, required)| {
+    // 2. Check ERC20 balance (only if requested)
+    let balance_ok = balance_check.as_ref().and_then(|(sender, required)| {
         let bal_calldata =
-            IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
+            IFeeCurrencyERC20::balanceOfCall { account: *sender }.abi_encode();
         let result = evm
             .system_call_one(fee_currency, bal_calldata.into())
             .ok()?;
@@ -409,10 +426,37 @@ fn lookup_rate_and_balance(
         };
         let balance =
             IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output).ok()?;
-        Some(balance >= required)
+        Some(balance >= *required)
     });
 
-    (rate, balance_result)
+    // 3. Simulate debitGasFees (only if balance was sufficient).
+    //
+    // Catches tokens with custom hooks (pause, blacklist) that would pass
+    // the balance check but fail at execution time. Uses Address::ZERO as
+    // the caller, matching the `onlyVm` modifier that fee currency contracts
+    // require (msg.sender == address(0)).
+    let debit_ok = balance_check.and_then(|(sender, required)| {
+        if balance_ok != Some(true) {
+            return None;
+        }
+        let debit_calldata = IFeeCurrencyERC20::debitGasFeesCall {
+            from: sender,
+            value: required,
+        }
+        .abi_encode();
+        match evm.system_call_one_with_caller(
+            Address::ZERO,
+            fee_currency,
+            debit_calldata.into(),
+        ) {
+            Ok(ExecutionResult::Success { .. }) => Some(true),
+            Ok(ExecutionResult::Revert { .. }) => Some(false),
+            // Halt or EVM-level error: inconclusive, don't reject
+            _ => None,
+        }
+    });
+
+    FcLookupResult { rate, balance_ok, debit_ok }
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +478,9 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// FC→native conversion. Set to [`CELO_BASE_FEE_FLOOR`](crate::CELO_BASE_FEE_FLOOR)
     /// for mainnet/testnet, or 0 for dev chains where the floor doesn't apply.
     base_fee_floor: u64,
+    /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
+    /// that, when converted to FC units, is at least this value converted to FC.
+    minimum_priority_fee: u128,
 }
 
 impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
@@ -451,8 +498,9 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         provider: P,
         fee_currency_directory: Address,
         base_fee_floor: u64,
+        minimum_priority_fee: u128,
     ) -> Self {
-        Self { inner, provider, fee_currency_directory, base_fee_floor }
+        Self { inner, provider, fee_currency_directory, base_fee_floor, minimum_priority_fee }
     }
 }
 
@@ -468,8 +516,10 @@ enum Cip64Rejection {
     InsufficientBalance(Address),
     /// The fee cap (in FC terms) is below the base fee floor converted to FC.
     BelowBaseFeeFloor(Address),
-    /// The priority fee (in FC terms) is zero — must be at least 1 wei.
-    ZeroPriorityFee,
+    /// The priority fee (in FC terms) is below the minimum tip converted to FC.
+    BelowMinTip { currency: Address, min_tip_fc: u128, actual: u128 },
+    /// The `debitGasFees()` simulation failed (e.g. token is paused or blacklisted).
+    DebitSimulationFailed(Address),
 }
 
 impl std::fmt::Display for Cip64Rejection {
@@ -484,8 +534,14 @@ impl std::fmt::Display for Cip64Rejection {
             Self::BelowBaseFeeFloor(fc) => {
                 write!(f, "fee cap below base fee floor for fee-currency {fc}")
             }
-            Self::ZeroPriorityFee => {
-                write!(f, "CIP-64 priority fee must be at least 1 wei in fee currency")
+            Self::BelowMinTip { currency, min_tip_fc, actual } => {
+                write!(
+                    f,
+                    "CIP-64 priority fee {actual} below minimum {min_tip_fc} for fee-currency {currency}"
+                )
+            }
+            Self::DebitSimulationFailed(fc) => {
+                write!(f, "debitGasFees simulation failed for fee-currency {fc}")
             }
         }
     }
@@ -498,6 +554,8 @@ impl PoolTransactionError for Cip64Rejection {
         match self {
             // Insufficient balance is transient — balance may change.
             Self::InsufficientBalance(_) => false,
+            // Debit simulation failure is transient — token state may change.
+            Self::DebitSimulationFailed(_) => false,
             _ => true,
         }
     }
@@ -508,12 +566,13 @@ impl PoolTransactionError for Cip64Rejection {
 }
 
 /// Apply exchange rates to a [`ValidTransaction`] if it is a CIP-64 tx.
-/// Also checks ERC20 balance for the fee currency.
+/// Also checks ERC20 balance, minimum tip, and simulates debitGasFees.
 fn apply_exchange_rates_to_valid_tx(
     provider: &dyn StateProviderFactory,
     valid_tx: &mut ValidTransaction<CeloPoolTx>,
     fee_currency_directory: Address,
     base_fee_floor: u64,
+    minimum_priority_fee: u128,
 ) -> Result<(), Cip64Rejection> {
     let tx = match valid_tx {
         ValidTransaction::Valid(tx) => tx,
@@ -523,30 +582,19 @@ fn apply_exchange_rates_to_valid_tx(
         let old_fee = tx.inner.max_fee_per_gas();
         let old_priority_fee = tx.inner.max_priority_fee_per_gas();
 
-        // Check: original FC-denominated priority fee must be >= 1.
-        // After exchange rate conversion a 0-wei FC tip stays 0, which would
-        // pass the inner validator's minimum_priority_fee(1) check vacuously.
-        if old_priority_fee == Some(0) {
-            tracing::warn!(
-                target: "celo::pool",
-                ?fc,
-                "Rejecting CIP-64 tx: zero priority fee in fee currency"
-            );
-            return Err(Cip64Rejection::ZeroPriorityFee);
-        }
-
-        // Look up exchange rate and check ERC20 balance in a single EVM instance.
+        // Look up exchange rate, check ERC20 balance, and simulate debit
+        // in a single EVM instance.
         let required_fc = U256::from(tx.inner.gas_limit())
             .saturating_mul(U256::from(old_fee));
         let sender = tx.sender();
-        let (rate, balance_ok) = lookup_rate_and_balance(
+        let result = lookup_rate_and_balance(
             provider,
             fc,
             fee_currency_directory,
             Some((sender, required_fc)),
         );
 
-        let rate = match rate {
+        let rate = match result.rate {
             Some(r) => r,
             None => {
                 tracing::warn!(
@@ -558,13 +606,26 @@ fn apply_exchange_rates_to_valid_tx(
             }
         };
 
+        // Check: priority fee must meet the minimum tip converted to FC.
+        let min_tip_fc = rate.to_fc(minimum_priority_fee);
+        let actual_tip = old_priority_fee.unwrap_or(0);
+        if actual_tip < min_tip_fc {
+            tracing::warn!(
+                target: "celo::pool",
+                ?fc,
+                actual_tip,
+                min_tip_fc,
+                "Rejecting CIP-64 tx: priority fee below minimum tip"
+            );
+            return Err(Cip64Rejection::BelowMinTip {
+                currency: fc,
+                min_tip_fc,
+                actual: actual_tip,
+            });
+        }
+
         // Check: fee cap must be >= base fee floor converted to FC.
-        // FC floor = native_floor * numerator / denominator.
-        let base_fee_floor_native = base_fee_floor as u128;
-        let base_fee_floor_fc = base_fee_floor_native
-            .checked_mul(rate.numerator)
-            .map(|v| v / rate.denominator)
-            .unwrap_or(u128::MAX);
+        let base_fee_floor_fc = rate.to_fc(base_fee_floor as u128);
         if old_fee < base_fee_floor_fc {
             tracing::warn!(
                 target: "celo::pool",
@@ -590,7 +651,7 @@ fn apply_exchange_rates_to_valid_tx(
         // Check ERC20 balance result (query already done above).
         // If balance_ok is None (query failed), we allow the tx through —
         // it will be caught during execution.
-        if let Some(false) = balance_ok {
+        if let Some(false) = result.balance_ok {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
@@ -599,6 +660,18 @@ fn apply_exchange_rates_to_valid_tx(
                 "Rejecting CIP-64 tx: insufficient fee currency balance"
             );
             return Err(Cip64Rejection::InsufficientBalance(fc));
+        }
+
+        // Check debit simulation result. If debit_ok is None (not attempted
+        // or query failed), allow the tx — it will be caught at execution.
+        if let Some(false) = result.debit_ok {
+            tracing::warn!(
+                target: "celo::pool",
+                ?fc,
+                ?sender,
+                "Rejecting CIP-64 tx: debitGasFees simulation failed"
+            );
+            return Err(Cip64Rejection::DebitSimulationFailed(fc));
         }
     }
     Ok(())
@@ -632,7 +705,7 @@ where
                     authorities,
                 } => {
                     if let Err(rejection) =
-                        apply_exchange_rates_to_valid_tx(provider, &mut transaction, self.fee_currency_directory, self.base_fee_floor)
+                        apply_exchange_rates_to_valid_tx(provider, &mut transaction, self.fee_currency_directory, self.base_fee_floor, self.minimum_priority_fee)
                     {
                         let tx = match transaction {
                             ValidTransaction::Valid(tx) => tx,
@@ -757,5 +830,63 @@ mod tests {
         let rate = ExchangeRate { numerator: 0, denominator: 1000 };
         // When numerator is 0, to_native returns the amount unchanged
         assert_eq!(rate.to_native(500), 500);
+    }
+
+    #[test]
+    fn test_exchange_rate_to_fc() {
+        // 1 fc = 500 native (denominator/numerator = 1000/2 = 500)
+        // So 1 native = 1/500 fc => native * numerator / denominator
+        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
+        // to_fc(500) = 500 * 2 / 1000 = 1
+        assert_eq!(rate.to_fc(500), 1);
+        assert_eq!(rate.to_fc(0), 0);
+
+        // 1 fc = 0.5 native => 1 native = 2 fc
+        let rate = ExchangeRate { numerator: 2000, denominator: 1000 };
+        // to_fc(100) = 100 * 2000 / 1000 = 200
+        assert_eq!(rate.to_fc(100), 200);
+    }
+
+    #[test]
+    fn test_exchange_rate_to_fc_roundtrip() {
+        let rate = ExchangeRate { numerator: 3, denominator: 1000 };
+        let native = 1_000_000u128;
+        let fc = rate.to_fc(native);
+        let back = rate.to_native(fc);
+        // Round-trip may lose precision due to integer division, but should be close
+        assert!(back <= native);
+        assert!(native - back < rate.denominator / rate.numerator + 1);
+    }
+
+    #[test]
+    fn test_exchange_rate_to_fc_zero_denominator_passthrough() {
+        let rate = ExchangeRate { numerator: 1000, denominator: 0 };
+        assert_eq!(rate.to_fc(500), 500);
+    }
+
+    #[test]
+    fn test_cross_currency_replacement_uses_native_equivalents() {
+        // Two CIP-64 txs with different fee currencies but same sender/nonce.
+        // After exchange rate conversion, max_fee_per_gas returns native-equivalent
+        // values, enabling correct cross-currency comparison.
+        let sender = Address::with_last_byte(1);
+        let fc_a = Address::with_last_byte(0xAA);
+        let fc_b = Address::with_last_byte(0xBB);
+
+        // TX A: fee_currency A, max_fee=1000, rate 1:2 (1 FC = 2 native)
+        let mut tx_a = make_test_tx(Some(fc_a), 21_000, 1000, 50, sender);
+        tx_a.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 2 });
+        // native max_fee = 1000 * 2 = 2000
+        assert_eq!(tx_a.max_fee_per_gas(), 2000);
+
+        // TX B: fee_currency B, max_fee=500, rate 1:5 (1 FC = 5 native)
+        let mut tx_b = make_test_tx(Some(fc_b), 21_000, 500, 20, sender);
+        tx_b.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 5 });
+        // native max_fee = 500 * 5 = 2500
+        assert_eq!(tx_b.max_fee_per_gas(), 2500);
+
+        // TX B has higher native-equivalent fee, so replacement check (which
+        // compares max_fee_per_gas()) will correctly see B > A.
+        assert!(tx_b.max_fee_per_gas() > tx_a.max_fee_per_gas());
     }
 }
