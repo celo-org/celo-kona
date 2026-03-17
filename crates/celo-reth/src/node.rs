@@ -3,7 +3,7 @@
 use crate::{
     celo_next_block_base_fee,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
-    pool::{CeloExchangeRateApplier, CeloPoolTx},
+    pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
     CeloEvmConfig,
@@ -197,7 +197,6 @@ where
             .with_custom_tx_type(celo_alloy_consensus::CeloTxType::Cip64 as u8)
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
             .kzg_settings(ctx.kzg_settings()?)
-            .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
             // Celo requires a minimum priority fee of 1 wei (matching op-geth's
             // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
@@ -231,12 +230,17 @@ where
                 };
                 let minimum_priority_fee =
                     ctx.config().txpool.minimum_priority_fee.unwrap_or(1) as u128;
+                let tx_fee_cap = match ctx.config().rpc.rpc_tx_fee_cap {
+                    0 => None,
+                    cap => Some(cap),
+                };
                 CeloExchangeRateApplier::new(
                     validator,
                     ctx.provider().clone(),
                     fee_currency_directory,
                     base_fee_floor,
                     minimum_priority_fee,
+                    tx_fee_cap,
                 )
             });
 
@@ -246,6 +250,24 @@ where
             reth_node_builder::components::TxPoolBuilder::new(ctx)
                 .with_validator(validator)
                 .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
+
+        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
+        // is deregistered from the FeeCurrencyDirectory.
+        {
+            use reth_provider::CanonStateSubscriptions;
+            let chain_id = ctx.chain_spec().chain().id();
+            let fcd = celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
+            let events = ctx.provider().subscribe_to_canonical_state();
+            let maintainer = CeloPoolMaintainer::new(
+                transaction_pool.clone(),
+                ctx.provider().clone(),
+                fcd,
+            );
+            ctx.task_executor().spawn_critical_task(
+                "celo pool fee currency maintainer",
+                Box::pin(maintainer.run(events)),
+            );
+        }
 
         tracing::info!(target: "reth::cli", "Transaction pool initialized");
         tracing::debug!(target: "reth::cli", "Spawned txpool maintenance task");

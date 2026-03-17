@@ -4,7 +4,7 @@ use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
     node::{CeloNode, RollupArgs},
     payload::FeeCurrencyLimits,
-    rpc::{celo_admin_module, celo_gas_price_module, make_celo_fee_api},
+    rpc::{celo_admin_module, celo_fee_history_module, celo_gas_price_module, make_celo_fee_api},
 };
 use clap::Parser;
 use reth_optimism_cli::{Cli, chainspec::OpChainSpecParser};
@@ -75,8 +75,12 @@ fn main() {
                     let fee_currency_directory =
                         celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
                     let fee_api = make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
-                    let gas_module = celo_gas_price_module(fee_api);
+                    let fee_api = std::sync::Arc::new(fee_api);
+                    let gas_module = celo_gas_price_module(fee_api.clone());
                     ctx.modules.replace_configured(gas_module)?;
+
+                    let fee_history_module = celo_fee_history_module(fee_api);
+                    ctx.modules.replace_configured(fee_history_module)?;
 
                     let admin_module = celo_admin_module(blocklist);
                     ctx.modules.merge_configured(admin_module)?;

@@ -360,10 +360,35 @@ impl OpPooledTx for CeloPoolTx {
 // ---------------------------------------------------------------------------
 
 /// Result of looking up exchange rate, balance, and debit simulation for a fee currency.
-struct FcLookupResult {
-    rate: Option<ExchangeRate>,
-    balance_ok: Option<bool>,
-    debit_ok: Option<bool>,
+pub(crate) struct FcLookupResult {
+    pub(crate) rate: Option<ExchangeRate>,
+    pub(crate) balance_ok: Option<bool>,
+    pub(crate) debit_ok: Option<bool>,
+}
+
+/// Trait for looking up fee currency exchange rates, balances, and debit simulation.
+///
+/// Extracted from the concrete `StateProviderFactory`-based implementation to allow
+/// mocking in tests.
+pub(crate) trait FcLookup {
+    fn lookup_rate_and_balance(
+        &self,
+        fee_currency: Address,
+        fee_currency_directory: Address,
+        balance_check: Option<(Address, U256)>,
+    ) -> FcLookupResult;
+}
+
+/// Blanket implementation for any `StateProviderFactory`.
+impl<P: StateProviderFactory> FcLookup for P {
+    fn lookup_rate_and_balance(
+        &self,
+        fee_currency: Address,
+        fee_currency_directory: Address,
+        balance_check: Option<(Address, U256)>,
+    ) -> FcLookupResult {
+        lookup_rate_and_balance_impl(self, fee_currency, fee_currency_directory, balance_check)
+    }
 }
 
 /// Look up the exchange rate, check ERC20 balance, and simulate `debitGasFees`
@@ -373,7 +398,7 @@ struct FcLookupResult {
 /// provider and EVM construction on the pool validation hot path.
 /// The EVM's in-memory journal is discarded when it drops, so the debit
 /// simulation causes no persistent state changes.
-fn lookup_rate_and_balance(
+fn lookup_rate_and_balance_impl(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
     fee_currency_directory: Address,
@@ -481,6 +506,9 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
+    /// Maximum transaction fee in wei (cost - value). `None` or `Some(0)` disables the check.
+    /// For CIP-64 txs, the native-equivalent cost is used after exchange rate conversion.
+    tx_fee_cap: Option<u128>,
 }
 
 impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
@@ -499,8 +527,9 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         fee_currency_directory: Address,
         base_fee_floor: u64,
         minimum_priority_fee: u128,
+        tx_fee_cap: Option<u128>,
     ) -> Self {
-        Self { inner, provider, fee_currency_directory, base_fee_floor, minimum_priority_fee }
+        Self { inner, provider, fee_currency_directory, base_fee_floor, minimum_priority_fee, tx_fee_cap }
     }
 }
 
@@ -520,6 +549,8 @@ enum Cip64Rejection {
     BelowMinTip { currency: Address, min_tip_fc: u128, actual: u128 },
     /// The `debitGasFees()` simulation failed (e.g. token is paused or blacklisted).
     DebitSimulationFailed(Address),
+    /// The transaction fee (cost - value) exceeds the configured fee cap.
+    ExceedsFeeCap { max_tx_fee_wei: u128, tx_fee_cap_wei: u128 },
 }
 
 impl std::fmt::Display for Cip64Rejection {
@@ -543,6 +574,12 @@ impl std::fmt::Display for Cip64Rejection {
             Self::DebitSimulationFailed(fc) => {
                 write!(f, "debitGasFees simulation failed for fee-currency {fc}")
             }
+            Self::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei } => {
+                write!(
+                    f,
+                    "tx fee ({max_tx_fee_wei} wei) exceeds the configured cap ({tx_fee_cap_wei} wei)"
+                )
+            }
         }
     }
 }
@@ -556,6 +593,8 @@ impl PoolTransactionError for Cip64Rejection {
             Self::InsufficientBalance(_) => false,
             // Debit simulation failure is transient — token state may change.
             Self::DebitSimulationFailed(_) => false,
+            // Fee cap rejection is permanent — the tx's gas cost won't change.
+            Self::ExceedsFeeCap { .. } => true,
             _ => true,
         }
     }
@@ -568,11 +607,12 @@ impl PoolTransactionError for Cip64Rejection {
 /// Apply exchange rates to a [`ValidTransaction`] if it is a CIP-64 tx.
 /// Also checks ERC20 balance, minimum tip, and simulates debitGasFees.
 fn apply_exchange_rates_to_valid_tx(
-    provider: &dyn StateProviderFactory,
+    lookup: &dyn FcLookup,
     valid_tx: &mut ValidTransaction<CeloPoolTx>,
     fee_currency_directory: Address,
     base_fee_floor: u64,
     minimum_priority_fee: u128,
+    tx_fee_cap: Option<u128>,
 ) -> Result<(), Cip64Rejection> {
     let tx = match valid_tx {
         ValidTransaction::Valid(tx) => tx,
@@ -587,8 +627,7 @@ fn apply_exchange_rates_to_valid_tx(
         let required_fc = U256::from(tx.inner.gas_limit())
             .saturating_mul(U256::from(old_fee));
         let sender = tx.sender();
-        let result = lookup_rate_and_balance(
-            provider,
+        let result = lookup.lookup_rate_and_balance(
             fc,
             fee_currency_directory,
             Some((sender, required_fc)),
@@ -674,6 +713,22 @@ fn apply_exchange_rates_to_valid_tx(
             return Err(Cip64Rejection::DebitSimulationFailed(fc));
         }
     }
+
+    // Fee cap check: applies to both CIP-64 (using native-equivalent cost) and native txs.
+    // For CIP-64 txs, native_cost was recomputed by apply_exchange_rate above.
+    if let Some(cap) = tx_fee_cap {
+        if cap > 0 {
+            let fee_cost = tx.cost().saturating_sub(tx.value());
+            let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or(u128::MAX);
+            if max_tx_fee_wei > cap {
+                return Err(Cip64Rejection::ExceedsFeeCap {
+                    max_tx_fee_wei,
+                    tx_fee_cap_wei: cap,
+                });
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -692,7 +747,6 @@ where
     ) -> impl core::future::Future<Output = TransactionValidationOutcome<Self::Transaction>> + Send
     {
         let fut = self.inner.validate_transaction(origin, transaction);
-        let provider = &self.provider;
         async move {
             let result = fut.await;
             match result {
@@ -705,7 +759,7 @@ where
                     authorities,
                 } => {
                     if let Err(rejection) =
-                        apply_exchange_rates_to_valid_tx(provider, &mut transaction, self.fee_currency_directory, self.base_fee_floor, self.minimum_priority_fee)
+                        apply_exchange_rates_to_valid_tx(&self.provider, &mut transaction, self.fee_currency_directory, self.base_fee_floor, self.minimum_priority_fee, self.tx_fee_cap)
                     {
                         let tx = match transaction {
                             ValidTransaction::Valid(tx) => tx,
@@ -735,6 +789,147 @@ where
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         self.inner.on_new_head_block(new_tip_block);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CeloPoolMaintainer — evict CIP-64 txs when fee currency is deregistered
+// ---------------------------------------------------------------------------
+
+/// Monitors canonical state changes and evicts pooled CIP-64 transactions
+/// whose fee currency has been deregistered from the `FeeCurrencyDirectory`.
+#[derive(Debug)]
+pub struct CeloPoolMaintainer<Pool, P> {
+    pool: Pool,
+    provider: P,
+    fee_currency_directory: Address,
+    /// Cached set of registered currencies. Only scan pool when this changes.
+    registered_currencies: std::collections::HashSet<Address>,
+}
+
+impl<Pool, P> CeloPoolMaintainer<Pool, P> {
+    /// Create a new [`CeloPoolMaintainer`].
+    pub fn new(pool: Pool, provider: P, fee_currency_directory: Address) -> Self {
+        Self {
+            pool,
+            provider,
+            fee_currency_directory,
+            registered_currencies: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl<Pool, P> CeloPoolMaintainer<Pool, P>
+where
+    Pool: reth_transaction_pool::TransactionPool<Transaction = CeloPoolTx>,
+    P: StateProviderFactory,
+{
+    /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
+    fn query_registered_currencies(&self) -> Option<std::collections::HashSet<Address>> {
+        use alloy_sol_types::SolCall;
+        use celo_revm::{
+            CeloBuilder, DefaultCelo,
+            contracts::core_contracts::getCurrenciesCall,
+        };
+        use reth_revm::database::StateProviderDatabase;
+        use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
+
+        let state = self.provider.latest().ok()?;
+        let db = StateProviderDatabase::new(state);
+        let mut evm = Context::celo().with_db(db).build_celo();
+
+        let calldata = getCurrenciesCall {}.abi_encode();
+        let result = evm
+            .system_call_one(self.fee_currency_directory, calldata.into())
+            .ok()?;
+
+        match result {
+            ExecutionResult::Success { output, .. } => {
+                let currencies: Vec<Address> =
+                    getCurrenciesCall::abi_decode_returns(&output.into_data()).ok()?;
+                Some(currencies.into_iter().collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Run the maintainer, listening for canonical state changes.
+    pub async fn run(mut self, mut events: reth_provider::CanonStateNotifications<crate::primitives::CeloPrimitives>) {
+        // Initialize the cache
+        if let Some(currencies) = self.query_registered_currencies() {
+            self.registered_currencies = currencies;
+        }
+
+        loop {
+            match events.recv().await {
+                Ok(_notification) => {
+                    self.on_new_block();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        skipped,
+                        "Celo pool maintainer lagged, checking currencies"
+                    );
+                    self.on_new_block();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!(
+                        target: "celo::pool",
+                        "Canonical state stream closed, stopping Celo pool maintainer"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Handle a new canonical block: check if registered currencies changed
+    /// and evict CIP-64 txs with deregistered currencies.
+    fn on_new_block(&mut self) {
+        let Some(new_currencies) = self.query_registered_currencies() else {
+            return;
+        };
+
+        // Only scan pool if the registered set actually changed.
+        if new_currencies == self.registered_currencies {
+            return;
+        }
+
+        let removed_currencies: std::collections::HashSet<_> = self
+            .registered_currencies
+            .difference(&new_currencies)
+            .copied()
+            .collect();
+
+        if !removed_currencies.is_empty() {
+            let all_txs = self.pool.all_transactions();
+            let to_evict: Vec<TxHash> = all_txs
+                .pending
+                .iter()
+                .chain(all_txs.queued.iter())
+                .filter_map(|vtx| {
+                    let fc = vtx.transaction.fee_currency()?;
+                    if removed_currencies.contains(&fc) {
+                        Some(*vtx.hash())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !to_evict.is_empty() {
+                tracing::info!(
+                    target: "celo::pool",
+                    count = to_evict.len(),
+                    ?removed_currencies,
+                    "Evicting CIP-64 txs with deregistered fee currencies"
+                );
+                self.pool.remove_transactions(to_evict);
+            }
+        }
+
+        self.registered_currencies = new_currencies;
     }
 }
 
@@ -888,5 +1083,231 @@ mod tests {
         // TX B has higher native-equivalent fee, so replacement check (which
         // compares max_fee_per_gas()) will correctly see B > A.
         assert!(tx_b.max_fee_per_gas() > tx_a.max_fee_per_gas());
+    }
+
+    // -----------------------------------------------------------------------
+    // MockFcLookup + apply_exchange_rates_to_valid_tx integration tests
+    // -----------------------------------------------------------------------
+
+    struct MockFcLookup {
+        rate: Option<ExchangeRate>,
+        balance_ok: Option<bool>,
+        debit_ok: Option<bool>,
+    }
+
+    impl FcLookup for MockFcLookup {
+        fn lookup_rate_and_balance(
+            &self,
+            _fee_currency: Address,
+            _fee_currency_directory: Address,
+            _balance_check: Option<(Address, U256)>,
+        ) -> FcLookupResult {
+            FcLookupResult {
+                rate: self.rate,
+                balance_ok: self.balance_ok,
+                debit_ok: self.debit_ok,
+            }
+        }
+    }
+
+    fn wrap_valid(tx: CeloPoolTx) -> ValidTransaction<CeloPoolTx> {
+        ValidTransaction::Valid(tx)
+    }
+
+    #[test]
+    fn test_apply_rates_successful_conversion() {
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, None,
+        );
+        assert!(result.is_ok());
+
+        let tx = match &valid { ValidTransaction::Valid(t) => t, _ => panic!() };
+        // 1_000_000_000 * 2/1 = 2_000_000_000
+        assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+    }
+
+    #[test]
+    fn test_apply_rates_unregistered_currency() {
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, None,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::UnregisteredCurrency(_))));
+    }
+
+    #[test]
+    fn test_apply_rates_insufficient_balance() {
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(false),
+            debit_ok: None,
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, None,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::InsufficientBalance(_))));
+    }
+
+    #[test]
+    fn test_apply_rates_below_base_fee_floor() {
+        let fc = Address::with_last_byte(0xAA);
+        // max_fee_per_gas = 100 in FC terms
+        let tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        // rate: 1:1, base_fee_floor = 25 Gwei
+        // base_fee_floor_fc = to_fc(25_000_000_000) = 25_000_000_000
+        // 100 < 25_000_000_000 → reject
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 25_000_000_000, 0, None,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::BelowBaseFeeFloor(_))));
+    }
+
+    #[test]
+    fn test_apply_rates_below_min_tip() {
+        let fc = Address::with_last_byte(0xAA);
+        // priority_fee = 5 in FC terms
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 5, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        // rate: 1:1, min_priority_fee = 100
+        // min_tip_fc = to_fc(100) = 100
+        // 5 < 100 → reject
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 100, None,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::BelowMinTip { .. })));
+    }
+
+    #[test]
+    fn test_apply_rates_debit_simulation_failed() {
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(false),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, None,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::DebitSimulationFailed(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fee cap tests (Item #8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fee_cap_cip64_within_cap_after_conversion() {
+        let fc = Address::with_last_byte(0xAA);
+        // CIP-64 tx: gas=21000, max_fee=1000 FC, value=0
+        // FC cost = 21_000_000 FC units → looks large in raw terms
+        let tx = make_test_tx(Some(fc), 21_000, 1000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        // rate: 1 FC = 0.001 native (numerator=1000, denominator=1)
+        // native_max_fee = 1000 * 1/1000 = 1
+        // native_cost = 21_000 * 1 = 21_000 wei
+        // Cap = 100_000 wei → within cap → accepted
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, Some(100_000),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fee_cap_cip64_exceeds_cap_after_conversion() {
+        let fc = Address::with_last_byte(0xAA);
+        // CIP-64 tx: gas=21000, max_fee=1_000_000_000 FC
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        // rate: 1:1 → native_cost = 21_000 * 1_000_000_000 = 21_000_000_000_000
+        // Cap = 1_000_000_000_000 (1000 Gwei) → exceeds → rejected
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, Some(1_000_000_000_000),
+        );
+        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+    }
+
+    #[test]
+    fn test_fee_cap_native_tx_exceeds_cap() {
+        // Native tx: gas=21_000, max_fee=1_000_000_000, value=0
+        // cost - value = 21_000 * 1_000_000_000 = 21_000_000_000_000
+        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, Some(1_000_000_000_000),
+        );
+        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+    }
+
+    #[test]
+    fn test_fee_cap_disabled_with_zero() {
+        // Native tx with large cost, but cap = 0 → disabled
+        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, Some(0),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fee_cap_disabled_with_none() {
+        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock, &mut valid, Address::ZERO, 0, 0, None,
+        );
+        assert!(result.is_ok());
     }
 }

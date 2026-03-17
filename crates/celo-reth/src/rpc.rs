@@ -163,6 +163,11 @@ impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
     }
 }
 
+/// Gas estimation works correctly for CIP-64 because:
+/// - `disable_base_fee = true` during estimation, so FC/native base fee mismatch is irrelevant
+/// - The CIP-64 handler in celo-revm runs during simulation, correctly applying per-currency
+///   intrinsic gas costs
+/// - Binary search only varies `gas_limit`, not fee parameters
 impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv>, Block>
     for CeloTransactionRequest
 {
@@ -500,10 +505,23 @@ where
 /// Type-erased wrapper for the parts of the Eth API we need in the gas price
 /// RPC overrides. This avoids leaking the heavily-parameterised [`EthApiServer`]
 /// types into the RPC module registration.
+/// Type alias for CeloBlock in RPC context.
+type CeloRpcBlock = alloy_rpc_types_eth::Block<
+    op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+    alloy_rpc_types_eth::Header,
+>;
+/// Type-erased async closure.
+type AsyncFn<A, R> = Box<dyn Fn(A) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<R>> + Send>> + Send + Sync>;
+/// Type-erased async thunk (no args).
+type AsyncThunk<R> = Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<R>> + Send>> + Send + Sync>;
+
 pub struct CeloFeeApi {
-    gas_price: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
-    priority_fee: Box<dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<U256>> + Send>> + Send + Sync>,
-    eth_call: Box<dyn Fn(CeloTransactionRequest) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<Bytes>> + Send>> + Send + Sync>,
+    gas_price: AsyncThunk<U256>,
+    priority_fee: AsyncThunk<U256>,
+    eth_call: AsyncFn<CeloTransactionRequest, Bytes>,
+    #[allow(clippy::type_complexity)]
+    fee_history: Box<dyn Fn(alloy_primitives::U64, alloy_rpc_types_eth::BlockNumberOrTag, Option<Vec<f64>>) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<alloy_rpc_types_eth::FeeHistory>> + Send>> + Send + Sync>,
+    block_by_number: AsyncFn<alloy_rpc_types_eth::BlockNumberOrTag, Option<CeloRpcBlock>>,
     fee_currency_directory: Address,
 }
 
@@ -568,9 +586,8 @@ impl CeloFeeApi {
 /// When `feeCurrency` is absent the methods behave identically to the standard
 /// Ethereum RPCs. When present, the returned price is scaled by the on-chain
 /// exchange rate for that fee currency.
-pub fn celo_gas_price_module(api: CeloFeeApi) -> jsonrpsee::RpcModule<Arc<CeloFeeApi>> {
-    let ctx = Arc::new(api);
-    let mut module = jsonrpsee::RpcModule::new(ctx);
+pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeApi>> {
+    let mut module = jsonrpsee::RpcModule::new(api);
 
     module
         .register_async_method("eth_gasPrice", |params, ctx, _| async move {
@@ -603,6 +620,138 @@ pub fn celo_gas_price_module(api: CeloFeeApi) -> jsonrpsee::RpcModule<Arc<CeloFe
     module
 }
 
+/// Build a [`jsonrpsee::RpcModule`] with a fee-currency-aware `eth_feeHistory` that
+/// normalizes CIP-64 transaction tips from fee-currency units to native CELO.
+///
+/// For each block in the fee history range, if any CIP-64 transactions are present,
+/// their effective tips are converted to native CELO using the on-chain exchange rate,
+/// and the reward percentiles are recomputed.
+pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeApi>> {
+    let mut module = jsonrpsee::RpcModule::new(api);
+
+    module
+        .register_async_method("eth_feeHistory", |params, ctx, _| async move {
+            use alloy_consensus::Transaction;
+
+            let mut seq = params.sequence();
+            let block_count: alloy_primitives::U64 = seq.next()?;
+            let newest_block: alloy_rpc_types_eth::BlockNumberOrTag = seq.next()?;
+            let reward_percentiles: Option<Vec<f64>> = seq.optional_next()?;
+
+            // Get the base fee history from the underlying implementation
+            let mut history = (ctx.fee_history)(block_count, newest_block, reward_percentiles.clone()).await?;
+
+            // If no reward percentiles requested or no rewards returned, pass through
+            let percentiles = match reward_percentiles {
+                Some(p) if !p.is_empty() => p,
+                _ => return Ok(history),
+            };
+            let rewards = match history.reward.as_mut() {
+                Some(r) if !r.is_empty() => r,
+                _ => return Ok(history),
+            };
+
+            // For each block in range, fetch the block and normalize CIP-64 tips
+            let oldest_block = history.oldest_block;
+            for (i, block_rewards) in rewards.iter_mut().enumerate() {
+                let block_num = oldest_block + i as u64;
+                let block_tag = alloy_rpc_types_eth::BlockNumberOrTag::Number(block_num);
+
+                let block = match (ctx.block_by_number)(block_tag).await? {
+                    Some(b) => b,
+                    None => continue,
+                };
+
+                let base_fee = block.header.base_fee_per_gas;
+
+                let txs = match block.transactions.as_transactions() {
+                    Some(txs) => txs,
+                    None => continue,
+                };
+
+                use alloy_eips::Typed2718;
+
+                let cip64_ty = celo_alloy_consensus::CeloTxType::Cip64 as u8;
+
+                // Check if any tx is CIP-64 — if not, skip this block
+                let has_cip64 = txs.iter().any(|tx| tx.ty() == cip64_ty);
+                if !has_cip64 {
+                    continue;
+                }
+
+                // Collect per-tx effective tips, converting CIP-64 tips to native
+                let mut native_tips: Vec<u128> = Vec::with_capacity(txs.len());
+
+                // Cache exchange rates per fee currency to avoid redundant lookups
+                let mut rate_cache: std::collections::HashMap<Address, Option<(U256, U256)>> =
+                    std::collections::HashMap::new();
+
+                for tx in txs {
+                    let bf = base_fee.unwrap_or(0);
+                    let raw_tip = tx.effective_tip_per_gas(bf).unwrap_or(0);
+
+                    let tip = if tx.ty() == cip64_ty {
+                        // CIP-64 tx: extract fee_currency and convert tip to native
+                        let envelope: &CeloTxEnvelope = &tx.inner.inner;
+                        let fc = match envelope {
+                            CeloTxEnvelope::Cip64(signed) => {
+                                signed.tx().fee_currency.unwrap_or(Address::ZERO)
+                            }
+                            _ => Address::ZERO,
+                        };
+                        let rate = match rate_cache.get(&fc) {
+                            Some(cached) => *cached,
+                            None => {
+                                let r = ctx.exchange_rate(fc).await.ok();
+                                rate_cache.insert(fc, r);
+                                r
+                            }
+                        };
+
+                        match rate {
+                            Some((num, denom)) => {
+                                // Convert FC tip to native: tip * denom / num
+                                (U256::from(raw_tip) * denom / num)
+                                    .try_into()
+                                    .unwrap_or(u128::MAX)
+                            }
+                            None => raw_tip,
+                        }
+                    } else {
+                        // Native tx: tip is already in CELO
+                        raw_tip
+                    };
+                    native_tips.push(tip);
+                }
+
+                // Sort tips and recompute percentiles
+                if native_tips.is_empty() {
+                    continue;
+                }
+                native_tips.sort_unstable();
+
+                let new_rewards: Vec<u128> = percentiles
+                    .iter()
+                    .map(|&p| {
+                        if native_tips.is_empty() {
+                            return 0;
+                        }
+                        let idx = ((p / 100.0) * (native_tips.len() - 1) as f64).round() as usize;
+                        let idx = idx.min(native_tips.len() - 1);
+                        native_tips[idx]
+                    })
+                    .collect();
+
+                *block_rewards = new_rewards;
+            }
+
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(history)
+        })
+        .expect("eth_feeHistory registration");
+
+    module
+}
+
 /// Create a [`CeloFeeApi`] from any type implementing the full Eth RPC API.
 ///
 /// This is a generic constructor that captures the concrete [`EthApiServer`]
@@ -628,9 +777,11 @@ where
 {
     use reth_rpc_eth_api::EthApiServer;
 
-    let ea1 = Arc::new(eth_api.clone());
+    let ea1 = Arc::new(eth_api);
     let ea2 = ea1.clone();
     let ea3 = ea1.clone();
+    let ea4 = ea1.clone();
+    let ea5 = ea1.clone();
 
     CeloFeeApi {
         gas_price: Box::new(move || {
@@ -644,6 +795,14 @@ where
         eth_call: Box::new(move |req| {
             let ea = ea3.clone();
             Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
+        }),
+        fee_history: Box::new(move |block_count, newest_block, reward_percentiles| {
+            let ea = ea4.clone();
+            Box::pin(async move { EthApiServer::fee_history(&*ea, block_count, newest_block, reward_percentiles).await })
+        }),
+        block_by_number: Box::new(move |block_num| {
+            let ea = ea5.clone();
+            Box::pin(async move { EthApiServer::block_by_number(&*ea, block_num, true).await })
         }),
         fee_currency_directory,
     }
