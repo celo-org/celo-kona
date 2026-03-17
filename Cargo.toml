@@ -166,6 +166,7 @@ reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }

@@ -11,7 +11,7 @@ use alloy_eips::{
     eip2930::AccessList, eip4844::BlobTransactionValidationError,
     eip7594::BlobTransactionSidecarVariant, Typed2718,
 };
-use alloy_primitives::{Address, Bytes, TxHash, TxKind, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope};
 use reth_optimism_txpool::{
     conditional::MaybeConditionalTransaction, estimated_da_size::DataAvailabilitySized,
@@ -329,43 +329,41 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
-/// Look up the exchange rate for a fee currency by reading contract storage directly.
-///
-/// Reads:
-/// 1. FeeCurrencyDirectory: `currencies[token].oracle` at `keccak256(token || slot_1)`
-/// 2. Oracle: `numerator` at slot 0, `denominator` at slot 1
+/// Look up the exchange rate for a fee currency by calling the FeeCurrencyDirectory
+/// contract's `getExchangeRate(address)` method via a temporary EVM.
 fn lookup_exchange_rate(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
     fee_currency_directory: Address,
 ) -> Option<ExchangeRate> {
-    use alloy_primitives::keccak256;
+    use alloy_sol_types::SolCall;
+    use celo_revm::{
+        CeloBuilder, DefaultCelo,
+        contracts::core_contracts::getExchangeRateCall,
+    };
+    use reth_revm::database::StateProviderDatabase;
+    use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
 
     let state = provider.latest().ok()?;
+    let db = StateProviderDatabase::new(state);
 
-    // Compute mapping slot: keccak256(abi.encode(token, 1))
-    let mut key_buf = [0u8; 64];
-    key_buf[12..32].copy_from_slice(fee_currency.as_slice());
-    key_buf[63] = 1; // slot 1 = currencyConfig mapping
-    let oracle_slot = keccak256(key_buf);
+    let ctx = Context::celo().with_db(db);
+    let mut evm = ctx.build_celo();
 
-    let oracle_value = state
-        .storage(fee_currency_directory, oracle_slot.into())
-        .ok()??;
-    let oracle_addr = Address::from_word(oracle_value.into());
+    let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
+    let result = evm
+        .system_call_one(fee_currency_directory, calldata.into())
+        .ok()?;
 
-    if oracle_addr.is_zero() {
-        return None;
-    }
+    let output = match result {
+        ExecutionResult::Success { output, .. } => output.into_data(),
+        _ => return None,
+    };
 
-    // Read oracle storage: slot 0 = numerator, slot 1 = denominator
-    let num_value = state.storage(oracle_addr, B256::ZERO).ok()??;
-    let den_value = state
-        .storage(oracle_addr, U256::from(1).into())
-        .ok()??;
+    let rate = getExchangeRateCall::abi_decode_returns(&output).ok()?;
 
-    let numerator = u128::try_from(num_value).ok()?;
-    let denominator = u128::try_from(den_value).ok()?;
+    let numerator = u128::try_from(rate.numerator).ok()?;
+    let denominator = u128::try_from(rate.denominator).ok()?;
 
     if numerator == 0 || denominator == 0 {
         return None;
