@@ -45,6 +45,10 @@ pub struct Cip64Info {
     pub logs_post: Vec<Log>,
     /// Base fee converted to the ERC20 fee currency (set during handler execution)
     pub base_fee_in_erc20: Option<u128>,
+    /// L1 data fee converted to the fee currency (debited from sender, credited to coinbase via tip)
+    pub l1_cost_in_fc: U256,
+    /// Operator fee converted to the fee currency (debited from sender, credited to operator)
+    pub operator_fee_in_fc: U256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

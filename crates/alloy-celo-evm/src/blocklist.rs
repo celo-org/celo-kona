@@ -9,15 +9,18 @@
 //! - `admin_enableBlocklistFeeCurrencies`: Re-enables blocklisting for a currency.
 //! - `admin_unblockFeeCurrency`: Removes a currency from the blocklist.
 
-use alloc::{collections::BTreeSet, sync::Arc};
+use alloc::{collections::BTreeMap, collections::BTreeSet, sync::Arc};
 use alloy_primitives::Address;
 use spin::Mutex;
+
+/// How long (in seconds) a currency stays blocked before automatic eviction.
+const BLOCKLIST_EVICTION_SECONDS: u64 = 7200;
 
 /// Internal state for the fee currency blocklist.
 #[derive(Debug, Default)]
 struct BlocklistState {
-    /// Currencies currently blocked due to execution errors.
-    blocked: BTreeSet<Address>,
+    /// Currencies currently blocked due to execution errors, with the timestamp when blocked.
+    blocked: BTreeMap<Address, u64>,
     /// Currencies for which blocklisting is disabled (will never be auto-blocked).
     blocklist_disabled: BTreeSet<Address>,
 }
@@ -35,15 +38,24 @@ pub struct FeeCurrencyBlocklist {
 impl FeeCurrencyBlocklist {
     /// Returns `true` if the given currency is currently blocked.
     pub fn is_blocked(&self, currency: Address) -> bool {
-        self.inner.lock().blocked.contains(&currency)
+        self.inner.lock().blocked.contains_key(&currency)
     }
 
-    /// Adds a currency to the blocklist (if blocklisting is not disabled for it).
-    pub fn block_currency(&self, currency: Address) {
+    /// Adds a currency to the blocklist at the given timestamp
+    /// (if blocklisting is not disabled for it).
+    pub fn block_currency(&self, currency: Address, timestamp: u64) {
         let mut state = self.inner.lock();
         if !state.blocklist_disabled.contains(&currency) {
-            state.blocked.insert(currency);
+            state.blocked.insert(currency, timestamp);
         }
+    }
+
+    /// Removes entries older than [`BLOCKLIST_EVICTION_SECONDS`] from the current timestamp.
+    pub fn evict(&self, current_timestamp: u64) {
+        let mut state = self.inner.lock();
+        state
+            .blocked
+            .retain(|_, blocked_at| current_timestamp.saturating_sub(*blocked_at) < BLOCKLIST_EVICTION_SECONDS);
     }
 
     /// Removes a currency from the blocklist.
@@ -67,5 +79,85 @@ impl FeeCurrencyBlocklist {
         for &c in currencies {
             state.blocklist_disabled.remove(&c);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(b: u8) -> Address {
+        Address::with_last_byte(b)
+    }
+
+    #[test]
+    fn block_and_check() {
+        let bl = FeeCurrencyBlocklist::default();
+        assert!(!bl.is_blocked(addr(1)));
+        bl.block_currency(addr(1), 1000);
+        assert!(bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn eviction_before_deadline() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        // 7199 seconds later — still within window
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS - 1);
+        assert!(bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn eviction_at_deadline() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        // Exactly at the eviction boundary
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(!bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn eviction_after_deadline() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS + 100);
+        assert!(!bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn eviction_preserves_recent() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        bl.block_currency(addr(2), 5000);
+        // Evict at t=8200: addr(1) blocked at 1000 is 7200s old (evicted),
+        // addr(2) blocked at 5000 is 3200s old (kept)
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(!bl.is_blocked(addr(1)));
+        assert!(bl.is_blocked(addr(2)));
+    }
+
+    #[test]
+    fn unblock_removes_immediately() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        bl.unblock_currency(addr(1));
+        assert!(!bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn disable_blocklist_prevents_blocking() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.disable_blocklist(&[addr(1)]);
+        bl.block_currency(addr(1), 1000);
+        assert!(!bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn re_enable_blocklist_allows_blocking() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.disable_blocklist(&[addr(1)]);
+        bl.enable_blocklist(&[addr(1)]);
+        bl.block_currency(addr(1), 1000);
+        assert!(bl.is_blocked(addr(1)));
     }
 }

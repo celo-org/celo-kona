@@ -6,6 +6,7 @@
 //! Each non-native fee currency is limited to a configurable fraction of the block gas limit.
 //! Native CELO transactions are unrestricted.
 
+use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use alloy_consensus::Transaction;
 use crate::pool::CeloPoolTx;
 use alloy_primitives::Address;
@@ -83,12 +84,13 @@ impl FeeCurrencyLimits {
 #[derive(Debug, Clone)]
 pub struct CeloPayloadTransactions {
     limits: FeeCurrencyLimits,
+    blocklist: FeeCurrencyBlocklist,
 }
 
 impl CeloPayloadTransactions {
-    /// Create a new instance with the given fee currency limits.
-    pub const fn new(limits: FeeCurrencyLimits) -> Self {
-        Self { limits }
+    /// Create a new instance with the given fee currency limits and blocklist.
+    pub fn new(limits: FeeCurrencyLimits, blocklist: FeeCurrencyBlocklist) -> Self {
+        Self { limits, blocklist }
     }
 }
 
@@ -104,6 +106,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
         CeloFeeCurrencyFilter {
             inner: BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr)),
             limits: self.limits.clone(),
+            blocklist: self.blocklist.clone(),
             gas_used_per_currency: HashMap::new(),
         }
     }
@@ -122,6 +125,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
 struct CeloFeeCurrencyFilter<I> {
     inner: I,
     limits: FeeCurrencyLimits,
+    blocklist: FeeCurrencyBlocklist,
     /// Cumulative gas used per fee currency address.
     gas_used_per_currency: HashMap<Address, u64>,
 }
@@ -136,6 +140,19 @@ where
         loop {
             let tx = self.inner.next(ctx)?;
             let fee_currency = tx.fee_currency();
+
+            // Check blocklist before gas limits
+            if let Some(fc) = fee_currency {
+                if self.blocklist.is_blocked(fc) {
+                    tracing::debug!(
+                        target: "celo::payload",
+                        ?fc,
+                        "Skipping tx: fee currency is blocklisted"
+                    );
+                    self.inner.mark_invalid(tx.sender(), tx.nonce());
+                    continue;
+                }
+            }
 
             if let Some(max_gas) = self.limits.max_gas_for_currency(fee_currency) {
                 let fc = fee_currency.unwrap(); // safe: max_gas is Some only when fee_currency is Some
@@ -217,5 +234,183 @@ mod tests {
         let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5, ..Default::default() };
         // 0.9 of 30M = 27M
         assert_eq!(limits.max_gas_for_currency(Some(addr)), Some(27_000_000));
+    }
+
+    // -----------------------------------------------------------------------
+    // CeloFeeCurrencyFilter tests
+    // -----------------------------------------------------------------------
+
+    use crate::pool::CeloPoolTx;
+    use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
+    use reth_optimism_txpool::OpPooledTransaction;
+    use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::PoolTransaction;
+
+    type TestInnerPoolTx = OpPooledTransaction<
+        crate::primitives::CeloTransactionSigned,
+        CeloPooledTransaction,
+    >;
+
+    /// Create a test CeloPoolTx with the given fee_currency, gas_limit, and sender.
+    fn make_test_tx(
+        fee_currency: Option<Address>,
+        gas_limit: u64,
+        sender: Address,
+    ) -> CeloPoolTx {
+        use alloy_primitives::Signature;
+
+        let tx = if let Some(fc) = fee_currency {
+            let cip64 = TxCip64 {
+                chain_id: 42220,
+                nonce: 0,
+                gas_limit,
+                max_fee_per_gas: 1_000_000_000,
+                max_priority_fee_per_gas: 100,
+                to: alloy_primitives::TxKind::Call(Address::ZERO),
+                value: alloy_primitives::U256::ZERO,
+                access_list: Default::default(),
+                input: Default::default(),
+                fee_currency: Some(fc),
+            };
+            CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
+                cip64,
+                Signature::test_signature(),
+            ))
+        } else {
+            let eip1559 = alloy_consensus::TxEip1559 {
+                chain_id: 42220,
+                nonce: 0,
+                gas_limit,
+                max_fee_per_gas: 1_000_000_000,
+                max_priority_fee_per_gas: 100,
+                to: alloy_primitives::TxKind::Call(Address::ZERO),
+                value: alloy_primitives::U256::ZERO,
+                access_list: Default::default(),
+                input: Default::default(),
+            };
+            CeloTxEnvelope::Eip1559(alloy_consensus::Signed::new_unhashed(
+                eip1559,
+                Signature::test_signature(),
+            ))
+        };
+
+        let signed: crate::primitives::CeloTransactionSigned = tx.into();
+        let recovered = Recovered::new_unchecked(signed, sender);
+        let pooled = CeloPooledTransaction::try_from(recovered.clone().into_inner()).unwrap();
+        let inner = TestInnerPoolTx::from_pooled(Recovered::new_unchecked(pooled, sender));
+        CeloPoolTx::new(inner)
+    }
+
+    /// A simple PayloadTransactions implementation backed by a Vec.
+    struct VecPayloadTransactions {
+        txs: Vec<CeloPoolTx>,
+        invalid: Vec<(Address, u64)>,
+    }
+
+    impl PayloadTransactions for VecPayloadTransactions {
+        type Transaction = CeloPoolTx;
+
+        fn next(&mut self, _ctx: ()) -> Option<Self::Transaction> {
+            if self.txs.is_empty() {
+                None
+            } else {
+                Some(self.txs.remove(0))
+            }
+        }
+
+        fn mark_invalid(&mut self, sender: Address, nonce: u64) {
+            self.invalid.push((sender, nonce));
+            self.txs.retain(|tx| tx.sender() != sender);
+        }
+    }
+
+    fn fc_addr(b: u8) -> Address {
+        Address::with_last_byte(b)
+    }
+
+    #[test]
+    fn filter_passes_native_celo_tx() {
+        let sender = Address::with_last_byte(1);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(None, 21_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        assert!(filter.next(()).is_some());
+        assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_skips_when_gas_limit_exceeded() {
+        let sender = Address::with_last_byte(1);
+        let fc = fc_addr(10);
+        // Limit = 0.5 * 30M = 15M. Tx with 16M gas should be skipped.
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(Some(fc), 16_000_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_tracks_gas_per_currency_independently() {
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let fc_a = fc_addr(10);
+        let fc_b = fc_addr(11);
+        // Each currency can use 15M (0.5 * 30M)
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc_a), 10_000_000, sender_a),
+                    make_test_tx(Some(fc_b), 10_000_000, sender_b),
+                    // This should be skipped: fc_a would be at 20M > 15M
+                    make_test_tx(Some(fc_a), 10_000_000, sender_a),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        // First two should pass (different currencies)
+        let tx1 = filter.next(()).unwrap();
+        assert_eq!(tx1.fee_currency(), Some(fc_a));
+        let tx2 = filter.next(()).unwrap();
+        assert_eq!(tx2.fee_currency(), Some(fc_b));
+        // Third should be skipped (fc_a exceeded)
+        assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_skips_blocklisted_currency() {
+        let sender = Address::with_last_byte(1);
+        let fc = fc_addr(10);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(Some(fc), 21_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist,
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        assert!(filter.next(()).is_none());
     }
 }

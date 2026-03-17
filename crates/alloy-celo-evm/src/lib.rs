@@ -28,7 +28,7 @@ use op_revm::{
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
-    context_interface::result::{EVMError, ResultAndState},
+    context_interface::{Cfg, result::{EVMError, ResultAndState}},
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
@@ -239,7 +239,7 @@ where
 
         // Only apply blocklist during block building, not during RPC simulation
         // (eth_call, eth_estimateGas). RPC simulation disables the base fee check.
-        let is_block_building = !self.ctx().cfg.disable_base_fee;
+        let is_block_building = !self.ctx().cfg.is_base_fee_check_disabled();
 
         // Check if the fee currency is blocklisted — reject early without EVM execution.
         if is_block_building {
@@ -272,7 +272,8 @@ where
                     target: "celo",
                     "fee-currency EVM execution error for {fc}: {e}"
                 );
-                self.blocklist.block_currency(fc);
+                let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                self.blocklist.block_currency(fc, block_timestamp);
             }
             _ => {}
         }
@@ -426,6 +427,23 @@ impl CeloEvmFactory {
     }
 }
 
+/// Creates a [`CeloEvm`] for testing with an in-memory database.
+#[cfg(test)]
+fn make_test_evm(blocklist: FeeCurrencyBlocklist) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+    let spec_id = OpSpecId::FJORD;
+    let db = revm::database::InMemoryDB::default();
+    CeloEvm {
+        inner: Context::celo()
+            .with_db(db)
+            .with_chain(default_l1_block_info(spec_id))
+            .build_celo_with_inspector(revm::inspector::NoOpInspector {})
+            .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
+        inspect: false,
+        cip64_storage: Cip64Storage::default(),
+        blocklist,
+    }
+}
+
 impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
     type Context<DB: Database> = CeloContext<DB>;
@@ -478,5 +496,128 @@ impl EvmFactory for CeloEvmFactory {
             cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
             blocklist: self.blocklist.clone().unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_evm::Evm;
+    use celo_alloy_consensus::CeloTxType;
+    use op_revm::OpTransaction;
+
+    /// Build a CIP-64 `CeloTransaction<TxEnv>` for testing.
+    fn make_cip64_tx(fee_currency: Address) -> CeloTransaction<TxEnv> {
+        CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller: Address::with_last_byte(0x01),
+                    kind: TxKind::Call(Address::with_last_byte(0x02)),
+                    nonce: 0,
+                    gas_limit: 21_000,
+                    value: U256::ZERO,
+                    data: Bytes::new(),
+                    gas_price: 1_000_000_000,
+                    chain_id: Some(42220),
+                    gas_priority_fee: Some(100),
+                    access_list: Default::default(),
+                    blob_hashes: Vec::new(),
+                    max_fee_per_blob_gas: 0,
+                    tx_type: CeloTxType::Cip64 as u8,
+                    authorization_list: Default::default(),
+                },
+                enveloped_tx: Some(Bytes::default()),
+                deposit: Default::default(),
+            },
+            fee_currency: Some(fee_currency),
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        }
+    }
+
+    #[test]
+    fn test_blocklist_rejects_in_block_mode() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        let tx = make_cip64_tx(fc);
+        let result = evm.transact_raw(tx);
+
+        // The blocklisted currency should be rejected
+        assert!(result.is_err(), "Expected blocklisted currency to be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("blocklisted"),
+            "Error should mention blocklist, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_blocklist_allows_unblocked_currency() {
+        let blocked_fc = Address::with_last_byte(0xAA);
+        let other_fc = Address::with_last_byte(0xBB);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(blocked_fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // A different fee currency should not be blocked (it may fail later
+        // during execution for other reasons, but not at the blocklist check)
+        let tx = make_cip64_tx(other_fc);
+        let result = evm.transact_raw(tx);
+        // If it fails, it should NOT be a blocklist error
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Non-blocked currency should not get blocklist error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_blocklist_does_not_block_native_tx() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // Native tx (no fee currency) should never be rejected by blocklist
+        let mut tx = make_cip64_tx(fc);
+        tx.fee_currency = None;
+        tx.op_tx.base.tx_type = 2; // EIP-1559
+
+        let result = evm.transact_raw(tx);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Native tx should not get blocklist error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_failed_execution_blocks_currency() {
+        let fc = Address::with_last_byte(0xCC);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        let mut evm = make_test_evm(blocklist.clone());
+        // Set a non-zero basefee so the EVM is in "block building" mode
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+
+        // This CIP-64 tx will fail during execution (no ERC20 contract deployed)
+        let tx = make_cip64_tx(fc);
+        let _ = evm.transact_raw(tx);
+
+        // After failed execution, the currency should be blocklisted
+        assert!(
+            blocklist.is_blocked(fc),
+            "Fee currency should be blocklisted after execution failure"
+        );
     }
 }

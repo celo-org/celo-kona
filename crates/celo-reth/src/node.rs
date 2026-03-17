@@ -222,7 +222,19 @@ where
                 let chain_id = ctx.chain_spec().chain().id();
                 let fee_currency_directory =
                     celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
-                CeloExchangeRateApplier::new(validator, ctx.provider().clone(), fee_currency_directory)
+                // In dev mode, disable the base fee floor check since the dev
+                // chain may use a much lower base fee than mainnet's 25 Gwei floor.
+                let base_fee_floor = if ctx.config().dev.dev {
+                    0
+                } else {
+                    crate::CELO_BASE_FEE_FLOOR
+                };
+                CeloExchangeRateApplier::new(
+                    validator,
+                    ctx.provider().clone(),
+                    fee_currency_directory,
+                    base_fee_floor,
+                )
             });
 
         let final_pool_config = pool_config_overrides.apply(ctx.pool_config());
@@ -262,7 +274,7 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
-        let celo_txs = CeloPayloadTransactions::new(self.fee_currency_limits.clone());
+        let celo_txs = CeloPayloadTransactions::new(self.fee_currency_limits.clone(), self.blocklist.clone());
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
@@ -278,7 +290,9 @@ where
         use reth_node_builder::rpc::RpcAddOns;
         OpAddOns::new(
             RpcAddOns::new(
-                CeloEthApiBuilder,
+                CeloEthApiBuilder::default()
+                    .with_sequencer(self.args.sequencer.clone())
+                    .with_sequencer_headers(self.args.sequencer_headers.clone()),
                 OpEngineValidatorBuilder::default(),
                 OpEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),

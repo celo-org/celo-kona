@@ -20,7 +20,7 @@ use reth_node_api::{FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_rpc::{
-    OpEthApi,
+    OpEthApi, SequencerClient,
     eth::{receipt::OpReceiptFieldsBuilder, transaction::OpTxInfoMapper},
 };
 use reth_primitives_traits::SealedBlock;
@@ -132,7 +132,31 @@ impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
         let fee_currency = self.fee_currency;
         self.inner
             .try_into_sim_tx()
-            .map(op_tx_to_celo)
+            .map(|op_tx| {
+                let mut celo_tx = op_tx_to_celo(op_tx);
+                // If fee_currency is set, wrap the inner EIP-1559 tx into a CIP-64 variant
+                if let Some(fc) = fee_currency {
+                    if let CeloTxEnvelope::Eip1559(signed) = celo_tx {
+                        let (eip1559, sig, _hash) = signed.into_parts();
+                        let cip64 = celo_alloy_consensus::TxCip64 {
+                            chain_id: eip1559.chain_id,
+                            nonce: eip1559.nonce,
+                            gas_limit: eip1559.gas_limit,
+                            max_fee_per_gas: eip1559.max_fee_per_gas,
+                            max_priority_fee_per_gas: eip1559.max_priority_fee_per_gas,
+                            to: eip1559.to,
+                            value: eip1559.value,
+                            access_list: eip1559.access_list,
+                            input: eip1559.input,
+                            fee_currency: Some(fc),
+                        };
+                        celo_tx = CeloTxEnvelope::Cip64(
+                            alloy_consensus::Signed::new_unhashed(cip64, sig),
+                        );
+                    }
+                }
+                celo_tx
+            })
             .map_err(|e| e.map(|inner| CeloTransactionRequest { inner, fee_currency }))
     }
 }
@@ -164,11 +188,32 @@ impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<CeloTxEnvelope, SignTxRequestError> {
-        SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(
-            self.inner, signer,
-        )
-        .await
-        .map(op_tx_to_celo)
+        if let Some(fc) = self.fee_currency {
+            // Build a CIP-64 tx directly so fee_currency is preserved.
+            let req = self.inner.as_ref();
+            let mut cip64 = celo_alloy_consensus::TxCip64 {
+                chain_id: req.chain_id.unwrap_or_default(),
+                nonce: req.nonce.unwrap_or_default(),
+                gas_limit: req.gas.unwrap_or(0),
+                max_fee_per_gas: req.max_fee_per_gas.unwrap_or_default(),
+                max_priority_fee_per_gas: req.max_priority_fee_per_gas.unwrap_or_default(),
+                to: req.to.unwrap_or_default(),
+                value: req.value.unwrap_or_default(),
+                access_list: req.access_list.clone().unwrap_or_default(),
+                input: req.input.clone().into_input().unwrap_or_default(),
+                fee_currency: Some(fc),
+            };
+            let sig = signer
+                .sign_transaction(&mut cip64)
+                .await?;
+            Ok(CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(cip64, sig)))
+        } else {
+            SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(
+                self.inner, signer,
+            )
+            .await
+            .map(op_tx_to_celo)
+        }
     }
 }
 
@@ -318,8 +363,26 @@ pub type CeloRpcConvert<N> = RpcConverter<
 /// Uses [`CeloReceiptConverter`] instead of the op-reth `OpReceiptConverter`, which has a
 /// hard `Receipt = OpReceipt` bound incompatible with [`CeloPrimitives`].
 #[derive(Debug, Default)]
-#[non_exhaustive]
-pub struct CeloEthApiBuilder;
+pub struct CeloEthApiBuilder {
+    /// Sequencer URL for transaction forwarding.
+    pub sequencer_url: Option<String>,
+    /// Headers to use for the sequencer client requests.
+    pub sequencer_headers: Vec<String>,
+}
+
+impl CeloEthApiBuilder {
+    /// Sets the sequencer URL for transaction forwarding.
+    pub fn with_sequencer(mut self, sequencer_url: Option<String>) -> Self {
+        self.sequencer_url = sequencer_url;
+        self
+    }
+
+    /// Sets the headers to use for the sequencer client requests.
+    pub fn with_sequencer_headers(mut self, sequencer_headers: Vec<String>) -> Self {
+        self.sequencer_headers = sequencer_headers;
+        self
+    }
+}
 
 impl<N> EthApiBuilder<N> for CeloEthApiBuilder
 where
@@ -345,13 +408,25 @@ where
     type EthApi = OpEthApi<N, CeloRpcConvert<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
+        let Self { sequencer_url, sequencer_headers } = self;
+
         let rpc_converter =
             RpcConverter::new(CeloReceiptConverter::new(ctx.components.provider().clone()))
                 .with_mapper(OpTxInfoMapper::new(ctx.components.provider().clone()));
 
         let eth_api = ctx.eth_api_builder().with_rpc_converter(rpc_converter).build_inner();
 
-        Ok(OpEthApi::new(eth_api, None, U256::from(1_000_000_u64), None))
+        let sequencer_client = if let Some(url) = sequencer_url {
+            Some(
+                SequencerClient::new_with_headers(&url, sequencer_headers)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to init sequencer client with {url}: {e}"))?,
+            )
+        } else {
+            None
+        };
+
+        Ok(OpEthApi::new(eth_api, sequencer_client, U256::from(1_000_000_u64), None))
     }
 }
 
@@ -549,4 +624,61 @@ pub fn celo_admin_module(
         .expect("admin_unblockFeeCurrency registration");
 
     module
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serde_roundtrip_with_fee_currency() {
+        let fc: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .value(U256::from(100)),
+            fee_currency: Some(fc),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let deser: CeloTransactionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.fee_currency, Some(fc));
+        assert_eq!(deser.inner.as_ref().value, req.inner.as_ref().value);
+    }
+
+    #[test]
+    fn serde_roundtrip_without_fee_currency() {
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default().to(Address::ZERO),
+            fee_currency: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let deser: CeloTransactionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.fee_currency, None);
+    }
+
+    #[test]
+    fn serde_null_fee_currency_deserializes_as_none() {
+        let json = r#"{"feeCurrency": null, "to": "0x0000000000000000000000000000000000000000"}"#;
+        let deser: CeloTransactionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(deser.fee_currency, None);
+    }
+
+    #[test]
+    fn serde_inner_op_fields_survive_roundtrip() {
+        let fc: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .nonce(42)
+                .max_fee_per_gas(1_000_000_000)
+                .max_priority_fee_per_gas(100),
+            fee_currency: Some(fc),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let deser: CeloTransactionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.fee_currency, Some(fc));
+        assert_eq!(deser.inner.as_ref().nonce, Some(42));
+        assert_eq!(deser.inner.as_ref().max_fee_per_gas, Some(1_000_000_000));
+        assert_eq!(deser.inner.as_ref().max_priority_fee_per_gas, Some(100));
+    }
 }

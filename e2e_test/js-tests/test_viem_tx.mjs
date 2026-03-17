@@ -333,6 +333,47 @@ describe("viem send tx", () => {
 		assert.isAbove(Number(receipt.effectiveGasPrice), Number(maxFeePerGas) * 0.7, "effective gas price is too low");
 	}).timeout(10_000);
 
+	it("send CIP-64 tx with native value transfer", async () => {
+		const receiver = "0x00000000000000000000000000000000DeaDBeef";
+		const value = 10000n; // small native CELO transfer
+
+		// Get balances before
+		const senderBalanceBefore = await publicClient.getBalance({ address: walletClient.account.address });
+		const receiverBalanceBefore = await publicClient.getBalance({ address: receiver });
+
+		const [maxFeePerGas, tip] = await getGasFees(publicClient, 2n, process.env.FEE_CURRENCY);
+		const hash = await walletClient.sendTransaction({
+			to: receiver,
+			value: value,
+			gas: await getIntrinsicGasForFeeCurrency(TX_GAS, process.env.FEE_CURRENCY),
+			feeCurrency: process.env.FEE_CURRENCY,
+			maxFeePerGas: maxFeePerGas,
+			maxPriorityFeePerGas: tip,
+		});
+		const receipt = await publicClient.waitForTransactionReceipt({ hash });
+		assert.equal(receipt.status, "success", "receipt status 'failure'");
+
+		// Verify native balances: sender decreased by exactly `value` (gas paid in FC),
+		// receiver increased by `value`.
+		const senderBalanceAfter = await publicClient.getBalance({ address: walletClient.account.address });
+		const receiverBalanceAfter = await publicClient.getBalance({ address: receiver });
+
+		assert.equal(
+			senderBalanceBefore - senderBalanceAfter,
+			value,
+			"Sender native balance should decrease by exactly the transferred value (gas in FC)"
+		);
+		assert.equal(
+			receiverBalanceAfter - receiverBalanceBefore,
+			value,
+			"Receiver native balance should increase by the transferred value"
+		);
+
+		// Verify gas was actually used
+		assert.isAbove(Number(receipt.gasUsed), 0, "gasUsed should be > 0");
+		assert.isAbove(Number(receipt.effectiveGasPrice), 0, "effectiveGasPrice should be > 0");
+	}).timeout(10_000);
+
 	it("zero tip tx rejected", async () => {
 		const gasPrice = await publicClient.getGasPrice();
 		let request = await walletClient.prepareTransactionRequest({

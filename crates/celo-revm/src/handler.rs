@@ -211,9 +211,17 @@ where
         // may be lower than base_fee_in_erc20. Clamp to 0 in that case.
         let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20);
 
+        // Extract L1+operator cost stored during debit phase
+        let l1_cost_in_fc = evm.ctx().tx().cip64_tx_info.as_ref().unwrap().l1_cost_in_fc;
+        let operator_fee_in_fc = evm.ctx().tx().cip64_tx_info.as_ref().unwrap().operator_fee_in_fc;
+
+        // Tip includes the priority fee portion plus L1 cost and operator fee (converted to FC).
+        // This matches op-geth's creditGasFees where L1 cost is merged with the tip.
         let tx_fee_tip_in_erc20 = U256::from(
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
-        );
+        )
+        .saturating_add(l1_cost_in_fc)
+        .saturating_add(operator_fee_in_fc);
 
         // Return balance of not spent gas.
         let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
@@ -341,10 +349,41 @@ where
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
 
-        let gas_cost = (gas_limit as u128)
+        let mut gas_cost = (gas_limit as u128)
             .checked_mul(effective_gas_price)
             .map(|gas_cost| U256::from(gas_cost))
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+
+        // Compute L1 cost and operator fee, convert to fee currency, and add to debit.
+        // This matches op-geth which includes these costs in the ERC20 debit.
+        let ctx = evm.ctx();
+        let spec = *ctx.cfg().spec();
+        let mut l1_cost_in_fc = U256::ZERO;
+        let mut operator_fee_in_fc = U256::ZERO;
+
+        if !ctx.cfg().is_fee_charge_disabled() {
+            if let Some(enveloped_tx) = ctx.tx().enveloped_tx().cloned() {
+                let l1_cost = ctx.chain_mut().calculate_tx_l1_cost(&enveloped_tx, spec);
+                l1_cost_in_fc = evm
+                    .fee_currency_context
+                    .celo_to_currency(fee_currency, l1_cost)
+                    .map_err(InvalidTransaction::from)?;
+                gas_cost = gas_cost.saturating_add(l1_cost_in_fc);
+
+                if spec.is_enabled_in(OpSpecId::ISTHMUS) {
+                    let gas_limit_u256 = U256::from(gas_limit);
+                    let operator_fee = evm
+                        .ctx()
+                        .chain()
+                        .operator_fee_charge(&enveloped_tx, gas_limit_u256, spec);
+                    operator_fee_in_fc = evm
+                        .fee_currency_context
+                        .celo_to_currency(fee_currency, operator_fee)
+                        .map_err(InvalidTransaction::from)?;
+                    gas_cost = gas_cost.saturating_add(operator_fee_in_fc);
+                }
+            }
+        }
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
@@ -370,6 +409,8 @@ where
             logs_pre: logs,
             logs_post: Vec::new(),
             base_fee_in_erc20: Some(base_fee_in_erc20),
+            l1_cost_in_fc,
+            operator_fee_in_fc,
         });
         // Store the effective gas price for the GASPRICE opcode.
         // This is calculated using the base fee converted to the fee currency.
@@ -562,23 +603,27 @@ where
                 *ctx.chain_mut() = L1BlockInfo::try_fetch(ctx.db_mut(), block_number, spec)?;
             }
 
-            // account for additional cost of l1 fee and operator fee
-            let enveloped_tx = ctx
-                .tx()
-                .enveloped_tx()
-                .expect("all not deposit tx have enveloped tx")
-                .clone();
+            // For CIP-64 txs, L1+operator costs are handled in the fee currency debit/credit,
+            // so we only compute additional_cost for native CELO transactions.
+            if fees_in_celo {
+                // account for additional cost of l1 fee and operator fee
+                let enveloped_tx = ctx
+                    .tx()
+                    .enveloped_tx()
+                    .expect("all not deposit tx have enveloped tx")
+                    .clone();
 
-            // compute L1 cost
-            additional_cost = ctx.chain_mut().calculate_tx_l1_cost(&enveloped_tx, spec);
+                // compute L1 cost
+                additional_cost = ctx.chain_mut().calculate_tx_l1_cost(&enveloped_tx, spec);
 
-            // compute operator fee
-            if spec.is_enabled_in(OpSpecId::ISTHMUS) {
-                let gas_limit = U256::from(ctx.tx().gas_limit());
-                let operator_fee_charge =
-                    ctx.chain()
-                        .operator_fee_charge(&enveloped_tx, gas_limit, spec);
-                additional_cost = additional_cost.saturating_add(operator_fee_charge);
+                // compute operator fee
+                if spec.is_enabled_in(OpSpecId::ISTHMUS) {
+                    let gas_limit = U256::from(ctx.tx().gas_limit());
+                    let operator_fee_charge =
+                        ctx.chain()
+                            .operator_fee_charge(&enveloped_tx, gas_limit, spec);
+                    additional_cost = additional_cost.saturating_add(operator_fee_charge);
+                }
             }
         }
 
