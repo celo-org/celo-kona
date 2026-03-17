@@ -4,14 +4,20 @@ RUN apt-get update && apt-get install -y libclang-dev pkg-config && rm -rf /var/
 
 FROM chef AS planner
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json --bin celo-reth
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 ARG BUILD_PROFILE=release
-RUN cargo chef cook --profile $BUILD_PROFILE --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --profile $BUILD_PROFILE --recipe-path recipe.json --bin celo-reth
 COPY . .
-RUN cargo build --profile $BUILD_PROFILE --locked -p celo-reth --bin celo-reth \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --profile $BUILD_PROFILE --locked -p celo-reth --bin celo-reth \
     && cp /app/target/$BUILD_PROFILE/celo-reth /app/celo-reth
 
 FROM ubuntu:24.04 AS runtime
