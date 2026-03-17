@@ -241,6 +241,12 @@ where
         // (eth_call, eth_estimateGas). RPC simulation disables the base fee check.
         let is_block_building = !self.ctx().cfg.is_base_fee_check_disabled();
 
+        // Evict stale blocklist entries using the current block timestamp.
+        if is_block_building {
+            let block_timestamp: u64 = self.ctx().block.timestamp.to();
+            self.blocklist.evict(block_timestamp);
+        }
+
         // Check if the fee currency is blocklisted — reject early without EVM execution.
         if is_block_building {
             if let Some(fc) = fee_currency {

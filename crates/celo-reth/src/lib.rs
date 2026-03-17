@@ -53,6 +53,9 @@ pub mod payload;
 #[cfg(feature = "std")]
 pub mod rpc;
 
+#[cfg(all(test, feature = "std"))]
+pub(crate) mod test_utils;
+
 pub use primitives::*;
 pub use receipt::CeloReceipt;
 pub use receipts::CeloRethReceiptBuilder;

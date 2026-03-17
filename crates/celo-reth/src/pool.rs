@@ -348,186 +348,76 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
-/// Check the ERC20 balance of `sender` in `fee_currency` via a temporary EVM.
+/// Look up the exchange rate and optionally the ERC20 balance for a fee currency.
 ///
-/// Returns `Some(true)` if balance >= required, `Some(false)` if insufficient,
-/// or `None` if the balance check fails (e.g. contract reverts).
-fn check_erc20_balance(
-    provider: &dyn StateProviderFactory,
-    fee_currency: Address,
-    sender: Address,
-    required: U256,
-) -> Option<bool> {
-    use alloy_sol_types::SolCall;
-    use celo_revm::{
-        CeloBuilder, DefaultCelo,
-        contracts::erc20::IFeeCurrencyERC20,
-    };
-    use reth_revm::database::StateProviderDatabase;
-    use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
-
-    let state = provider.latest().ok()?;
-    let db = StateProviderDatabase::new(state);
-
-    let ctx = Context::celo().with_db(db);
-    let mut evm = ctx.build_celo();
-
-    let calldata = IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
-    let result = evm
-        .system_call_one(fee_currency, calldata.into())
-        .ok()?;
-
-    let output = match result {
-        ExecutionResult::Success { output, .. } => output.into_data(),
-        _ => return None,
-    };
-
-    let balance = IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output).ok()?;
-    Some(balance >= required)
-}
-
-/// Look up the exchange rate for a fee currency by calling the FeeCurrencyDirectory
-/// contract's `getExchangeRate(address)` method via a temporary EVM.
-fn lookup_exchange_rate(
+/// Performs both queries in a single EVM instance to avoid duplicate state
+/// provider and EVM construction on the pool validation hot path.
+///
+/// Returns `(Some(rate), balance_check)` where `balance_check` is:
+/// - `None` if no balance check was requested or the query failed
+/// - `Some(true/false)` for the balance comparison
+fn lookup_rate_and_balance(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
     fee_currency_directory: Address,
-) -> Option<ExchangeRate> {
+    balance_check: Option<(Address, U256)>,
+) -> (Option<ExchangeRate>, Option<bool>) {
     use alloy_sol_types::SolCall;
     use celo_revm::{
         CeloBuilder, DefaultCelo,
-        contracts::core_contracts::getExchangeRateCall,
+        contracts::{core_contracts::getExchangeRateCall, erc20::IFeeCurrencyERC20},
     };
     use reth_revm::database::StateProviderDatabase;
     use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
 
-    let state = provider.latest().ok()?;
-    let db = StateProviderDatabase::new(state);
-
-    let ctx = Context::celo().with_db(db);
-    let mut evm = ctx.build_celo();
-
-    let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
-    let result = evm
-        .system_call_one(fee_currency_directory, calldata.into())
-        .ok()?;
-
-    let output = match result {
-        ExecutionResult::Success { output, .. } => output.into_data(),
-        _ => return None,
+    let state = match provider.latest() {
+        Ok(s) => s,
+        Err(_) => return (None, None),
     };
+    let db = StateProviderDatabase::new(state);
+    let mut evm = Context::celo().with_db(db).build_celo();
 
-    let rate = getExchangeRateCall::abi_decode_returns(&output).ok()?;
+    // 1. Look up exchange rate
+    let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
+    let rate = evm
+        .system_call_one(fee_currency_directory, rate_calldata.into())
+        .ok()
+        .and_then(|result| match result {
+            ExecutionResult::Success { output, .. } => Some(output.into_data()),
+            _ => None,
+        })
+        .and_then(|output| {
+            let r = getExchangeRateCall::abi_decode_returns(&output).ok()?;
+            let numerator = u128::try_from(r.numerator).ok()?;
+            let denominator = u128::try_from(r.denominator).ok()?;
+            if numerator == 0 || denominator == 0 {
+                return None;
+            }
+            Some(ExchangeRate { numerator, denominator })
+        });
 
-    let numerator = u128::try_from(rate.numerator).ok()?;
-    let denominator = u128::try_from(rate.denominator).ok()?;
+    // 2. Check ERC20 balance (only if requested and rate lookup succeeded)
+    let balance_result = balance_check.and_then(|(sender, required)| {
+        let bal_calldata =
+            IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
+        let result = evm
+            .system_call_one(fee_currency, bal_calldata.into())
+            .ok()?;
+        let output = match result {
+            ExecutionResult::Success { output, .. } => output.into_data(),
+            _ => return None,
+        };
+        let balance =
+            IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output).ok()?;
+        Some(balance >= required)
+    });
 
-    if numerator == 0 || denominator == 0 {
-        return None;
-    }
-
-    Some(ExchangeRate {
-        numerator,
-        denominator,
-    })
+    (rate, balance_result)
 }
 
 // ---------------------------------------------------------------------------
-// UnregisteredFeeCurrency error
+// Cip64Rejection — CIP-64 pool transaction error
 // ---------------------------------------------------------------------------
-
-/// Error for CIP-64 transactions with an unregistered fee currency.
-#[derive(Debug)]
-struct UnregisteredFeeCurrency(Address);
-
-/// Error for CIP-64 transactions where the sender has insufficient ERC20 balance.
-#[derive(Debug)]
-struct InsufficientFeeCurrencyBalance(Address);
-
-impl std::fmt::Display for UnregisteredFeeCurrency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unregistered fee-currency address {}", self.0)
-    }
-}
-
-impl std::error::Error for UnregisteredFeeCurrency {}
-
-impl PoolTransactionError for UnregisteredFeeCurrency {
-    fn is_bad_transaction(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-impl std::fmt::Display for InsufficientFeeCurrencyBalance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "insufficient ERC20 balance for fee-currency {}", self.0)
-    }
-}
-
-impl std::error::Error for InsufficientFeeCurrencyBalance {}
-
-impl PoolTransactionError for InsufficientFeeCurrencyBalance {
-    fn is_bad_transaction(&self) -> bool {
-        // Not "bad" in the permanent sense — balance may change.
-        false
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// Error for CIP-64 transactions whose fee cap is below the base fee floor.
-#[derive(Debug)]
-struct BelowBaseFeeFloor(Address);
-
-impl std::fmt::Display for BelowBaseFeeFloor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "fee cap below base fee floor for fee-currency {}",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for BelowBaseFeeFloor {}
-
-impl PoolTransactionError for BelowBaseFeeFloor {
-    fn is_bad_transaction(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// Error for CIP-64 transactions with zero priority fee.
-#[derive(Debug)]
-struct ZeroPriorityFee;
-
-impl std::fmt::Display for ZeroPriorityFee {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CIP-64 priority fee must be at least 1 wei in fee currency")
-    }
-}
-
-impl std::error::Error for ZeroPriorityFee {}
-
-impl PoolTransactionError for ZeroPriorityFee {
-    fn is_bad_transaction(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
 
 // ---------------------------------------------------------------------------
 // CeloExchangeRateApplier
@@ -567,6 +457,10 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
 }
 
 /// Rejection reason for a CIP-64 pool transaction.
+///
+/// Implements [`PoolTransactionError`] directly so it can be passed to
+/// [`InvalidPoolTransactionError::other`] without separate error structs.
+#[derive(Debug)]
 enum Cip64Rejection {
     /// The fee currency is not registered in the FeeCurrencyDirectory.
     UnregisteredCurrency(Address),
@@ -576,6 +470,41 @@ enum Cip64Rejection {
     BelowBaseFeeFloor(Address),
     /// The priority fee (in FC terms) is zero — must be at least 1 wei.
     ZeroPriorityFee,
+}
+
+impl std::fmt::Display for Cip64Rejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnregisteredCurrency(fc) => {
+                write!(f, "unregistered fee-currency address {fc}")
+            }
+            Self::InsufficientBalance(fc) => {
+                write!(f, "insufficient ERC20 balance for fee-currency {fc}")
+            }
+            Self::BelowBaseFeeFloor(fc) => {
+                write!(f, "fee cap below base fee floor for fee-currency {fc}")
+            }
+            Self::ZeroPriorityFee => {
+                write!(f, "CIP-64 priority fee must be at least 1 wei in fee currency")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Cip64Rejection {}
+
+impl PoolTransactionError for Cip64Rejection {
+    fn is_bad_transaction(&self) -> bool {
+        match self {
+            // Insufficient balance is transient — balance may change.
+            Self::InsufficientBalance(_) => false,
+            _ => true,
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Apply exchange rates to a [`ValidTransaction`] if it is a CIP-64 tx.
@@ -591,75 +520,85 @@ fn apply_exchange_rates_to_valid_tx(
         ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
     };
     if let Some(fc) = tx.fee_currency() {
-        if let Some(rate) = lookup_exchange_rate(provider, fc, fee_currency_directory) {
-            let old_fee = tx.inner.max_fee_per_gas();
-            let old_priority_fee = tx.inner.max_priority_fee_per_gas();
+        let old_fee = tx.inner.max_fee_per_gas();
+        let old_priority_fee = tx.inner.max_priority_fee_per_gas();
 
-            // Check: original FC-denominated priority fee must be >= 1.
-            // After exchange rate conversion a 0-wei FC tip stays 0, which would
-            // pass the inner validator's minimum_priority_fee(1) check vacuously.
-            if old_priority_fee == Some(0) {
-                tracing::warn!(
-                    target: "celo::pool",
-                    ?fc,
-                    "Rejecting CIP-64 tx: zero priority fee in fee currency"
-                );
-                return Err(Cip64Rejection::ZeroPriorityFee);
-            }
-
-            // Check: fee cap must be >= base fee floor converted to FC.
-            // FC floor = native_floor * numerator / denominator.
-            let base_fee_floor_native = base_fee_floor as u128;
-            let base_fee_floor_fc = base_fee_floor_native
-                .checked_mul(rate.numerator)
-                .map(|v| v / rate.denominator)
-                .unwrap_or(u128::MAX);
-            if old_fee < base_fee_floor_fc {
-                tracing::warn!(
-                    target: "celo::pool",
-                    ?fc,
-                    old_fee,
-                    base_fee_floor_fc,
-                    "Rejecting CIP-64 tx: fee cap below base fee floor"
-                );
-                return Err(Cip64Rejection::BelowBaseFeeFloor(fc));
-            }
-
-            tx.apply_exchange_rate(rate);
-            tracing::info!(
-                target: "celo::pool",
-                ?fc,
-                numerator = rate.numerator,
-                denominator = rate.denominator,
-                old_max_fee = old_fee,
-                new_max_fee = tx.native_max_fee_per_gas,
-                "Applied exchange rate to CIP-64 pool tx"
-            );
-
-            // Check ERC20 balance: the sender must have enough fee currency
-            // to cover gas_limit * max_fee_per_gas (in FC terms, pre-conversion).
-            let required_fc = U256::from(tx.inner.gas_limit())
-                .saturating_mul(U256::from(old_fee));
-            let sender = tx.sender();
-            if let Some(false) = check_erc20_balance(provider, fc, sender, required_fc) {
-                tracing::warn!(
-                    target: "celo::pool",
-                    ?fc,
-                    ?sender,
-                    ?required_fc,
-                    "Rejecting CIP-64 tx: insufficient fee currency balance"
-                );
-                return Err(Cip64Rejection::InsufficientBalance(fc));
-            }
-            // If check_erc20_balance returns None (query failed), we allow the tx
-            // through — it will be caught during execution.
-        } else {
+        // Check: original FC-denominated priority fee must be >= 1.
+        // After exchange rate conversion a 0-wei FC tip stays 0, which would
+        // pass the inner validator's minimum_priority_fee(1) check vacuously.
+        if old_priority_fee == Some(0) {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                "Rejecting CIP-64 tx: unregistered fee currency"
+                "Rejecting CIP-64 tx: zero priority fee in fee currency"
             );
-            return Err(Cip64Rejection::UnregisteredCurrency(fc));
+            return Err(Cip64Rejection::ZeroPriorityFee);
+        }
+
+        // Look up exchange rate and check ERC20 balance in a single EVM instance.
+        let required_fc = U256::from(tx.inner.gas_limit())
+            .saturating_mul(U256::from(old_fee));
+        let sender = tx.sender();
+        let (rate, balance_ok) = lookup_rate_and_balance(
+            provider,
+            fc,
+            fee_currency_directory,
+            Some((sender, required_fc)),
+        );
+
+        let rate = match rate {
+            Some(r) => r,
+            None => {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fc,
+                    "Rejecting CIP-64 tx: unregistered fee currency"
+                );
+                return Err(Cip64Rejection::UnregisteredCurrency(fc));
+            }
+        };
+
+        // Check: fee cap must be >= base fee floor converted to FC.
+        // FC floor = native_floor * numerator / denominator.
+        let base_fee_floor_native = base_fee_floor as u128;
+        let base_fee_floor_fc = base_fee_floor_native
+            .checked_mul(rate.numerator)
+            .map(|v| v / rate.denominator)
+            .unwrap_or(u128::MAX);
+        if old_fee < base_fee_floor_fc {
+            tracing::warn!(
+                target: "celo::pool",
+                ?fc,
+                old_fee,
+                base_fee_floor_fc,
+                "Rejecting CIP-64 tx: fee cap below base fee floor"
+            );
+            return Err(Cip64Rejection::BelowBaseFeeFloor(fc));
+        }
+
+        tx.apply_exchange_rate(rate);
+        tracing::info!(
+            target: "celo::pool",
+            ?fc,
+            numerator = rate.numerator,
+            denominator = rate.denominator,
+            old_max_fee = old_fee,
+            new_max_fee = tx.native_max_fee_per_gas,
+            "Applied exchange rate to CIP-64 pool tx"
+        );
+
+        // Check ERC20 balance result (query already done above).
+        // If balance_ok is None (query failed), we allow the tx through —
+        // it will be caught during execution.
+        if let Some(false) = balance_ok {
+            tracing::warn!(
+                target: "celo::pool",
+                ?fc,
+                ?sender,
+                ?required_fc,
+                "Rejecting CIP-64 tx: insufficient fee currency balance"
+            );
+            return Err(Cip64Rejection::InsufficientBalance(fc));
         }
     }
     Ok(())
@@ -701,21 +640,10 @@ where
                                 transaction
                             }
                         };
-                        let error = match rejection {
-                            Cip64Rejection::UnregisteredCurrency(fc) => {
-                                InvalidPoolTransactionError::other(UnregisteredFeeCurrency(fc))
-                            }
-                            Cip64Rejection::InsufficientBalance(fc) => {
-                                InvalidPoolTransactionError::other(InsufficientFeeCurrencyBalance(fc))
-                            }
-                            Cip64Rejection::BelowBaseFeeFloor(fc) => {
-                                InvalidPoolTransactionError::other(BelowBaseFeeFloor(fc))
-                            }
-                            Cip64Rejection::ZeroPriorityFee => {
-                                InvalidPoolTransactionError::other(ZeroPriorityFee)
-                            }
-                        };
-                        TransactionValidationOutcome::Invalid(tx, error)
+                        TransactionValidationOutcome::Invalid(
+                            tx,
+                            InvalidPoolTransactionError::other(rejection),
+                        )
                     } else {
                         TransactionValidationOutcome::Valid {
                             transaction,
@@ -740,66 +668,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
-    use reth_optimism_txpool::OpPooledTransaction;
-    use reth_primitives_traits::Recovered;
-
-    type TestInnerPoolTx = OpPooledTransaction<
-        crate::primitives::CeloTransactionSigned,
-        CeloPooledTransaction,
-    >;
-
-    /// Create a test CeloPoolTx with configurable fields.
-    fn make_test_tx(
-        fee_currency: Option<Address>,
-        gas_limit: u64,
-        max_fee_per_gas: u128,
-        max_priority_fee_per_gas: u128,
-        sender: Address,
-    ) -> CeloPoolTx {
-        use alloy_primitives::Signature;
-
-        let tx = if let Some(fc) = fee_currency {
-            let cip64 = TxCip64 {
-                chain_id: 42220,
-                nonce: 0,
-                gas_limit,
-                max_fee_per_gas,
-                max_priority_fee_per_gas,
-                to: alloy_primitives::TxKind::Call(Address::ZERO),
-                value: alloy_primitives::U256::ZERO,
-                access_list: Default::default(),
-                input: Default::default(),
-                fee_currency: Some(fc),
-            };
-            CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
-                cip64,
-                Signature::test_signature(),
-            ))
-        } else {
-            let eip1559 = alloy_consensus::TxEip1559 {
-                chain_id: 42220,
-                nonce: 0,
-                gas_limit,
-                max_fee_per_gas,
-                max_priority_fee_per_gas,
-                to: alloy_primitives::TxKind::Call(Address::ZERO),
-                value: alloy_primitives::U256::ZERO,
-                access_list: Default::default(),
-                input: Default::default(),
-            };
-            CeloTxEnvelope::Eip1559(alloy_consensus::Signed::new_unhashed(
-                eip1559,
-                Signature::test_signature(),
-            ))
-        };
-
-        let signed: crate::primitives::CeloTransactionSigned = tx.into();
-        let recovered = Recovered::new_unchecked(signed, sender);
-        let pooled = CeloPooledTransaction::try_from(recovered.clone().into_inner()).unwrap();
-        let inner = TestInnerPoolTx::from_pooled(Recovered::new_unchecked(pooled, sender));
-        CeloPoolTx::new(inner)
-    }
+    use crate::test_utils::make_test_tx;
 
     #[test]
     fn test_exchange_rate_to_native() {
