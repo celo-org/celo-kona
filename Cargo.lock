@@ -2311,6 +2311,7 @@ dependencies = [
  "alloy-sol-types",
  "bytes",
  "celo-alloy-consensus",
+ "celo-alloy-rpc-types",
  "celo-revm",
  "clap",
  "eyre",

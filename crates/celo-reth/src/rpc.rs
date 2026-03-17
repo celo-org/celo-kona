@@ -5,15 +5,17 @@
 //! and `OpEthApiBuilder`.
 
 use crate::{primitives::CeloPrimitives, receipt::CeloReceipt};
-use alloy_consensus::{TxReceipt, error::ValueError};
+use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_evm::{env::BlockEnvironment, rpc::EthTxEnvError, EvmEnv};
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Bytes, Signature, U256, keccak256};
 use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
-use celo_alloy_consensus::CeloTxEnvelope;
+use celo_alloy_consensus::{
+    CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope, CeloTxEnvelope,
+};
+use celo_alloy_rpc_types::CeloTransactionReceipt;
 use celo_revm::CeloTransaction;
-use op_alloy_consensus::OpReceipt;
-use op_alloy_rpc_types::{OpTransactionReceipt, OpTransactionRequest};
+use op_alloy_rpc_types::OpTransactionRequest;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::ConfigureEvm;
 use reth_node_api::{FullNodeComponents, NodeTypes};
@@ -64,7 +66,7 @@ pub struct CeloRpcTypes;
 
 impl RpcTypes for CeloRpcTypes {
     type Header = alloy_rpc_types_eth::Header;
-    type Receipt = OpTransactionReceipt;
+    type Receipt = CeloTransactionReceipt;
     type TransactionRequest = CeloTransactionRequest;
     type TransactionResponse = op_alloy_rpc_types::Transaction<CeloTxEnvelope>;
 }
@@ -221,10 +223,11 @@ impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
 // CeloReceiptConverter
 // ---------------------------------------------------------------------------
 
-/// Converter for Celo receipts, producing [`OpTransactionReceipt`] RPC representations.
+/// Converter for Celo receipts, producing [`CeloTransactionReceipt`] RPC representations.
 ///
 /// Analogous to [`OpReceiptConverter`](reth_optimism_rpc::eth::receipt::OpReceiptConverter)
-/// but handles the additional [`CeloReceipt::Cip64`] variant.
+/// but handles the additional [`CeloReceipt::Cip64`] variant with correct type, base fee,
+/// and effective gas price.
 #[derive(Debug, Clone)]
 pub struct CeloReceiptConverter<Provider> {
     provider: Provider,
@@ -244,7 +247,7 @@ where
         + Debug
         + 'static,
 {
-    type RpcReceipt = OpTransactionReceipt;
+    type RpcReceipt = CeloTransactionReceipt;
     type Error = reth_optimism_rpc::OpEthApiError;
 
     fn convert_receipts(
@@ -294,49 +297,109 @@ where
 }
 
 impl<Provider> CeloReceiptConverter<Provider> {
-    /// Converts a single [`ConvertReceiptInput`] with [`CeloReceipt`] to an
-    /// [`OpTransactionReceipt`].
+    /// Converts a single [`ConvertReceiptInput`] with [`CeloReceipt`] to a
+    /// [`CeloTransactionReceipt`].
     fn build_receipt<ChainSpec: OpHardforks>(
         chain_spec: &ChainSpec,
         input: ConvertReceiptInput<'_, CeloPrimitives>,
         l1_block_info: &mut op_revm::L1BlockInfo,
-    ) -> Result<OpTransactionReceipt, reth_optimism_rpc::OpEthApiError> {
+    ) -> Result<CeloTransactionReceipt, reth_optimism_rpc::OpEthApiError> {
         use alloy_consensus::Receipt;
 
         let timestamp = input.meta.timestamp;
         let block_number = input.meta.block_number;
         let tx_signed = *input.tx.inner();
 
-        let core_receipt = build_receipt(input, None, |celo_receipt, next_log_index, meta| {
-            let map_logs = move |receipt: alloy_consensus::Receipt<alloy_primitives::Log>| {
-                let Receipt { status, cumulative_gas_used, logs } = receipt;
-                let logs = Log::collect_for_receipt(next_log_index, meta, logs);
-                Receipt { status, cumulative_gas_used, logs }
-            };
+        let mut core_receipt =
+            build_receipt(input, None, |celo_receipt, next_log_index, meta| {
+                // Compute bloom from primitive logs, then map to RPC logs.
+                let map_receipt =
+                    move |receipt: alloy_consensus::Receipt<alloy_primitives::Log>| {
+                        let bloom = alloy_primitives::logs_bloom(receipt.logs.iter());
+                        let Receipt { status, cumulative_gas_used, logs } = receipt;
+                        let logs = Log::collect_for_receipt(next_log_index, meta, logs);
+                        (Receipt { status, cumulative_gas_used, logs }, bloom)
+                    };
 
-            let op_receipt: OpReceipt<Log> = match celo_receipt {
-                CeloReceipt::Legacy(r) => OpReceipt::Legacy(map_logs(r)),
-                CeloReceipt::Eip2930(r) => OpReceipt::Eip2930(map_logs(r)),
-                CeloReceipt::Eip1559(r) => OpReceipt::Eip1559(map_logs(r)),
-                CeloReceipt::Eip7702(r) => OpReceipt::Eip7702(map_logs(r)),
-                // TODO: Use cip64.base_fee to calculate the effective gas price for
-                // CIP-64 receipts. For now, CIP-64 receipts are reported as EIP-1559.
-                CeloReceipt::Cip64(cip64) => OpReceipt::Eip1559(map_logs(cip64.inner)),
-                CeloReceipt::Deposit(d) => {
-                    OpReceipt::Deposit(d.map_inner(|inner| map_logs(inner)))
-                }
-            };
+                let envelope: CeloReceiptEnvelope<Log> = match celo_receipt {
+                    CeloReceipt::Legacy(r) => {
+                        let (r, bloom) = map_receipt(r);
+                        CeloReceiptEnvelope::Legacy(ReceiptWithBloom {
+                            receipt: r,
+                            logs_bloom: bloom,
+                        })
+                    }
+                    CeloReceipt::Eip2930(r) => {
+                        let (r, bloom) = map_receipt(r);
+                        CeloReceiptEnvelope::Eip2930(ReceiptWithBloom {
+                            receipt: r,
+                            logs_bloom: bloom,
+                        })
+                    }
+                    CeloReceipt::Eip1559(r) => {
+                        let (r, bloom) = map_receipt(r);
+                        CeloReceiptEnvelope::Eip1559(ReceiptWithBloom {
+                            receipt: r,
+                            logs_bloom: bloom,
+                        })
+                    }
+                    CeloReceipt::Eip7702(r) => {
+                        let (r, bloom) = map_receipt(r);
+                        CeloReceiptEnvelope::Eip7702(ReceiptWithBloom {
+                            receipt: r,
+                            logs_bloom: bloom,
+                        })
+                    }
+                    CeloReceipt::Cip64(cip64) => {
+                        let (r, bloom) = map_receipt(cip64.inner);
+                        CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+                            receipt: CeloCip64Receipt {
+                                inner: r,
+                                base_fee: cip64.base_fee,
+                            },
+                            logs_bloom: bloom,
+                        })
+                    }
+                    CeloReceipt::Deposit(d) => {
+                        let (inner, bloom) = map_receipt(d.inner);
+                        CeloReceiptEnvelope::Deposit(
+                            op_alloy_consensus::OpDepositReceiptWithBloom {
+                                receipt: op_alloy_consensus::OpDepositReceipt {
+                                    inner,
+                                    deposit_nonce: d.deposit_nonce,
+                                    deposit_receipt_version: d.deposit_receipt_version,
+                                },
+                                logs_bloom: bloom,
+                            },
+                        )
+                    }
+                };
 
-            op_receipt.into_with_bloom()
-        });
+                envelope
+            });
+
+        // For CIP-64 receipts, fix effective_gas_price using the FC-denominated base fee
+        // instead of the native CELO base fee that `build_receipt` used.
+        let base_fee = if let CeloReceiptEnvelope::Cip64(ref cip64) = core_receipt.inner {
+            let fc_base_fee = cip64.receipt.base_fee;
+            if let Some(fc_bf) = fc_base_fee {
+                // Recompute effective gas price with the fee-currency base fee
+                core_receipt.effective_gas_price =
+                    tx_signed.effective_gas_price(Some(fc_bf as u64));
+            }
+            fc_base_fee
+        } else {
+            None
+        };
 
         let op_fields = OpReceiptFieldsBuilder::new(timestamp, block_number)
             .l1_block_info(chain_spec, tx_signed, l1_block_info)?
             .build();
 
-        Ok(OpTransactionReceipt {
+        Ok(CeloTransactionReceipt {
             inner: core_receipt,
             l1_block_info: op_fields.l1_block_info,
+            base_fee,
         })
     }
 }
@@ -555,7 +618,7 @@ where
                 op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
                 alloy_rpc_types_eth::Header,
             >,
-            OpTransactionReceipt,
+            CeloTransactionReceipt,
             alloy_rpc_types_eth::Header,
             crate::primitives::CeloTransactionSigned,
         > + Send
@@ -661,6 +724,89 @@ mod tests {
         let json = r#"{"feeCurrency": null, "to": "0x0000000000000000000000000000000000000000"}"#;
         let deser: CeloTransactionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(deser.fee_currency, None);
+    }
+
+    /// Verify CIP-64 receipt serialization: type=0x7b, baseFee present, effectiveGasPrice
+    /// uses the FC-denominated base fee (not the native CELO base fee).
+    #[test]
+    fn cip64_receipt_serde_has_correct_type_and_base_fee() {
+        use alloy_consensus::Receipt;
+        use alloy_primitives::B256;
+
+        // Construct a CIP-64 receipt with known base_fee
+        let fc_base_fee: u128 = 500_000_000; // 0.5 gwei in fee currency
+        let receipt = CeloTransactionReceipt {
+            inner: alloy_rpc_types_eth::TransactionReceipt {
+                inner: CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+                    receipt: CeloCip64Receipt {
+                        inner: Receipt {
+                            status: true.into(),
+                            cumulative_gas_used: 21000,
+                            logs: vec![],
+                        },
+                        base_fee: Some(fc_base_fee),
+                    },
+                    logs_bloom: Default::default(),
+                }),
+                transaction_hash: B256::ZERO,
+                transaction_index: Some(0),
+                block_hash: Some(B256::ZERO),
+                block_number: Some(1),
+                from: Address::ZERO,
+                to: Some(Address::ZERO),
+                gas_used: 21000,
+                contract_address: None,
+                effective_gas_price: 500_020_000, // FC base fee + tip
+                blob_gas_price: None,
+                blob_gas_used: None,
+            },
+            l1_block_info: Default::default(),
+            base_fee: Some(fc_base_fee),
+        };
+
+        let json = serde_json::to_value(&receipt).unwrap();
+
+        // type must be 0x7b (CIP-64), not 0x2 (EIP-1559)
+        assert_eq!(json["type"], "0x7b", "CIP-64 receipt type must be 0x7b");
+
+        // baseFee must be present and correct
+        assert_eq!(
+            json["baseFee"],
+            format!("0x{fc_base_fee:x}"),
+            "baseFee must be the FC-denominated base fee"
+        );
+
+        // effectiveGasPrice must reflect the FC-denominated price
+        assert_eq!(
+            json["effectiveGasPrice"], "0x1dcdb320",
+            "effectiveGasPrice must use the FC base fee, not native"
+        );
+    }
+
+    #[test]
+    fn cip64_receipt_deserialization_preserves_fields() {
+        // JSON from a CIP-64 receipt (e.g. from Celo Sepolia)
+        let json = r#"{
+            "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "blockNumber": "0x1",
+            "contractAddress": null,
+            "cumulativeGasUsed": "0x5208",
+            "effectiveGasPrice": "0x1dcd6920",
+            "from": "0x0000000000000000000000000000000000000000",
+            "gasUsed": "0x5208",
+            "logs": [],
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "status": "0x1",
+            "to": "0x0000000000000000000000000000000000000000",
+            "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "transactionIndex": "0x0",
+            "type": "0x7b",
+            "baseFee": "0x1dcd6500"
+        }"#;
+
+        let receipt: CeloTransactionReceipt = serde_json::from_str(json).unwrap();
+        assert_eq!(receipt.base_fee, Some(500_000_000));
+        assert!(matches!(receipt.inner.inner, CeloReceiptEnvelope::Cip64(_)));
     }
 
     #[test]

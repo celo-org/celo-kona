@@ -66,6 +66,7 @@ reth-optimism-rpc.workspace = true
 # Celo
 alloy-celo-evm.workspace = true
 celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
+celo-alloy-rpc-types.workspace = true
 celo-revm = { workspace = true, features = ["alloy-op-evm", "reth", "optional_no_base_fee"] }
 
 # Revm
