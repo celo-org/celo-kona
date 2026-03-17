@@ -827,4 +827,127 @@ mod tests {
         assert_eq!(deser.inner.as_ref().max_fee_per_gas, Some(1_000_000_000));
         assert_eq!(deser.inner.as_ref().max_priority_fee_per_gas, Some(100));
     }
+
+    // -----------------------------------------------------------------------
+    // Item #17: Admin RPC module registration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn admin_module_registers_all_methods() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist);
+
+        // Verify all three admin methods are registered
+        let method_names: Vec<_> = module.method_names().collect();
+        assert!(
+            method_names.contains(&"admin_disableBlocklistFeeCurrencies"),
+            "missing admin_disableBlocklistFeeCurrencies"
+        );
+        assert!(
+            method_names.contains(&"admin_enableBlocklistFeeCurrencies"),
+            "missing admin_enableBlocklistFeeCurrencies"
+        );
+        assert!(
+            method_names.contains(&"admin_unblockFeeCurrency"),
+            "missing admin_unblockFeeCurrency"
+        );
+    }
+
+    #[test]
+    fn admin_blocklist_disable_makes_currency_unblocked() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let fc = Address::with_last_byte(0xAA);
+
+        // Block the currency
+        blocklist.block_currency(fc, 1000);
+        assert!(blocklist.is_blocked(fc));
+
+        // Disable blocklisting for it
+        blocklist.disable_blocklist(&[fc]);
+        assert!(!blocklist.is_blocked(fc));
+
+        // Block again — should have no effect while disabled
+        blocklist.block_currency(fc, 2000);
+        assert!(!blocklist.is_blocked(fc));
+
+        // Re-enable blocklisting
+        blocklist.enable_blocklist(&[fc]);
+    }
+
+    #[test]
+    fn admin_unblock_removes_currency() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let fc = Address::with_last_byte(0xBB);
+
+        blocklist.block_currency(fc, 1000);
+        assert!(blocklist.is_blocked(fc));
+
+        blocklist.unblock_currency(fc);
+        assert!(!blocklist.is_blocked(fc));
+    }
+
+    // -----------------------------------------------------------------------
+    // Item #19: TryIntoSimTx with non-EIP1559 inner tx
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_into_sim_tx_fee_currency_ignored_for_legacy() {
+        use alloy_network::TransactionBuilder;
+
+        let fc = Address::with_last_byte(0xCC);
+        // Build a legacy-style request (gas_price set, no max_fee_per_gas)
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .with_gas_price(1_000_000_000)
+                .with_nonce(0)
+                .with_chain_id(42220),
+            fee_currency: Some(fc),
+        };
+
+        let result = req.try_into_sim_tx();
+        match result {
+            Ok(tx) => {
+                // The tx should NOT be CIP-64 — fee_currency wrapping only
+                // applies when the inner OP tx produces EIP-1559.
+                assert!(
+                    !matches!(tx, CeloTxEnvelope::Cip64(_)),
+                    "Legacy request with fee_currency should not produce CIP-64 tx"
+                );
+            }
+            Err(_) => {
+                // It's also acceptable for the conversion to fail for legacy
+                // requests — the key invariant is that it doesn't produce a
+                // malformed CIP-64 envelope.
+            }
+        }
+    }
+
+    #[test]
+    fn try_into_sim_tx_fee_currency_wraps_eip1559() {
+        use alloy_eips::Typed2718;
+        use alloy_network::TransactionBuilder;
+
+        let fc = Address::with_last_byte(0xDD);
+        let sender = Address::with_last_byte(1);
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .max_fee_per_gas(1_000_000_000)
+                .max_priority_fee_per_gas(100)
+                .gas_limit(21_000)
+                .with_nonce(0)
+                .with_chain_id(42220)
+                .with_from(sender),
+            fee_currency: Some(fc),
+        };
+
+        let tx = req.try_into_sim_tx().expect("EIP-1559 with fee_currency should succeed");
+        match tx {
+            CeloTxEnvelope::Cip64(signed) => {
+                assert_eq!(signed.tx().fee_currency, Some(fc));
+            }
+            other => panic!("Expected CIP-64 (0x7b), got type 0x{:02x}", other.ty()),
+        }
+    }
 }

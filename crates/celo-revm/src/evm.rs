@@ -196,7 +196,8 @@ mod tests {
         state::Bytecode,
     };
 
-    // TODO: add cip64 tx test
+    // CIP-64 debit/credit integration is covered by e2e tests
+    // (e2e_test/test_fee_currency_*.sh) which exercise the full handler flow.
 
     #[test]
     fn test_deposit_tx() {

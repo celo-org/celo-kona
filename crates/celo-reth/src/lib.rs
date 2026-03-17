@@ -359,3 +359,72 @@ where
         Ok((transactions, convert))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::Header;
+    use reth_optimism_chainspec::OpChainSpecBuilder;
+
+    /// Helper: build a pre-Jovian chain spec (Granite activated at genesis,
+    /// pre-Holocene so standard EIP-1559 base fee computation is used).
+    fn pre_jovian_chain_spec() -> Arc<reth_optimism_chainspec::OpChainSpec> {
+        Arc::new(
+            OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .granite_activated()
+                .build(),
+        )
+    }
+
+    #[test]
+    fn base_fee_floor_applied_pre_jovian() {
+        let cs = pre_jovian_chain_spec();
+        // Parent header with base fee = 7 wei, gas limit 30M, gas used 15M (50%).
+        // EIP-1559 formula at 50% utilization yields the same base fee.
+        // The floor should bump it to 25 Gwei.
+        let parent = Header {
+            base_fee_per_gas: Some(7),
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            timestamp: 10,
+            ..Default::default()
+        };
+        let result = celo_next_block_base_fee(&cs, &parent, 12);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), CELO_BASE_FEE_FLOOR);
+    }
+
+    #[test]
+    fn base_fee_above_floor_unchanged_pre_jovian() {
+        let cs = pre_jovian_chain_spec();
+        // Parent with base fee well above the floor (50 Gwei), 50% utilization.
+        let parent = Header {
+            base_fee_per_gas: Some(50_000_000_000),
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            timestamp: 10,
+            ..Default::default()
+        };
+        let result = celo_next_block_base_fee(&cs, &parent, 12).unwrap();
+        // At 50% utilization, EIP-1559 keeps base fee the same.
+        assert_eq!(result, 50_000_000_000);
+    }
+
+    #[test]
+    fn base_fee_floor_clamps_low_computed_fee() {
+        let cs = pre_jovian_chain_spec();
+        // Parent with base fee = 1 Gwei, empty block (gas_used = 0).
+        // EIP-1559 with empty block would lower base fee, but floor should clamp.
+        let parent = Header {
+            base_fee_per_gas: Some(1_000_000_000),
+            gas_limit: 30_000_000,
+            gas_used: 0,
+            timestamp: 10,
+            ..Default::default()
+        };
+        let result = celo_next_block_base_fee(&cs, &parent, 12).unwrap();
+        assert_eq!(result, CELO_BASE_FEE_FLOOR, "Low base fee should be clamped to floor");
+    }
+}
