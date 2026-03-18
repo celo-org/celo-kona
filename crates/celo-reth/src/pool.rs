@@ -1408,4 +1408,45 @@ mod tests {
         assert_eq!(decoded.numerator, alloy_primitives::U256::from(100));
         assert_eq!(decoded.denominator, alloy_primitives::U256::from(1000));
     }
+
+    // -----------------------------------------------------------------------
+    // Gap 2: post-Jovian base fee floor
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_base_fee_floor_zero_accepts_low_fee_cip64() {
+        // Post-Jovian: base_fee_floor = 0 → any max_fee >= 0 passes the floor check.
+        // Uses max_fee=100 which would be rejected by the 25 Gwei pre-Jovian floor.
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        // base_fee_floor = 0 → floor check: 100 < 0 is false → passes
+        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        assert!(result.is_ok(), "floor=0 should accept any fee; got {result:?}");
+    }
+
+    #[test]
+    fn test_base_fee_floor_exact_at_limit_accepted() {
+        // max_fee == floor exactly → boundary is exclusive (old_fee < floor_fc rejects),
+        // so equal is accepted.
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 21_000, 1000, 10, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        // rate 1:1 → base_fee_floor_fc = 1000 = max_fee → 1000 < 1000 is false → accepted
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result =
+            apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 1000, 0, None);
+        assert!(result.is_ok(), "max_fee == floor should be accepted; got {result:?}");
+    }
 }
