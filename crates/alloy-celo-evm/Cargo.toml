@@ -32,6 +32,9 @@ tracing.workspace = true
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-op-hardforks.workspace = true
+# Enable optional_no_base_fee so tests can disable the base-fee check
+# (simulating RPC mode where blocklist should be bypassed).
+revm = { workspace = true, features = ["optional_no_base_fee"] }
 
 [features]
 default = ["std"]

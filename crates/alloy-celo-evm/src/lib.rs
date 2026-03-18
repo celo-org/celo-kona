@@ -632,4 +632,31 @@ mod tests {
             "Fee currency should be blocklisted after execution failure"
         );
     }
+
+    /// Verify that the blocklist is NOT enforced during RPC simulation
+    /// (eth_call / eth_estimateGas). RPC mode disables the base fee check,
+    /// which `transact_raw` uses as the signal for "not block building".
+    #[test]
+    fn test_blocklist_bypassed_in_rpc_simulation() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // Enable RPC simulation mode: disable base fee check
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        // Even though the currency is blocklisted, transact_raw should NOT
+        // reject it — the blocklist only applies during block building.
+        let tx = make_cip64_tx(fc);
+        let result = evm.transact_raw(tx);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Blocklist must not apply during RPC simulation, got: {msg}"
+            );
+        }
+    }
 }
