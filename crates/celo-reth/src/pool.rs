@@ -1410,6 +1410,66 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // CIP-64 high gas limit + exchange rate → fee cap enforcement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cip64_high_gas_limit_exceeds_fee_cap_after_rate_conversion() {
+        // CIP-64 tx with block-level gas limit (30M) and a moderate per-gas fee.
+        // In FC terms the cost looks small, but after exchange rate conversion to
+        // native the total fee exceeds the configured cap.
+        //
+        // gas=30_000_000, max_fee=10 FC, rate 1:1 → native cost = 300_000_000
+        // cap = 100_000_000 → exceeds
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            Some(100_000_000),
+        );
+        assert!(
+            matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })),
+            "High gas CIP-64 tx should exceed fee cap after rate conversion; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_high_gas_limit_within_cap_due_to_favorable_rate() {
+        // Same high-gas tx, but with a rate that shrinks the native cost below the cap.
+        // gas=30_000_000, max_fee=10 FC, rate num=1000 denom=1 → native_max_fee = 10/1000 = 0
+        // (integer truncation) → native cost = 0 → within any cap.
+        let fc = Address::with_last_byte(0xAA);
+        let tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
+            balance_ok: Some(true),
+            debit_ok: Some(true),
+        };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            Some(100_000_000),
+        );
+        assert!(result.is_ok(), "Favorable rate should keep cost within cap; got {result:?}");
+    }
+
+    // -----------------------------------------------------------------------
     // Gap 2: post-Jovian base fee floor
     // -----------------------------------------------------------------------
 
