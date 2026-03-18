@@ -116,7 +116,9 @@ where
             CeloRollupConfig,
             CeloEvmFactory,
         >::new(
-            updated_receipt_builder, self.config.clone(), self.factory.evm_factory().clone()
+            updated_receipt_builder,
+            self.config.clone(),
+            self.factory.evm_factory().clone(),
         );
 
         let ctx = OpBlockExecutionCtx {

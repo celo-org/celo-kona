@@ -27,7 +27,7 @@ pub enum CeloPooledTransaction {
     /// A [`TxEip1559`] transaction tagged with type 2.
     #[envelope(ty = 2)]
     Eip1559(Signed<TxEip1559>),
-    /// A [`TxEip7702`] transaction tagged with type 4.
+    /// A [`alloy_consensus::TxEip7702`] transaction tagged with type 4.
     #[envelope(ty = 4)]
     Eip7702(Signed<alloy_consensus::TxEip7702>),
     /// A [`TxCip64`] tagged with type 0x7B.
@@ -166,10 +166,7 @@ impl TryFrom<CeloTxEnvelope> for CeloPooledTransaction {
             CeloTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
             CeloTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
             CeloTxEnvelope::Cip64(tx) => Ok(Self::Cip64(tx)),
-            other => Err(ValueError::new_static(
-                other,
-                "Deposit transactions cannot be pooled",
-            )),
+            other => Err(ValueError::new_static(other, "Deposit transactions cannot be pooled")),
         }
     }
 }

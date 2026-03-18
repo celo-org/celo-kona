@@ -13,8 +13,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_revm::{
-    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo,
-    constants,
+    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
 use core::{
@@ -28,7 +27,10 @@ use op_revm::{
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
-    context_interface::{Cfg, result::{EVMError, ResultAndState}},
+    context_interface::{
+        Cfg,
+        result::{EVMError, ResultAndState},
+    },
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
@@ -57,18 +59,23 @@ fn default_l1_block_info(spec_id: OpSpecId) -> L1BlockInfo {
 /// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
 /// transfer precompile for the given spec.
 pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
-    let mut map =
-        PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
-    map.extend_precompiles([(
-        TRANSFER_ADDRESS,
-        make_transfer_precompile(spec_id),
-    )]);
+    let mut map = PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
+    map.extend_precompiles([(TRANSFER_ADDRESS, make_transfer_precompile(spec_id))]);
     map
 }
 
 /// Creates the Celo transfer [`DynPrecompile`] for the given spec.
 fn make_transfer_precompile(spec_id: OpSpecId) -> DynPrecompile {
-    fn coerce<F: Fn(alloy_evm::precompiles::PrecompileInput<'_>) -> revm::precompile::PrecompileResult + Send + Sync + 'static>(f: F) -> F { f }
+    fn coerce<
+        F: Fn(alloy_evm::precompiles::PrecompileInput<'_>) -> revm::precompile::PrecompileResult
+            + Send
+            + Sync
+            + 'static,
+    >(
+        f: F,
+    ) -> F {
+        f
+    }
     DynPrecompile::from(coerce(move |input| transfer_precompile(spec_id, input))).stateful()
 }
 
@@ -103,10 +110,10 @@ fn transfer_precompile(
     let value = U256::from_be_slice(&input.data[64..96]);
 
     let revert_cold_status = !spec_id.is_enabled_in(OpSpecId::JOVIAN);
-    let revert_from_cold = revert_cold_status
-        && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
-    let revert_to_cold = revert_cold_status
-        && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
+    let revert_from_cold =
+        revert_cold_status && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
+    let revert_to_cold =
+        revert_cold_status && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
 
     let result = input.internals.transfer(from, to, value);
 
@@ -126,9 +133,9 @@ fn transfer_precompile(
         Ok(Some(transfer_err)) => Err(PrecompileError::Other(Cow::Owned(format!(
             "transfer error occurred: {transfer_err:?}"
         )))),
-        Err(db_err) => Err(PrecompileError::Other(Cow::Owned(format!(
-            "database error occurred: {db_err:?}"
-        )))),
+        Err(db_err) => {
+            Err(PrecompileError::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))))
+        }
     }
 }
 
@@ -252,9 +259,9 @@ where
             if let Some(fc) = fee_currency {
                 if self.blocklist.is_blocked(fc) {
                     return Err(EVMError::Transaction(
-                        revm::context::result::InvalidTransaction::from(
-                            alloc::format!("fee currency {fc} is temporarily blocklisted"),
-                        )
+                        revm::context::result::InvalidTransaction::from(alloc::format!(
+                            "fee currency {fc} is temporarily blocklisted"
+                        ))
                         .into(),
                     ));
                 }
@@ -435,7 +442,9 @@ impl CeloEvmFactory {
 
 /// Creates a [`CeloEvm`] for testing with an in-memory database.
 #[cfg(test)]
-fn make_test_evm(blocklist: FeeCurrencyBlocklist) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+fn make_test_evm(
+    blocklist: FeeCurrencyBlocklist,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
     let spec_id = OpSpecId::FJORD;
     let db = revm::database::InMemoryDB::default();
     CeloEvm {
@@ -555,10 +564,7 @@ mod tests {
         // The blocklisted currency should be rejected
         assert!(result.is_err(), "Expected blocklisted currency to be rejected");
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("blocklisted"),
-            "Error should mention blocklist, got: {err_msg}"
-        );
+        assert!(err_msg.contains("blocklisted"), "Error should mention blocklist, got: {err_msg}");
     }
 
     #[test]

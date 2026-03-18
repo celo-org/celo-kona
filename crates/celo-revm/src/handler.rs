@@ -87,12 +87,14 @@ impl<EVM, ERROR, FRAME> Default for CeloHandler<EVM, ERROR, FRAME> {
     }
 }
 
-impl<ERROR, DB, INSP, P> CeloHandler<CeloEvm<DB, INSP, P>, ERROR, revm::handler::EthFrame<EthInterpreter>>
+impl<ERROR, DB, INSP, P>
+    CeloHandler<CeloEvm<DB, INSP, P>, ERROR, revm::handler::EthFrame<EthInterpreter>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR:
+        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP, P>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
@@ -213,7 +215,13 @@ where
 
         // Extract L1+operator cost stored during debit phase
         let l1_cost_in_fc = evm.ctx().tx().cip64_tx_info.as_ref().unwrap().l1_cost_in_fc;
-        let operator_fee_in_fc = evm.ctx().tx().cip64_tx_info.as_ref().unwrap().operator_fee_in_fc;
+        let operator_fee_in_fc = evm
+            .ctx()
+            .tx()
+            .cip64_tx_info
+            .as_ref()
+            .unwrap()
+            .operator_fee_in_fc;
 
         // Tip includes the priority fee portion plus L1 cost and operator fee (converted to FC).
         // This matches op-geth's creditGasFees where L1 cost is merged with the tip.
@@ -337,10 +345,7 @@ where
             .currency_exchange_rate(fee_currency)
             .is_err()
         {
-            return Err(InvalidTransaction::from(
-                "unregistered fee-currency address",
-            )
-            .into());
+            return Err(InvalidTransaction::from("unregistered fee-currency address").into());
         }
 
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
@@ -372,10 +377,10 @@ where
 
                 if spec.is_enabled_in(OpSpecId::ISTHMUS) {
                     let gas_limit_u256 = U256::from(gas_limit);
-                    let operator_fee = evm
-                        .ctx()
-                        .chain()
-                        .operator_fee_charge(&enveloped_tx, gas_limit_u256, spec);
+                    let operator_fee =
+                        evm.ctx()
+                            .chain()
+                            .operator_fee_charge(&enveloped_tx, gas_limit_u256, spec);
                     operator_fee_in_fc = evm
                         .fee_currency_context
                         .celo_to_currency(fee_currency, operator_fee)
@@ -471,7 +476,8 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR:
+        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
     type Evm = CeloEvm<DB, INSP, P>;
     type Error = ERROR;
@@ -514,20 +520,12 @@ where
                 }
 
                 // Skip base fee check when disabled (e.g. during eth_estimateGas)
-                let base_fee_for_check =
-                    if evm.ctx().cfg().is_base_fee_check_disabled() {
-                        None
-                    } else {
-                        Some(
-                            self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?,
-                        )
-                    };
-                validate_priority_fee_tx(
-                    max_fee,
-                    max_priority_fee,
-                    base_fee_for_check,
-                    false,
-                )?;
+                let base_fee_for_check = if evm.ctx().cfg().is_base_fee_check_disabled() {
+                    None
+                } else {
+                    Some(self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?)
+                };
+                validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
                 // Return early — CIP-64 validation is complete. The revm
                 // `validate_tx_env` would classify 0x7b as `Custom` and skip
                 // its base fee check, but we must not fall through because it
@@ -870,7 +868,8 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR: EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR:
+        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
 {
     type IT = EthInterpreter;
 }

@@ -13,12 +13,7 @@ use revm::{
 };
 
 pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
-    pub inner: OpEvm<
-        CeloContext<DB>,
-        INSP,
-        EthInstructions<EthInterpreter, CeloContext<DB>>,
-        P,
-    >,
+    pub inner: OpEvm<CeloContext<DB>, INSP, EthInstructions<EthInterpreter, CeloContext<DB>>, P>,
     pub fee_currency_context: FeeCurrencyContext,
 }
 

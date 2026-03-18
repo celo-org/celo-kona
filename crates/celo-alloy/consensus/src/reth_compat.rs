@@ -1,13 +1,16 @@
 //! Reth compatibility implementations for Celo consensus types.
 //!
 //! Provides [`InMemorySize`], [`SignedTransaction`], [`Compact`], and
-//! [`SerdeBincodeCompat`] trait implementations required by reth's node framework.
+//! `SerdeBincodeCompat` trait implementations required by reth's node framework.
 
 use crate::transaction::{
-    CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
-    pooled::CeloPooledTransaction,
+    CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64, pooled::CeloPooledTransaction,
 };
-use alloy_consensus::{Sealed, crypto::RecoveryError, transaction::{SignerRecoverable, TxHashRef}};
+use alloy_consensus::{
+    Sealed,
+    crypto::RecoveryError,
+    transaction::{SignerRecoverable, TxHashRef},
+};
 use alloy_primitives::B256;
 use op_alloy_consensus::{OpTransaction, TxDeposit};
 use reth_primitives_traits::{InMemorySize, SignedTransaction};
@@ -15,7 +18,7 @@ use reth_primitives_traits::{InMemorySize, SignedTransaction};
 impl InMemorySize for TxCip64 {
     #[inline]
     fn size(&self) -> usize {
-        TxCip64::size(self)
+        Self::size(self)
     }
 }
 
@@ -60,7 +63,7 @@ impl OpTransaction for CeloTxEnvelope {
 
 impl TxHashRef for CeloTxEnvelope {
     fn tx_hash(&self) -> &B256 {
-        CeloTxEnvelope::hash(self)
+        Self::hash(self)
     }
 }
 
@@ -243,7 +246,7 @@ impl Envelope for CeloTxEnvelope {
     }
 
     fn tx_type(&self) -> Self::TxType {
-        CeloTxEnvelope::tx_type(self)
+        Self::tx_type(self)
     }
 }
 

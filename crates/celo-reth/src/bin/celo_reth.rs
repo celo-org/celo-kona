@@ -22,7 +22,8 @@ pub struct CeloArgs {
     /// Per-fee-currency block space limits as fraction of block gas.
     ///
     /// Format: `address=fraction,address=fraction,...`
-    /// Example: `0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=0.5`
+    /// Example: `0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,
+    /// 0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=0.5`
     #[arg(long = "celo.feecurrency.limits", value_name = "LIMITS")]
     pub fee_currency_limits: Option<String>,
 
@@ -74,7 +75,8 @@ fn main() {
                     let chain_id = ctx.config().chain.chain().id();
                     let fee_currency_directory =
                         celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
-                    let fee_api = make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
+                    let fee_api =
+                        make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
                     let fee_api = std::sync::Arc::new(fee_api);
                     let gas_module = celo_gas_price_module(fee_api.clone());
                     ctx.modules.replace_configured(gas_module)?;

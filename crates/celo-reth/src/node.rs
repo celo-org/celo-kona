@@ -1,15 +1,13 @@
 //! Celo Node types configuration.
 
 use crate::{
-    celo_next_block_base_fee,
+    CeloEvmConfig, celo_next_block_base_fee,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
-    CeloEvmConfig,
 };
-use alloy_eips::eip1559::INITIAL_BASE_FEE;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
 use op_alloy_rpc_types_engine::{
@@ -73,7 +71,10 @@ impl CeloNode {
     }
 
     /// Sets the shared fee currency blocklist.
-    pub fn with_blocklist(mut self, blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist) -> Self {
+    pub fn with_blocklist(
+        mut self,
+        blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+    ) -> Self {
         self.blocklist = blocklist;
         self
     }
@@ -96,7 +97,7 @@ impl NodeTypes for CeloNode {
 // CeloEngineTypes
 // ---------------------------------------------------------------------------
 
-/// Engine types for Celo, mirroring [`OpEngineTypes`] but with `Block = CeloBlock`
+/// Engine types for Celo, mirroring `OpEngineTypes` but with `Block = CeloBlock`
 /// instead of `Block = OpBlock`.
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[non_exhaustive]
@@ -150,8 +151,8 @@ where
 ///
 /// Wraps [`OpPoolBuilder`] but:
 /// - Registers CIP-64 (type `0x7b`) as an accepted transaction type.
-/// - Wraps the validator with [`CeloExchangeRateApplier`] so that CIP-64
-///   transactions have their fee values converted to native equivalents.
+/// - Wraps the validator with [`CeloExchangeRateApplier`] so that CIP-64 transactions have their
+///   fee values converted to native equivalents.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct CeloPoolBuilder {
@@ -161,11 +162,11 @@ pub struct CeloPoolBuilder {
 impl<Node, Evm> reth_node_builder::components::PoolBuilder<Node, Evm> for CeloPoolBuilder
 where
     Node: reth_node_builder::node::FullNodeTypes<
-        Types: NodeTypes<
-            ChainSpec: reth_optimism_forks::OpHardforks,
-            Primitives = CeloPrimitives,
+            Types: NodeTypes<
+                ChainSpec: reth_optimism_forks::OpHardforks,
+                Primitives = CeloPrimitives,
+            >,
         >,
-    >,
     Node::Provider: core::fmt::Debug + Send + Sync + 'static,
     Evm: reth_evm::ConfigureEvm<Primitives = CeloPrimitives> + Clone + 'static,
 {
@@ -192,61 +193,80 @@ where
         let minimum_priority_fee = ctx.config().txpool.minimum_priority_fee.unwrap_or(1);
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
-        let validator =
-            reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
-                ctx.provider().clone(),
-                evm_config,
-            )
-            .no_eip4844()
-            .with_custom_tx_type(celo_alloy_consensus::CeloTxType::Cip64 as u8)
-            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-            .kzg_settings(ctx.kzg_settings()?)
-            .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
-            // Celo requires a minimum priority fee of 1 wei (matching op-geth's
-            // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
-            .with_minimum_priority_fee(Some(minimum_priority_fee))
-            .with_additional_tasks(
-                pool_config_overrides
-                    .additional_validation_tasks
-                    .unwrap_or_else(|| ctx.config().txpool.additional_validation_tasks),
-            )
-            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone())
-            .map(|validator| {
-                reth_optimism_txpool::OpTransactionValidator::new(validator)
-                    // In --dev mode we can't require gas fees because we're unable to decode
-                    // the L1 block info
-                    .require_l1_data_gas_fee(!ctx.config().dev.dev)
-            })
-            // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
-            // to native equivalents after validation.
-            .map(|validator| {
-                // In dev mode, disable the base fee floor check since the dev
-                // chain may use a much lower base fee than mainnet's 25 Gwei floor.
-                let base_fee_floor = if ctx.config().dev.dev {
-                    0
-                } else {
-                    crate::CELO_BASE_FEE_FLOOR
-                };
-                let tx_fee_cap = match ctx.config().rpc.rpc_tx_fee_cap {
-                    0 => None,
-                    cap => Some(cap),
-                };
-                CeloExchangeRateApplier::new(
-                    validator,
-                    ctx.provider().clone(),
-                    fee_currency_directory,
-                    base_fee_floor,
-                    minimum_priority_fee as u128,
-                    tx_fee_cap,
+        let validator = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
+            ctx.provider().clone(),
+            evm_config,
+        )
+        .no_eip4844()
+        .with_custom_tx_type(celo_alloy_consensus::CeloTxType::Cip64 as u8)
+        .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+        .kzg_settings(ctx.kzg_settings()?)
+        .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
+        // Celo requires a minimum priority fee of 1 wei (matching op-geth's
+        // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
+        .with_minimum_priority_fee(Some(minimum_priority_fee))
+        .with_additional_tasks(
+            pool_config_overrides
+                .additional_validation_tasks
+                .unwrap_or_else(|| ctx.config().txpool.additional_validation_tasks),
+        )
+        .build_with_tasks(ctx.task_executor().clone(), blob_store.clone())
+        .map(|validator| {
+            reth_optimism_txpool::OpTransactionValidator::new(validator)
+                // In --dev mode we can't require gas fees because we're unable to decode
+                // the L1 block info
+                .require_l1_data_gas_fee(!ctx.config().dev.dev)
+        })
+        // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
+        // to native equivalents after validation.
+        .map(|validator| {
+            // In dev mode, disable the base fee floor check since the dev
+            // chain may use a much lower base fee than mainnet's 25 Gwei floor.
+            let base_fee_floor = if ctx.config().dev.dev { 0 } else { crate::CELO_BASE_FEE_FLOOR };
+            let tx_fee_cap = match ctx.config().rpc.rpc_tx_fee_cap {
+                0 => None,
+                cap => Some(cap),
+            };
+            // Build a closure that computes the base fee floor for the next block
+            // given the current tip block's header and estimated next timestamp.
+            let cs = ctx.chain_spec();
+            let base_fee_floor_fn: crate::pool::BaseFeeFloorFn = if ctx.config().dev.dev {
+                // Dev mode: no floor
+                std::sync::Arc::new(|_, _| 0)
+            } else {
+                std::sync::Arc::new(
+                    move |header: &dyn alloy_consensus::BlockHeader, _next_ts: u64| {
+                        // Post-Jovian: the chain spec reads min_base_fee from extraData,
+                        // so we use the header's base_fee as a proxy for the floor.
+                        // Pre-Jovian: use the static 25 Gwei floor.
+                        if cs.is_jovian_active_at_timestamp(header.timestamp()) {
+                            // Under Jovian, base fee can go below the pre-Jovian floor.
+                            // The floor is encoded in extraData and enforced by the
+                            // consensus layer; the pool doesn't need an additional floor
+                            // beyond what the chain produces.
+                            0
+                        } else {
+                            crate::CELO_BASE_FEE_FLOOR
+                        }
+                    },
                 )
-            });
+            };
+            CeloExchangeRateApplier::new(
+                validator,
+                ctx.provider().clone(),
+                fee_currency_directory,
+                base_fee_floor,
+                base_fee_floor_fn,
+                minimum_priority_fee as u128,
+                tx_fee_cap,
+            )
+        });
 
         let final_pool_config = pool_config_overrides.apply(ctx.pool_config());
 
-        let transaction_pool =
-            reth_node_builder::components::TxPoolBuilder::new(ctx)
-                .with_validator(validator)
-                .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
+        let transaction_pool = reth_node_builder::components::TxPoolBuilder::new(ctx)
+            .with_validator(validator)
+            .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
 
         // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
         // is deregistered from the FeeCurrencyDirectory.
@@ -285,7 +305,10 @@ where
     >;
 
     type AddOns = OpAddOns<
-        NodeAdapter<N, <Self::ComponentsBuilder as reth_node_builder::NodeComponentsBuilder<N>>::Components>,
+        NodeAdapter<
+            N,
+            <Self::ComponentsBuilder as reth_node_builder::NodeComponentsBuilder<N>>::Components,
+        >,
         CeloEthApiBuilder,
         OpEngineValidatorBuilder,
         OpEngineApiBuilder<OpEngineValidatorBuilder>,
@@ -294,7 +317,8 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
-        let celo_txs = CeloPayloadTransactions::new(self.fee_currency_limits.clone(), self.blocklist.clone());
+        let celo_txs =
+            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), self.blocklist.clone());
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
@@ -324,7 +348,7 @@ where
             self.args.sequencer_headers.clone(),
             None, // historical_rpc
             self.args.enable_tx_conditional,
-            0,    // min_suggested_priority_fee
+            0, // min_suggested_priority_fee
         )
     }
 }
@@ -455,10 +479,7 @@ pub struct CeloConsensus<ChainSpec = OpChainSpec> {
 impl<ChainSpec> CeloConsensus<ChainSpec> {
     /// Create a new [`CeloConsensus`].
     pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
-        Self {
-            inner: OpBeaconConsensus::new(chain_spec.clone()),
-            chain_spec,
-        }
+        Self { inner: OpBeaconConsensus::new(chain_spec.clone()), chain_spec }
     }
 
     /// Returns the chain spec.
@@ -504,10 +525,7 @@ where
         )
     }
 
-    fn validate_block_pre_execution(
-        &self,
-        block: &SealedBlock<B>,
-    ) -> Result<(), ConsensusError> {
+    fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
         <OpBeaconConsensus<ChainSpec> as Consensus<B>>::validate_block_pre_execution(
             &self.inner,
             block,
@@ -538,8 +556,7 @@ where
 
         // Celo-specific base fee validation: applies the 25 Gwei floor pre-Jovian.
         if self.chain_spec().is_london_active_at_block(header.number()) {
-            let base_fee =
-                header.base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
+            let base_fee = header.base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
             let expected = if self
                 .chain_spec
                 .ethereum_fork_activation(EthereumHardfork::London)
@@ -567,11 +584,10 @@ where
         // After Ecotone, blob_gas_used and excess_blob_gas must be present.
         // Before Jovian, blob_gas_used must be 0. excess_blob_gas must always be 0.
         if self.chain_spec.is_ecotone_active_at_timestamp(header.timestamp()) {
-            let blob_gas_used =
-                header.blob_gas_used().ok_or(ConsensusError::BlobGasUsedMissing)?;
+            let blob_gas_used = header.blob_gas_used().ok_or(ConsensusError::BlobGasUsedMissing)?;
 
-            if !self.chain_spec.is_jovian_active_at_timestamp(header.timestamp())
-                && blob_gas_used != 0
+            if !self.chain_spec.is_jovian_active_at_timestamp(header.timestamp()) &&
+                blob_gas_used != 0
             {
                 return Err(ConsensusError::BlobGasUsedDiff(GotExpected {
                     got: blob_gas_used,

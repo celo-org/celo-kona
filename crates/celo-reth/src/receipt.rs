@@ -55,10 +55,10 @@ impl<T> CeloReceipt<T> {
     /// Returns inner [`Receipt`].
     pub const fn as_receipt(&self) -> &Receipt<T> {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt,
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt,
             Self::Cip64(receipt) => &receipt.inner,
             Self::Deposit(receipt) => &receipt.inner,
         }
@@ -67,10 +67,10 @@ impl<T> CeloReceipt<T> {
     /// Returns a mutable reference to the inner [`Receipt`].
     pub fn as_receipt_mut(&mut self) -> &mut Receipt<T> {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt,
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt,
             Self::Cip64(receipt) => &mut receipt.inner,
             Self::Deposit(receipt) => &mut receipt.inner,
         }
@@ -82,10 +82,10 @@ impl<T> CeloReceipt<T> {
         T: Encodable,
     {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt.rlp_encoded_fields_length_with_bloom(bloom),
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt.rlp_encoded_fields_length_with_bloom(bloom),
             Self::Cip64(receipt) => receipt.rlp_encoded_fields_length_with_bloom(bloom),
             Self::Deposit(receipt) => receipt.rlp_encoded_fields_length_with_bloom(bloom),
         }
@@ -97,10 +97,10 @@ impl<T> CeloReceipt<T> {
         T: Encodable,
     {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt.rlp_encode_fields_with_bloom(bloom, out),
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt.rlp_encode_fields_with_bloom(bloom, out),
             Self::Cip64(receipt) => receipt.rlp_encode_fields_with_bloom(bloom, out),
             Self::Deposit(receipt) => receipt.rlp_encode_fields_with_bloom(bloom, out),
         }
@@ -132,7 +132,10 @@ impl<T> CeloReceipt<T> {
         T: Decodable,
     {
         match tx_type {
-            CeloTxType::Legacy | CeloTxType::Eip2930 | CeloTxType::Eip1559 | CeloTxType::Eip7702 => {
+            CeloTxType::Legacy |
+            CeloTxType::Eip2930 |
+            CeloTxType::Eip1559 |
+            CeloTxType::Eip7702 => {
                 let ReceiptWithBloom { receipt, logs_bloom } =
                     RlpDecodableReceipt::rlp_decode_with_bloom(buf)?;
                 let receipt = match tx_type {
@@ -192,19 +195,15 @@ impl<T> CeloReceipt<T> {
         T: Encodable,
     {
         let inner = self.as_receipt();
-        Into::<u8>::into(self.tx_type()).length()
-            + inner.status.length()
-            + inner.cumulative_gas_used.length()
-            + inner.logs.length()
-            + match self {
-                Self::Cip64(receipt) => {
-                    receipt.base_fee.map_or(0, |base_fee| base_fee.length())
-                }
+        Into::<u8>::into(self.tx_type()).length() +
+            inner.status.length() +
+            inner.cumulative_gas_used.length() +
+            inner.logs.length() +
+            match self {
+                Self::Cip64(receipt) => receipt.base_fee.map_or(0, |base_fee| base_fee.length()),
                 Self::Deposit(receipt) => {
-                    receipt.deposit_nonce.map_or(0, |nonce| nonce.length())
-                        + receipt
-                            .deposit_receipt_version
-                            .map_or(0, |version| version.length())
+                    receipt.deposit_nonce.map_or(0, |nonce| nonce.length()) +
+                        receipt.deposit_receipt_version.map_or(0, |version| version.length())
                 }
                 _ => 0,
             }
@@ -223,7 +222,10 @@ impl<T> CeloReceipt<T> {
         let logs = Decodable::decode(buf)?;
 
         match tx_type {
-            CeloTxType::Legacy | CeloTxType::Eip2930 | CeloTxType::Eip1559 | CeloTxType::Eip7702 => {
+            CeloTxType::Legacy |
+            CeloTxType::Eip2930 |
+            CeloTxType::Eip1559 |
+            CeloTxType::Eip7702 => {
                 let receipt = Receipt { status, cumulative_gas_used, logs };
                 Ok(match tx_type {
                     CeloTxType::Legacy => Self::Legacy(receipt),
@@ -234,8 +236,7 @@ impl<T> CeloReceipt<T> {
                 })
             }
             CeloTxType::Cip64 => {
-                let base_fee =
-                    (!buf.is_empty()).then(|| Decodable::decode(buf)).transpose()?;
+                let base_fee = (!buf.is_empty()).then(|| Decodable::decode(buf)).transpose()?;
                 Ok(Self::Cip64(CeloCip64Receipt {
                     inner: Receipt { status, cumulative_gas_used, logs },
                     base_fee,
@@ -262,7 +263,8 @@ impl<T> CeloReceipt<T> {
 
 impl<T: Encodable> Eip2718EncodableReceipt for CeloReceipt<T> {
     fn eip2718_encoded_length_with_bloom(&self, bloom: &Bloom) -> usize {
-        !matches!(self, Self::Legacy(_)) as usize + self.rlp_header_inner(bloom).length_with_payload()
+        !matches!(self, Self::Legacy(_)) as usize +
+            self.rlp_header_inner(bloom).length_with_payload()
     }
 
     fn eip2718_encode_with_bloom(&self, bloom: &Bloom, out: &mut dyn BufMut) {
@@ -394,10 +396,10 @@ impl<T: Send + Sync + Clone + core::fmt::Debug + Eq + AsRef<Log>> TxReceipt for 
 
     fn into_logs(self) -> Vec<Self::Log> {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt.logs,
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt.logs,
             Self::Cip64(receipt) => receipt.inner.logs,
             Self::Deposit(receipt) => receipt.inner.logs,
         }
@@ -419,10 +421,10 @@ impl<T> IsTyped2718 for CeloReceipt<T> {
 impl InMemorySize for CeloReceipt {
     fn size(&self) -> usize {
         match self {
-            Self::Legacy(receipt)
-            | Self::Eip2930(receipt)
-            | Self::Eip1559(receipt)
-            | Self::Eip7702(receipt) => receipt.size(),
+            Self::Legacy(receipt) |
+            Self::Eip2930(receipt) |
+            Self::Eip1559(receipt) |
+            Self::Eip7702(receipt) => receipt.size(),
             Self::Cip64(receipt) => receipt.inner.size() + core::mem::size_of::<Option<u128>>(),
             Self::Deposit(receipt) => receipt.size(),
         }

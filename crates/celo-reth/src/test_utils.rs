@@ -8,10 +8,8 @@ use reth_primitives_traits::Recovered;
 use reth_transaction_pool::PoolTransaction;
 
 /// Inner OP pool transaction type used in tests.
-pub(crate) type TestInnerPoolTx = OpPooledTransaction<
-    crate::primitives::CeloTransactionSigned,
-    CeloPooledTransaction,
->;
+pub(crate) type TestInnerPoolTx =
+    OpPooledTransaction<crate::primitives::CeloTransactionSigned, CeloPooledTransaction>;
 
 /// Create a test [`CeloPoolTx`] with configurable fields.
 pub(crate) fn make_test_tx(

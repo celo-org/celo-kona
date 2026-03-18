@@ -6,9 +6,9 @@
 //! Each non-native fee currency is limited to a configurable fraction of the block gas limit.
 //! Native CELO transactions are unrestricted.
 
+use crate::pool::CeloPoolTx;
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use alloy_consensus::Transaction;
-use crate::pool::CeloPoolTx;
 use alloy_primitives::Address;
 use reth_optimism_payload_builder::builder::OpPayloadTransactions;
 use reth_payload_util::{BestPayloadTransactions, PayloadTransactions};
@@ -37,11 +37,7 @@ pub struct FeeCurrencyLimits {
 
 impl Default for FeeCurrencyLimits {
     fn default() -> Self {
-        Self {
-            limits: HashMap::new(),
-            default_limit: 0.5,
-            block_gas_limit: 30_000_000,
-        }
+        Self { limits: HashMap::new(), default_limit: 0.5, block_gas_limit: 30_000_000 }
     }
 }
 
@@ -74,7 +70,9 @@ impl FeeCurrencyLimits {
                 continue;
             }
             if let Some((addr_str, frac_str)) = pair.split_once('=') {
-                if let (Ok(addr), Ok(frac)) = (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>()) {
+                if let (Ok(addr), Ok(frac)) =
+                    (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>())
+                {
                     map.insert(addr, frac);
                 }
             }
@@ -97,6 +95,11 @@ impl FeeCurrencyLimits {
 
 /// Implements [`OpPayloadTransactions`] for Celo, wrapping the pool's best
 /// transactions with per-fee-currency gas limit filtering.
+///
+/// **Note:** These per-currency gas limits only apply during sequencing (block
+/// building from the pool). During derivation, `ConfigureEngineEvm::tx_iterator_for_payload`
+/// in `lib.rs` bypasses `CeloPayloadTransactions` entirely, iterating over
+/// the L2 block's pre-determined transaction list without any per-currency limits.
 #[derive(Debug, Clone)]
 pub struct CeloPayloadTransactions {
     limits: FeeCurrencyLimits,
@@ -208,7 +211,7 @@ mod tests {
     #[test]
     fn test_parse_limits() {
         let limits = FeeCurrencyLimits::parse_limits(
-            "0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=0.5"
+            "0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=0.5",
         );
         assert_eq!(limits.len(), 2);
         assert_eq!(
@@ -293,11 +296,7 @@ mod tests {
     use reth_transaction_pool::PoolTransaction;
 
     /// Create a test CeloPoolTx with default fee values (1 Gwei fee cap, 100 wei tip).
-    fn make_test_tx(
-        fee_currency: Option<Address>,
-        gas_limit: u64,
-        sender: Address,
-    ) -> CeloPoolTx {
+    fn make_test_tx(fee_currency: Option<Address>, gas_limit: u64, sender: Address) -> CeloPoolTx {
         crate::test_utils::make_test_tx(fee_currency, gas_limit, 1_000_000_000, 100, sender)
     }
 
@@ -311,11 +310,7 @@ mod tests {
         type Transaction = CeloPoolTx;
 
         fn next(&mut self, _ctx: ()) -> Option<Self::Transaction> {
-            if self.txs.is_empty() {
-                None
-            } else {
-                Some(self.txs.remove(0))
-            }
+            if self.txs.is_empty() { None } else { Some(self.txs.remove(0)) }
         }
 
         fn mark_invalid(&mut self, sender: Address, nonce: u64) {
@@ -412,5 +407,33 @@ mod tests {
         };
 
         assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_passes_after_blocklist_eviction() {
+        let sender = Address::with_last_byte(1);
+        let fc = fc_addr(10);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        // Block the currency at timestamp 1000
+        blocklist.block_currency(fc, 1000);
+        assert!(blocklist.is_blocked(fc));
+
+        // Evict stale entries at timestamp 8201 (> 1000 + 7200 TTL)
+        blocklist.evict(8201);
+        assert!(!blocklist.is_blocked(fc), "Currency should be unblocked after TTL eviction");
+
+        // Now the filter should pass the tx through
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(Some(fc), 21_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist,
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        assert!(filter.next(()).is_some(), "Tx should pass after blocklist eviction");
     }
 }

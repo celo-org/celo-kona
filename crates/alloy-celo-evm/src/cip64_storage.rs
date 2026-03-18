@@ -29,15 +29,8 @@ pub struct Cip64Storage {
 
 impl Cip64Storage {
     /// Stores CIP-64 execution info for a transaction, enqueueing it for receipt building.
-    pub fn store_cip64_info(
-        &self,
-        fee_currency: Option<Address>,
-        info: Cip64Info,
-    ) {
-        let data = Cip64ReceiptData {
-            fee_currency,
-            cip64_info: info,
-        };
+    pub fn store_cip64_info(&self, fee_currency: Option<Address>, info: Cip64Info) {
+        let data = Cip64ReceiptData { fee_currency, cip64_info: info };
         self.receipt_queue.lock().push_back(data.clone());
         self.all_entries.lock().push(data);
     }

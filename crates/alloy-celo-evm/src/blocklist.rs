@@ -9,7 +9,10 @@
 //! - `admin_enableBlocklistFeeCurrencies`: Re-enables blocklisting for a currency.
 //! - `admin_unblockFeeCurrency`: Removes a currency from the blocklist.
 
-use alloc::{collections::BTreeMap, collections::BTreeSet, sync::Arc};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use alloy_primitives::Address;
 use spin::Mutex;
 
@@ -50,12 +53,12 @@ impl FeeCurrencyBlocklist {
         }
     }
 
-    /// Removes entries older than [`BLOCKLIST_EVICTION_SECONDS`] from the current timestamp.
+    /// Removes entries older than `BLOCKLIST_EVICTION_SECONDS` (7200s) from the current timestamp.
     pub fn evict(&self, current_timestamp: u64) {
         let mut state = self.inner.lock();
-        state
-            .blocked
-            .retain(|_, blocked_at| current_timestamp.saturating_sub(*blocked_at) < BLOCKLIST_EVICTION_SECONDS);
+        state.blocked.retain(|_, blocked_at| {
+            current_timestamp.saturating_sub(*blocked_at) < BLOCKLIST_EVICTION_SECONDS
+        });
     }
 
     /// Removes a currency from the blocklist.

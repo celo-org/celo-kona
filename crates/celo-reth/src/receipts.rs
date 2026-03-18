@@ -1,9 +1,6 @@
 //! Celo receipt builder for reth, producing bloomless [`CeloReceipt`] types.
 
-use crate::{
-    primitives::CeloTransactionSigned,
-    receipt::CeloReceipt,
-};
+use crate::{primitives::CeloTransactionSigned, receipt::CeloReceipt};
 use alloy_celo_evm::cip64_storage::Cip64Storage;
 use alloy_consensus::Eip658Value;
 use alloy_evm::eth::receipt_builder::ReceiptBuilderCtx;

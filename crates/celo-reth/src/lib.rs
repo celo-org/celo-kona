@@ -37,8 +37,8 @@ use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
 use revm::context::BlockEnv;
 
-pub mod receipt;
 pub mod primitives;
+pub mod receipt;
 pub mod receipts;
 
 #[cfg(feature = "std")]
@@ -62,8 +62,7 @@ pub use receipts::CeloRethReceiptBuilder;
 
 // Re-export block assembler and execution context from op-reth (same for Celo as OP Stack).
 pub use reth_optimism_evm::{
-    OpBlockAssembler, OpBlockExecutionCtx, OpBlockExecutorFactory, OpNextBlockEnvAttributes,
-    l1,
+    OpBlockAssembler, OpBlockExecutionCtx, OpBlockExecutorFactory, OpNextBlockEnvAttributes, l1,
 };
 
 // Re-export Celo EVM types.
@@ -77,7 +76,6 @@ use {
     reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor},
     reth_primitives_traits::TxTy,
 };
-
 
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///
@@ -137,7 +135,10 @@ impl<ChainSpec, N: NodePrimitives, R: Clone, EvmFactory: Clone> Clone
 impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
     /// Creates a new [`CeloEvmConfig`] with the given chain spec.
     pub fn celo(chain_spec: Arc<ChainSpec>) -> Self {
-        Self::celo_with_blocklist(chain_spec, alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default())
+        Self::celo_with_blocklist(
+            chain_spec,
+            alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default(),
+        )
     }
 
     /// Creates a new [`CeloEvmConfig`] with the given chain spec and shared fee currency blocklist.
@@ -148,15 +149,11 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         // Create a shared CIP-64 storage so the EVM and receipt builder can communicate.
         let cip64_storage = alloy_celo_evm::cip64_storage::Cip64Storage::default();
         let receipt_builder = CeloRethReceiptBuilder::new(cip64_storage.clone());
-        let evm_factory = CeloEvmFactory::with_cip64_storage(cip64_storage)
-            .with_blocklist(blocklist);
+        let evm_factory =
+            CeloEvmFactory::with_cip64_storage(cip64_storage).with_blocklist(blocklist);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: OpBlockExecutorFactory::new(
-                receipt_builder,
-                chain_spec,
-                evm_factory,
-            ),
+            executor_factory: OpBlockExecutorFactory::new(receipt_builder, chain_spec, evm_factory),
             _pd: core::marker::PhantomData,
         }
     }
@@ -177,22 +174,22 @@ impl<ChainSpec, N, R, EvmF> ConfigureEvm for CeloEvmConfig<ChainSpec, N, R, EvmF
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
-        Receipt = R::Receipt,
-        SignedTx = R::Transaction,
-        BlockHeader = Header,
-        BlockBody = alloy_consensus::BlockBody<R::Transaction>,
-        Block = alloy_consensus::Block<R::Transaction>,
-    >,
+            Receipt = R::Receipt,
+            SignedTx = R::Transaction,
+            BlockHeader = Header,
+            BlockBody = alloy_consensus::BlockBody<R::Transaction>,
+            Block = alloy_consensus::Block<R::Transaction>,
+        >,
     R: OpReceiptBuilder<Receipt: DepositReceipt, Transaction: SignedTransaction>,
     EvmF: EvmFactory<
-        Tx: FromRecoveredTx<R::Transaction>
-            + FromTxWithEncoded<R::Transaction>
-            + TransactionEnv
-            + OpTxEnv,
-        Spec = OpSpecId,
-        BlockEnv = BlockEnv,
-        Precompiles = PrecompilesMap,
-    > + Debug,
+            Tx: FromRecoveredTx<R::Transaction>
+                    + FromTxWithEncoded<R::Transaction>
+                    + TransactionEnv
+                    + OpTxEnv,
+            Spec = OpSpecId,
+            BlockEnv = BlockEnv,
+            Precompiles = PrecompilesMap,
+        > + Debug,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     type Primitives = N;
@@ -263,22 +260,22 @@ impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecutionData>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
-        Receipt = R::Receipt,
-        SignedTx = R::Transaction,
-        BlockHeader = Header,
-        BlockBody = alloy_consensus::BlockBody<R::Transaction>,
-        Block = alloy_consensus::Block<R::Transaction>,
-    >,
+            Receipt = R::Receipt,
+            SignedTx = R::Transaction,
+            BlockHeader = Header,
+            BlockBody = alloy_consensus::BlockBody<R::Transaction>,
+            Block = alloy_consensus::Block<R::Transaction>,
+        >,
     R: OpReceiptBuilder<Receipt: DepositReceipt, Transaction: SignedTransaction>,
     EvmF: EvmFactory<
-        Tx: FromRecoveredTx<R::Transaction>
-            + FromTxWithEncoded<R::Transaction>
-            + TransactionEnv
-            + OpTxEnv,
-        Spec = OpSpecId,
-        BlockEnv = BlockEnv,
-        Precompiles = PrecompilesMap,
-    > + Debug,
+            Tx: FromRecoveredTx<R::Transaction>
+                    + FromTxWithEncoded<R::Transaction>
+                    + TransactionEnv
+                    + OpTxEnv,
+            Spec = OpSpecId,
+            BlockEnv = BlockEnv,
+            Precompiles = PrecompilesMap,
+        > + Debug,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     fn evm_env_for_payload(
@@ -286,15 +283,14 @@ where
         payload: &OpExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
         use alloy_primitives::U256;
-        use revm::context::CfgEnv;
-        use revm::context_interface::block::BlobExcessGasAndPrice;
-        use revm::primitives::hardfork::SpecId;
+        use revm::{
+            context::CfgEnv, context_interface::block::BlobExcessGasAndPrice,
+            primitives::hardfork::SpecId,
+        };
 
         let timestamp = payload.payload.timestamp();
-        let spec = reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(
-            self.chain_spec(),
-            timestamp,
-        );
+        let spec =
+            reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(self.chain_spec(), timestamp);
 
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().chain().id())
@@ -303,10 +299,7 @@ where
         let blob_excess_gas_and_price = spec
             .into_eth_spec()
             .is_enabled_in(SpecId::CANCUN)
-            .then_some(BlobExcessGasAndPrice {
-                excess_blob_gas: 0,
-                blob_gasprice: 1,
-            });
+            .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
 
         let block_env = BlockEnv {
             number: U256::from(payload.payload.block_number()),

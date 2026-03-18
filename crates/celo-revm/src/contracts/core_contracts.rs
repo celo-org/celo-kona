@@ -206,7 +206,9 @@ where
 /// Fetches complete currency info (exchange rate + intrinsic gas) for all registered currencies.
 /// A currency is only included if BOTH pieces of data are successfully fetched.
 /// This ensures no partial/inconsistent currency data can exist.
-pub fn get_currency_info<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> HashMap<Address, FeeCurrencyInfo>
+pub fn get_currency_info<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+) -> HashMap<Address, FeeCurrencyInfo>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
