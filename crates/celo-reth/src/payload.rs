@@ -410,6 +410,51 @@ mod tests {
     }
 
     #[test]
+    fn filter_exactly_at_gas_limit_passes() {
+        // tx uses exactly 15M gas = 0.5 * 30M → condition is used + gas > max, so equal passes
+        let sender = Address::with_last_byte(1);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(Some(fc), 15_000_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(), // max = 0.5 * 30M = 15M
+            blocklist: FeeCurrencyBlocklist::default(),
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        assert!(filter.next(()).is_some(), "Tx using exactly the gas limit should pass");
+        assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_two_senders_same_currency_second_skipped() {
+        // sender_a sends 10M gas, sender_b sends 8M gas, both using the same fc.
+        // After sender_a's tx: used=10M. sender_b's 8M would bring total to 18M > 15M → skipped.
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc), 10_000_000, sender_a),
+                    make_test_tx(Some(fc), 8_000_000, sender_b),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(), // max = 15M
+            blocklist: FeeCurrencyBlocklist::default(),
+            gas_used_per_currency: HashMap::new(),
+        };
+
+        let tx1 = filter.next(()).expect("sender_a tx should pass");
+        assert_eq!(tx1.fee_currency(), Some(fc));
+        // sender_b's tx is skipped (cumulative 10M + 8M = 18M > 15M)
+        assert!(filter.next(()).is_none(), "sender_b tx should be skipped");
+    }
+
+    #[test]
     fn filter_passes_after_blocklist_eviction() {
         let sender = Address::with_last_byte(1);
         let fc = fc_addr(10);
