@@ -50,7 +50,7 @@ async function replaceTransaction(tx) {
 
 async function main() {
   let value = 2n
-  if (celoValue !== "") {
+  if (celoValue !== undefined && celoValue !== "") {
     value = BigInt(celoValue)
   }
   const request = await walletClient.prepareTransactionRequest({

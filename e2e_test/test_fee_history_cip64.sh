@@ -6,7 +6,7 @@ source shared.sh
 source debug-fee-currency/lib.sh
 
 # Deploy a fee currency and send a CIP-64 transaction
-fee_currency=$(deploy_fee_currency false false false 70000)
+fee_currency=$(deploy_fee_currency false false false)
 cip_64_tx $fee_currency 10 | assert_cip_64_tx true
 
 # Call eth_feeHistory with reward percentiles to check CIP-64 tip normalization

@@ -37,11 +37,23 @@ function deploy_fee_currency() {
 function cleanup_fee_currency() {
 	(
 		local fee_currency=$1
-		# HACK: this uses a static index 2, which relies on the fact that all non-predeployed currencies will be always cleaned up
-		# from the directory and the list never has more than 3 elements. Once there is the need for more dynamic removal we
-		# can parse the following call and find the index ourselves:
-		# local currencies=$(cast call "$FEE_CURRENCY_DIRECTORY_ADDR" 'getCurrencies() (address[] memory)')
-		cast send --private-key $ACC_PRIVKEY $FEE_CURRENCY_DIRECTORY_ADDR 'removeCurrencies(address, uint256)' $fee_currency 2 --json | jq 'if .status == "0x1" then 0 else 1 end' -r
+		# Dynamically find the index of the currency in the directory
+		local currencies=$(cast call "$FEE_CURRENCY_DIRECTORY_ADDR" 'getCurrencies() (address[] memory)')
+		local index=0
+		local found=false
+		for addr in $(echo "$currencies" | tr '[],' ' '); do
+			# Normalize both to lowercase for comparison
+			if [ "$(echo "$addr" | tr '[:upper:]' '[:lower:]')" = "$(echo "$fee_currency" | tr '[:upper:]' '[:lower:]')" ]; then
+				found=true
+				break
+			fi
+			((index++)) || true
+		done
+		if [ "$found" != "true" ]; then
+			echo "ERROR: fee currency $fee_currency not found in directory"
+			exit 1
+		fi
+		cast send --private-key $ACC_PRIVKEY $FEE_CURRENCY_DIRECTORY_ADDR 'removeCurrencies(address, uint256)' $fee_currency $index --json | jq 'if .status == "0x1" then 0 else 1 end' -r
 	)
 }
 
