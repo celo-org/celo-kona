@@ -531,6 +531,16 @@ impl Debug for CeloFeeApi {
     }
 }
 
+/// JSON-RPC server error code for call execution failures.
+const RPC_SERVER_ERROR: i32 = -32000;
+
+/// Pre-computed selector for `getExchangeRate(address)`.
+/// keccak256("getExchangeRate(address)")[..4]
+static GET_EXCHANGE_RATE_SELECTOR: std::sync::LazyLock<[u8; 4]> = std::sync::LazyLock::new(|| {
+    let hash = keccak256("getExchangeRate(address)");
+    [hash[0], hash[1], hash[2], hash[3]]
+});
+
 impl CeloFeeApi {
     /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
     ///
@@ -539,10 +549,8 @@ impl CeloFeeApi {
         &self,
         fee_currency: Address,
     ) -> Result<(U256, U256), jsonrpsee_types::ErrorObjectOwned> {
-        // getExchangeRate(address) → (uint256, uint256)
-        let selector = &keccak256("getExchangeRate(address)")[..4];
         let mut calldata = Vec::with_capacity(36);
-        calldata.extend_from_slice(selector);
+        calldata.extend_from_slice(GET_EXCHANGE_RATE_SELECTOR.as_slice());
         calldata.extend_from_slice(fee_currency.into_word().as_slice());
 
         let request = CeloTransactionRequest {
@@ -556,7 +564,7 @@ impl CeloFeeApi {
 
         if result.len() < 64 {
             return Err(jsonrpsee_types::ErrorObject::owned(
-                -32000,
+                RPC_SERVER_ERROR,
                 format!(
                     "Invalid exchange rate response for {fee_currency}: expected >=64 bytes, got {}",
                     result.len()
@@ -570,7 +578,7 @@ impl CeloFeeApi {
 
         if denominator.is_zero() {
             return Err(jsonrpsee_types::ErrorObject::owned(
-                -32000,
+                RPC_SERVER_ERROR,
                 format!("Exchange rate denominator is zero for {fee_currency}"),
                 None::<()>,
             ));
@@ -653,6 +661,10 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
 
             // For each block in range, fetch the block and normalize CIP-64 tips
             let oldest_block = history.oldest_block;
+            // Cache exchange rates per fee currency across blocks to avoid redundant lookups.
+            // The rate is queried at latest state (not per-block), so cross-block reuse is safe.
+            let mut rate_cache: std::collections::HashMap<Address, Option<(U256, U256)>> =
+                std::collections::HashMap::new();
             for (i, block_rewards) in rewards.iter_mut().enumerate() {
                 let block_num = oldest_block + i as u64;
                 let block_tag = alloy_rpc_types_eth::BlockNumberOrTag::Number(block_num);
@@ -681,10 +693,6 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
 
                 // Collect per-tx effective tips, converting CIP-64 tips to native
                 let mut native_tips: Vec<u128> = Vec::with_capacity(txs.len());
-
-                // Cache exchange rates per fee currency to avoid redundant lookups
-                let mut rate_cache: std::collections::HashMap<Address, Option<(U256, U256)>> =
-                    std::collections::HashMap::new();
 
                 for tx in txs {
                     let bf = base_fee.unwrap_or(0);
@@ -733,9 +741,6 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 let new_rewards: Vec<u128> = percentiles
                     .iter()
                     .map(|&p| {
-                        if native_tips.is_empty() {
-                            return 0;
-                        }
                         let idx = ((p / 100.0) * (native_tips.len() - 1) as f64).round() as usize;
                         let idx = idx.min(native_tips.len() - 1);
                         native_tips[idx]

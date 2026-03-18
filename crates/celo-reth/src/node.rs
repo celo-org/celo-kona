@@ -186,6 +186,10 @@ where
         evm_config: Evm,
     ) -> eyre::Result<Self::Pool> {
         let pool_config_overrides = self.inner.pool_config_overrides;
+        let chain_id = ctx.chain_spec().chain().id();
+        let fee_currency_directory =
+            celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
+        let minimum_priority_fee = ctx.config().txpool.minimum_priority_fee.unwrap_or(1);
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
         let validator =
@@ -200,9 +204,7 @@ where
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
             // Celo requires a minimum priority fee of 1 wei (matching op-geth's
             // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
-            .with_minimum_priority_fee(Some(
-                ctx.config().txpool.minimum_priority_fee.unwrap_or(1),
-            ))
+            .with_minimum_priority_fee(Some(minimum_priority_fee))
             .with_additional_tasks(
                 pool_config_overrides
                     .additional_validation_tasks
@@ -218,9 +220,6 @@ where
             // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
             // to native equivalents after validation.
             .map(|validator| {
-                let chain_id = ctx.chain_spec().chain().id();
-                let fee_currency_directory =
-                    celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
                 // In dev mode, disable the base fee floor check since the dev
                 // chain may use a much lower base fee than mainnet's 25 Gwei floor.
                 let base_fee_floor = if ctx.config().dev.dev {
@@ -228,8 +227,6 @@ where
                 } else {
                     crate::CELO_BASE_FEE_FLOOR
                 };
-                let minimum_priority_fee =
-                    ctx.config().txpool.minimum_priority_fee.unwrap_or(1) as u128;
                 let tx_fee_cap = match ctx.config().rpc.rpc_tx_fee_cap {
                     0 => None,
                     cap => Some(cap),
@@ -239,7 +236,7 @@ where
                     ctx.provider().clone(),
                     fee_currency_directory,
                     base_fee_floor,
-                    minimum_priority_fee,
+                    minimum_priority_fee as u128,
                     tx_fee_cap,
                 )
             });
@@ -255,13 +252,11 @@ where
         // is deregistered from the FeeCurrencyDirectory.
         {
             use reth_provider::CanonStateSubscriptions;
-            let chain_id = ctx.chain_spec().chain().id();
-            let fcd = celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
             let events = ctx.provider().subscribe_to_canonical_state();
             let maintainer = CeloPoolMaintainer::new(
                 transaction_pool.clone(),
                 ctx.provider().clone(),
-                fcd,
+                fee_currency_directory,
             );
             ctx.task_executor().spawn_critical_task(
                 "celo pool fee currency maintainer",
