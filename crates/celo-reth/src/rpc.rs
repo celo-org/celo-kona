@@ -1377,4 +1377,82 @@ mod tests {
         let result = cip64_native_tip(1_000_000, 500, 100, U256::ZERO, U256::ZERO);
         assert_eq!(result, 0);
     }
+
+    // -----------------------------------------------------------------------
+    // Gas price / priority fee with fee-currency scaling
+    // -----------------------------------------------------------------------
+
+    /// Helper: build an ABI-encoded `(uint256, uint256)` response for exchange rate.
+    fn encode_exchange_rate(numerator: u128, denominator: u128) -> Bytes {
+        let mut buf = vec![0u8; 64];
+        buf[16..32].copy_from_slice(&numerator.to_be_bytes());
+        buf[48..64].copy_from_slice(&denominator.to_be_bytes());
+        Bytes::from(buf)
+    }
+
+    /// Build a [`CeloFeeApi`] for testing with a fixed gas price, priority fee,
+    /// and exchange rate returned for any fee currency.
+    fn make_test_fee_api(
+        gas_price: u64,
+        priority_fee: u64,
+        rate_num: u128,
+        rate_denom: u128,
+    ) -> Arc<CeloFeeApi> {
+        let rate_bytes = encode_exchange_rate(rate_num, rate_denom);
+        Arc::new(CeloFeeApi {
+            gas_price: Box::new(move || Box::pin(async move { Ok(U256::from(gas_price)) })),
+            priority_fee: Box::new(move || Box::pin(async move { Ok(U256::from(priority_fee)) })),
+            eth_call: Box::new(move |_| {
+                let b = rate_bytes.clone();
+                Box::pin(async move { Ok(b) })
+            }),
+            fee_history: Box::new(|_, _, _| {
+                Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
+            }),
+            block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
+            block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            fee_currency_directory: Address::ZERO,
+        })
+    }
+
+    #[tokio::test]
+    async fn gas_price_scales_by_exchange_rate() {
+        // Native gas price = 25 Gwei. Rate: num=2, denom=1 → FC price = 25*2/1 = 50 Gwei.
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 2, 1);
+        let module = celo_gas_price_module(api);
+
+        let fc = Address::with_last_byte(0xAA);
+        let result: U256 = module
+            .call("eth_gasPrice", [fc])
+            .await
+            .expect("eth_gasPrice with fee currency should succeed");
+        assert_eq!(result, U256::from(50_000_000_000u64));
+    }
+
+    #[tokio::test]
+    async fn gas_price_returns_native_without_fee_currency() {
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 2, 1);
+        let module = celo_gas_price_module(api);
+
+        // Call without fee currency parameter → returns native price unchanged
+        let result: U256 = module
+            .call("eth_gasPrice", Vec::<Address>::new())
+            .await
+            .expect("eth_gasPrice without fee currency should succeed");
+        assert_eq!(result, U256::from(25_000_000_000u64));
+    }
+
+    #[tokio::test]
+    async fn priority_fee_scales_by_exchange_rate() {
+        // Native priority fee = 1M wei. Rate: num=3, denom=1 → FC tip = 3M wei.
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 3, 1);
+        let module = celo_gas_price_module(api);
+
+        let fc = Address::with_last_byte(0xBB);
+        let result: U256 = module
+            .call("eth_maxPriorityFeePerGas", [fc])
+            .await
+            .expect("eth_maxPriorityFeePerGas with fee currency should succeed");
+        assert_eq!(result, U256::from(3_000_000u64));
+    }
 }
