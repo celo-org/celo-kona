@@ -163,4 +163,27 @@ mod tests {
         bl.block_currency(addr(1), 1000);
         assert!(bl.is_blocked(addr(1)));
     }
+
+    #[test]
+    fn block_after_eviction() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        // Evict at the deadline — currency is no longer blocked
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(!bl.is_blocked(addr(1)));
+        // Re-add after eviction — should be blocked again
+        bl.block_currency(addr(1), 9000);
+        assert!(bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn block_after_unblock() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        bl.unblock_currency(addr(1));
+        assert!(!bl.is_blocked(addr(1)));
+        // Re-add after manual unblock — should be blocked again
+        bl.block_currency(addr(1), 2000);
+        assert!(bl.is_blocked(addr(1)));
+    }
 }
