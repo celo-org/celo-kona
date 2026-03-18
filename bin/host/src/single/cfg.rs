@@ -213,7 +213,7 @@ fn proactive_hint_type() -> ExtendedHintType {
 
 /// Returns the proactive hint type for the host backend.
 #[cfg(not(feature = "eigenda"))]
-fn proactive_hint_type() -> HintType {
+const fn proactive_hint_type() -> HintType {
     HintType::L2PayloadWitness
 }
 

@@ -19,44 +19,47 @@ pub(crate) fn make_test_tx(
     max_priority_fee_per_gas: u128,
     sender: Address,
 ) -> CeloPoolTx {
-    let tx = if let Some(fc) = fee_currency {
-        let cip64 = TxCip64 {
-            chain_id: 42220,
-            nonce: 0,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            to: alloy_primitives::TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            access_list: Default::default(),
-            input: Default::default(),
-            fee_currency: Some(fc),
-        };
-        CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
-            cip64,
-            Signature::test_signature(),
-        ))
-    } else {
-        let eip1559 = alloy_consensus::TxEip1559 {
-            chain_id: 42220,
-            nonce: 0,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            to: alloy_primitives::TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            access_list: Default::default(),
-            input: Default::default(),
-        };
-        CeloTxEnvelope::Eip1559(alloy_consensus::Signed::new_unhashed(
-            eip1559,
-            Signature::test_signature(),
-        ))
-    };
+    let tx = fee_currency.map_or_else(
+        || {
+            let eip1559 = alloy_consensus::TxEip1559 {
+                chain_id: 42220,
+                nonce: 0,
+                gas_limit,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+                to: alloy_primitives::TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                access_list: Default::default(),
+                input: Default::default(),
+            };
+            CeloTxEnvelope::Eip1559(alloy_consensus::Signed::new_unhashed(
+                eip1559,
+                Signature::test_signature(),
+            ))
+        },
+        |fc| {
+            let cip64 = TxCip64 {
+                chain_id: 42220,
+                nonce: 0,
+                gas_limit,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+                to: alloy_primitives::TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                access_list: Default::default(),
+                input: Default::default(),
+                fee_currency: Some(fc),
+            };
+            CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
+                cip64,
+                Signature::test_signature(),
+            ))
+        },
+    );
 
-    let signed: crate::primitives::CeloTransactionSigned = tx.into();
+    let signed: crate::primitives::CeloTransactionSigned = tx;
     let recovered = Recovered::new_unchecked(signed, sender);
-    let pooled = CeloPooledTransaction::try_from(recovered.clone().into_inner()).unwrap();
+    let pooled = CeloPooledTransaction::try_from(recovered.into_inner()).unwrap();
     let inner = TestInnerPoolTx::from_pooled(Recovered::new_unchecked(pooled, sender));
     CeloPoolTx::new(inner)
 }

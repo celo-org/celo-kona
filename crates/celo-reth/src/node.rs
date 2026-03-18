@@ -257,7 +257,7 @@ where
                 fee_currency_directory,
                 base_fee_floor,
                 base_fee_floor_fn,
-                minimum_priority_fee as u128,
+                minimum_priority_fee,
                 tx_fee_cap,
             )
         });
@@ -483,7 +483,7 @@ impl<ChainSpec> CeloConsensus<ChainSpec> {
     }
 
     /// Returns the chain spec.
-    pub fn chain_spec(&self) -> &Arc<ChainSpec> {
+    pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         &self.chain_spec
     }
 }

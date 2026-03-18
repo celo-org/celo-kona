@@ -67,7 +67,6 @@ std = [
 ]
 alloy-op-evm = ["dep:alloy-op-evm"]
 reth = ["dep:reth-evm"]
-hashbrown = ["revm/hashbrown"]
 serde = [
     "dep:serde",
     "revm/serde",

@@ -140,7 +140,7 @@ impl CeloPoolTx {
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
-    pub fn fee_currency(&self) -> Option<Address> {
+    pub const fn fee_currency(&self) -> Option<Address> {
         self.fee_currency
     }
 }

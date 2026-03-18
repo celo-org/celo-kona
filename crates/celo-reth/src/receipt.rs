@@ -65,7 +65,7 @@ impl<T> CeloReceipt<T> {
     }
 
     /// Returns a mutable reference to the inner [`Receipt`].
-    pub fn as_receipt_mut(&mut self) -> &mut Receipt<T> {
+    pub const fn as_receipt_mut(&mut self) -> &mut Receipt<T> {
         match self {
             Self::Legacy(receipt) |
             Self::Eip2930(receipt) |

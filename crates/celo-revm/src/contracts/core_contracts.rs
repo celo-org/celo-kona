@@ -359,7 +359,6 @@ pub(crate) mod tests {
                 code_hash: bytecode.hash_slow(),
                 account_id: None,
                 code: Some(bytecode),
-                ..Default::default()
             };
             db.insert_account_info(oracle_address, account_info);
         }
@@ -393,7 +392,6 @@ pub(crate) mod tests {
                 code_hash: bytecode.hash_slow(),
                 account_id: None,
                 code: Some(bytecode),
-                ..Default::default()
             };
             db.insert_account_info(get_addresses(0).fee_currency_directory, account_info);
         }

@@ -108,7 +108,7 @@ pub struct CeloPayloadTransactions {
 
 impl CeloPayloadTransactions {
     /// Create a new instance with the given fee currency limits and blocklist.
-    pub fn new(limits: FeeCurrencyLimits, blocklist: FeeCurrencyBlocklist) -> Self {
+    pub const fn new(limits: FeeCurrencyLimits, blocklist: FeeCurrencyBlocklist) -> Self {
         Self { limits, blocklist }
     }
 }

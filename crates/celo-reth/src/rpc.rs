@@ -155,7 +155,7 @@ impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
                 }
                 celo_tx
             })
-            .map_err(|e| e.map(|inner| CeloTransactionRequest { inner, fee_currency }))
+            .map_err(|e| e.map(|inner| Self { inner, fee_currency }))
     }
 }
 

@@ -66,7 +66,7 @@ pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
 
 /// Creates the Celo transfer [`DynPrecompile`] for the given spec.
 fn make_transfer_precompile(spec_id: OpSpecId) -> DynPrecompile {
-    fn coerce<
+    const fn coerce<
         F: Fn(alloy_evm::precompiles::PrecompileInput<'_>) -> revm::precompile::PrecompileResult
             + Send
             + Sync
@@ -429,7 +429,7 @@ pub struct CeloEvmFactory {
 
 impl CeloEvmFactory {
     /// Creates a new factory with shared CIP-64 storage.
-    pub fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
+    pub const fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
         Self { cip64_storage: Some(cip64_storage), blocklist: None }
     }
 
