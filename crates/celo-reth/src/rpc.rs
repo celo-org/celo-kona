@@ -1379,6 +1379,49 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Effective gas tip for CIP-64 transactions
+    // (mirrors op-geth's TestTransactionEffectiveGasTipInCelo)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cip64_tip_priority_fee_is_limiting_factor() {
+        // When max_fee has plenty of headroom above base_fee_fc, the effective
+        // tip is bounded by priority_fee_fc (converted to native).
+        // rate: num=2, denom=1 (1 FC = 0.5 native)
+        // base_fee_native=100, max_fee_fc=1000, priority_fee_fc=20
+        // base_fee_fc = 100 * 2 / 1 = 200
+        // tip_fc = min(1000 - 200, 20) = 20
+        // tip_native = 20 * 1 / 2 = 10
+        let tip = cip64_native_tip(1000, 20, 100, U256::from(2u64), U256::from(1u64));
+        assert_eq!(tip, 10);
+    }
+
+    #[test]
+    fn cip64_tip_headroom_is_limiting_factor() {
+        // When priority_fee_fc is generous but max_fee_fc barely covers the base fee,
+        // the effective tip is bounded by (max_fee_fc - base_fee_fc).
+        // rate: num=1, denom=1
+        // base_fee_native=1000, max_fee_fc=1050, priority_fee_fc=200
+        // base_fee_fc = 1000
+        // tip_fc = min(1050 - 1000, 200) = 50
+        // tip_native = 50
+        let tip = cip64_native_tip(1050, 200, 1000, U256::from(1u64), U256::from(1u64));
+        assert_eq!(tip, 50);
+    }
+
+    #[test]
+    fn cip64_tip_with_high_exchange_rate_amplifies_native_tip() {
+        // A small FC tip can map to a large native tip when FC is expensive.
+        // rate: num=1, denom=100 (1 FC = 100 native)
+        // base_fee_native=10, max_fee_fc=10, priority_fee_fc=5
+        // base_fee_fc = 10 * 1 / 100 = 0 (integer truncation)
+        // tip_fc = min(10 - 0, 5) = 5
+        // tip_native = 5 * 100 / 1 = 500
+        let tip = cip64_native_tip(10, 5, 10, U256::from(1u64), U256::from(100u64));
+        assert_eq!(tip, 500);
+    }
+
+    // -----------------------------------------------------------------------
     // Gas price / priority fee with fee-currency scaling
     // -----------------------------------------------------------------------
 
