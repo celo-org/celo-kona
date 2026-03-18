@@ -489,12 +489,12 @@ pub struct CeloExchangeRateApplier<V, P> {
     provider: P,
     fee_currency_directory: Address,
     /// Current base fee floor (in native wei). Updated on each new head block
-    /// via [`on_new_head_block`] to handle the pre-Jovian → Jovian transition:
+    /// via `on_new_head_block` to handle the pre-Jovian → Jovian transition:
     /// pre-Jovian uses the static 25 Gwei floor, post-Jovian reads `min_base_fee`
     /// from the chain spec (which parses the parent's `extraData`).
     base_fee_floor: Arc<std::sync::atomic::AtomicU64>,
     /// Computes the base fee floor for the next block given the current tip block.
-    /// This closure captures the chain spec and calls [`celo_next_block_base_fee`].
+    /// This closure captures the chain spec and calls `celo_next_block_base_fee`.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
