@@ -471,10 +471,6 @@ fn lookup_rate_and_balance_impl(
 }
 
 // ---------------------------------------------------------------------------
-// Cip64Rejection — CIP-64 pool transaction error
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // CeloExchangeRateApplier
 // ---------------------------------------------------------------------------
 
@@ -770,12 +766,8 @@ where
                         self.minimum_priority_fee,
                         self.tx_fee_cap,
                     ) {
-                        let tx = match transaction {
-                            ValidTransaction::Valid(tx) => tx,
-                            ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
-                        };
                         TransactionValidationOutcome::Invalid(
-                            tx,
+                            transaction.into_transaction(),
                             InvalidPoolTransactionError::other(rejection),
                         )
                     } else {
@@ -848,12 +840,17 @@ where
         use reth_revm::database::StateProviderDatabase;
         use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
 
-        let state = self.provider.latest().ok()?;
+        let state = self.provider.latest().inspect_err(|e| {
+            tracing::warn!(target: "celo::pool", %e, "Failed to get latest state for currency query");
+        }).ok()?;
         let db = StateProviderDatabase::new(state);
         let mut evm = Context::celo().with_db(db).build_celo();
 
         let calldata = getCurrenciesCall {}.abi_encode();
-        let result = evm.system_call_one(self.fee_currency_directory, calldata.into()).ok()?;
+        let result = evm.system_call_one(self.fee_currency_directory, calldata.into())
+            .inspect_err(|e| {
+                tracing::warn!(target: "celo::pool", %e, "EVM system call failed querying fee currencies");
+            }).ok()?;
 
         match result {
             ExecutionResult::Success { output, .. } => {
@@ -861,7 +858,10 @@ where
                     getCurrenciesCall::abi_decode_returns(&output.into_data()).ok()?;
                 Some(currencies.into_iter().collect())
             }
-            _ => None,
+            other => {
+                tracing::warn!(target: "celo::pool", ?other, "Fee currency query returned non-success");
+                None
+            }
         }
     }
 

@@ -229,28 +229,19 @@ where
             };
             // Build a closure that computes the base fee floor for the next block
             // given the current tip block's header and estimated next timestamp.
+            let is_dev = ctx.config().dev.dev;
             let cs = ctx.chain_spec();
-            let base_fee_floor_fn: crate::pool::BaseFeeFloorFn = if ctx.config().dev.dev {
-                // Dev mode: no floor
-                std::sync::Arc::new(|_, _| 0)
-            } else {
-                std::sync::Arc::new(
-                    move |header: &dyn alloy_consensus::BlockHeader, _next_ts: u64| {
-                        // Post-Jovian: the chain spec reads min_base_fee from extraData,
-                        // so we use the header's base_fee as a proxy for the floor.
-                        // Pre-Jovian: use the static 25 Gwei floor.
-                        if cs.is_jovian_active_at_timestamp(header.timestamp()) {
-                            // Under Jovian, base fee can go below the pre-Jovian floor.
-                            // The floor is encoded in extraData and enforced by the
-                            // consensus layer; the pool doesn't need an additional floor
-                            // beyond what the chain produces.
-                            0
-                        } else {
-                            crate::CELO_BASE_FEE_FLOOR
-                        }
-                    },
-                )
-            };
+            let base_fee_floor_fn: crate::pool::BaseFeeFloorFn = std::sync::Arc::new(
+                move |header: &dyn alloy_consensus::BlockHeader, _next_ts: u64| {
+                    // Dev mode or post-Jovian: no pool-level floor. Under Jovian the floor
+                    // is encoded in extraData and enforced by the consensus layer.
+                    if is_dev || cs.is_jovian_active_at_timestamp(header.timestamp()) {
+                        0
+                    } else {
+                        crate::CELO_BASE_FEE_FLOOR
+                    }
+                },
+            );
             CeloExchangeRateApplier::new(
                 validator,
                 ctx.provider().clone(),
@@ -317,12 +308,13 @@ where
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
+        let blocklist = self.blocklist.clone();
         let celo_txs =
-            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), self.blocklist.clone());
+            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), blocklist.clone());
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
-            .executor(CeloExecutorBuilder { blocklist: self.blocklist.clone() })
+            .executor(CeloExecutorBuilder { blocklist })
             .payload(BasicPayloadServiceBuilder::new(
                 OpPayloadBuilder::new(false).with_transactions(celo_txs),
             ))
