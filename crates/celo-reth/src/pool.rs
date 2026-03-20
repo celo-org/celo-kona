@@ -72,10 +72,12 @@ impl ExchangeRate {
 /// CIP-64 transactions. This makes the pool's base fee check (`ENOUGH_FEE_CAP_BLOCK`)
 /// and replacement check (`is_underpriced`) work correctly across currencies.
 ///
-/// **Known limitation:** Pool ordering uses `CoinbaseTipOrdering` which compares
-/// native-equivalent fees. This means CIP-64 txs from different fee currencies are
-/// ordered by their native-equivalent tip, not by per-currency effective tip. This
-/// matches op-geth's behavior but may not be optimal for all MEV strategies.
+/// **Simplification vs op-geth:** Pool ordering uses `CoinbaseTipOrdering` which compares
+/// native-equivalent fees, rather than op-geth's `CompareWithRates` which does
+/// cross-currency comparison using exchange rates directly. CIP-64 txs from different
+/// fee currencies are ordered by their native-equivalent tip. This is fine because tx
+/// ordering in the pool is not consensus-critical and important differences in inclusion
+/// order are unlikely.
 #[derive(Debug, Clone)]
 pub struct CeloPoolTx {
     inner: InnerPoolTx,
