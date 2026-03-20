@@ -1542,4 +1542,242 @@ mod tests {
         // Should pass - chain IDs match, no exception logic triggered
         assert!(handler.validate_env(&mut evm).is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // CIP-64 debit/credit handler tests
+    // -----------------------------------------------------------------------
+
+    use crate::contracts::core_contracts::tests::{
+        TEST_FEE_CURRENCY, make_celo_test_db_with_fee_currency,
+    };
+    use alloy_primitives::address;
+    use revm::ExecuteEvm;
+
+    /// Run a CIP-64 transaction through the full handler pipeline and return the
+    /// execution result.
+    fn run_cip64_tx(
+        sender: Address,
+        fc_balance: U256,
+        gas_limit: u64,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        basefee: u64,
+        beneficiary: Address,
+    ) -> Result<
+        revm::context_interface::result::ExecutionResult<OpHaltReason>,
+        EVMError<<InMemoryDB as revm::Database>::Error, OpTransactionError>,
+    > {
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = gas_limit;
+                tx.op_tx.base.gas_price = max_fee_per_gas;
+                tx.op_tx.base.gas_priority_fee = Some(max_priority_fee_per_gas);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0); // test chain uses chain_id 0
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = basefee;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0; // match test chain
+            });
+
+        let mut evm = ctx.build_celo();
+        evm.replay().map(|r| r.result)
+    }
+
+    #[test]
+    fn test_cip64_happy_path() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        // Give sender plenty of ERC20 balance
+        let fc_balance = U256::from(1_000_000_000_000u128);
+        // basefee=1, rate=20/10=2x, so base_fee_in_erc20=2
+        // effective_gas_price = min(max_fee, basefee_erc20 + priority) = min(100, 2+10) = 12
+        // gas_cost = 100_000 * 12 = 1_200_000
+        let result = run_cip64_tx(sender, fc_balance, 100_000, 100, 10, 1, beneficiary);
+        assert!(
+            result.is_ok(),
+            "CIP-64 happy path should succeed: {result:?}"
+        );
+        let exec = result.unwrap();
+        assert!(exec.is_success(), "Execution should succeed: {exec:?}");
+    }
+
+    #[test]
+    fn test_cip64_unregistered_currency() {
+        // Use a fee currency that is NOT registered in the FeeCurrencyDirectory.
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let db = make_celo_test_db_with_fee_currency(sender, U256::from(1_000_000u64));
+
+        // Set fee_currency to an unregistered address
+        let unregistered_fc = address!("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(unregistered_fc);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let result = evm.replay();
+        // Should fail during validation — unregistered fee currency
+        assert!(
+            result.is_err(),
+            "Unregistered currency should be rejected: {result:?}"
+        );
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains("unregistered") || err_str.contains("not registered"),
+            "Error should mention unregistered currency: {err_str}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_insufficient_balance() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        // Give sender very little ERC20 balance — not enough for gas
+        // basefee=1, rate=20/10=2x, base_fee_in_erc20=2
+        // effective_gas_price = min(100, 2+10) = 12
+        // gas_cost = 100_000 * 12 = 1_200_000, but balance is only 100
+        let fc_balance = U256::from(100u64);
+        let result = run_cip64_tx(sender, fc_balance, 100_000, 100, 10, 1, beneficiary);
+        // Should fail — debitGasFees will fail due to insufficient balance
+        assert!(
+            result.is_err(),
+            "Insufficient ERC20 balance should be rejected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_exchange_rate_conversion() {
+        // Verify that base_fee_in_erc20 is correctly converted using the exchange rate.
+        // The test DB has rate = 20/10 (numerator=20, denominator=10),
+        // meaning 1 CELO = 2 FC (or equivalently, base_fee * numerator / denominator).
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        // basefee=100, rate=20/10 → base_fee_in_erc20 = 100 * 20 / 10 = 200
+        // max_fee=500, priority=50
+        // effective_gas_price = min(500, 200+50) = 250
+        // gas_cost = 100_000 * 250 = 25_000_000
+        let result = run_cip64_tx(sender, fc_balance, 100_000, 500, 50, 100, beneficiary);
+        assert!(
+            result.is_ok(),
+            "Exchange rate conversion should work: {result:?}"
+        );
+        let exec = result.unwrap();
+        assert!(exec.is_success(), "Execution should succeed: {exec:?}");
+    }
+
+    #[test]
+    fn test_cip64_zero_beneficiary_fallback() {
+        // When beneficiary is Address::ZERO, fees should go to the fee_handler instead.
+        // This tests the zero-beneficiary fallback in cip64_credit_fee_currency.
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let result = run_cip64_tx(sender, fc_balance, 100_000, 100, 10, 1, Address::ZERO);
+        assert!(
+            result.is_ok(),
+            "Zero beneficiary should fall back to fee_handler: {result:?}"
+        );
+        let exec = result.unwrap();
+        assert!(
+            exec.is_success(),
+            "Execution should succeed with zero beneficiary: {exec:?}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_gas_accounting() {
+        // Verify that debit/credit gas is tracked in Cip64Info and stays within
+        // the intrinsic gas budget (50_000 from the test DB × 3 = 150_000 max).
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 200_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+
+        // Use the handler directly to inspect the tx after debit
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let result = handler.run(&mut evm);
+        assert!(result.is_ok(), "Handler run should succeed: {result:?}");
+
+        // Check that cip64_tx_info was populated with gas values
+        let ctx = evm.ctx();
+        let cip64_info = ctx.tx().cip64_tx_info.as_ref();
+        assert!(
+            cip64_info.is_some(),
+            "CIP-64 info should be set after execution"
+        );
+        let info = cip64_info.unwrap();
+
+        // Debit and credit should have used some gas
+        assert!(info.debit_gas_used > 0, "Debit should use gas");
+        assert!(info.credit_gas_used > 0, "Credit should use gas");
+
+        // Total raw gas (before refunds) should be within the max allowed (50_000 * 3 = 150_000)
+        let total_raw = info.debit_gas_used
+            + info.debit_gas_refunded
+            + info.credit_gas_used
+            + info.credit_gas_refunded;
+        assert!(
+            total_raw <= 150_000,
+            "Total debit+credit gas ({total_raw}) should be within intrinsic budget (150_000)"
+        );
+
+        // Credit should generate Transfer event logs (from sender refund + tip/base to recipients)
+        assert!(!info.logs_post.is_empty(), "Credit should generate logs");
+    }
 }

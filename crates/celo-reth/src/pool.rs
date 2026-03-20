@@ -25,7 +25,12 @@ use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolTransactionError},
     validate::ValidTransaction,
 };
-use std::{borrow::Cow, fmt::Debug, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::Debug,
+    sync::{Arc, Mutex},
+};
 
 /// Inner OP pool transaction type.
 type InnerPoolTx = OpPooledTransaction<CeloTransactionSigned, CeloPooledTransaction>;
@@ -361,7 +366,8 @@ impl OpPooledTx for CeloPoolTx {
 /// Result of looking up exchange rate, balance, and debit simulation for a fee currency.
 pub(crate) struct FcLookupResult {
     pub(crate) rate: Option<ExchangeRate>,
-    pub(crate) balance_ok: Option<bool>,
+    /// Raw ERC20 balance of the sender. `None` if the query failed or was not requested.
+    pub(crate) balance: Option<U256>,
     pub(crate) debit_ok: Option<bool>,
 }
 
@@ -413,7 +419,7 @@ fn lookup_rate_and_balance_impl(
 
     let state = match provider.latest() {
         Ok(s) => s,
-        Err(_) => return FcLookupResult { rate: None, balance_ok: None, debit_ok: None },
+        Err(_) => return FcLookupResult { rate: None, balance: None, debit_ok: None },
     };
     let db = StateProviderDatabase::new(state);
     let mut evm = Context::celo().with_db(db).build_celo();
@@ -438,7 +444,7 @@ fn lookup_rate_and_balance_impl(
         });
 
     // 2. Check ERC20 balance (only if requested)
-    let balance_ok = balance_check.as_ref().and_then(|(sender, required)| {
+    let balance = balance_check.as_ref().and_then(|(sender, _required)| {
         let bal_calldata = IFeeCurrencyERC20::balanceOfCall { account: *sender }.abi_encode();
         let result = evm.system_call_one(fee_currency, bal_calldata.into()).ok()?;
         let output = match result {
@@ -446,7 +452,7 @@ fn lookup_rate_and_balance_impl(
             _ => return None,
         };
         let balance = IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output).ok()?;
-        Some(balance >= *required)
+        Some(balance)
     });
 
     // 3. Simulate debitGasFees (only if balance was sufficient).
@@ -455,6 +461,8 @@ fn lookup_rate_and_balance_impl(
     // the balance check but fail at execution time. Uses Address::ZERO as
     // the caller, matching the `onlyVm` modifier that fee currency contracts
     // require (msg.sender == address(0)).
+    let balance_ok =
+        balance_check.as_ref().zip(balance).map(|((_, required), bal)| bal >= *required);
     let debit_ok = balance_check.and_then(|(sender, required)| {
         if balance_ok != Some(true) {
             return None;
@@ -469,7 +477,7 @@ fn lookup_rate_and_balance_impl(
         }
     });
 
-    FcLookupResult { rate, balance_ok, debit_ok }
+    FcLookupResult { rate, balance, debit_ok }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +486,16 @@ fn lookup_rate_and_balance_impl(
 
 /// Type alias for the base fee floor computation closure.
 pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> u64 + Send + Sync>;
+
+/// Cumulative fee-currency costs per (sender, fee_currency) pair.
+///
+/// Tracks the total ERC20 cost of all CIP-64 transactions that have passed
+/// pool validation for each sender/currency combination. This prevents a sender
+/// from submitting multiple CIP-64 transactions that individually pass the
+/// per-tx balance check but collectively exceed their ERC20 balance.
+///
+/// Cleared on each new head block (when balances may have changed).
+type CumulativeFcCosts = Arc<Mutex<HashMap<(Address, Address), U256>>>;
 
 /// Wraps a [`TransactionValidator`] and applies fee-currency exchange rates
 /// to validated CIP-64 transactions, so that the pool sees native-equivalent
@@ -501,6 +519,8 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// Maximum transaction fee in wei (cost - value). `None` or `Some(0)` disables the check.
     /// For CIP-64 txs, the native-equivalent cost is used after exchange rate conversion.
     tx_fee_cap: Option<u128>,
+    /// Cumulative per-(sender, fee_currency) ERC20 costs for pending CIP-64 txs.
+    cumulative_fc_costs: CumulativeFcCosts,
 }
 
 impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
@@ -528,6 +548,7 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             base_fee_floor_fn,
             minimum_priority_fee,
             tx_fee_cap,
+            cumulative_fc_costs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -604,12 +625,8 @@ impl PoolTransactionError for Cip64Rejection {
 }
 
 /// Apply exchange rates to a [`ValidTransaction`] if it is a CIP-64 tx.
-/// Also checks ERC20 balance, minimum tip, and simulates debitGasFees.
-///
-/// **Known limitation:** Balance and debit checks are per-transaction — there is no
-/// cumulative per-currency balance tracking across multiple transactions from the
-/// same sender. A sender could submit multiple CIP-64 txs that individually pass
-/// the balance check but collectively exceed their ERC20 balance.
+/// Also checks ERC20 balance (including cumulative tracking across multiple txs
+/// from the same sender/currency), minimum tip, and simulates debitGasFees.
 fn apply_exchange_rates_to_valid_tx(
     lookup: &dyn FcLookup,
     valid_tx: &mut ValidTransaction<CeloPoolTx>,
@@ -617,6 +634,7 @@ fn apply_exchange_rates_to_valid_tx(
     base_fee_floor: u64,
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
+    cumulative_fc_costs: &CumulativeFcCosts,
 ) -> Result<(), Cip64Rejection> {
     let tx = match valid_tx {
         ValidTransaction::Valid(tx) => tx,
@@ -691,17 +709,37 @@ fn apply_exchange_rates_to_valid_tx(
         );
 
         // Check ERC20 balance result (query already done above).
-        // If balance_ok is None (query failed), we allow the tx through —
+        // If balance is None (query failed), we allow the tx through —
         // it will be caught during execution.
-        if let Some(false) = result.balance_ok {
-            tracing::warn!(
-                target: "celo::pool",
-                ?fc,
-                ?sender,
-                ?required_fc,
-                "Rejecting CIP-64 tx: insufficient fee currency balance"
-            );
-            return Err(Cip64Rejection::InsufficientBalance(fc));
+        if let Some(balance) = result.balance {
+            if required_fc > balance {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fc,
+                    ?sender,
+                    ?required_fc,
+                    "Rejecting CIP-64 tx: insufficient fee currency balance"
+                );
+                return Err(Cip64Rejection::InsufficientBalance(fc));
+            }
+
+            // Cumulative balance check: ensure the total cost across all pending
+            // CIP-64 txs from this sender in this currency doesn't exceed balance.
+            let mut costs = cumulative_fc_costs.lock().unwrap();
+            let cumulative = costs.entry((sender, fc)).or_default();
+            if (*cumulative).saturating_add(required_fc) > balance {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fc,
+                    ?sender,
+                    ?required_fc,
+                    cumulative = %*cumulative,
+                    ?balance,
+                    "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
+                );
+                return Err(Cip64Rejection::InsufficientBalance(fc));
+            }
+            *cumulative = cumulative.saturating_add(required_fc);
         }
 
         // Check debit simulation result. If debit_ok is None (not attempted
@@ -767,6 +805,7 @@ where
                         base_fee_floor,
                         self.minimum_priority_fee,
                         self.tx_fee_cap,
+                        &self.cumulative_fc_costs,
                     ) {
                         TransactionValidationOutcome::Invalid(
                             transaction.into_transaction(),
@@ -790,6 +829,9 @@ where
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         self.inner.on_new_head_block(new_tip_block);
+
+        // Clear cumulative fee-currency costs — balances may have changed.
+        self.cumulative_fc_costs.lock().unwrap().clear();
 
         // Recompute the base fee floor for the next block.
         // Pre-Jovian: static 25 Gwei floor. Post-Jovian: read from chain spec.
@@ -1096,7 +1138,8 @@ mod tests {
 
     struct MockFcLookup {
         rate: Option<ExchangeRate>,
-        balance_ok: Option<bool>,
+        /// Raw ERC20 balance to return. `None` means query failed.
+        balance: Option<U256>,
         debit_ok: Option<bool>,
     }
 
@@ -1107,12 +1150,16 @@ mod tests {
             _fee_currency_directory: Address,
             _balance_check: Option<(Address, U256)>,
         ) -> FcLookupResult {
-            FcLookupResult { rate: self.rate, balance_ok: self.balance_ok, debit_ok: self.debit_ok }
+            FcLookupResult { rate: self.rate, balance: self.balance, debit_ok: self.debit_ok }
         }
     }
 
     fn wrap_valid(tx: CeloPoolTx) -> ValidTransaction<CeloPoolTx> {
         ValidTransaction::Valid(tx)
+    }
+
+    fn empty_cumulative_costs() -> CumulativeFcCosts {
+        Arc::new(Mutex::new(HashMap::new()))
     }
 
     #[test]
@@ -1123,11 +1170,19 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
 
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok());
 
         let tx = match &valid {
@@ -1144,8 +1199,16 @@ mod tests {
         let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
         let mut valid = wrap_valid(tx);
 
-        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(matches!(result, Err(Cip64Rejection::UnregisteredCurrency(_))));
     }
 
@@ -1157,10 +1220,18 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(false),
+            balance: Some(U256::ZERO),
             debit_ok: None,
         };
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(matches!(result, Err(Cip64Rejection::InsufficientBalance(_))));
     }
 
@@ -1176,7 +1247,7 @@ mod tests {
         // 100 < 25_000_000_000 → reject
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1186,6 +1257,7 @@ mod tests {
             25_000_000_000,
             0,
             None,
+            &empty_cumulative_costs(),
         );
         assert!(matches!(result, Err(Cip64Rejection::BelowBaseFeeFloor(_))));
     }
@@ -1202,11 +1274,18 @@ mod tests {
         // 5 < 100 → reject
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result =
-            apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 100, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            100,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(matches!(result, Err(Cip64Rejection::BelowMinTip { .. })));
     }
 
@@ -1218,10 +1297,18 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(false),
         };
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(matches!(result, Err(Cip64Rejection::DebitSimulationFailed(_))));
     }
 
@@ -1243,11 +1330,18 @@ mod tests {
         // Cap = 100_000 wei → within cap → accepted
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result =
-            apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, Some(100_000));
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            Some(100_000),
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok());
     }
 
@@ -1262,7 +1356,7 @@ mod tests {
         // Cap = 1_000_000_000_000 (1000 Gwei) → exceeds → rejected
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1272,6 +1366,7 @@ mod tests {
             0,
             0,
             Some(1_000_000_000_000),
+            &empty_cumulative_costs(),
         );
         assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
     }
@@ -1283,7 +1378,7 @@ mod tests {
         let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
         let mut valid = wrap_valid(tx);
 
-        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
         let result = apply_exchange_rates_to_valid_tx(
             &mock,
             &mut valid,
@@ -1291,6 +1386,7 @@ mod tests {
             0,
             0,
             Some(1_000_000_000_000),
+            &empty_cumulative_costs(),
         );
         assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
     }
@@ -1301,9 +1397,16 @@ mod tests {
         let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
         let mut valid = wrap_valid(tx);
 
-        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
-        let result =
-            apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, Some(0));
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            Some(0),
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok());
     }
 
@@ -1312,8 +1415,16 @@ mod tests {
         let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
         let mut valid = wrap_valid(tx);
 
-        let mock = MockFcLookup { rate: None, balance_ok: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok());
     }
 
@@ -1335,7 +1446,7 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1345,6 +1456,7 @@ mod tests {
             1_000_000_000,
             150,
             None,
+            &empty_cumulative_costs(),
         );
         assert!(
             matches!(result, Err(Cip64Rejection::BelowMinTip { actual: 100, .. })),
@@ -1366,7 +1478,7 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1376,6 +1488,7 @@ mod tests {
             1_000_000_000,
             100,
             None,
+            &empty_cumulative_costs(),
         );
         assert!(result.is_ok(), "Should accept: effective tip (200) >= min tip (100)");
     }
@@ -1429,7 +1542,7 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1439,6 +1552,7 @@ mod tests {
             0,
             0,
             Some(100_000_000),
+            &empty_cumulative_costs(),
         );
         assert!(
             matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })),
@@ -1457,7 +1571,7 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         let result = apply_exchange_rates_to_valid_tx(
@@ -1467,6 +1581,7 @@ mod tests {
             0,
             0,
             Some(100_000_000),
+            &empty_cumulative_costs(),
         );
         assert!(result.is_ok(), "Favorable rate should keep cost within cap; got {result:?}");
     }
@@ -1485,11 +1600,19 @@ mod tests {
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
         // base_fee_floor = 0 → floor check: 100 < 0 is false → passes
-        let result = apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 0, 0, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok(), "floor=0 should accept any fee; got {result:?}");
     }
 
@@ -1504,11 +1627,220 @@ mod tests {
         // rate 1:1 → base_fee_floor_fc = 1000 = max_fee → 1000 < 1000 is false → accepted
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance_ok: Some(true),
+            balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result =
-            apply_exchange_rates_to_valid_tx(&mock, &mut valid, Address::ZERO, 1000, 0, None);
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            1000,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        );
         assert!(result.is_ok(), "max_fee == floor should be accepted; got {result:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Cumulative per-currency balance tracking tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cumulative_balance_rejects_overdraft() {
+        // Two CIP-64 txs from same sender/currency, each requiring 60% of balance.
+        // First passes, second fails cumulative check.
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        // gas=100, max_fee=100 → required_fc = 10_000 per tx
+        let balance = U256::from(15_000u64); // 60% each = 10_000, cumulative = 20_000 > 15_000
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(true),
+        };
+
+        let cumulative = empty_cumulative_costs();
+
+        // First tx: 10_000 <= 15_000 → pass
+        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid1 = wrap_valid(tx1);
+        let r1 = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid1,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r1.is_ok(), "First tx should pass; got {r1:?}");
+
+        // Second tx: cumulative 10_000 + 10_000 = 20_000 > 15_000 → reject
+        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid2 = wrap_valid(tx2);
+        let r2 = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid2,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(
+            matches!(r2, Err(Cip64Rejection::InsufficientBalance(_))),
+            "Second tx should fail cumulative check; got {r2:?}"
+        );
+    }
+
+    #[test]
+    fn test_cumulative_balance_different_senders_independent() {
+        // Two senders, each with balance=15_000, each submitting a 10_000 tx.
+        // Both should pass because they are tracked independently.
+        let fc = Address::with_last_byte(0xAA);
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let balance = U256::from(15_000u64);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(true),
+        };
+
+        let cumulative = empty_cumulative_costs();
+
+        let tx_a = make_test_tx(Some(fc), 100, 100, 10, sender_a);
+        let mut valid_a = wrap_valid(tx_a);
+        let r_a = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid_a,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r_a.is_ok(), "Sender A should pass; got {r_a:?}");
+
+        let tx_b = make_test_tx(Some(fc), 100, 100, 10, sender_b);
+        let mut valid_b = wrap_valid(tx_b);
+        let r_b = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid_b,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r_b.is_ok(), "Sender B should pass independently; got {r_b:?}");
+    }
+
+    #[test]
+    fn test_cumulative_balance_different_currencies_independent() {
+        // Same sender, two different fee currencies, each with sufficient balance.
+        // Costs are tracked per-currency, so both should pass.
+        let fc_a = Address::with_last_byte(0xAA);
+        let fc_b = Address::with_last_byte(0xBB);
+        let sender = Address::with_last_byte(1);
+        let balance = U256::from(15_000u64);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(true),
+        };
+
+        let cumulative = empty_cumulative_costs();
+
+        let tx_a = make_test_tx(Some(fc_a), 100, 100, 10, sender);
+        let mut valid_a = wrap_valid(tx_a);
+        let r_a = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid_a,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r_a.is_ok(), "Currency A should pass; got {r_a:?}");
+
+        let tx_b = make_test_tx(Some(fc_b), 100, 100, 10, sender);
+        let mut valid_b = wrap_valid(tx_b);
+        let r_b = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid_b,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r_b.is_ok(), "Currency B should pass independently; got {r_b:?}");
+    }
+
+    #[test]
+    fn test_cumulative_balance_clears_on_new_head() {
+        // After clearing the cumulative map, same sender can submit again.
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let balance = U256::from(15_000u64);
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(true),
+        };
+
+        let cumulative = empty_cumulative_costs();
+
+        // First tx passes (10_000 <= 15_000)
+        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid1 = wrap_valid(tx1);
+        let r1 = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid1,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r1.is_ok());
+
+        // Second tx would fail (cumulative 20_000 > 15_000)
+        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid2 = wrap_valid(tx2);
+        let r2 = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid2,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(matches!(r2, Err(Cip64Rejection::InsufficientBalance(_))));
+
+        // Clear (simulates on_new_head_block)
+        cumulative.lock().unwrap().clear();
+
+        // Now the same tx passes again
+        let tx3 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid3 = wrap_valid(tx3);
+        let r3 = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid3,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r3.is_ok(), "After clear, tx should pass again; got {r3:?}");
     }
 }
