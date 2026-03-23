@@ -1217,9 +1217,9 @@ mod tests {
     // Test 14: Gas price and fee history module construction
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn gas_price_module_registers_methods() {
-        let api = Arc::new(CeloFeeApi {
+    /// Build a no-op [`CeloFeeApi`] for tests that only need module registration.
+    fn make_noop_fee_api() -> Arc<CeloFeeApi> {
+        Arc::new(CeloFeeApi {
             gas_price: Box::new(|| Box::pin(async { Ok(U256::from(25_000_000_000u64)) })),
             priority_fee: Box::new(|| Box::pin(async { Ok(U256::from(1_000_000u64)) })),
             eth_call: Box::new(|_| Box::pin(async { Ok(Bytes::new()) })),
@@ -1229,9 +1229,12 @@ mod tests {
             block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
             block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
             fee_currency_directory: Address::ZERO,
-        });
+        })
+    }
 
-        let module = celo_gas_price_module(api);
+    #[test]
+    fn gas_price_module_registers_methods() {
+        let module = celo_gas_price_module(make_noop_fee_api());
         let method_names: Vec<_> = module.method_names().collect();
         assert!(method_names.contains(&"eth_gasPrice"), "Missing eth_gasPrice");
         assert!(
@@ -1242,19 +1245,7 @@ mod tests {
 
     #[test]
     fn fee_history_module_registers_method() {
-        let api = Arc::new(CeloFeeApi {
-            gas_price: Box::new(|| Box::pin(async { Ok(U256::from(25_000_000_000u64)) })),
-            priority_fee: Box::new(|| Box::pin(async { Ok(U256::from(1_000_000u64)) })),
-            eth_call: Box::new(|_| Box::pin(async { Ok(Bytes::new()) })),
-            fee_history: Box::new(|_, _, _| {
-                Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
-            }),
-            block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
-            block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
-            fee_currency_directory: Address::ZERO,
-        });
-
-        let module = celo_fee_history_module(api);
+        let module = celo_fee_history_module(make_noop_fee_api());
         let method_names: Vec<_> = module.method_names().collect();
         assert!(method_names.contains(&"eth_feeHistory"), "Missing eth_feeHistory");
     }
