@@ -350,7 +350,7 @@ impl DataAvailabilitySized for CeloPoolTx {
 
 impl OpPooledTx for CeloPoolTx {
     fn encoded_2718(&self) -> Cow<'_, Bytes> {
-        Cow::Owned(self.inner.encoded_2718().clone())
+        Cow::Borrowed(self.inner.encoded_2718())
     }
 }
 
