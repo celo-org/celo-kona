@@ -67,6 +67,9 @@ reth-optimism-rpc.workspace = true
 alloy-celo-evm.workspace = true
 celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
 celo-alloy-rpc-types.workspace = true
+# optional_no_base_fee is required in production: reth sets disable_base_fee=true
+# for eth_call and gas estimation RPCs. Without this feature those calls would fail
+# with "insufficient funds for gas" because the base fee check cannot be skipped.
 celo-revm = { workspace = true, features = ["alloy-op-evm", "reth", "optional_no_base_fee"] }
 
 # Revm
