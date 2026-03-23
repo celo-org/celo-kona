@@ -354,9 +354,21 @@ where
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
-        // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
-        // Note: Warmness was already reset in load_fee_currency_context() after context loading,
-        // so accounts warmed during context loading are now cold.
+        // For CIP-64 transactions, gas deduction from fee currency via the
+        // erc20::debit_gas_fees system call.
+        //
+        // Reentrancy safety: The ERC20 debit/credit calls execute as system calls
+        // (caller = address(0)) with a capped gas limit (max_allowed_gas_cost).
+        // Malicious fee currency contracts cannot re-enter the handler because:
+        //   1. System calls use a fresh call frame — there is no user call stack to return to.
+        //   2. The gas cap limits execution to prevent unbounded work.
+        //   3. The debit runs BEFORE the user tx; the credit runs AFTER. There is no
+        //      interleaving with user-controlled execution.
+        // A malicious contract could still revert or consume all gas, which is handled
+        // by the error path below and the blocklist mechanism.
+        //
+        // Note: Warmness was already reset in load_fee_currency_context() after context
+        // loading, so accounts warmed during context loading are now cold.
         let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
