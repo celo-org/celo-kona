@@ -475,9 +475,6 @@ where
 // Fee-currency-aware gas price RPCs
 // ---------------------------------------------------------------------------
 
-/// Type-erased wrapper for the parts of the Eth API we need in the gas price
-/// RPC overrides. This avoids leaking the heavily-parameterised `EthApiServer`
-/// types into the RPC module registration.
 /// Type alias for CeloBlock in RPC context.
 type CeloRpcBlock = alloy_rpc_types_eth::Block<
     op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
