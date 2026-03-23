@@ -371,6 +371,48 @@ mod tests {
         )
     }
 
+    /// Helper: build a post-Jovian chain spec (Jovian activated at genesis).
+    fn jovian_chain_spec() -> Arc<reth_optimism_chainspec::OpChainSpec> {
+        Arc::new(
+            OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .jovian_activated()
+                .build(),
+        )
+    }
+
+    #[test]
+    fn base_fee_returned_without_floor_post_jovian() {
+        use alloy_primitives::B64;
+        use op_alloy_consensus::encode_jovian_extra_data;
+        use reth_chainspec::BaseFeeParams;
+
+        let cs = jovian_chain_spec();
+        // Jovian requires encoded extra_data: use chain defaults (zero params) with
+        // min_base_fee = 0 so the floor doesn't interfere.
+        let extra_data = encode_jovian_extra_data(
+            B64::ZERO,
+            BaseFeeParams::ethereum(),
+            0, // min_base_fee
+        )
+        .unwrap();
+        // Parent header with base fee = 7 wei, 50% utilization.
+        // EIP-1559 at 50% yields the same base fee (7).
+        // Post-Jovian, the 25 Gwei floor is NOT applied.
+        let parent = Header {
+            base_fee_per_gas: Some(7),
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            timestamp: 10,
+            extra_data,
+            ..Default::default()
+        };
+        let result = celo_next_block_base_fee(&cs, &parent, 12);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), 7, "Post-Jovian should not clamp to the base fee floor");
+    }
+
     #[test]
     fn base_fee_floor_applied_pre_jovian() {
         let cs = pre_jovian_chain_spec();
