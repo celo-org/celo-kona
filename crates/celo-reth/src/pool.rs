@@ -52,7 +52,7 @@ impl ExchangeRate {
     /// Convert a fee-currency amount to native equivalent.
     pub fn to_native(&self, amount: u128) -> u128 {
         if self.numerator == 0 {
-            return amount;
+            return 0;
         }
         amount.checked_mul(self.denominator).map(|v| v / self.numerator).unwrap_or(u128::MAX)
     }
@@ -1060,10 +1060,10 @@ mod tests {
     }
 
     #[test]
-    fn test_exchange_rate_zero_numerator_passthrough() {
+    fn test_exchange_rate_zero_numerator_returns_zero() {
         let rate = ExchangeRate { numerator: 0, denominator: 1000 };
-        // When numerator is 0, to_native returns the amount unchanged
-        assert_eq!(rate.to_native(500), 500);
+        // When numerator is 0, the currency has no value — to_native returns 0
+        assert_eq!(rate.to_native(500), 0);
     }
 
     #[test]
