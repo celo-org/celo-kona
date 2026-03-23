@@ -847,38 +847,49 @@ where
 {
     use reth_rpc_eth_api::EthApiServer;
 
-    let ea1 = Arc::new(eth_api);
-    let ea2 = ea1.clone();
-    let ea3 = ea1.clone();
-    let ea4 = ea1.clone();
-    let ea5 = ea1.clone();
-    let ea6 = ea1.clone();
+    let ea = Arc::new(eth_api);
 
     CeloFeeApi {
-        gas_price: Box::new(move || {
-            let ea = ea1.clone();
-            Box::pin(async move { EthApiServer::gas_price(&*ea).await })
-        }),
-        priority_fee: Box::new(move || {
-            let ea = ea2.clone();
-            Box::pin(async move { EthApiServer::max_priority_fee_per_gas(&*ea).await })
-        }),
-        eth_call: Box::new(move |req| {
-            let ea = ea3.clone();
-            Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
-        }),
-        fee_history: Box::new(move |block_count, newest_block, reward_percentiles| {
-            let ea = ea4.clone();
-            Box::pin(async move {
-                EthApiServer::fee_history(&*ea, block_count, newest_block, reward_percentiles).await
+        gas_price: {
+            let ea = ea.clone();
+            Box::new(move || {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::gas_price(&*ea).await })
             })
-        }),
-        block_by_number: Box::new(move |block_num| {
-            let ea = ea5.clone();
-            Box::pin(async move { EthApiServer::block_by_number(&*ea, block_num, true).await })
-        }),
+        },
+        priority_fee: {
+            let ea = ea.clone();
+            Box::new(move || {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::max_priority_fee_per_gas(&*ea).await })
+            })
+        },
+        eth_call: {
+            let ea = ea.clone();
+            Box::new(move |req| {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
+            })
+        },
+        fee_history: {
+            let ea = ea.clone();
+            Box::new(move |block_count, newest_block, reward_percentiles| {
+                let ea = ea.clone();
+                Box::pin(async move {
+                    EthApiServer::fee_history(&*ea, block_count, newest_block, reward_percentiles)
+                        .await
+                })
+            })
+        },
+        block_by_number: {
+            let ea = ea.clone();
+            Box::new(move |block_num| {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::block_by_number(&*ea, block_num, true).await })
+            })
+        },
         block_receipts: Box::new(move |block_num| {
-            let ea = ea6.clone();
+            let ea = ea.clone();
             Box::pin(async move { EthApiServer::block_receipts(&*ea, block_num.into()).await })
         }),
         fee_currency_directory,
