@@ -29,4 +29,4 @@ trap 'kill %%' EXIT # kill bg tail job on exit
 )
 sleep 0.5
 # Because blocking was disabled, the execution error should appear multiple times
-if [ "$(grep -Ec "fee-currency EVM execution error" debug-fee-currency/reth.disable_blocking.log)" -le 1 ]; then exit 1; fi
+if [ "$(grep -Ec "fee-currency debit/credit failed" debug-fee-currency/reth.disable_blocking.log)" -le 1 ]; then exit 1; fi

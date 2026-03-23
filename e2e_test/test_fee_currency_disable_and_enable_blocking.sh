@@ -31,4 +31,4 @@ trap 'kill %%' EXIT # kill bg tail job on exit
 sleep 0.5
 # Even though we send the faulty fee-currency transaction twice,
 # the execution error should occur only once.
-if [ "$(grep -Ec "fee-currency EVM execution error" debug-fee-currency/reth.disable_and_enable_blocking.log)" -ne 1 ]; then exit 1; fi
+if [ "$(grep -Ec "fee-currency debit/credit failed" debug-fee-currency/reth.disable_and_enable_blocking.log)" -ne 1 ]; then exit 1; fi

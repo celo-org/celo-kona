@@ -180,9 +180,5 @@ if [[ $passed -eq 0 ]]; then
 fi
 
 if [[ $failures -gt 0 ]]; then
-    tput setaf 3 2>/dev/null || true
-    echo "Some tests failed. This is expected — not all features are implemented yet."
-    tput sgr0 2>/dev/null || true
+    exit 1
 fi
-
-exit 0
