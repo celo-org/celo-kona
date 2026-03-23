@@ -173,6 +173,8 @@ where
                         ?fc,
                         "Skipping tx: fee currency is blocklisted"
                     );
+                    metrics::counter!("celo_payload_skipped_total", "reason" => "blocklisted")
+                        .increment(1);
                     self.inner.mark_invalid(tx.sender(), tx.nonce());
                     continue;
                 }
@@ -194,6 +196,8 @@ where
                         max_gas,
                         "Skipping tx: fee currency block space limit exceeded"
                     );
+                    metrics::counter!("celo_payload_skipped_total", "reason" => "gas_limit_exceeded")
+                        .increment(1);
                     self.inner.mark_invalid(tx.sender(), tx.nonce());
                     continue;
                 }

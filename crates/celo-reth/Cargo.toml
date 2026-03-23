@@ -90,6 +90,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+metrics.workspace = true
 reth-cli-util.workspace = true
 
 [dev-dependencies]

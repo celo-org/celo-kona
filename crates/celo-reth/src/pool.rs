@@ -32,6 +32,31 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+/// Prometheus metrics for the Celo pool validator.
+///
+/// All counters use the `celo_pool_` prefix.
+struct CeloPoolMetrics;
+
+impl CeloPoolMetrics {
+    fn cip64_rejection(reason: &str) {
+        metrics::counter!("celo_pool_cip64_rejections_total", "reason" => reason.to_string())
+            .increment(1);
+    }
+    fn exchange_rate_lookup() {
+        metrics::counter!("celo_pool_exchange_rate_lookups_total").increment(1);
+    }
+    fn pool_eviction(count: u64) {
+        metrics::counter!("celo_pool_maintainer_evictions_total").increment(count);
+    }
+    fn maintainer_failure() {
+        metrics::counter!("celo_pool_maintainer_failures_total").increment(1);
+    }
+}
+
 /// Inner OP pool transaction type.
 type InnerPoolTx = OpPooledTransaction<CeloTransactionSigned, CeloPooledTransaction>;
 
@@ -655,6 +680,7 @@ fn apply_exchange_rates_to_valid_tx(
         // in a single EVM instance.
         let required_fc = U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(old_fee));
         let sender = tx.sender();
+        CeloPoolMetrics::exchange_rate_lookup();
         let result =
             lookup.lookup_rate_and_balance(fc, fee_currency_directory, Some((sender, required_fc)));
 
@@ -666,6 +692,7 @@ fn apply_exchange_rates_to_valid_tx(
                     ?fc,
                     "Rejecting CIP-64 tx: unregistered fee currency"
                 );
+                CeloPoolMetrics::cip64_rejection("unregistered_currency");
                 return Err(Cip64Rejection::UnregisteredCurrency(fc));
             }
         };
@@ -680,6 +707,7 @@ fn apply_exchange_rates_to_valid_tx(
                 base_fee_floor_fc,
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
+            CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
             return Err(Cip64Rejection::BelowBaseFeeFloor(fc));
         }
 
@@ -697,6 +725,7 @@ fn apply_exchange_rates_to_valid_tx(
                 min_tip_fc,
                 "Rejecting CIP-64 tx: effective tip below minimum"
             );
+            CeloPoolMetrics::cip64_rejection("below_min_tip");
             return Err(Cip64Rejection::BelowMinTip {
                 currency: fc,
                 min_tip_fc,
@@ -727,6 +756,7 @@ fn apply_exchange_rates_to_valid_tx(
                     ?required_fc,
                     "Rejecting CIP-64 tx: insufficient fee currency balance"
                 );
+                CeloPoolMetrics::cip64_rejection("insufficient_balance");
                 return Err(Cip64Rejection::InsufficientBalance(fc));
             }
 
@@ -744,6 +774,7 @@ fn apply_exchange_rates_to_valid_tx(
                     ?balance,
                     "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
                 );
+                CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
                 return Err(Cip64Rejection::InsufficientBalance(fc));
             }
             *cumulative = cumulative.saturating_add(required_fc);
@@ -758,6 +789,7 @@ fn apply_exchange_rates_to_valid_tx(
                 ?sender,
                 "Rejecting CIP-64 tx: debitGasFees simulation failed"
             );
+            CeloPoolMetrics::cip64_rejection("debit_simulation_failed");
             return Err(Cip64Rejection::DebitSimulationFailed(fc));
         }
     }
@@ -769,6 +801,7 @@ fn apply_exchange_rates_to_valid_tx(
             let fee_cost = tx.cost().saturating_sub(tx.value());
             let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or(u128::MAX);
             if max_tx_fee_wei > cap {
+                CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
                 return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
             }
         }
@@ -958,6 +991,7 @@ where
     fn on_new_block(&mut self) {
         let Some(new_currencies) = self.query_registered_currencies() else {
             self.consecutive_failures += 1;
+            CeloPoolMetrics::maintainer_failure();
             if self.consecutive_failures >= 5 {
                 tracing::error!(
                     target: "celo::pool",
@@ -990,6 +1024,7 @@ where
                 .collect();
 
             if !to_evict.is_empty() {
+                CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
                 tracing::info!(
                     target: "celo::pool",
                     count = to_evict.len(),

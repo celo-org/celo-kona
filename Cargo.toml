@@ -229,6 +229,7 @@ tracing = { version = "0.1.44", default-features = false }
 # RPC
 jsonrpsee = "0.26.0"
 jsonrpsee-types = "0.26.0"
+metrics = "0.24"
 
 # Serialization
 serde_repr = "0.1.20"
