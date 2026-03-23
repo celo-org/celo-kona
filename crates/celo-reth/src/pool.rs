@@ -113,15 +113,8 @@ impl ExchangeRate {
 /// **Simplification vs op-geth:** Pool ordering uses `CoinbaseTipOrdering` which compares
 /// native-equivalent fees, rather than op-geth's `CompareWithRates` which does
 /// cross-currency comparison using exchange rates directly. CIP-64 txs from different
-/// fee currencies are ordered by their native-equivalent tip. This is acceptable because:
-///
-///   - Tx ordering in the pool is not consensus-critical (the sequencer picks final order).
-///   - Both approaches produce equivalent results when exchange rates are stable.
-///   - The native-equivalent comparison avoids the complexity of maintaining rate state inside the
-///     ordering comparator.
-///
-/// The main difference is edge behavior when rates change between ordering and inclusion,
-/// but with 1s block times this window is negligible.
+/// fee currencies are ordered by their native-equivalent tip. This is acceptable because
+/// pool ordering is not consensus-critical — the sequencer picks final inclusion order.
 #[derive(Debug, Clone)]
 pub struct CeloPoolTx {
     inner: InnerPoolTx,
