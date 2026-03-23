@@ -48,9 +48,19 @@ lazy_static! {
     };
 }
 
-/// Returns the addresses for the given chain ID, or Mainnet addresses if not found.
+/// Returns the addresses for the given chain ID, or Celo Mainnet addresses if not found.
+///
+/// Logs a warning for unknown chain IDs since the Celo Mainnet addresses are almost
+/// certainly wrong on other chains and will cause fee debit/credit to target
+/// non-existent or incorrect contracts.
 pub fn get_addresses(chain_id: u64) -> &'static CeloAddresses {
-    CELO_ADDRESSES
-        .get(&chain_id)
-        .unwrap_or(&CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID])
+    CELO_ADDRESSES.get(&chain_id).unwrap_or_else(|| {
+        tracing::warn!(
+            target: "celo::constants",
+            chain_id,
+            "Unknown chain ID — falling back to Celo Mainnet contract addresses. \
+             Fee currency operations will likely fail on this chain."
+        );
+        &CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID]
+    })
 }
