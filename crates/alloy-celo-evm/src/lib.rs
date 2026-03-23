@@ -477,6 +477,33 @@ fn make_test_evm(
     }
 }
 
+impl CeloEvmFactory {
+    /// Shared initialization for both `create_evm` and `create_evm_with_inspector`.
+    fn build_evm<DB: Database, I: Inspector<CeloContext<DB>>>(
+        &self,
+        db: DB,
+        mut input: EvmEnv<OpSpecId>,
+        inspector: I,
+        inspect: bool,
+    ) -> CeloEvm<DB, I, PrecompilesMap> {
+        input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
+        let spec_id = input.cfg_env.spec;
+        CeloEvm {
+            inner: Context::celo()
+                .with_db(db)
+                .with_block(input.block_env)
+                .with_cfg(input.cfg_env)
+                .with_chain(default_l1_block_info(spec_id))
+                .build_celo_with_inspector(inspector)
+                .with_precompiles(celo_precompiles_map(spec_id)),
+            inspect,
+            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
+            blocklist: self.blocklist.clone().unwrap_or_default(),
+            last_evicted_timestamp: 0,
+        }
+    }
+}
+
 impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
     type Context<DB: Database> = CeloContext<DB>;
@@ -491,46 +518,18 @@ impl EvmFactory for CeloEvmFactory {
     fn create_evm<DB: Database>(
         &self,
         db: DB,
-        mut input: EvmEnv<OpSpecId>,
+        input: EvmEnv<OpSpecId>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
-        let spec_id = input.cfg_env.spec;
-        CeloEvm {
-            inner: Context::celo()
-                .with_db(db)
-                .with_block(input.block_env)
-                .with_cfg(input.cfg_env)
-                .with_chain(default_l1_block_info(spec_id))
-                .build_celo_with_inspector(NoOpInspector {})
-                .with_precompiles(celo_precompiles_map(spec_id)),
-            inspect: false,
-            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
-            blocklist: self.blocklist.clone().unwrap_or_default(),
-            last_evicted_timestamp: 0,
-        }
+        self.build_evm(db, input, NoOpInspector {}, false)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,
-        mut input: EvmEnv<OpSpecId>,
+        input: EvmEnv<OpSpecId>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
-        let spec_id = input.cfg_env.spec;
-        CeloEvm {
-            inner: Context::celo()
-                .with_db(db)
-                .with_block(input.block_env)
-                .with_cfg(input.cfg_env)
-                .with_chain(default_l1_block_info(spec_id))
-                .build_celo_with_inspector(inspector)
-                .with_precompiles(celo_precompiles_map(spec_id)),
-            inspect: true,
-            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
-            blocklist: self.blocklist.clone().unwrap_or_default(),
-            last_evicted_timestamp: 0,
-        }
+        self.build_evm(db, input, inspector, true)
     }
 }
 
