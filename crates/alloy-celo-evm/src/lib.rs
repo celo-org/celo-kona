@@ -280,13 +280,21 @@ where
                 }
             }
             Err(e) if is_block_building && fee_currency.is_some() => {
-                let fc = fee_currency.unwrap();
-                tracing::warn!(
-                    target: "celo",
-                    "fee-currency EVM execution error for {fc}: {e}"
-                );
-                let block_timestamp: u64 = self.ctx().block.timestamp.to();
-                self.blocklist.block_currency(fc, block_timestamp);
+                // Only blocklist when the error is a fee-currency debit/credit failure,
+                // not for unrelated validation errors (nonce, gas limit, etc.) that
+                // happen to involve a CIP-64 tx.
+                let err_msg = alloc::format!("{e}");
+                if err_msg.contains("Failed to debit gas fees")
+                    || err_msg.contains("Failed to credit gas fees")
+                {
+                    let fc = fee_currency.unwrap();
+                    tracing::warn!(
+                        target: "celo",
+                        "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
+                    );
+                    let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                    self.blocklist.block_currency(fc, block_timestamp);
+                }
             }
             _ => {}
         }

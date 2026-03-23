@@ -185,6 +185,9 @@ where
         let ctx = evm.ctx();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fee_currency = ctx.tx().fee_currency();
+        // Address::ZERO is treated as native CELO — the zero address cannot host a fee
+        // currency contract. This matches op-geth's `feeCurrency == nil` check (Go's nil
+        // common.Address is the zero value).
         let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
