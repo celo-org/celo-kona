@@ -2,7 +2,7 @@
 
 use crate::{
     CeloContext,
-    constants::get_addresses,
+    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses},
     contracts::erc20,
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
@@ -248,7 +248,7 @@ where
             U256::from(base_tx_charge),
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("Failed to credit gas fees: {e}")))?;
+        .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
 
         // Collect logs from the system call to be included in the final receipt
         let mut tx = evm.ctx().tx().clone();
@@ -364,7 +364,7 @@ where
             gas_cost,
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("Failed to debit gas fees: {e}")))?;
+        .map_err(|e| InvalidTransaction::from(format!("{FEE_DEBIT_ERROR_PREFIX}: {e}")))?;
 
         // Store CIP64 transaction information by modifying the transaction
         let mut tx = evm.ctx().tx().clone();

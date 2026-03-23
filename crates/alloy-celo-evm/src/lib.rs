@@ -14,6 +14,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
+    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX},
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
 use core::{
@@ -292,8 +293,8 @@ where
                 // not for unrelated validation errors (nonce, gas limit, etc.) that
                 // happen to involve a CIP-64 tx.
                 let err_msg = alloc::format!("{e}");
-                if err_msg.contains("Failed to debit gas fees")
-                    || err_msg.contains("Failed to credit gas fees")
+                if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
+                    || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
                     let fc = fee_currency.unwrap();
                     tracing::warn!(
