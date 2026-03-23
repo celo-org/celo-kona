@@ -904,6 +904,12 @@ where
 /// - `admin_disableBlocklistFeeCurrencies`: Disable blocklisting for given currencies
 /// - `admin_enableBlocklistFeeCurrencies`: Re-enable blocklisting for given currencies
 /// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
+///
+/// # Authentication
+///
+/// These methods assume the `admin` namespace is behind reth's standard authenticated
+/// transport (engine API / admin IPC). No access control is enforced at the RPC method
+/// level.
 pub fn celo_admin_module(
     blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
 ) -> jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist> {
