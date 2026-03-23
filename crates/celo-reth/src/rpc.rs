@@ -804,15 +804,11 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 }
                 tip_gas.sort_unstable_by_key(|&(tip, _)| tip);
 
-                // Compute percentiles using cumulative gas weighting.
-                // compute_gas_weighted_percentiles returns zeros if total_gas == 0;
-                // skip the block in that case to preserve the underlying fee_history result.
-                let new_rewards = compute_gas_weighted_percentiles(&tip_gas, &percentiles);
-                if new_rewards.iter().all(|&x| x == 0) {
-                    continue;
-                }
-
-                *block_rewards = new_rewards;
+                // Compute percentiles using cumulative gas weighting and always replace
+                // the rewards for blocks containing CIP-64 txs. Even if all tips are zero
+                // (e.g. L1-cost-only txs), the recomputed value is more accurate than the
+                // default fee_history result which doesn't account for fee currency conversion.
+                *block_rewards = compute_gas_weighted_percentiles(&tip_gas, &percentiles);
             }
 
             Ok::<_, jsonrpsee_types::ErrorObjectOwned>(history)
