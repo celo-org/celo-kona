@@ -12,7 +12,7 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
-use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope};
+use celo_alloy_consensus::CeloPooledTransaction;
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
@@ -99,17 +99,9 @@ pub struct CeloPoolTx {
     native_cost: U256,
 }
 
-/// Extract the fee currency address from a pool transaction.
-/// Only clones the consensus tx for CIP-64 type (0x7b); other types return `None` immediately.
+/// Extract the fee currency address from a pool transaction without cloning.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
-    // Check type byte first to avoid cloning for non-CIP-64 transactions
-    if inner.ty() != celo_alloy_consensus::CeloTxType::Cip64 as u8 {
-        return None;
-    }
-    match inner.clone_into_consensus().into_parts().0 {
-        CeloTxEnvelope::Cip64(signed) => signed.tx().fee_currency,
-        _ => None,
-    }
+    inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency)
 }
 
 impl CeloPoolTx {
