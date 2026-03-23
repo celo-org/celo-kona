@@ -732,7 +732,7 @@ fn apply_exchange_rates_to_valid_tx(
 
             // Cumulative balance check: ensure the total cost across all pending
             // CIP-64 txs from this sender in this currency doesn't exceed balance.
-            let mut costs = cumulative_fc_costs.lock().unwrap();
+            let mut costs = cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner());
             let cumulative = costs.entry((sender, fc)).or_default();
             if (*cumulative).saturating_add(required_fc) > balance {
                 tracing::warn!(
@@ -838,7 +838,7 @@ where
         self.inner.on_new_head_block(new_tip_block);
 
         // Clear cumulative fee-currency costs — balances may have changed.
-        self.cumulative_fc_costs.lock().unwrap().clear();
+        self.cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
         // Recompute the base fee floor for the next block.
         // Pre-Jovian: static 25 Gwei floor. Post-Jovian: read from chain spec.
@@ -1772,7 +1772,7 @@ mod tests {
         assert!(matches!(r2, Err(Cip64Rejection::InsufficientBalance(_))));
 
         // Clear (simulates on_new_head_block)
-        cumulative.lock().unwrap().clear();
+        cumulative.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
         // Now the same tx passes again
         let tx3 = make_test_tx(Some(fc), 100, 100, 10, sender);
