@@ -48,9 +48,11 @@ impl Cip64Storage {
 
     /// Merges CIP-64 pre/post logs with the main execution logs.
     pub fn merge_logs(cip64_info: &Cip64Info, main_logs: Vec<Log>) -> Vec<Log> {
-        let mut merged = cip64_info.logs_pre.clone();
+        let capacity = cip64_info.logs_pre.len() + main_logs.len() + cip64_info.logs_post.len();
+        let mut merged = Vec::with_capacity(capacity);
+        merged.extend_from_slice(&cip64_info.logs_pre);
         merged.extend(main_logs);
-        merged.extend(cip64_info.logs_post.clone());
+        merged.extend_from_slice(&cip64_info.logs_post);
         merged
     }
 }
