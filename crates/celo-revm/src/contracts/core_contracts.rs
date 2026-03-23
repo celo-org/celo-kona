@@ -285,6 +285,24 @@ where
         return None;
     }
 
+    // Sanity bound: reject extreme exchange rates that could drain user funds.
+    // A ratio above 1e12 (either direction) is almost certainly an oracle bug.
+    // For context, 1 CELO ≈ $0.50 and most fee currencies are stablecoins,
+    // so sane rates are within a few orders of magnitude of 1:1.
+    const MAX_RATE_RATIO: u64 = 1_000_000_000_000; // 1e12
+    let ratio_exceeds_bound = rate.numerator > U256::from(MAX_RATE_RATIO) * rate.denominator
+        || rate.denominator > U256::from(MAX_RATE_RATIO) * rate.numerator;
+    if ratio_exceeds_bound {
+        tracing::warn!(
+            target: "celo_core_contracts",
+            ?token,
+            numerator = %rate.numerator,
+            denominator = %rate.denominator,
+            "Exchange rate exceeds sanity bounds (ratio > 1e12) — rejecting to protect users"
+        );
+        return None;
+    }
+
     Some((rate.numerator, rate.denominator))
 }
 
