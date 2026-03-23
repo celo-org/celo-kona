@@ -865,6 +865,8 @@ pub struct CeloPoolMaintainer<Pool, P> {
     fee_currency_directory: Address,
     /// Cached set of registered currencies. Only scan pool when this changes.
     registered_currencies: std::collections::HashSet<Address>,
+    /// Consecutive query failures, used to escalate log level.
+    consecutive_failures: u64,
 }
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P> {
@@ -875,6 +877,7 @@ impl<Pool, P> CeloPoolMaintainer<Pool, P> {
             provider,
             fee_currency_directory,
             registered_currencies: std::collections::HashSet::new(),
+            consecutive_failures: 0,
         }
     }
 }
@@ -954,8 +957,17 @@ where
     /// and evict CIP-64 txs with deregistered currencies.
     fn on_new_block(&mut self) {
         let Some(new_currencies) = self.query_registered_currencies() else {
+            self.consecutive_failures += 1;
+            if self.consecutive_failures >= 5 {
+                tracing::error!(
+                    target: "celo::pool",
+                    failures = self.consecutive_failures,
+                    "Fee currency query has failed repeatedly — registered currency cache is stale"
+                );
+            }
             return;
         };
+        self.consecutive_failures = 0;
 
         // Only scan pool if the registered set actually changed.
         if new_currencies == self.registered_currencies {
