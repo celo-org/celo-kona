@@ -128,7 +128,7 @@ where
         // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
         let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
             .try_into()
-            .expect("Failed to convert base_fee_in_erc20 to u128: value exceeds u128 range");
+            .map_err(|_| InvalidTransaction::from("base fee in ERC20 overflows u128"))?;
         Ok(base_fee_in_erc20_u128)
     }
 
