@@ -684,7 +684,15 @@ pub(crate) fn cip64_native_tip(
     let base_fee_fc = U256::from(base_fee_native) * rate_num / rate_denom;
     let tip_fc =
         U256::from(max_fee_fc).saturating_sub(base_fee_fc).min(U256::from(priority_fee_fc));
-    (tip_fc * rate_denom / rate_num).try_into().unwrap_or(u128::MAX)
+    let native_tip = tip_fc * rate_denom / rate_num;
+    native_tip.try_into().unwrap_or_else(|_| {
+        tracing::warn!(
+            target: "celo::rpc",
+            %native_tip,
+            "CIP-64 native tip exceeds u128::MAX, clamping"
+        );
+        u128::MAX
+    })
 }
 
 /// Compute gas-weighted reward percentiles from a pre-sorted `(tip, gas_used)` slice.

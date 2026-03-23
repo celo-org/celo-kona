@@ -821,7 +821,14 @@ fn apply_exchange_rates_to_valid_tx(
     if let Some(cap) = tx_fee_cap {
         if cap > 0 {
             let fee_cost = tx.cost().saturating_sub(tx.value());
-            let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or(u128::MAX);
+            let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %fee_cost,
+                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+                );
+                u128::MAX
+            });
             if max_tx_fee_wei > cap {
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
                 return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
