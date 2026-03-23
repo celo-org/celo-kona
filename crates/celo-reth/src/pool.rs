@@ -159,6 +159,8 @@ impl Transaction for CeloPoolTx {
         self.inner.gas_limit()
     }
     fn gas_price(&self) -> Option<u128> {
+        // Delegates to inner without conversion: CIP-64 txs are EIP-1559 style and
+        // return `None` from `gas_price()`, so no exchange rate adjustment is needed.
         self.inner.gas_price()
     }
     fn max_fee_per_gas(&self) -> u128 {
