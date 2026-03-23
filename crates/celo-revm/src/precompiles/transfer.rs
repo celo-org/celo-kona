@@ -43,6 +43,9 @@ where
     ) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
+            // SAFETY: gas_used <= gas_limit is guaranteed by the EVM, so underflow is
+            // impossible. A panic here is intentional — silently returning OOG would risk
+            // consensus divergence, while a crash is recoverable.
             assert!(underflow, "Gas underflow is not possible");
             result.result = InstructionResult::Return;
             result.output = output.bytes;
