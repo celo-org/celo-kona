@@ -50,18 +50,24 @@ pub struct ExchangeRate {
 
 impl ExchangeRate {
     /// Convert a fee-currency amount to native equivalent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `numerator` is zero. This is a logic error — the constructor
+    /// rejects zero numerator/denominator rates.
     pub fn to_native(&self, amount: u128) -> u128 {
-        if self.numerator == 0 {
-            return 0;
-        }
+        assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
         amount.checked_mul(self.denominator).map(|v| v / self.numerator).unwrap_or(u128::MAX)
     }
 
     /// Convert a native amount to fee-currency equivalent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `denominator` is zero. This is a logic error — the constructor
+    /// rejects zero numerator/denominator rates.
     pub fn to_fc(&self, native_amount: u128) -> u128 {
-        if self.denominator == 0 {
-            return native_amount;
-        }
+        assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
         native_amount.checked_mul(self.numerator).map(|v| v / self.denominator).unwrap_or(u128::MAX)
     }
 }
@@ -1069,10 +1075,10 @@ mod tests {
     }
 
     #[test]
-    fn test_exchange_rate_zero_numerator_returns_zero() {
+    #[should_panic(expected = "numerator must not be zero")]
+    fn test_exchange_rate_zero_numerator_panics() {
         let rate = ExchangeRate { numerator: 0, denominator: 1000 };
-        // When numerator is 0, the currency has no value — to_native returns 0
-        assert_eq!(rate.to_native(500), 0);
+        let _ = rate.to_native(500);
     }
 
     #[test]
@@ -1102,9 +1108,10 @@ mod tests {
     }
 
     #[test]
-    fn test_exchange_rate_to_fc_zero_denominator_passthrough() {
+    #[should_panic(expected = "denominator must not be zero")]
+    fn test_exchange_rate_to_fc_zero_denominator_panics() {
         let rate = ExchangeRate { numerator: 1000, denominator: 0 };
-        assert_eq!(rate.to_fc(500), 500);
+        let _ = rate.to_fc(500);
     }
 
     #[test]
@@ -1396,8 +1403,7 @@ mod tests {
     fn test_fee_cap_disabled_with_zero_or_none() {
         // Native tx with large cost, but cap disabled (0 or None) → both pass
         for cap in [Some(0), None] {
-            let tx =
-                make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+            let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
             let mut valid = wrap_valid(tx);
 
             let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
