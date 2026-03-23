@@ -194,10 +194,17 @@ impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
         if let Some(fc) = self.fee_currency {
             // Build a CIP-64 tx directly so fee_currency is preserved.
             let req = self.inner.as_ref();
+
+            // Validate required fields — defaulting to 0 would produce a
+            // seemingly valid but nonsensical CIP-64 transaction.
+            let chain_id = req.chain_id.ok_or(SignTxRequestError::InvalidTransactionRequest)?;
+            let nonce = req.nonce.ok_or(SignTxRequestError::InvalidTransactionRequest)?;
+            let gas_limit = req.gas.ok_or(SignTxRequestError::InvalidTransactionRequest)?;
+
             let mut cip64 = celo_alloy_consensus::TxCip64 {
-                chain_id: req.chain_id.unwrap_or_default(),
-                nonce: req.nonce.unwrap_or_default(),
-                gas_limit: req.gas.unwrap_or(0),
+                chain_id,
+                nonce,
+                gas_limit,
                 max_fee_per_gas: req.max_fee_per_gas.unwrap_or_default(),
                 max_priority_fee_per_gas: req.max_priority_fee_per_gas.unwrap_or_default(),
                 to: req.to.unwrap_or_default(),
