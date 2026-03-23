@@ -58,11 +58,8 @@ fn main() {
                 }
                 None => Default::default(),
             };
-            let fee_currency_limits = FeeCurrencyLimits {
-                limits,
-                default_limit: celo_args.fee_currency_default,
-                ..Default::default()
-            };
+            let fee_currency_limits =
+                FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
 
             let blocklist = FeeCurrencyBlocklist::default();
             let handle = builder

@@ -30,14 +30,11 @@ pub struct FeeCurrencyLimits {
     pub limits: HashMap<Address, f64>,
     /// Default limit for currencies not explicitly listed.
     pub default_limit: f64,
-    /// Block gas limit used for computing per-currency gas caps.
-    /// Defaults to 30_000_000 (Celo's typical block gas limit).
-    pub block_gas_limit: u64,
 }
 
 impl Default for FeeCurrencyLimits {
     fn default() -> Self {
-        Self { limits: HashMap::new(), default_limit: 0.5, block_gas_limit: 30_000_000 }
+        Self { limits: HashMap::new(), default_limit: 0.5 }
     }
 }
 
@@ -82,10 +79,14 @@ impl FeeCurrencyLimits {
 
     /// Returns the gas limit for a given fee currency address.
     /// Returns `None` (unlimited) for native CELO.
-    fn max_gas_for_currency(&self, fee_currency: Option<Address>) -> Option<u64> {
+    fn max_gas_for_currency(
+        &self,
+        fee_currency: Option<Address>,
+        block_gas_limit: u64,
+    ) -> Option<u64> {
         let fc = fee_currency?;
         let fraction = self.limits.get(&fc).copied().unwrap_or(self.default_limit);
-        Some((self.block_gas_limit as f64 * fraction) as u64)
+        Some((block_gas_limit as f64 * fraction) as u64)
     }
 }
 
@@ -122,10 +123,12 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
     where
         Pool: TransactionPool<Transaction = CeloPoolTx>,
     {
+        let block_gas_limit = pool.block_info().block_gas_limit;
         CeloFeeCurrencyFilter {
             inner: BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr)),
             limits: self.limits.clone(),
             blocklist: self.blocklist.clone(),
+            block_gas_limit,
             gas_used_per_currency: HashMap::new(),
         }
     }
@@ -145,6 +148,8 @@ struct CeloFeeCurrencyFilter<I> {
     inner: I,
     limits: FeeCurrencyLimits,
     blocklist: FeeCurrencyBlocklist,
+    /// Block gas limit from the pool, used to compute per-currency gas caps.
+    block_gas_limit: u64,
     /// Cumulative gas used per fee currency address.
     gas_used_per_currency: HashMap<Address, u64>,
 }
@@ -173,7 +178,9 @@ where
                 }
             }
 
-            if let Some(max_gas) = self.limits.max_gas_for_currency(fee_currency) {
+            if let Some(max_gas) =
+                self.limits.max_gas_for_currency(fee_currency, self.block_gas_limit)
+            {
                 let fc = fee_currency.unwrap(); // safe: max_gas is Some only when fee_currency is Some
                 let used = self.gas_used_per_currency.get(&fc).copied().unwrap_or(0);
                 if used + tx.gas_limit() > max_gas {
@@ -267,7 +274,7 @@ mod tests {
     fn test_max_gas_for_currency_native() {
         let limits = FeeCurrencyLimits::default();
         // Native CELO (None) should be unlimited
-        assert_eq!(limits.max_gas_for_currency(None), None);
+        assert_eq!(limits.max_gas_for_currency(None, 30_000_000), None);
     }
 
     #[test]
@@ -275,7 +282,7 @@ mod tests {
         let limits = FeeCurrencyLimits { default_limit: 0.5, ..Default::default() };
         let addr: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
         // Default 0.5 of 30M = 15M
-        assert_eq!(limits.max_gas_for_currency(Some(addr)), Some(15_000_000));
+        assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(15_000_000));
     }
 
     #[test]
@@ -285,7 +292,7 @@ mod tests {
         map.insert(addr, 0.9);
         let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5, ..Default::default() };
         // 0.9 of 30M = 27M
-        assert_eq!(limits.max_gas_for_currency(Some(addr)), Some(27_000_000));
+        assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(27_000_000));
     }
 
     // -----------------------------------------------------------------------
@@ -333,6 +340,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(),
             blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -352,6 +360,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(),
             blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -377,6 +386,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(),
             blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -403,6 +413,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(),
             blocklist,
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -421,6 +432,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(), // max = 0.5 * 30M = 15M
             blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -445,6 +457,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(), // max = 15M
             blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
@@ -476,6 +489,7 @@ mod tests {
             },
             limits: FeeCurrencyLimits::default(),
             blocklist,
+            block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
         };
 
