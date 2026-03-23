@@ -431,6 +431,12 @@ impl<P: StateProviderFactory> FcLookup for P {
 /// provider and EVM construction on the pool validation hot path.
 /// The EVM's in-memory journal is discarded when it drops, so the debit
 /// simulation causes no persistent state changes.
+/// Gas limit for pool EVM system calls (exchange rate, balance, debit sim).
+/// Caps execution time to prevent adversarial/buggy fee currency contracts from
+/// stalling the pool validator. 1M gas is plenty for simple view calls and
+/// ERC20 transfers.
+const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
+
 fn lookup_rate_and_balance_impl(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
@@ -455,7 +461,11 @@ fn lookup_rate_and_balance_impl(
     // 1. Look up exchange rate
     let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
     let rate = evm
-        .system_call_one(fee_currency_directory, rate_calldata.into())
+        .transact_system_call_with_gas_limit(
+            fee_currency_directory,
+            rate_calldata.into(),
+            POOL_SYSTEM_CALL_GAS_LIMIT,
+        )
         .ok()
         .and_then(|result| match result {
             ExecutionResult::Success { output, .. } => Some(output.into_data()),
@@ -474,7 +484,13 @@ fn lookup_rate_and_balance_impl(
     // 2. Check ERC20 balance (only if requested)
     let balance = balance_check.as_ref().and_then(|(sender, _required)| {
         let bal_calldata = IFeeCurrencyERC20::balanceOfCall { account: *sender }.abi_encode();
-        let result = evm.system_call_one(fee_currency, bal_calldata.into()).ok()?;
+        let result = evm
+            .transact_system_call_with_gas_limit(
+                fee_currency,
+                bal_calldata.into(),
+                POOL_SYSTEM_CALL_GAS_LIMIT,
+            )
+            .ok()?;
         let output = match result {
             ExecutionResult::Success { output, .. } => output.into_data(),
             _ => return None,
@@ -925,7 +941,7 @@ where
         use alloy_sol_types::SolCall;
         use celo_revm::{CeloBuilder, DefaultCelo, contracts::core_contracts::getCurrenciesCall};
         use reth_revm::database::StateProviderDatabase;
-        use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
+        use revm::{Context, context_interface::result::ExecutionResult};
 
         let state = self.provider.latest().inspect_err(|e| {
             tracing::warn!(target: "celo::pool", %e, "Failed to get latest state for currency query");
@@ -934,10 +950,16 @@ where
         let mut evm = Context::celo().with_db(db).build_celo();
 
         let calldata = getCurrenciesCall {}.abi_encode();
-        let result = evm.system_call_one(self.fee_currency_directory, calldata.into())
+        let result = evm
+            .transact_system_call_with_gas_limit(
+                self.fee_currency_directory,
+                calldata.into(),
+                POOL_SYSTEM_CALL_GAS_LIMIT,
+            )
             .inspect_err(|e| {
                 tracing::warn!(target: "celo::pool", %e, "EVM system call failed querying fee currencies");
-            }).ok()?;
+            })
+            .ok()?;
 
         match result {
             ExecutionResult::Success { output, .. } => {
