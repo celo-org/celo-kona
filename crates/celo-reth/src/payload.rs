@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_max_gas_for_currency_default() {
-        let limits = FeeCurrencyLimits { default_limit: 0.5, ..Default::default() };
+        let limits = FeeCurrencyLimits { limits: HashMap::new(), default_limit: 0.5 };
         let addr: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
         // Default 0.5 of 30M = 15M
         assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(15_000_000));
@@ -337,7 +337,7 @@ mod tests {
         let addr: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
         let mut map = HashMap::new();
         map.insert(addr, 0.9);
-        let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5, ..Default::default() };
+        let limits = FeeCurrencyLimits { limits: map, default_limit: 0.5 };
         // 0.9 of 30M = 27M
         assert_eq!(limits.max_gas_for_currency(Some(addr), 30_000_000), Some(27_000_000));
     }
