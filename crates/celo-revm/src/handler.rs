@@ -354,7 +354,7 @@ where
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
-        // For CIP-64 transactions, gas deduction from fee currency we call the erc20::debit_gas_fees function
+        // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
         // Note: Warmness was already reset in load_fee_currency_context() after context loading,
         // so accounts warmed during context loading are now cold.
         let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
