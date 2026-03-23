@@ -399,7 +399,7 @@ where
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
                 .map_err(InvalidTransaction::from)?;
-            // Adding only in the initial gas, and not the floor because we never addapted the
+            // Adding only in the initial gas, and not the floor because we never adapted the
             // eip7623 to the cip64 (discussions being taken)
             gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20);
         }
