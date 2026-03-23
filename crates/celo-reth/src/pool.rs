@@ -171,6 +171,9 @@ impl Transaction for CeloPoolTx {
         self.inner.max_fee_per_blob_gas()
     }
     fn priority_fee_or_price(&self) -> u128 {
+        // The `None` branch is unreachable for CIP-64 txs (always EIP-1559 style with
+        // priority fee set). For non-CIP-64 txs, `native_max_priority_fee_per_gas` is
+        // copied from inner unchanged, so the fallback is only hit for legacy txs.
         self.native_max_priority_fee_per_gas.unwrap_or_else(|| self.inner.priority_fee_or_price())
     }
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
