@@ -1392,40 +1392,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_cap_disabled_with_zero() {
-        // Native tx with large cost, but cap = 0 → disabled
-        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+    fn test_fee_cap_disabled_with_zero_or_none() {
+        // Native tx with large cost, but cap disabled (0 or None) → both pass
+        for cap in [Some(0), None] {
+            let tx =
+                make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+            let mut valid = wrap_valid(tx);
 
-        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid,
-            Address::ZERO,
-            0,
-            0,
-            Some(0),
-            &empty_cumulative_costs(),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_fee_cap_disabled_with_none() {
-        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
-
-        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &empty_cumulative_costs(),
-        );
-        assert!(result.is_ok());
+            let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+            let result = apply_exchange_rates_to_valid_tx(
+                &mock,
+                &mut valid,
+                Address::ZERO,
+                0,
+                0,
+                cap,
+                &empty_cumulative_costs(),
+            );
+            assert!(result.is_ok(), "cap={cap:?} should disable fee cap check");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1696,10 +1681,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cumulative_balance_different_senders_independent() {
-        // Two senders, each with balance=15_000, each submitting a 10_000 tx.
-        // Both should pass because they are tracked independently.
-        let fc = Address::with_last_byte(0xAA);
+    fn test_cumulative_balance_independent_across_senders_and_currencies() {
+        // Cumulative costs are tracked per (sender, currency) pair. Verify
+        // independence along both axes: different senders with the same currency,
+        // and the same sender with different currencies.
+        let fc_a = Address::with_last_byte(0xAA);
+        let fc_b = Address::with_last_byte(0xBB);
         let sender_a = Address::with_last_byte(1);
         let sender_b = Address::with_last_byte(2);
         let balance = U256::from(15_000u64);
@@ -1712,75 +1699,26 @@ mod tests {
 
         let cumulative = empty_cumulative_costs();
 
-        let tx_a = make_test_tx(Some(fc), 100, 100, 10, sender_a);
-        let mut valid_a = wrap_valid(tx_a);
-        let r_a = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid_a,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &cumulative,
-        );
-        assert!(r_a.is_ok(), "Sender A should pass; got {r_a:?}");
-
-        let tx_b = make_test_tx(Some(fc), 100, 100, 10, sender_b);
-        let mut valid_b = wrap_valid(tx_b);
-        let r_b = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid_b,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &cumulative,
-        );
-        assert!(r_b.is_ok(), "Sender B should pass independently; got {r_b:?}");
-    }
-
-    #[test]
-    fn test_cumulative_balance_different_currencies_independent() {
-        // Same sender, two different fee currencies, each with sufficient balance.
-        // Costs are tracked per-currency, so both should pass.
-        let fc_a = Address::with_last_byte(0xAA);
-        let fc_b = Address::with_last_byte(0xBB);
-        let sender = Address::with_last_byte(1);
-        let balance = U256::from(15_000u64);
-
-        let mock = MockFcLookup {
-            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance: Some(balance),
-            debit_ok: Some(true),
-        };
-
-        let cumulative = empty_cumulative_costs();
-
-        let tx_a = make_test_tx(Some(fc_a), 100, 100, 10, sender);
-        let mut valid_a = wrap_valid(tx_a);
-        let r_a = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid_a,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &cumulative,
-        );
-        assert!(r_a.is_ok(), "Currency A should pass; got {r_a:?}");
-
-        let tx_b = make_test_tx(Some(fc_b), 100, 100, 10, sender);
-        let mut valid_b = wrap_valid(tx_b);
-        let r_b = apply_exchange_rates_to_valid_tx(
-            &mock,
-            &mut valid_b,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &cumulative,
-        );
-        assert!(r_b.is_ok(), "Currency B should pass independently; got {r_b:?}");
+        // (sender_a, fc_a), (sender_b, fc_a) — different senders, same currency
+        // (sender_a, fc_a), (sender_a, fc_b) — same sender, different currencies
+        for (sender, fc, label) in [
+            (sender_a, fc_a, "sender_a/fc_a"),
+            (sender_b, fc_a, "sender_b/fc_a"),
+            (sender_a, fc_b, "sender_a/fc_b"),
+        ] {
+            let tx = make_test_tx(Some(fc), 100, 100, 10, sender);
+            let mut valid = wrap_valid(tx);
+            let r = apply_exchange_rates_to_valid_tx(
+                &mock,
+                &mut valid,
+                Address::ZERO,
+                0,
+                0,
+                None,
+                &cumulative,
+            );
+            assert!(r.is_ok(), "{label} should pass independently; got {r:?}");
+        }
     }
 
     #[test]
