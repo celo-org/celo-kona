@@ -592,14 +592,6 @@ impl CeloFeeApi {
             ));
         }
 
-        tracing::debug!(
-            target: "celo::rpc",
-            ?fee_currency,
-            %numerator,
-            %denominator,
-            "Fetched exchange rate"
-        );
-
         Ok((numerator, denominator))
     }
 }
@@ -625,15 +617,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc).await?;
-                    let converted = base_price * num / denom;
-                    tracing::debug!(
-                        target: "celo::rpc",
-                        ?fc,
-                        %base_price,
-                        %converted,
-                        "eth_gasPrice with fee currency conversion"
-                    );
-                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(converted)
+                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_price * num / denom)
                 }
                 None => Ok(base_price),
             }
@@ -647,15 +631,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc).await?;
-                    let converted = base_tip * num / denom;
-                    tracing::debug!(
-                        target: "celo::rpc",
-                        ?fc,
-                        %base_tip,
-                        %converted,
-                        "eth_maxPriorityFeePerGas with fee currency conversion"
-                    );
-                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(converted)
+                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_tip * num / denom)
                 }
                 None => Ok(base_tip),
             }
@@ -741,13 +717,6 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
             let block_count: alloy_primitives::U64 = seq.next()?;
             let newest_block: alloy_rpc_types_eth::BlockNumberOrTag = seq.next()?;
             let reward_percentiles: Option<Vec<f64>> = seq.optional_next()?;
-
-            tracing::debug!(
-                target: "celo::rpc",
-                %block_count,
-                ?newest_block,
-                "eth_feeHistory request"
-            );
 
             // Get the base fee history from the underlying implementation
             let mut history =
