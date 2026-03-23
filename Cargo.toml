@@ -218,18 +218,18 @@ alloy-eips = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exp
 alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-v1.5.2" }
 
 [patch."https://github.com/op-rs/kona"]
-kona-host = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-client = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-driver   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-derive   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-protocol = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-registry = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-proof      = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-executor   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-cli   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
+kona-host = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-client = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-driver   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-derive   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-protocol = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-registry = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-proof      = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-executor   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
+kona-cli   = { git = "https://github.com/celo-org/kona", rev = "d517e14882cf72582c7164b92703d49a1f4e630f" }
