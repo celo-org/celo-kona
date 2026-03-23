@@ -42,9 +42,11 @@ use std::{
 struct CeloPoolMetrics;
 
 impl CeloPoolMetrics {
-    fn cip64_rejection(reason: &str) {
-        metrics::counter!("celo_pool_cip64_rejections_total", "reason" => reason.to_string())
-            .increment(1);
+    fn cip64_rejection(reason: &'static str) {
+        metrics::counter!("celo_pool_cip64_rejections_total", "reason" => reason).increment(1);
+    }
+    fn cip64_accepted() {
+        metrics::counter!("celo_pool_cip64_accepted_total").increment(1);
     }
     fn exchange_rate_lookup() {
         metrics::counter!("celo_pool_exchange_rate_lookups_total").increment(1);
@@ -814,6 +816,8 @@ fn apply_exchange_rates_to_valid_tx(
             CeloPoolMetrics::cip64_rejection("debit_simulation_failed");
             return Err(Cip64Rejection::DebitSimulationFailed(fc));
         }
+
+        CeloPoolMetrics::cip64_accepted();
     }
 
     // Fee cap check: applies to both CIP-64 (using native-equivalent cost) and native txs.
