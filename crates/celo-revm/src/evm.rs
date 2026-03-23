@@ -12,6 +12,13 @@ use revm::{
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 
+/// Celo EVM wrapper around the OP Stack EVM.
+///
+/// `P` (precompile provider) defaults to [`CeloPrecompiles`] and is never
+/// used directly by Celo code, but must be threaded through every `impl`
+/// block and helper function because revm's `EvmTr` / `ExecuteEvm` /
+/// `SystemCallEvm` trait bounds require it. This matches the upstream
+/// `op_revm::OpEvm<DB, I, P = OpPrecompiles>` pattern.
 pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
     pub inner: OpEvm<CeloContext<DB>, INSP, EthInstructions<EthInterpreter, CeloContext<DB>>, P>,
     pub fee_currency_context: FeeCurrencyContext,
