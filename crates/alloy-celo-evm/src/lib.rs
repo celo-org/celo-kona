@@ -464,9 +464,12 @@ fn make_test_evm(
 ) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
     let spec_id = OpSpecId::FJORD;
     let db = revm::database::InMemoryDB::default();
+    let mut cfg = revm::context::CfgEnv::<OpSpecId>::default();
+    cfg.chain_id = 42220;
     CeloEvm {
         inner: Context::celo()
             .with_db(db)
+            .with_cfg(cfg)
             .with_chain(default_l1_block_info(spec_id))
             .build_celo_with_inspector(revm::inspector::NoOpInspector {})
             .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
@@ -632,8 +635,11 @@ mod tests {
         }
     }
 
+    /// Verify that non-debit/credit errors (e.g. unregistered currency) do NOT
+    /// cause the currency to be blocklisted. Only debit/credit failures should
+    /// trigger blocklisting.
     #[test]
-    fn test_failed_execution_blocks_currency() {
+    fn test_non_debit_error_does_not_blocklist() {
         let fc = Address::with_last_byte(0xCC);
         let blocklist = FeeCurrencyBlocklist::default();
 
@@ -641,15 +647,12 @@ mod tests {
         // Set a non-zero basefee so the EVM is in "block building" mode
         evm.ctx_mut().block.basefee = 1_000_000_000;
 
-        // This CIP-64 tx will fail during execution (no ERC20 contract deployed)
+        // This CIP-64 tx will fail (fee currency not registered), but the
+        // error is NOT a debit/credit failure, so it should NOT be blocklisted.
         let tx = make_cip64_tx(fc);
-        let _ = evm.transact_raw(tx);
-
-        // After failed execution, the currency should be blocklisted
-        assert!(
-            blocklist.is_blocked(fc),
-            "Fee currency should be blocklisted after execution failure"
-        );
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err(), "Expected tx to fail");
+        assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
     }
 
     /// Verify that the blocklist is NOT enforced during RPC simulation
