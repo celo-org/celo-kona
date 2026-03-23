@@ -238,6 +238,53 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_limits_invalid_address() {
+        let limits = FeeCurrencyLimits::parse_limits("0xDEAD=0.5");
+        assert!(limits.is_empty(), "Too-short address should be rejected");
+    }
+
+    #[test]
+    fn test_parse_limits_invalid_fraction() {
+        let limits = FeeCurrencyLimits::parse_limits(
+            "0x765DE816845861e75A25fCA122bb6898B8B1282a=notanumber",
+        );
+        assert!(limits.is_empty(), "Non-numeric fraction should be rejected");
+    }
+
+    #[test]
+    fn test_parse_limits_mixed_valid_invalid() {
+        let limits = FeeCurrencyLimits::parse_limits(
+            "0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,0xINVALID=0.5",
+        );
+        assert_eq!(limits.len(), 1, "Only valid entry should be kept");
+        assert_eq!(
+            limits[&"0x765DE816845861e75A25fCA122bb6898B8B1282a".parse::<Address>().unwrap()],
+            0.9
+        );
+    }
+
+    #[test]
+    fn test_parse_limits_trailing_comma() {
+        let limits =
+            FeeCurrencyLimits::parse_limits("0x765DE816845861e75A25fCA122bb6898B8B1282a=0.9,");
+        assert_eq!(limits.len(), 1, "Trailing comma should not cause error");
+    }
+
+    #[test]
+    fn test_parse_limits_extra_whitespace() {
+        let limits = FeeCurrencyLimits::parse_limits(
+            " 0x765DE816845861e75A25fCA122bb6898B8B1282a = 0.9 , 0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73 = 0.5 ",
+        );
+        assert_eq!(limits.len(), 2, "Extra whitespace should be handled");
+    }
+
+    #[test]
+    fn test_parse_limits_no_equals_sign() {
+        let limits = FeeCurrencyLimits::parse_limits("0x765DE816845861e75A25fCA122bb6898B8B1282a");
+        assert!(limits.is_empty(), "Entry without = should be ignored");
+    }
+
+    #[test]
     fn test_mainnet_defaults() {
         let defaults = FeeCurrencyLimits::mainnet_defaults();
         assert_eq!(defaults.len(), 5);
