@@ -837,7 +837,7 @@ where
                     authorities,
                 } => {
                     let base_fee_floor =
-                        self.base_fee_floor.load(std::sync::atomic::Ordering::Relaxed);
+                        self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
                     if let Err(rejection) = apply_exchange_rates_to_valid_tx(
                         &self.provider,
                         &mut transaction,
@@ -881,7 +881,7 @@ where
         // doesn't matter for fork activation checks which use the parent's timestamp).
         let next_ts = header.timestamp().saturating_add(1);
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
-        self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Relaxed);
+        self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
     }
 }
 
