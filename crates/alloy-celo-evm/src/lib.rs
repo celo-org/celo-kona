@@ -150,6 +150,9 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inspect: bool,
     cip64_storage: Cip64Storage,
     blocklist: FeeCurrencyBlocklist,
+    /// Block timestamp of the last eviction call, used to avoid redundant eviction
+    /// on every `transact_raw` call within the same block.
+    last_evicted_timestamp: u64,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -194,6 +197,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             inspect,
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
+            last_evicted_timestamp: 0,
         }
     }
 }
@@ -248,10 +252,14 @@ where
         // (eth_call, eth_estimateGas). RPC simulation disables the base fee check.
         let is_block_building = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // Evict stale blocklist entries using the current block timestamp.
+        // Evict stale blocklist entries using the current block timestamp,
+        // but only once per block to avoid redundant work on every transaction.
         if is_block_building {
             let block_timestamp: u64 = self.ctx().block.timestamp.to();
-            self.blocklist.evict(block_timestamp);
+            if block_timestamp != self.last_evicted_timestamp {
+                self.blocklist.evict(block_timestamp);
+                self.last_evicted_timestamp = block_timestamp;
+            }
         }
 
         // Check if the fee currency is blocklisted — reject early without EVM execution.
@@ -464,6 +472,7 @@ fn make_test_evm(
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
+        last_evicted_timestamp: 0,
     }
 }
 
@@ -496,6 +505,7 @@ impl EvmFactory for CeloEvmFactory {
             inspect: false,
             cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
             blocklist: self.blocklist.clone().unwrap_or_default(),
+            last_evicted_timestamp: 0,
         }
     }
 
@@ -518,6 +528,7 @@ impl EvmFactory for CeloEvmFactory {
             inspect: true,
             cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
             blocklist: self.blocklist.clone().unwrap_or_default(),
+            last_evicted_timestamp: 0,
         }
     }
 }
