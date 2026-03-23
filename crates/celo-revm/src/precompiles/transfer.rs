@@ -42,12 +42,10 @@ where
         inputs.gas_limit,
     ) {
         Ok(output) => {
-            if !result.gas.record_cost(output.gas_used) {
-                result.result = InstructionResult::PrecompileOOG;
-            } else {
-                result.result = InstructionResult::Return;
-                result.output = output.bytes;
-            }
+            let underflow = result.gas.record_cost(output.gas_used);
+            assert!(underflow, "Gas underflow is not possible");
+            result.result = InstructionResult::Return;
+            result.output = output.bytes;
         }
         Err(PrecompileError::Fatal(e)) => return Err(e),
         Err(e) => {
