@@ -99,3 +99,9 @@ Transaction accepted due to a bug in op-geth's EIP-2930 sender recovery that use
   * Network: Celo Mainnet
   * File: mainnet-failed_uncategorized_1-block-49847887.tar.gz
   * Explorer: https://celo.blockscout.com/block/49847887
+
+## Mismatch in base fee calculation following Jovian activation to op-geth
+* Block following the Jovian hardfork, which disabled Celo's MinBaseFee, which results in the base fee reducing.
+* Network: Celo Sepolia
+* File: `sepolia-post-jovian-basefee-change_block-20465049.tar.gz`
+* Explorer: https://celo-sepolia.blockscout.com/block/20465049
