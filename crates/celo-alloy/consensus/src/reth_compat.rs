@@ -2,6 +2,11 @@
 //!
 //! Provides [`InMemorySize`], [`SignedTransaction`], [`Compact`], and
 //! `SerdeBincodeCompat` trait implementations required by reth's node framework.
+//!
+//! These impls live in `celo-alloy-consensus` (not `celo-reth`) due to Rust's orphan rules:
+//! they implement foreign traits (`InMemorySize`, `SignedTransaction`, `Compact`) on types
+//! defined in this crate (`CeloTxEnvelope`, `TxCip64`, etc.). Moving them to `celo-reth`
+//! would be a compiler error.
 
 use crate::transaction::{
     CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64, pooled::CeloPooledTransaction,

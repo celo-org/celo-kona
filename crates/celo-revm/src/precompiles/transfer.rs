@@ -1,5 +1,10 @@
 //! [`transfer` precompile](https://specs.celo.org/token_duality.html#the-transfer-precompile)
 //! For more details check [`transfer_run`] function.
+//!
+//! Note: `alloy-celo-evm` has a parallel implementation (`transfer_precompile`) that adapts the
+//! same logic for `alloy-evm`'s stateless `DynPrecompile` interface, which receives balance
+//! changes via `PrecompileInput::internals` rather than a full `ContextTr`. Both implementations
+//! must be kept in sync.
 
 use crate::constants;
 use op_revm::OpSpecId;

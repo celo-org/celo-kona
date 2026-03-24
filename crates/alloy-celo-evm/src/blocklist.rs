@@ -4,6 +4,11 @@
 //! errors. When a fee currency is blocklisted, CIP-64 transactions using that currency
 //! are rejected early during block building, avoiding repeated execution failures.
 //!
+//! This lives in `alloy-celo-evm` (not `celo-reth`) because it is checked inside
+//! `CeloEvm::transact_raw()` — the shared execution path used by both reth and any other
+//! consumer of `CeloEvmFactory`. Kona/ZK paths do not need it and pass `blocklist: None`
+//! when constructing `CeloEvmFactory::default()`.
+//!
 //! Blocklisting can be controlled per-currency via admin RPCs:
 //! - `admin_disableBlocklistFeeCurrencies`: Prevents a currency from being blocklisted.
 //! - `admin_enableBlocklistFeeCurrencies`: Re-enables blocklisting for a currency.

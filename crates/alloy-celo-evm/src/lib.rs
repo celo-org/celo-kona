@@ -81,6 +81,12 @@ fn make_transfer_precompile(spec_id: OpSpecId) -> DynPrecompile {
 }
 
 /// Transfer precompile implementation for use as a [`DynPrecompile`].
+///
+/// This duplicates the logic in `celo_revm::precompiles::transfer::transfer_run` because the two
+/// dispatch models are incompatible: `celo-revm`'s version operates on a full `ContextTr` (used
+/// by the handler-based precompile pipeline), while this version targets `alloy-evm`'s stateless
+/// `DynPrecompile` interface (balance changes go through `PrecompileInput::internals`). Both
+/// implementations must be kept in sync.
 fn transfer_precompile(
     spec_id: OpSpecId,
     mut input: alloy_evm::precompiles::PrecompileInput<'_>,
