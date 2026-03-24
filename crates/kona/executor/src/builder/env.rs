@@ -137,11 +137,23 @@ where
     ///
     /// ## Note
     /// Before Jovian activation, the min-base-fee is Celo's base fee floor (25 Gwei).
+    /// Once Jovian is active (based on the new block's timestamp), the Celo floor is
+    /// disabled and the min-base-fee comes from the parent header's extra_data instead.
     pub(crate) fn active_base_fee_params(
         config: &CeloRollupConfig,
         parent_header: &Header,
         payload_timestamp: u64,
     ) -> ExecutorResult<(BaseFeeParams, u64)> {
+        // Once Jovian is active for the new block, the Celo base fee floor no longer
+        // applies. This matches op-geth which disables the floor based on the new
+        // block's time, not the parent's. The min_base_fee from the parent's extra_data
+        // (or 0 if absent) is used instead.
+        let celo_floor = if config.is_jovian_active(payload_timestamp) {
+            0
+        } else {
+            CELO_EIP_1559_BASE_FEE_FLOOR
+        };
+
         match config {
             // After Jovian activation, the base fee parameters are stored in the
             // `extraData` field of the parent header, along with the min-base-fee.
@@ -153,17 +165,17 @@ where
             // parent block, the default base fee parameters are used.
             _ if config.is_holocene_active(parent_header.timestamp) => {
                 decode_holocene_eip_1559_params(parent_header)
-                    .map(|base_fee_params| (base_fee_params, CELO_EIP_1559_BASE_FEE_FLOOR))
+                    .map(|base_fee_params| (base_fee_params, celo_floor))
             }
             // If the next payload attribute timestamp is past canyon activation,
             // use the canyon base fee params from the rollup config.
             _ if config.is_canyon_active(payload_timestamp) => {
-                Ok((config.chain_op_config.post_canyon_params(), CELO_EIP_1559_BASE_FEE_FLOOR))
+                Ok((config.chain_op_config.post_canyon_params(), celo_floor))
             }
             _ => {
                 // If the next payload attribute timestamp is prior to canyon activation,
                 // use the default base fee params from the rollup config.
-                Ok((config.chain_op_config.pre_canyon_params(), CELO_EIP_1559_BASE_FEE_FLOOR))
+                Ok((config.chain_op_config.pre_canyon_params(), celo_floor))
             }
         }
     }
