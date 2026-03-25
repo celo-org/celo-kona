@@ -470,11 +470,7 @@ mod tests {
         // Parent at timestamp 99 (pre-Jovian, Holocene-active) with Holocene-encoded
         // extra_data (9 bytes, version 0). Use low base fee (7 wei) that would be
         // clamped by the 25 Gwei floor.
-        let extra_data = encode_holocene_extra_data(
-            B64::ZERO,
-            BaseFeeParams::ethereum(),
-        )
-        .unwrap();
+        let extra_data = encode_holocene_extra_data(B64::ZERO, BaseFeeParams::ethereum()).unwrap();
         let parent = Header {
             base_fee_per_gas: Some(7),
             gas_limit: 30_000_000,
@@ -487,11 +483,7 @@ mod tests {
         // New block at timestamp 100 (first Jovian block): floor should NOT apply.
         let result = celo_next_block_base_fee(&cs, &parent, 100);
         assert!(result.is_some());
-        assert_eq!(
-            result.unwrap(),
-            7,
-            "First Jovian block should not apply the 25 Gwei floor"
-        );
+        assert_eq!(result.unwrap(), 7, "First Jovian block should not apply the 25 Gwei floor");
 
         // Sanity: a block at timestamp 99 (still pre-Jovian) SHOULD get the floor.
         let result_pre = celo_next_block_base_fee(&cs, &parent, 99);
