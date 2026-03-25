@@ -97,7 +97,7 @@ where
     ChainSpec: reth_chainspec::EthChainSpec<Header = H> + OpHardforks,
 {
     let raw = chain_spec.next_block_base_fee(parent, timestamp)?;
-    if chain_spec.is_jovian_active_at_timestamp(parent.timestamp()) {
+    if chain_spec.is_jovian_active_at_timestamp(timestamp) {
         Some(raw)
     } else {
         Some(raw.max(CELO_BASE_FEE_FLOOR))
@@ -445,6 +445,58 @@ mod tests {
         let result = celo_next_block_base_fee(&cs, &parent, 12).unwrap();
         // At 50% utilization, EIP-1559 keeps base fee the same.
         assert_eq!(result, 50_000_000_000);
+    }
+
+    /// Regression: at the Jovian activation boundary, the floor must be decided by the
+    /// *new* block's timestamp, not the parent's. The first Jovian block should NOT
+    /// have the 25 Gwei floor applied even though its parent is pre-Jovian.
+    #[test]
+    fn jovian_activation_boundary_no_floor() {
+        use alloy_primitives::B64;
+        use op_alloy_consensus::encode_holocene_extra_data;
+        use reth_chainspec::{BaseFeeParams, ForkCondition};
+        use reth_optimism_forks::OpHardfork;
+
+        // Chain spec where Jovian activates at timestamp 100.
+        let cs = Arc::new(
+            OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .isthmus_activated()
+                .with_fork(OpHardfork::Jovian, ForkCondition::Timestamp(100))
+                .build(),
+        );
+
+        // Parent at timestamp 99 (pre-Jovian, Holocene-active) with Holocene-encoded
+        // extra_data (9 bytes, version 0). Use low base fee (7 wei) that would be
+        // clamped by the 25 Gwei floor.
+        let extra_data = encode_holocene_extra_data(
+            B64::ZERO,
+            BaseFeeParams::ethereum(),
+        )
+        .unwrap();
+        let parent = Header {
+            base_fee_per_gas: Some(7),
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            timestamp: 99,
+            extra_data,
+            ..Default::default()
+        };
+
+        // New block at timestamp 100 (first Jovian block): floor should NOT apply.
+        let result = celo_next_block_base_fee(&cs, &parent, 100);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            7,
+            "First Jovian block should not apply the 25 Gwei floor"
+        );
+
+        // Sanity: a block at timestamp 99 (still pre-Jovian) SHOULD get the floor.
+        let result_pre = celo_next_block_base_fee(&cs, &parent, 99);
+        assert!(result_pre.is_some());
+        assert_eq!(result_pre.unwrap(), CELO_BASE_FEE_FLOOR);
     }
 
     #[test]

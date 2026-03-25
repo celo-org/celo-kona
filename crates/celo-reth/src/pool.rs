@@ -908,7 +908,7 @@ where
         use alloy_consensus::BlockHeader;
         let header = new_tip_block.header();
         // Estimate next block timestamp as current + 1 (conservative; exact value
-        // doesn't matter for fork activation checks which use the parent's timestamp).
+        // only needs to be close enough for fork activation boundary checks).
         let next_ts = header.timestamp().saturating_add(1);
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
         self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
