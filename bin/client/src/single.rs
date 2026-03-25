@@ -9,7 +9,9 @@ use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use celo_protocol::CeloToOpProviderAdapter;
 use core::fmt::Debug;
+#[cfg(feature = "eigenda")]
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
+#[cfg(feature = "eigenda")]
 use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
 use kona_derive::EthereumDataSource;
@@ -100,14 +102,20 @@ where
 
     let evm_factory = CeloEvmFactory::default();
 
-    // Set up EigenDA data source with Ethereum fallback
+    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+
+    // Set up data source and build the pipeline.
     let eth_data_source =
         EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
-    let eigenda_preimage_provider = OracleEigenDAPreimageProvider::new(oracle.clone());
-    let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
-    let da_provider = EigenDADataSource::new(eth_data_source, eigenda_preimage_source);
 
-    let l1_config = Arc::new(boot.op_boot_info.l1_config);
+    #[cfg(feature = "eigenda")]
+    let da_provider = {
+        let eigenda_preimage_provider = OracleEigenDAPreimageProvider::new(oracle.clone());
+        let eigenda_preimage_source = EigenDAPreimageSource::new(eigenda_preimage_provider);
+        EigenDADataSource::new(eth_data_source, eigenda_preimage_source)
+    };
+    #[cfg(not(feature = "eigenda"))]
+    let da_provider = eth_data_source;
 
     let pipeline = OraclePipeline::new(
         rollup_config.clone(),

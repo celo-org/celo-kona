@@ -5,7 +5,9 @@ use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
+#[cfg(feature = "eigenda")]
 use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
+#[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
@@ -20,6 +22,7 @@ use kona_preimage::{
 use kona_proof::HintType;
 use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
 use kona_std_fpvm::{FileChannel, FileDescriptor};
+#[cfg(feature = "eigenda")]
 use reqwest::Url;
 use serde::Serialize;
 use std::sync::Arc;
@@ -93,7 +96,7 @@ impl CeloSingleChainHost {
                 providers,
                 CeloSingleChainHintHandler,
             )
-            .with_proactive_hint(ExtendedHintType::Original(HintType::L2PayloadWitness));
+            .with_proactive_hint(proactive_hint_type());
 
             task::spawn(async {
                 PreimageServer::new(
@@ -169,6 +172,7 @@ impl CeloSingleChainHost {
         )
         .await;
 
+        #[cfg(feature = "eigenda")]
         let eigenda_preimage_provider = self
             .eigenda_proxy_address
             .as_ref()
@@ -183,14 +187,34 @@ impl CeloSingleChainHost {
             l1: l1_provider,
             blobs: blob_provider,
             l2: l2_provider,
+            #[cfg(feature = "eigenda")]
             eigenda_preimage_provider,
         })
     }
 }
 
+#[cfg(feature = "eigenda")]
 impl OnlineHostBackendCfg for CeloSingleChainHost {
     type HintType = ExtendedHintType;
     type Providers = CeloSingleChainProviders;
+}
+
+#[cfg(not(feature = "eigenda"))]
+impl OnlineHostBackendCfg for CeloSingleChainHost {
+    type HintType = HintType;
+    type Providers = CeloSingleChainProviders;
+}
+
+/// Returns the proactive hint type for the host backend.
+#[cfg(feature = "eigenda")]
+fn proactive_hint_type() -> ExtendedHintType {
+    ExtendedHintType::Original(HintType::L2PayloadWitness)
+}
+
+/// Returns the proactive hint type for the host backend.
+#[cfg(not(feature = "eigenda"))]
+const fn proactive_hint_type() -> HintType {
+    HintType::L2PayloadWitness
 }
 
 /// The providers required for the single chain host.
@@ -203,6 +227,7 @@ pub struct CeloSingleChainProviders {
     /// The L2 EL provider.
     pub l2: RootProvider<Celo>,
     /// The EigenDA blob provider
+    #[cfg(feature = "eigenda")]
     pub eigenda_preimage_provider: Option<OnlineEigenDAPreimageProvider>,
 }
 

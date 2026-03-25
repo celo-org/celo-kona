@@ -10,19 +10,20 @@ use revm::{
         ContextTr, Database,
         result::{EVMError, ExecutionResult},
     },
-    handler::{EthFrame, EvmTr, Handler, SystemCallTx},
+    handler::{EthFrame, EvmTr, Handler, PrecompileProvider, SystemCallTx},
     inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler},
-    interpreter::interpreter::EthInterpreter,
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
 };
 
 /// Type alias for the error type of the CeloEvm.
 type CeloError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, OpTransactionError>;
 
-impl<DB, INSP> ExecuteEvm for CeloEvm<DB, INSP>
+impl<DB, INSP, P> ExecuteEvm for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type Tx = <CeloContext<DB> as ContextTr>::Tx;
     type Block = <CeloContext<DB> as ContextTr>::Block;
@@ -37,7 +38,7 @@ where
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
         let mut h = CeloHandler::<
-            CeloEvm<DB, INSP>,
+            CeloEvm<DB, INSP, P>,
             CeloError<CeloContext<DB>>,
             EthFrame<EthInterpreter>,
         >::new();
@@ -52,7 +53,7 @@ where
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
         let mut h = CeloHandler::<
-            CeloEvm<DB, INSP>,
+            CeloEvm<DB, INSP, P>,
             CeloError<CeloContext<DB>>,
             EthFrame<EthInterpreter>,
         >::new();
@@ -63,20 +64,22 @@ where
     }
 }
 
-impl<DB, INSP> ExecuteCommitEvm for CeloEvm<DB, INSP>
+impl<DB, INSP, P> ExecuteCommitEvm for CeloEvm<DB, INSP, P>
 where
     DB: Database + DatabaseCommit,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     fn commit(&mut self, state: Self::State) {
         self.inner.ctx().db_mut().commit(state);
     }
 }
 
-impl<DB, INSP> InspectEvm for CeloEvm<DB, INSP>
+impl<DB, INSP, P> InspectEvm for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type Inspector = INSP;
 
@@ -87,7 +90,7 @@ where
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
         let mut h = CeloHandler::<
-            CeloEvm<DB, INSP>,
+            CeloEvm<DB, INSP, P>,
             CeloError<CeloContext<DB>>,
             EthFrame<EthInterpreter>,
         >::new();
@@ -95,17 +98,19 @@ where
     }
 }
 
-impl<DB, INSP> InspectCommitEvm for CeloEvm<DB, INSP>
+impl<DB, INSP, P> InspectCommitEvm for CeloEvm<DB, INSP, P>
 where
     DB: Database + DatabaseCommit,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
 }
 
-impl<DB, INSP> SystemCallEvm for CeloEvm<DB, INSP>
+impl<DB, INSP, P> SystemCallEvm for CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     fn system_call_one_with_caller(
         &mut self,
@@ -121,7 +126,7 @@ where
             ),
         );
         let mut h = CeloHandler::<
-            CeloEvm<DB, INSP>,
+            CeloEvm<DB, INSP, P>,
             CeloError<CeloContext<DB>>,
             EthFrame<EthInterpreter>,
         >::new();
@@ -129,10 +134,11 @@ where
     }
 }
 
-impl<DB, INSP> CeloEvm<DB, INSP>
+impl<DB, INSP, P> CeloEvm<DB, INSP, P>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     /// Execute a system call with a custom gas limit
     pub fn transact_system_call_with_gas_limit(
@@ -150,7 +156,7 @@ where
             ),
         );
         let mut h = CeloHandler::<
-            CeloEvm<DB, INSP>,
+            CeloEvm<DB, INSP, P>,
             CeloError<CeloContext<DB>>,
             EthFrame<EthInterpreter>,
         >::new();
