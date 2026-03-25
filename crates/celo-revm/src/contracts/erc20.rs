@@ -171,6 +171,7 @@ mod tests {
                 nonce: 0,
                 code_hash: bytecode.hash_slow(),
                 code: Some(bytecode),
+                account_id: None,
             },
         );
         // Set _balances[account_addr] = balance
