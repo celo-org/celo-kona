@@ -15,6 +15,7 @@ workspace = true
 [[bin]]
 name = "celo-reth"
 path = "src/bin/celo_reth.rs"
+required-features = ["std"]
 
 [dependencies]
 # Reth
