@@ -13,6 +13,10 @@ exclude_members := "--exclude celo-registry --exclude execution-fixture"
 default:
   @just --list
 
+# Install git hooks (nightly fmt check on pre-commit)
+setup:
+  git config core.hooksPath .githooks
+
 # Test for the native target with all features.
 # NOTE: celo-host and celo-client are tested separately because their `eigenda` feature
 # pulls in hokulea-client, which is incompatible with the kona fork's alloy-evm version.
