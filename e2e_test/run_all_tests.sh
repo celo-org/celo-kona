@@ -63,7 +63,6 @@ trap cleanup EXIT
 # Use non-default ports to avoid conflicts with other running nodes.
 HTTP_PORT="${HTTP_PORT:-8545}"
 AUTH_PORT="${AUTH_PORT:-8651}"
-P2P_PORT="${P2P_PORT:-30403}"
 
 # Kill any stale celo-reth instances on our ports to prevent conflicts.
 if lsof -ti :"$HTTP_PORT" &>/dev/null; then
@@ -82,8 +81,7 @@ echo "Starting celo-reth in dev mode (datadir=$DATADIR)..."
     --http.port "$HTTP_PORT" \
     --http.api eth,web3,net,admin \
     --authrpc.port "$AUTH_PORT" \
-    --port "$P2P_PORT" \
-    --discovery.port "$P2P_PORT" \
+    --disable-discovery \
     &>"$SCRIPT_DIR/celo-reth.log" &
 CELO_RETH_PID=$!
 
