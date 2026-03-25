@@ -7,10 +7,6 @@ const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
 const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 
-// The pre-Granite channel timeout for Celo Mainnet, as configured in the node RPC rollup config.
-// chain_config.as_rollup_config() defaults to 300, but Celo Mainnet uses 50.
-const CELO_MAINNET_CHANNEL_TIMEOUT: u64 = 50;
-
 use celo_genesis::CeloRollupConfig;
 use kona_genesis::{ChainConfig, Superchains};
 
@@ -66,10 +62,6 @@ impl Registry {
                     // a single value), but Chaos and Celo Sepolia have a different address.
                     rollup.protocol_versions_address =
                         address!("0xbca7e7eeddd0a7d5892ed7c4fa4a4cd4047bfdd7");
-                } else if rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID {
-                    // chain_config.as_rollup_config() defaults channel_timeout to 300, but the
-                    // node RPC rollup config for Celo Mainnet uses CELO_MAINNET_CHANNEL_TIMEOUT.
-                    rollup.channel_timeout = CELO_MAINNET_CHANNEL_TIMEOUT;
                 }
 
                 // chain_config.as_rollup_config() copies da_challenge_address from
