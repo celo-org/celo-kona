@@ -47,7 +47,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
 ignore = true
-ignore-sources = ["https://github.com/Layr-Labs/hokulea"]
+ignore-sources = ["https://github.com/Layr-Labs/hokulea", "https://github.com/celo-org/hokulea"]
 
 [bans]
 multiple-versions = "warn"
@@ -71,7 +71,8 @@ allow-git = [
     "https://github.com/op-rs/kona",
     "https://github.com/celo-org/kona",
     "https://github.com/celo-org/revm",
-    "https://github.com/celo-org/alloy"
+    "https://github.com/celo-org/alloy",
+    "https://github.com/celo-org/hokulea"
 ]
 
 [sources.allow-org]
