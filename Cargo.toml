@@ -218,18 +218,27 @@ alloy-eips = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exp
 alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-v1.5.2" }
 
 [patch."https://github.com/op-rs/kona"]
-kona-host = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-client = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-driver   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-derive   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-protocol = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-registry = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-proof      = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-executor   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
-kona-cli   = { git = "https://github.com/celo-org/kona", rev = "ce6c778e" }
+kona-host = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-client = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-driver   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-derive   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-genesis  = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-protocol = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-registry = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-providers-alloy = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-mpt        = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-proof      = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-executor   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-std-fpvm   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-preimage   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+kona-cli   = { git = "https://github.com/celo-org/kona", rev = "cf790b7" }
+
+# TODO: Remove this patch once Hokulea is upgraded to a version that includes
+# the Kona update from:
+# https://github.com/ethereum-optimism/optimism/commit/b08e543ddfb2c49be51a351c10135bdedcb8152d
+# Also remove this entry from deny.toml.
+[patch."https://github.com/Layr-Labs/hokulea"]
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", branch = "kona-proof-fix" }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", branch = "kona-proof-fix" }
+hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", branch = "kona-proof-fix" }
