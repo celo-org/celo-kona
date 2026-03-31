@@ -73,6 +73,32 @@ where
         ));
     }
 
+    // If the claim targets the safe head block itself, then no derivation is required. This can
+    // happen at trace-extension leaves where the trace is capped at the root-claim block number.
+    //
+    // In this case, the only valid output root is the agreed output root (a zero-step transition).
+    if boot.op_boot_info.claimed_l2_block_number == safe_head.number {
+        if boot.op_boot_info.claimed_l2_output_root != boot.op_boot_info.agreed_l2_output_root {
+            error!(
+                target: "client",
+                claimed = boot.op_boot_info.claimed_l2_block_number,
+                safe = safe_head.number,
+                expected_output_root = ?boot.op_boot_info.agreed_l2_output_root,
+                claimed_output_root = ?boot.op_boot_info.claimed_l2_output_root,
+                "Claimed output root does not match agreed output root at safe head",
+            );
+            return Err(FaultProofProgramError::InvalidClaim(
+                boot.op_boot_info.agreed_l2_output_root,
+                boot.op_boot_info.claimed_l2_output_root,
+            ));
+        }
+        info!(
+            target: "client",
+            "Trace extension detected. State transition is already agreed upon.",
+        );
+        return Ok(());
+    }
+
     ////////////////////////////////////////////////////////////////
     //                   DERIVATION & EXECUTION                   //
     ////////////////////////////////////////////////////////////////
