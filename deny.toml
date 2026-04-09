@@ -48,7 +48,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
 ignore = true
-ignore-sources = ["https://github.com/Layr-Labs/hokulea", "https://github.com/celo-org/hokulea"]
+ignore-sources = ["https://github.com/Layr-Labs/hokulea"]
 
 [bans]
 multiple-versions = "warn"
