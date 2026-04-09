@@ -188,9 +188,9 @@ reth-optimism-storage = { git = "https://github.com/celo-org/optimism", rev = "5
 reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", rev = "574f3e06f9" }
 
 # Hokulea
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.5", default-features = false }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.5", default-features = false }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.5", default-features = false }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.6", default-features = false }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.6", default-features = false }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.6", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
