@@ -220,9 +220,6 @@ where
         // Wrap with CeloExchangeRateApplier to convert CIP-64 fee values
         // to native equivalents after validation.
         .map(|validator| {
-            // In dev mode, disable the base fee floor check since the dev
-            // chain may use a much lower base fee than mainnet's 25 Gwei floor.
-            let base_fee_floor = if ctx.config().dev.dev { 0 } else { crate::CELO_BASE_FEE_FLOOR };
             let tx_fee_cap = match ctx.config().rpc.rpc_tx_fee_cap {
                 0 => None,
                 cap => Some(cap),
@@ -245,6 +242,26 @@ where
                     }
                 },
             );
+            // Seed the initial floor from the current tip's fork state. Without
+            // this, a node restarting post-Jovian would apply a stale 25 gwei
+            // floor until the first `on_new_head_block` fires and can reject
+            // otherwise-valid CIP-64 txs in the meantime.
+            use alloy_consensus::BlockHeader;
+            use reth_storage_api::BlockReaderIdExt;
+            let base_fee_floor = if is_dev {
+                0
+            } else {
+                match ctx.provider().latest_header() {
+                    Ok(Some(header)) => {
+                        let next_ts = header.timestamp().saturating_add(1);
+                        base_fee_floor_fn(header.header(), next_ts)
+                    }
+                    // No tip yet (fresh chain) or read error: fall back to the
+                    // static pre-Jovian floor. `on_new_head_block` will fix it
+                    // once the first canonical block is observed.
+                    _ => crate::CELO_BASE_FEE_FLOOR,
+                }
+            };
             CeloExchangeRateApplier::new(
                 validator,
                 ctx.provider().clone(),
