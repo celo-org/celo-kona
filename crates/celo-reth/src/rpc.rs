@@ -536,7 +536,16 @@ type AsyncThunk<R> = Box<
 pub struct CeloFeeApi {
     gas_price: AsyncThunk<U256>,
     priority_fee: AsyncThunk<U256>,
-    eth_call: AsyncFn<CeloTransactionRequest, Bytes>,
+    #[allow(clippy::type_complexity)]
+    eth_call: Box<
+        dyn Fn(
+                CeloTransactionRequest,
+                Option<alloy_eips::BlockId>,
+            )
+                -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<Bytes>> + Send>>
+            + Send
+            + Sync,
+    >,
     #[allow(clippy::type_complexity)]
     fee_history: Box<
         dyn Fn(
@@ -576,10 +585,14 @@ static GET_EXCHANGE_RATE_SELECTOR: std::sync::LazyLock<[u8; 4]> = std::sync::Laz
 impl CeloFeeApi {
     /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
     ///
-    /// Returns `(numerator, denominator)`.
+    /// Returns `(numerator, denominator)`. When `block_id` is `None` the rate
+    /// is read from the latest state; pass a specific `BlockId` (used by
+    /// `eth_feeHistory`) to get the rate that was in force at that block —
+    /// rates for `eth_gasPrice` / `eth_maxPriorityFeePerGas` are always latest.
     async fn exchange_rate(
         &self,
         fee_currency: Address,
+        block_id: Option<alloy_eips::BlockId>,
     ) -> Result<(U256, U256), jsonrpsee_types::ErrorObjectOwned> {
         let mut calldata = Vec::with_capacity(36);
         calldata.extend_from_slice(GET_EXCHANGE_RATE_SELECTOR.as_slice());
@@ -592,7 +605,7 @@ impl CeloFeeApi {
             fee_currency: None,
         };
 
-        let result = (self.eth_call)(request).await?;
+        let result = (self.eth_call)(request, block_id).await?;
 
         if result.len() < 64 {
             tracing::warn!(
@@ -651,7 +664,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             let base_price = (ctx.gas_price)().await?;
             match fee_currency {
                 Some(fc) => {
-                    let (num, denom) = ctx.exchange_rate(fc).await?;
+                    let (num, denom) = ctx.exchange_rate(fc, None).await?;
                     Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_price * num / denom)
                 }
                 None => Ok(base_price),
@@ -665,7 +678,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             let base_tip = (ctx.priority_fee)().await?;
             match fee_currency {
                 Some(fc) => {
-                    let (num, denom) = ctx.exchange_rate(fc).await?;
+                    let (num, denom) = ctx.exchange_rate(fc, None).await?;
                     Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_tip * num / denom)
                 }
                 None => Ok(base_tip),
@@ -789,12 +802,21 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 _ => return Ok(history),
             };
 
-            // For each block in range, fetch the block and normalize CIP-64 tips
+            // For each block in range, fetch the block and normalize CIP-64 tips.
             let oldest_block = history.oldest_block;
-            // Cache exchange rates per fee currency across blocks to avoid redundant lookups.
-            // The rate is queried at latest state (not per-block), so cross-block reuse is safe.
-            let mut rate_cache: std::collections::HashMap<Address, Option<(U256, U256)>> =
-                std::collections::HashMap::new();
+            // Cache exchange rates keyed by `(block_number, fee_currency)`.
+            //
+            // Fee currency exchange rates can change over time (governance
+            // updates, oracle refreshes), so a per-block-range cache of the
+            // *latest* rate would misattribute tips for historical blocks.
+            // Instead, query the rate at the same block whose transactions we
+            // are normalizing — this yields correct per-block reward
+            // percentiles even when rates changed mid-range. The cache still
+            // dedupes lookups for multiple CIP-64 txs within the same block.
+            let mut rate_cache: std::collections::HashMap<
+                (u64, Address),
+                Option<(U256, U256)>,
+            > = std::collections::HashMap::new();
             for (i, block_rewards) in rewards.iter_mut().enumerate() {
                 let block_num = oldest_block + i as u64;
                 let block_tag = alloy_rpc_types_eth::BlockNumberOrTag::Number(block_num);
@@ -843,11 +865,18 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                             }
                             _ => Address::ZERO,
                         };
-                        let rate = match rate_cache.get(&fc) {
+                        let cache_key = (block_num, fc);
+                        let rate = match rate_cache.get(&cache_key) {
                             Some(cached) => *cached,
                             None => {
-                                let r = ctx.exchange_rate(fc).await.ok();
-                                rate_cache.insert(fc, r);
+                                let r = ctx
+                                    .exchange_rate(
+                                        fc,
+                                        Some(alloy_eips::BlockId::Number(block_tag)),
+                                    )
+                                    .await
+                                    .ok();
+                                rate_cache.insert(cache_key, r);
                                 r
                             }
                         };
@@ -948,9 +977,9 @@ where
         },
         eth_call: {
             let ea = ea.clone();
-            Box::new(move |req| {
+            Box::new(move |req, block_id| {
                 let ea = ea.clone();
-                Box::pin(async move { EthApiServer::call(&*ea, req, None, None, None).await })
+                Box::pin(async move { EthApiServer::call(&*ea, req, block_id, None, None).await })
             })
         },
         fee_history: {
@@ -1395,7 +1424,7 @@ mod tests {
         Arc::new(CeloFeeApi {
             gas_price: Box::new(|| Box::pin(async { Ok(U256::from(25_000_000_000u64)) })),
             priority_fee: Box::new(|| Box::pin(async { Ok(U256::from(1_000_000u64)) })),
-            eth_call: Box::new(|_| Box::pin(async { Ok(Bytes::new()) })),
+            eth_call: Box::new(|_, _| Box::pin(async { Ok(Bytes::new()) })),
             fee_history: Box::new(|_, _, _| {
                 Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
             }),
@@ -1606,7 +1635,7 @@ mod tests {
         Arc::new(CeloFeeApi {
             gas_price: Box::new(move || Box::pin(async move { Ok(U256::from(gas_price)) })),
             priority_fee: Box::new(move || Box::pin(async move { Ok(U256::from(priority_fee)) })),
-            eth_call: Box::new(move |_| {
+            eth_call: Box::new(move |_, _| {
                 let b = rate_bytes.clone();
                 Box::pin(async move { Ok(b) })
             }),
@@ -1644,6 +1673,49 @@ mod tests {
             .await
             .expect("eth_gasPrice without fee currency should succeed");
         assert_eq!(result, U256::from(25_000_000_000u64));
+    }
+
+    #[tokio::test]
+    async fn exchange_rate_passes_block_id_to_eth_call() {
+        // The fee-history normalization path queries the exchange rate at the
+        // *historical* block whose tips it is converting (rates can change
+        // over time, so using a single latest-state rate for the whole range
+        // misattributes tips). Verify that `exchange_rate(fc, Some(block_id))`
+        // actually threads the block id through to the underlying `eth_call`,
+        // and that the `None` case still picks up the latest state.
+        use std::sync::Mutex;
+        let captured: Arc<Mutex<Vec<Option<alloy_eips::BlockId>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+        let rate_bytes = encode_exchange_rate(2, 1);
+        let api = Arc::new(CeloFeeApi {
+            gas_price: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
+            priority_fee: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
+            eth_call: Box::new(move |_, block_id| {
+                captured_clone.lock().unwrap().push(block_id);
+                let b = rate_bytes.clone();
+                Box::pin(async move { Ok(b) })
+            }),
+            fee_history: Box::new(|_, _, _| {
+                Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
+            }),
+            block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
+            block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            fee_currency_directory: Address::ZERO,
+        });
+
+        let fc = Address::with_last_byte(0xAA);
+        // Historical block 42
+        let block_42 =
+            alloy_eips::BlockId::Number(alloy_rpc_types_eth::BlockNumberOrTag::Number(42));
+        let _ = api.exchange_rate(fc, Some(block_42)).await.unwrap();
+        // Latest (None)
+        let _ = api.exchange_rate(fc, None).await.unwrap();
+
+        let seen = captured.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], Some(block_42));
+        assert_eq!(seen[1], None);
     }
 
     #[tokio::test]
