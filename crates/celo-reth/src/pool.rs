@@ -747,6 +747,13 @@ fn apply_exchange_rates_to_valid_tx(
         ValidTransaction::Valid(tx) => tx,
         ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
     };
+    // Pending cumulative reservation — committed only once every check passes.
+    // Tracking it separately avoids leaving stale reserved balance in
+    // `cumulative_fc_costs` when a later check (`debit_ok`, fee cap) rejects
+    // the tx; such a leak would wrongly fail subsequent txs from the same
+    // sender/currency with `InsufficientBalance` until the next head block
+    // clears the map.
+    let mut pending_cumulative: Option<(Address, Address, U256)> = None;
     if let Some(fc) = tx.fee_currency() {
         let old_fee = tx.inner.max_fee_per_gas();
         let old_priority_fee = tx.inner.max_priority_fee_per_gas();
@@ -837,22 +844,26 @@ fn apply_exchange_rates_to_valid_tx(
 
             // Cumulative balance check: ensure the total cost across all pending
             // CIP-64 txs from this sender in this currency doesn't exceed balance.
-            let mut costs = cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner());
-            let cumulative = costs.entry((sender, fc)).or_default();
-            if (*cumulative).saturating_add(required_fc) > balance {
-                tracing::warn!(
-                    target: "celo::pool",
-                    ?fc,
-                    ?sender,
-                    ?required_fc,
-                    cumulative = %*cumulative,
-                    ?balance,
-                    "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
-                );
-                CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
-                return Err(Cip64Rejection::InsufficientBalance(fc));
+            // Read-only here — we only commit the reservation at the very end,
+            // after `debit_ok` and the fee-cap check have run.
+            {
+                let costs = cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner());
+                let cumulative = costs.get(&(sender, fc)).copied().unwrap_or_default();
+                if cumulative.saturating_add(required_fc) > balance {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        ?fc,
+                        ?sender,
+                        ?required_fc,
+                        %cumulative,
+                        ?balance,
+                        "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
+                    );
+                    CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
+                    return Err(Cip64Rejection::InsufficientBalance(fc));
+                }
             }
-            *cumulative = cumulative.saturating_add(required_fc);
+            pending_cumulative = Some((sender, fc, required_fc));
         }
 
         // Check debit simulation result. If debit_ok is None (not attempted
@@ -889,6 +900,13 @@ fn apply_exchange_rates_to_valid_tx(
             CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
         }
+    }
+
+    // All checks passed — commit the cumulative FC reservation now (if any).
+    if let Some((sender, fc, required_fc)) = pending_cumulative {
+        let mut costs = cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = costs.entry((sender, fc)).or_default();
+        *entry = entry.saturating_add(required_fc);
     }
 
     Ok(())
@@ -1942,5 +1960,97 @@ mod tests {
             &cumulative,
         );
         assert!(r3.is_ok(), "After clear, tx should pass again; got {r3:?}");
+    }
+
+    /// If a CIP-64 tx is rejected by a check that runs *after* the cumulative
+    /// reservation was staged (debit simulation, fee cap), the cumulative map
+    /// must NOT retain the reserved amount — otherwise subsequent valid txs
+    /// from the same sender/currency would be spuriously rejected as
+    /// `InsufficientBalance` until the next head block clears the map.
+    #[test]
+    fn test_cumulative_not_reserved_on_debit_sim_rejection() {
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        // gas=100, max_fee=100 → required_fc = 10_000 per tx
+        let balance = U256::from(30_000u64);
+
+        // First tx: debit simulation fails → rejected
+        let mock_fail = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(false),
+        };
+        let cumulative = empty_cumulative_costs();
+        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid1 = wrap_valid(tx1);
+        let r1 = apply_exchange_rates_to_valid_tx(
+            &mock_fail,
+            &mut valid1,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(matches!(r1, Err(Cip64Rejection::DebitSimulationFailed(_))));
+        assert_eq!(
+            cumulative.lock().unwrap_or_else(|e| e.into_inner()).get(&(sender, fc)).copied(),
+            None,
+            "debit-sim rejection must not leave a stale cumulative reservation"
+        );
+
+        // Second tx with the SAME balance: debit_ok=true → must succeed,
+        // even though a naive pre-check that committed the reservation up front
+        // would have left 10_000 reserved from the first tx.
+        let mock_ok = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(balance),
+            debit_ok: Some(true),
+        };
+        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let mut valid2 = wrap_valid(tx2);
+        let r2 = apply_exchange_rates_to_valid_tx(
+            &mock_ok,
+            &mut valid2,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &cumulative,
+        );
+        assert!(r2.is_ok(), "Follow-up tx should pass (no stale reservation); got {r2:?}");
+    }
+
+    #[test]
+    fn test_cumulative_not_reserved_on_fee_cap_rejection() {
+        // CIP-64 tx priced above the fee cap — fee cap check runs after the
+        // cumulative reservation is staged, so we need to verify the map is
+        // not mutated when that rejection fires.
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, sender);
+        let mut valid = wrap_valid(tx);
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+        };
+        let cumulative = empty_cumulative_costs();
+        // native_cost = 21_000 * 1_000_000_000 = 2.1e13; cap = 1e12 → rejected
+        let result = apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            Some(1_000_000_000_000),
+            &cumulative,
+        );
+        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+        assert_eq!(
+            cumulative.lock().unwrap_or_else(|e| e.into_inner()).get(&(sender, fc)).copied(),
+            None,
+            "fee-cap rejection must not leave a stale cumulative reservation"
+        );
     }
 }
