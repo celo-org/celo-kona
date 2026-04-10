@@ -217,10 +217,10 @@ impl Transaction for CeloPoolTx {
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
         base_fee.map_or(self.native_max_fee_per_gas, |base_fee| {
             let tip = self.native_max_fee_per_gas.saturating_sub(base_fee as u128);
-            if let Some(max_prio) = self.native_max_priority_fee_per_gas {
-                if tip > max_prio {
-                    return max_prio + base_fee as u128;
-                }
+            if let Some(max_prio) = self.native_max_priority_fee_per_gas &&
+                tip > max_prio
+            {
+                return max_prio + base_fee as u128;
             }
             self.native_max_fee_per_gas
         })
@@ -844,21 +844,21 @@ fn apply_exchange_rates_to_valid_tx(
 
     // Fee cap check: applies to both CIP-64 (using native-equivalent cost) and native txs.
     // For CIP-64 txs, native_cost was recomputed by apply_exchange_rate above.
-    if let Some(cap) = tx_fee_cap {
-        if cap > 0 {
-            let fee_cost = tx.cost().saturating_sub(tx.value());
-            let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
-                tracing::warn!(
-                    target: "celo::pool",
-                    %fee_cost,
-                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
-                );
-                u128::MAX
-            });
-            if max_tx_fee_wei > cap {
-                CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
-                return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
-            }
+    if let Some(cap) = tx_fee_cap &&
+        cap > 0
+    {
+        let fee_cost = tx.cost().saturating_sub(tx.value());
+        let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
+            tracing::warn!(
+                target: "celo::pool",
+                %fee_cost,
+                "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+            );
+            u128::MAX
+        });
+        if max_tx_fee_wei > cap {
+            CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
+            return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
         }
     }
 

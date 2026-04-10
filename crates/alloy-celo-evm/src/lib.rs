@@ -10,6 +10,7 @@ use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
     precompiles::{DynPrecompile, PrecompilesMap},
 };
+use alloy_op_evm::{OpTxError, map_op_err};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_revm::{
@@ -21,10 +22,7 @@ use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use op_revm::{
-    L1BlockInfo, OpHaltReason, OpSpecId, OpTransaction, OpTransactionError,
-    precompiles::OpPrecompiles,
-};
+use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, OpTransaction, precompiles::OpPrecompiles};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
@@ -124,15 +122,11 @@ fn transfer_precompile(
 
     let result = input.internals.transfer(from, to, value);
 
-    if revert_from_cold {
-        if let Ok(mut account) = input.internals.load_account_mut(from) {
-            account.data.unsafe_mark_cold();
-        }
+    if revert_from_cold && let Ok(mut account) = input.internals.load_account_mut(from) {
+        account.data.unsafe_mark_cold();
     }
-    if revert_to_cold {
-        if let Ok(mut account) = input.internals.load_account_mut(to) {
-            account.data.unsafe_mark_cold();
-        }
+    if revert_to_cold && let Ok(mut account) = input.internals.load_account_mut(to) {
+        account.data.unsafe_mark_cold();
     }
 
     match result {
@@ -233,7 +227,7 @@ where
 {
     type DB = DB;
     type Tx = CeloTransaction<TxEnv>;
-    type Error = EVMError<DB::Error, OpTransactionError>;
+    type Error = EVMError<DB::Error, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
@@ -270,20 +264,20 @@ where
         }
 
         // Check if the fee currency is blocklisted — reject early without EVM execution.
-        if is_block_building {
-            if let Some(fc) = fee_currency {
-                if self.blocklist.is_blocked(fc) {
-                    return Err(EVMError::Transaction(
-                        revm::context::result::InvalidTransaction::from(alloc::format!(
-                            "fee currency {fc} is temporarily blocklisted"
-                        ))
-                        .into(),
-                    ));
-                }
-            }
+        if is_block_building
+            && let Some(fc) = fee_currency
+            && self.blocklist.is_blocked(fc)
+        {
+            return Err(EVMError::Transaction(OpTxError(
+                revm::context::result::InvalidTransaction::from(alloc::format!(
+                    "fee currency {fc} is temporarily blocklisted"
+                ))
+                .into(),
+            )));
         }
 
-        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
+        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
+            .map_err(map_op_err);
 
         match &result {
             Ok(_) => {
@@ -517,8 +511,7 @@ impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
     type Context<DB: Database> = CeloContext<DB>;
     type Tx = CeloTransaction<TxEnv>;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> =
-        EVMError<DBError, OpTransactionError>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;

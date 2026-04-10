@@ -90,9 +90,12 @@ where
     ////////////////////////////////////////////////////////////////
 
     // Create a new derivation driver with the given boot information and oracle.
+    //
+    // kona-client v1.2.13 added `agreed_l2_output_root` as the 3rd argument.
     let cursor = new_oracle_pipeline_cursor(
         rollup_config.as_ref(),
         safe_head,
+        boot.op_boot_info.agreed_l2_output_root,
         &mut l1_provider,
         // new_oracle_pipeline_cursor requires l2_block_info_by_number
         &mut CeloToOpProviderAdapter(l2_provider.clone()),

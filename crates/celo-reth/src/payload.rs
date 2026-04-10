@@ -66,12 +66,11 @@ impl FeeCurrencyLimits {
             if pair.is_empty() {
                 continue;
             }
-            if let Some((addr_str, frac_str)) = pair.split_once('=') {
-                if let (Ok(addr), Ok(frac)) =
+            if let Some((addr_str, frac_str)) = pair.split_once('=') &&
+                let (Ok(addr), Ok(frac)) =
                     (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>())
-                {
-                    map.insert(addr, frac);
-                }
+            {
+                map.insert(addr, frac);
             }
         }
         map
@@ -166,18 +165,18 @@ where
             let fee_currency = tx.fee_currency();
 
             // Check blocklist before gas limits
-            if let Some(fc) = fee_currency {
-                if self.blocklist.is_blocked(fc) {
-                    tracing::debug!(
-                        target: "celo::payload",
-                        ?fc,
-                        "Skipping tx: fee currency is blocklisted"
-                    );
-                    metrics::counter!("celo_payload_skipped_total", "reason" => "blocklisted")
-                        .increment(1);
-                    self.inner.mark_invalid(tx.sender(), tx.nonce());
-                    continue;
-                }
+            if let Some(fc) = fee_currency &&
+                self.blocklist.is_blocked(fc)
+            {
+                tracing::debug!(
+                    target: "celo::payload",
+                    ?fc,
+                    "Skipping tx: fee currency is blocklisted"
+                );
+                metrics::counter!("celo_payload_skipped_total", "reason" => "blocklisted")
+                    .increment(1);
+                self.inner.mark_invalid(tx.sender(), tx.nonce());
+                continue;
             }
 
             if let Some(max_gas) =

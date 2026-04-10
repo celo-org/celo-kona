@@ -92,13 +92,13 @@ pub struct CeloTransactionRequest {
 impl serde::Serialize for CeloTransactionRequest {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut value = serde_json::to_value(&self.inner).map_err(serde::ser::Error::custom)?;
-        if let Some(fc) = self.fee_currency {
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "feeCurrency".to_string(),
-                    serde_json::to_value(fc).map_err(serde::ser::Error::custom)?,
-                );
-            }
+        if let Some(fc) = self.fee_currency &&
+            let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "feeCurrency".to_string(),
+                serde_json::to_value(fc).map_err(serde::ser::Error::custom)?,
+            );
         }
         value.serialize(serializer)
     }
@@ -137,25 +137,24 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
             .map(|op_tx| {
                 let mut celo_tx = op_tx_to_celo(op_tx);
                 // If fee_currency is set, wrap the inner EIP-1559 tx into a CIP-64 variant
-                if let Some(fc) = fee_currency {
-                    if let CeloTxEnvelope::Eip1559(signed) = celo_tx {
-                        let (eip1559, sig, _hash) = signed.into_parts();
-                        let cip64 = celo_alloy_consensus::TxCip64 {
-                            chain_id: eip1559.chain_id,
-                            nonce: eip1559.nonce,
-                            gas_limit: eip1559.gas_limit,
-                            max_fee_per_gas: eip1559.max_fee_per_gas,
-                            max_priority_fee_per_gas: eip1559.max_priority_fee_per_gas,
-                            to: eip1559.to,
-                            value: eip1559.value,
-                            access_list: eip1559.access_list,
-                            input: eip1559.input,
-                            fee_currency: Some(fc),
-                        };
-                        celo_tx = CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
-                            cip64, sig,
-                        ));
-                    }
+                if let Some(fc) = fee_currency &&
+                    let CeloTxEnvelope::Eip1559(signed) = celo_tx
+                {
+                    let (eip1559, sig, _hash) = signed.into_parts();
+                    let cip64 = celo_alloy_consensus::TxCip64 {
+                        chain_id: eip1559.chain_id,
+                        nonce: eip1559.nonce,
+                        gas_limit: eip1559.gas_limit,
+                        max_fee_per_gas: eip1559.max_fee_per_gas,
+                        max_priority_fee_per_gas: eip1559.max_priority_fee_per_gas,
+                        to: eip1559.to,
+                        value: eip1559.value,
+                        access_list: eip1559.access_list,
+                        input: eip1559.input,
+                        fee_currency: Some(fc),
+                    };
+                    celo_tx =
+                        CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(cip64, sig));
                 }
                 CeloConsensusTx::new(celo_tx)
             })

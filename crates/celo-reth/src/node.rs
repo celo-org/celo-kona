@@ -570,13 +570,10 @@ where
             // `celo_next_block_base_fee` returns `None` (e.g. dev mode with
             // an empty genesis extra-data under Holocene), skip the check and
             // fall back to OP's default behavior (trusted sequencer).
-            if let Some(expected) = expected {
-                if expected != base_fee {
-                    return Err(ConsensusError::BaseFeeDiff(GotExpected {
-                        expected,
-                        got: base_fee,
-                    }));
-                }
+            if let Some(expected) = expected &&
+                expected != base_fee
+            {
+                return Err(ConsensusError::BaseFeeDiff(GotExpected { expected, got: base_fee }));
             }
         }
 
