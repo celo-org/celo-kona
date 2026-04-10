@@ -128,10 +128,15 @@ pub struct CeloPoolTx {
     native_max_priority_fee_per_gas: Option<u128>,
     /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
     fee_currency: Option<Address>,
-    /// For CIP-64 txs after exchange rate is applied: `gas_limit * native_max_fee + value`.
-    /// For non-CIP-64 txs: same as `inner.cost()`.
-    /// The pool checks this against native balance, so for CIP-64 txs it must not
-    /// include the fee-currency gas cost.
+    /// Cost checked against the sender's native CELO balance.
+    ///
+    /// - Non-CIP-64 txs: same as `inner.cost()` (`gas_limit * max_fee + value`).
+    /// - CIP-64 txs, before [`apply_exchange_rate`] runs: just `value`, because gas is paid in the
+    ///   fee currency and we don't yet know the native equivalent. Seeding from `inner.cost()`
+    ///   would over-count the FC-denominated gas as if it were native CELO, causing the inner
+    ///   validator's balance check to reject otherwise-valid txs whose sender has plenty of ERC20
+    ///   balance but little CELO.
+    /// - CIP-64 txs, after [`apply_exchange_rate`] runs: `gas_limit * native_max_fee + value`.
     native_cost: U256,
 }
 
@@ -155,7 +160,13 @@ impl CeloPoolTx {
         let native_max_fee_per_gas = inner.max_fee_per_gas();
         let native_max_priority_fee_per_gas = inner.max_priority_fee_per_gas();
         let fee_currency = extract_fee_currency(&inner);
-        let native_cost = *inner.cost();
+        // For CIP-64 txs the raw `inner.cost()` is `gas_limit * max_fee + value`
+        // in *fee-currency* units — treating that as native CELO would reject
+        // valid txs whose sender funded gas with ERC20 but holds only `value`
+        // in CELO. Seed `native_cost` with just `value` and let
+        // `apply_exchange_rate` fill in the real native-equivalent gas cost
+        // once the rate is known.
+        let native_cost = if fee_currency.is_some() { inner.value() } else { *inner.cost() };
         Self {
             inner,
             native_max_fee_per_gas,
@@ -1200,6 +1211,22 @@ mod tests {
         let tx = make_test_tx(None, 100, 1_000, 10, Address::with_last_byte(1));
         // For native tx: cost = gas_limit * max_fee + value = 100 * 1000 + 0 = 100_000
         assert_eq!(*tx.cost(), U256::from(100_000));
+    }
+
+    #[test]
+    fn test_initial_native_cost_excludes_fc_gas_for_cip64() {
+        // Before `apply_exchange_rate` is called, the cost seen by the inner
+        // validator's native-balance check must NOT include the fee-currency
+        // gas cost — otherwise CIP-64 txs whose sender holds plenty of ERC20
+        // but little CELO get spuriously rejected. `make_test_tx` builds a tx
+        // with `value == 0`, so the expected initial cost is 0.
+        let fc = Address::with_last_byte(0xCD);
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        assert_eq!(
+            *tx.cost(),
+            U256::ZERO,
+            "initial native_cost for a CIP-64 tx must exclude FC-denominated gas"
+        );
     }
 
     #[test]
