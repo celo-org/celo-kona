@@ -359,7 +359,12 @@ where
     type RpcBlock = alloy_rpc_types_eth::Block<CeloTxEnvelope>;
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_node_api::BlockTy<Self> {
-        rpc_block.into_consensus()
+        // `RpcBlock` stays on the wire envelope type (`CeloTxEnvelope`) since RPC
+        // serialization is transparent across the `CeloConsensusTx` newtype. The
+        // internal block body is `Block<CeloConsensusTx>`, so map each tx into
+        // the wrapper when converting from RPC to the node's primitive block.
+        let block: alloy_consensus::Block<CeloTxEnvelope> = rpc_block.into_consensus();
+        block.map_transactions(crate::signed_tx::CeloConsensusTx::new)
     }
 
     fn local_payload_attributes_builder(

@@ -4,7 +4,11 @@
 //! the Celo equivalents of the op-reth `Optimism` network type, `OpReceiptConverter`,
 //! and `OpEthApiBuilder`.
 
-use crate::{primitives::CeloPrimitives, receipt::CeloReceipt};
+use crate::{
+    primitives::{CeloPrimitives, CeloTransactionSigned},
+    receipt::CeloReceipt,
+    signed_tx::CeloConsensusTx,
+};
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_evm::{EvmEnv, env::BlockEnvironment, rpc::EthTxEnvError};
 use alloy_network::TxSigner;
@@ -65,7 +69,7 @@ impl RpcTypes for CeloRpcTypes {
     type Header = alloy_rpc_types_eth::Header;
     type Receipt = CeloTransactionReceipt;
     type TransactionRequest = CeloTransactionRequest;
-    type TransactionResponse = op_alloy_rpc_types::Transaction<CeloTxEnvelope>;
+    type TransactionResponse = op_alloy_rpc_types::Transaction<CeloTransactionSigned>;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,8 +129,8 @@ impl AsMut<TransactionRequest> for CeloTransactionRequest {
     }
 }
 
-impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
-    fn try_into_sim_tx(self) -> Result<CeloTxEnvelope, ValueError<Self>> {
+impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
+    fn try_into_sim_tx(self) -> Result<CeloTransactionSigned, ValueError<Self>> {
         let fee_currency = self.fee_currency;
         self.inner
             .try_into_sim_tx()
@@ -153,7 +157,7 @@ impl TryIntoSimTx<CeloTxEnvelope> for CeloTransactionRequest {
                         ));
                     }
                 }
-                celo_tx
+                CeloConsensusTx::new(celo_tx)
             })
             .map_err(|e| e.map(|inner| Self { inner, fee_currency }))
     }
@@ -186,11 +190,11 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
     }
 }
 
-impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
+impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
     async fn try_build_and_sign(
         self,
         signer: impl TxSigner<Signature> + Send,
-    ) -> Result<CeloTxEnvelope, SignTxRequestError> {
+    ) -> Result<CeloTransactionSigned, SignTxRequestError> {
         if let Some(fc) = self.fee_currency {
             // Build a CIP-64 tx directly so fee_currency is preserved.
             let req = self.inner.as_ref();
@@ -214,13 +218,16 @@ impl SignableTxRequest<CeloTxEnvelope> for CeloTransactionRequest {
                 fee_currency: Some(fc),
             };
             let sig = signer.sign_transaction(&mut cip64).await?;
-            Ok(CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(cip64, sig)))
+            Ok(CeloConsensusTx::new(CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
+                cip64, sig,
+            ))))
         } else {
             SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(
                 self.inner, signer,
             )
             .await
             .map(op_tx_to_celo)
+            .map(CeloConsensusTx::new)
         }
     }
 }
@@ -248,7 +255,7 @@ impl<Provider> CeloReceiptConverter<Provider> {
 
 impl<Provider> ReceiptConverter<CeloPrimitives> for CeloReceiptConverter<Provider>
 where
-    Provider: BlockReader<Block = alloy_consensus::Block<CeloTxEnvelope>>
+    Provider: BlockReader<Block = alloy_consensus::Block<CeloTransactionSigned>>
         + ChainSpecProvider<ChainSpec: OpHardforks>
         + Debug
         + 'static,
@@ -275,7 +282,7 @@ where
     fn convert_receipts_with_block(
         &self,
         inputs: Vec<ConvertReceiptInput<'_, CeloPrimitives>>,
-        block: &SealedBlock<alloy_consensus::Block<CeloTxEnvelope>>,
+        block: &SealedBlock<alloy_consensus::Block<CeloTransactionSigned>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
         let mut l1_block_info = match reth_optimism_evm::extract_l1_info(block.body()) {
             Ok(l1_block_info) => l1_block_info,
@@ -445,7 +452,7 @@ where
                 Primitives = CeloPrimitives,
             >,
         >,
-    N::Provider: BlockReader<Block = alloy_consensus::Block<CeloTxEnvelope>>
+    N::Provider: BlockReader<Block = alloy_consensus::Block<CeloTransactionSigned>>
         + ChainSpecProvider<ChainSpec: OpHardforks>
         + Clone
         + Debug
@@ -484,7 +491,7 @@ where
 
 /// Type alias for CeloBlock in RPC context.
 type CeloRpcBlock = alloy_rpc_types_eth::Block<
-    op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+    op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
     alloy_rpc_types_eth::Header,
 >;
 /// Type-erased async closure.
@@ -779,7 +786,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
 
                     let tip = if tx.ty() == cip64_ty {
                         // CIP-64 tx: extract fee_currency and compute tip correctly
-                        let envelope: &CeloTxEnvelope = &tx.inner.inner;
+                        let envelope: &CeloTxEnvelope = tx.inner.inner.envelope();
                         let fc = match envelope {
                             CeloTxEnvelope::Cip64(signed) => {
                                 signed.tx().fee_currency.unwrap_or(Address::ZERO)
@@ -854,9 +861,9 @@ pub fn make_celo_fee_api<Api>(eth_api: Api, fee_currency_directory: Address) -> 
 where
     Api: reth_rpc_eth_api::EthApiServer<
             CeloTransactionRequest,
-            op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+            op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
             alloy_rpc_types_eth::Block<
-                op_alloy_rpc_types::Transaction<CeloTxEnvelope>,
+                op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
                 alloy_rpc_types_eth::Header,
             >,
             CeloTransactionReceipt,
@@ -1184,7 +1191,7 @@ mod tests {
                 // The tx should NOT be CIP-64 — fee_currency wrapping only
                 // applies when the inner OP tx produces EIP-1559.
                 assert!(
-                    !matches!(tx, CeloTxEnvelope::Cip64(_)),
+                    !matches!(tx.envelope(), CeloTxEnvelope::Cip64(_)),
                     "Legacy request with fee_currency should not produce CIP-64 tx"
                 );
             }
@@ -1309,7 +1316,7 @@ mod tests {
         };
 
         let tx = req.try_into_sim_tx().expect("EIP-1559 with fee_currency should succeed");
-        match tx {
+        match tx.envelope() {
             CeloTxEnvelope::Cip64(signed) => {
                 assert_eq!(signed.tx().fee_currency, Some(fc));
             }

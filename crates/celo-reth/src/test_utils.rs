@@ -57,7 +57,7 @@ pub(crate) fn make_test_tx(
         },
     );
 
-    let signed: crate::primitives::CeloTransactionSigned = tx;
+    let signed: crate::primitives::CeloTransactionSigned = tx.into();
     let recovered = Recovered::new_unchecked(signed, sender);
     let pooled = CeloPooledTransaction::try_from(recovered.into_inner()).unwrap();
     let inner = TestInnerPoolTx::from_pooled(Recovered::new_unchecked(pooled, sender));
