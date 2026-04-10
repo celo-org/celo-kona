@@ -383,9 +383,11 @@ impl<Provider> CeloReceiptConverter<Provider> {
         let base_fee = if let CeloReceiptEnvelope::Cip64(ref cip64) = core_receipt.inner {
             let fc_base_fee = cip64.receipt.base_fee;
             if let Some(fc_bf) = fc_base_fee {
-                // Recompute effective gas price with the fee-currency base fee
-                core_receipt.effective_gas_price =
-                    tx_signed.effective_gas_price(Some(fc_bf as u64));
+                core_receipt.effective_gas_price = cip64_effective_gas_price(
+                    tx_signed.max_fee_per_gas(),
+                    tx_signed.max_priority_fee_per_gas().unwrap_or(0),
+                    fc_bf,
+                );
             }
             fc_base_fee
         } else {
@@ -402,6 +404,26 @@ impl<Provider> CeloReceiptConverter<Provider> {
             base_fee,
         })
     }
+}
+
+/// Compute the effective gas price for a CIP-64 tx given its fee-currency-denominated
+/// base fee.
+///
+/// Equivalent to `min(max_fee_per_gas, base_fee + max_priority_fee_per_gas)` — same
+/// formula used elsewhere in reth/alloy, but entirely in `u128` space.
+///
+/// Avoids narrowing `base_fee_in_erc20` (a `u128`) to `u64` before calling the
+/// alloy-consensus `effective_gas_price` helper: for fee currencies with high
+/// exchange-rate numerators (cheap token, expensive CELO), `base_fee_in_erc20` can
+/// exceed `u64::MAX`, and the narrowing cast would wrap and report an incorrect
+/// `effectiveGasPrice` in RPC receipts.
+#[inline]
+fn cip64_effective_gas_price(
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    base_fee: u128,
+) -> u128 {
+    max_fee_per_gas.min(base_fee.saturating_add(max_priority_fee_per_gas))
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1106,36 @@ mod tests {
             json["effectiveGasPrice"], "0x1dcdb320",
             "effectiveGasPrice must use the FC base fee, not native"
         );
+    }
+
+    #[test]
+    fn cip64_effective_gas_price_basic() {
+        // tip fits: min(max, base + prio) = min(500, 100 + 10) = 110
+        assert_eq!(cip64_effective_gas_price(500, 10, 100), 110);
+        // max caps: min(50, 100 + 10) = 50
+        assert_eq!(cip64_effective_gas_price(50, 10, 100), 50);
+        // no priority fee: min(500, 100) = 100
+        assert_eq!(cip64_effective_gas_price(500, 0, 100), 100);
+    }
+
+    #[test]
+    fn cip64_effective_gas_price_preserves_full_u128_base_fee() {
+        // A fee currency with a high exchange-rate numerator can push
+        // `base_fee_in_erc20` above `u64::MAX`. The result must still be the
+        // correct `u128` value — no narrowing cast may lose the high bits.
+        let base_fee = (u64::MAX as u128) + 1;
+        let max_fee_per_gas = base_fee + 500;
+        let priority = 100u128;
+        let got = cip64_effective_gas_price(max_fee_per_gas, priority, base_fee);
+        assert_eq!(got, base_fee + priority);
+        assert!(got > u64::MAX as u128);
+    }
+
+    #[test]
+    fn cip64_effective_gas_price_saturates_on_overflow() {
+        // base_fee + priority_fee would overflow u128 — saturate to u128::MAX
+        // and then cap to max_fee_per_gas.
+        assert_eq!(cip64_effective_gas_price(123, u128::MAX, u128::MAX), 123);
     }
 
     #[test]
