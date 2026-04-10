@@ -107,10 +107,17 @@ impl serde::Serialize for CeloTransactionRequest {
 impl<'de> serde::Deserialize<'de> for CeloTransactionRequest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = serde_json::Value::deserialize(deserializer)?;
-        let fee_currency = value
-            .as_object_mut()
-            .and_then(|obj| obj.remove("feeCurrency"))
-            .and_then(|v| serde_json::from_value::<alloy_primitives::Address>(v).ok());
+        // Extract and parse `feeCurrency` if present. A missing key or explicit
+        // JSON `null` is treated as `None`; any other value that fails to parse
+        // as an Address is a hard error, so clients that intended a CIP-64 tx
+        // don't silently fall back to a native-fee tx.
+        let fee_currency = match value.as_object_mut().and_then(|obj| obj.remove("feeCurrency")) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(
+                serde_json::from_value::<alloy_primitives::Address>(v)
+                    .map_err(serde::de::Error::custom)?,
+            ),
+        };
         let inner: OpTransactionRequest =
             serde_json::from_value(value).map_err(serde::de::Error::custom)?;
         Ok(Self { inner, fee_currency })
@@ -1003,6 +1010,23 @@ mod tests {
         let json = r#"{"feeCurrency": null, "to": "0x0000000000000000000000000000000000000000"}"#;
         let deser: CeloTransactionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(deser.fee_currency, None);
+    }
+
+    #[test]
+    fn serde_malformed_fee_currency_errors() {
+        // A client that sends an obviously-invalid `feeCurrency` must get a hard
+        // deserialization error, not a silent fallback to native-fee (which would
+        // cause the tx to be signed and submitted in CELO without the user noticing).
+        let json = r#"{"feeCurrency": "0xnot-an-address", "to": "0x0000000000000000000000000000000000000000"}"#;
+        assert!(serde_json::from_str::<CeloTransactionRequest>(json).is_err());
+    }
+
+    #[test]
+    fn serde_wrong_length_fee_currency_errors() {
+        // Too-short hex string — must also error rather than silently become None.
+        let json =
+            r#"{"feeCurrency": "0x1234", "to": "0x0000000000000000000000000000000000000000"}"#;
+        assert!(serde_json::from_str::<CeloTransactionRequest>(json).is_err());
     }
 
     /// Verify CIP-64 receipt serialization: type=0x7b, baseFee present, effectiveGasPrice
