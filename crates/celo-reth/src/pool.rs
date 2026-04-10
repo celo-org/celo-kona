@@ -488,7 +488,7 @@ fn lookup_rate_and_balance_impl(
         contracts::{core_contracts::getExchangeRateCall, erc20::IFeeCurrencyERC20},
     };
     use reth_revm::database::StateProviderDatabase;
-    use revm::{Context, SystemCallEvm, context_interface::result::ExecutionResult};
+    use revm::{Context, context_interface::result::ExecutionResult};
 
     let state = match provider.latest() {
         Ok(s) => s,
@@ -541,9 +541,13 @@ fn lookup_rate_and_balance_impl(
     // 3. Simulate debitGasFees (only if balance was sufficient).
     //
     // Catches tokens with custom hooks (pause, blacklist) that would pass
-    // the balance check but fail at execution time. Uses Address::ZERO as
-    // the caller, matching the `onlyVm` modifier that fee currency contracts
-    // require (msg.sender == address(0)).
+    // the balance check but fail at execution time. The system-call caller is
+    // `Address::ZERO` (= `CELO_SYSTEM_ADDRESS`), matching the `onlyVm` modifier
+    // that fee currency contracts require. We use `transact_system_call_with_gas_limit`
+    // — not `system_call_one_with_caller` — so the simulation is capped at
+    // `POOL_SYSTEM_CALL_GAS_LIMIT` instead of inheriting the default 30M
+    // budget, which an adversarial or buggy fee currency contract could
+    // otherwise burn on every pool admission.
     let balance_ok =
         balance_check.as_ref().zip(balance).map(|((_, required), bal)| bal >= *required);
     let debit_ok = balance_check.and_then(|(sender, required)| {
@@ -552,7 +556,12 @@ fn lookup_rate_and_balance_impl(
         }
         let debit_calldata =
             IFeeCurrencyERC20::debitGasFeesCall { from: sender, value: required }.abi_encode();
-        match evm.system_call_one_with_caller(Address::ZERO, fee_currency, debit_calldata.into()) {
+        let result = evm.transact_system_call_with_gas_limit(
+            fee_currency,
+            debit_calldata.into(),
+            POOL_SYSTEM_CALL_GAS_LIMIT,
+        );
+        match result {
             Ok(ExecutionResult::Success { .. }) => Some(true),
             Ok(ExecutionResult::Revert { .. }) => Some(false),
             // Halt or EVM-level error: inconclusive, don't reject
