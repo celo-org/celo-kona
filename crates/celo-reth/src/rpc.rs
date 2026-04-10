@@ -706,6 +706,28 @@ pub(crate) fn cip64_native_tip(
     })
 }
 
+/// Compute the native-equivalent tip for a CIP-64 tx in `eth_feeHistory`.
+///
+/// When the rate is `None` (exchange rate lookup failed — e.g. the fee currency
+/// was deregistered after the historical block, or the underlying `eth_call`
+/// errored transiently), returning `tx.effective_tip_per_gas(base_fee)` would
+/// mix FC-denominated `max_fee`/`priority_fee` with a native-denominated
+/// `base_fee` and produce garbage. Instead, skip the tx by reporting a tip of
+/// `0`; callers can emit a warning for observability.
+pub(crate) fn cip64_fee_history_tip(
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    base_fee_native: u64,
+    rate: Option<(U256, U256)>,
+) -> u128 {
+    match rate {
+        Some((num, denom)) if !num.is_zero() => {
+            cip64_native_tip(max_fee_per_gas, max_priority_fee_per_gas, base_fee_native, num, denom)
+        }
+        _ => 0,
+    }
+}
+
 /// Compute gas-weighted reward percentiles from a pre-sorted `(tip, gas_used)` slice.
 ///
 /// `tip_gas` must be sorted by tip ascending before calling. Returns a vector of the
@@ -830,16 +852,19 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                             }
                         };
 
-                        match rate {
-                            Some((num, denom)) if !num.is_zero() => cip64_native_tip(
-                                tx.max_fee_per_gas(),
-                                tx.max_priority_fee_per_gas().unwrap_or(0),
-                                bf,
-                                num,
-                                denom,
-                            ),
-                            _ => tx.effective_tip_per_gas(bf).unwrap_or(0),
+                        if rate.is_none() {
+                            tracing::warn!(
+                                target: "celo::rpc",
+                                ?fc,
+                                "eth_feeHistory: exchange rate lookup failed for CIP-64 tx; treating tip as 0"
+                            );
                         }
+                        cip64_fee_history_tip(
+                            tx.max_fee_per_gas(),
+                            tx.max_priority_fee_per_gas().unwrap_or(0),
+                            bf,
+                            rate,
+                        )
                     } else {
                         // Native tx: tip is already in CELO
                         tx.effective_tip_per_gas(bf).unwrap_or(0)
@@ -1106,6 +1131,33 @@ mod tests {
             json["effectiveGasPrice"], "0x1dcdb320",
             "effectiveGasPrice must use the FC base fee, not native"
         );
+    }
+
+    #[test]
+    fn cip64_fee_history_tip_uses_rate_when_present() {
+        // rate: 1 FC = 0.5 native (numerator=2, denominator=1)
+        // max_fee_fc=500, priority_fc=10, base_fee_native=100
+        // base_fee_fc = 100 * 2 / 1 = 200
+        // tip_fc = min(500 - 200, 10) = 10
+        // native_tip = 10 * 1 / 2 = 5
+        let tip = cip64_fee_history_tip(500, 10, 100, Some((U256::from(2), U256::from(1))));
+        assert_eq!(tip, 5);
+    }
+
+    #[test]
+    fn cip64_fee_history_tip_returns_zero_when_rate_missing() {
+        // Rate lookup failed — must NOT mix FC-denominated fees with a native
+        // base_fee via effective_tip_per_gas (which used to produce a bogus
+        // positive tip and corrupt reward percentiles). Report 0 instead.
+        let tip = cip64_fee_history_tip(1_000_000_000, 100, 100, None);
+        assert_eq!(tip, 0);
+    }
+
+    #[test]
+    fn cip64_fee_history_tip_returns_zero_for_zero_numerator() {
+        // Degenerate rate (num=0) — same safe fallback as `None`.
+        let tip = cip64_fee_history_tip(1_000_000_000, 100, 100, Some((U256::ZERO, U256::from(1))));
+        assert_eq!(tip, 0);
     }
 
     #[test]
