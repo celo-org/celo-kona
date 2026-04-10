@@ -26,6 +26,19 @@ pub trait CeloTxTr: OpTxTr {
     fn is_cip64(&self) -> bool {
         self.tx_type() == CeloTxType::Cip64 as u8
     }
+
+    /// Returns `true` if this transaction pays fees in native CELO.
+    ///
+    /// A CIP-64 tx that sets `feeCurrency` to the zero address is treated as native,
+    /// because the zero address cannot host an ERC20 fee currency contract. This
+    /// matches op-geth's `feeCurrency == nil` check (Go's nil `common.Address` is
+    /// the zero value).
+    fn is_fee_in_celo(&self) -> bool {
+        match self.fee_currency() {
+            None => true,
+            Some(addr) => addr == Address::ZERO,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -185,10 +185,7 @@ where
         let ctx = evm.ctx();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fee_currency = ctx.tx().fee_currency();
-        // Address::ZERO is treated as native CELO — the zero address cannot host a fee
-        // currency contract. This matches op-geth's `feeCurrency == nil` check (Go's nil
-        // common.Address is the zero value).
-        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
+        let fees_in_celo = ctx.tx().is_fee_in_celo();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
 
@@ -537,8 +534,7 @@ where
         let basefee = ctx.block().basefee() as u128;
         let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-        let fee_currency = ctx.tx().fee_currency();
-        let fees_in_celo = fee_currency.is_none() || fee_currency.unwrap() == Address::ZERO;
+        let fees_in_celo = ctx.tx().is_fee_in_celo();
         let spec = *ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
@@ -683,16 +679,17 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        // For CIP-64 transactions, we need to credit the fee currency all in the same
-        // place. We address that in the reward_beneficiary function.
-        if evm.ctx().tx().fee_currency().is_none() {
+        // For CIP-64 transactions with a non-zero fee currency, we credit the fee
+        // currency all in the same place (in reward_beneficiary). Txs that pay fees in
+        // native CELO — including CIP-64 txs with `feeCurrency == Address::ZERO` —
+        // use the native reimbursement path here.
+        let fees_in_celo = evm.ctx().tx().is_fee_in_celo();
+        if fees_in_celo {
             self.mainnet.reimburse_caller(evm, exec_result)?;
         }
 
         let context = evm.ctx();
-        if context.tx().tx_type() != DEPOSIT_TRANSACTION_TYPE
-            && context.tx().fee_currency().is_none()
-        {
+        if context.tx().tx_type() != DEPOSIT_TRANSACTION_TYPE && fees_in_celo {
             let caller = context.tx().caller();
             let spec = *context.cfg().spec();
             let operator_fee_refund = context.chain().operator_fee_refund(exec_result.gas(), spec);
@@ -719,7 +716,10 @@ where
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
-        if is_deposit || evm.ctx().tx().fee_currency().is_some() {
+        // For CIP-64 txs paying in a non-zero fee currency, fee distribution happens in
+        // `cip64_credit_fee_currency`; native-fee txs (including CIP-64 with zero fee
+        // currency) go through the normal payout path below.
+        if is_deposit || !evm.ctx().tx().is_fee_in_celo() {
             return Ok(());
         }
 
@@ -1715,6 +1715,75 @@ mod tests {
         assert!(
             exec.is_success(),
             "Execution should succeed with zero beneficiary: {exec:?}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_zero_address_fee_currency_uses_native_path() {
+        // A CIP-64 tx with `feeCurrency = Address::ZERO` must be treated as a
+        // native-fee tx throughout the handler. Otherwise the tx gets charged in
+        // native CELO (via `validate_against_state_and_deduct_caller`) but the
+        // reimbursement and beneficiary payouts get skipped (they used to be
+        // gated on `fee_currency().is_none()`), which over-charges the sender
+        // and mis-distributes block fees. See PR #144 review.
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        // Use fc_balance=0 — the tx must NOT touch any ERC20 state.
+        let db = make_celo_test_db_with_fee_currency(sender, U256::ZERO);
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(Address::ZERO);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let output = evm
+            .replay()
+            .expect("CIP-64 with zero-address fee currency should use native path");
+        assert!(
+            output.result.is_success(),
+            "Execution should succeed: {:?}",
+            output.result
+        );
+
+        // Native fee path: caller's CELO balance must have dropped to cover gas,
+        // and the beneficiary must have received a portion. Verify both sides of
+        // the balance accounting (this would fail if reward_beneficiary's early
+        // return still matched `fee_currency().is_some()`).
+        let sender_balance = output
+            .state
+            .get(&sender)
+            .map(|a| a.info.balance)
+            .expect("sender account should exist in post-state");
+        let beneficiary_balance = output
+            .state
+            .get(&beneficiary)
+            .map(|a| a.info.balance)
+            .unwrap_or(U256::ZERO);
+        assert!(
+            sender_balance < U256::from(1_000_000_000_000_000_000u128),
+            "Sender CELO balance should have decreased: {sender_balance}"
+        );
+        assert!(
+            beneficiary_balance > U256::ZERO,
+            "Beneficiary should receive native CELO fees, got {beneficiary_balance}"
         );
     }
 

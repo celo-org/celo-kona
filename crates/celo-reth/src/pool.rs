@@ -136,8 +136,17 @@ pub struct CeloPoolTx {
 }
 
 /// Extract the fee currency address from a pool transaction without cloning.
+///
+/// A `feeCurrency` of `Address::ZERO` is treated as native CELO (mapped to `None`) —
+/// the zero address cannot host an ERC20 fee currency contract, and the celo-revm
+/// handler already treats it as native during execution. Normalizing here ensures
+/// the pool and the execution layer agree on which txs use the native fee path.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
-    inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency)
+    inner
+        .transaction()
+        .as_cip64()
+        .and_then(|signed| signed.tx().fee_currency)
+        .filter(|addr| *addr != Address::ZERO)
 }
 
 impl CeloPoolTx {
@@ -1146,6 +1155,20 @@ mod tests {
     #[test]
     fn test_extract_fee_currency_native() {
         let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        assert_eq!(tx.fee_currency(), None);
+    }
+
+    #[test]
+    fn test_extract_fee_currency_zero_address_treated_as_native() {
+        // A CIP-64 tx that sets `feeCurrency = 0x000…000` should be routed through the
+        // native fee path, matching how the celo-revm handler treats the zero address.
+        let tx = make_test_tx(
+            Some(Address::ZERO),
+            21_000,
+            1_000_000_000,
+            100,
+            Address::with_last_byte(1),
+        );
         assert_eq!(tx.fee_currency(), None);
     }
 
