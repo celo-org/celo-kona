@@ -18,12 +18,8 @@ setup:
   git config core.hooksPath .githooks
 
 # Test for the native target with all features.
-# NOTE: celo-host and celo-client are tested separately because their `eigenda` feature
-# pulls in hokulea-client, which is incompatible with the kona fork's alloy-evm version.
-# Remove the exclusion once hokulea is updated.
 test:
-  cargo nextest run --workspace --all-features {{exclude_members}} --exclude celo-host --exclude celo-client
-  cargo nextest run -p celo-host -p celo-client
+  cargo nextest run --workspace --all-features {{exclude_members}}
 
 # Runs benchmarks
 benches:
@@ -45,12 +41,8 @@ fmt-native-check:
   cargo +nightly fmt --all -- --check
 
 # Lint the workspace
-# NOTE: celo-host and celo-client are linted separately because their `eigenda` feature
-# pulls in hokulea-client, which is incompatible with the kona fork's alloy-evm version.
-# Remove the exclusion once hokulea is updated.
 lint-native: fmt-native-check lint-docs
-  cargo clippy --workspace --all-features --all-targets {{exclude_members}} --exclude celo-host --exclude celo-client -- -D warnings
-  cargo clippy -p celo-host -p celo-client --all-targets -- -D warnings
+  cargo clippy --workspace --all-features --all-targets {{exclude_members}} -- -D warnings
 
 # Lint the Rust documentation
 lint-docs:

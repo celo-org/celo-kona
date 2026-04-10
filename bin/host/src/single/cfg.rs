@@ -207,7 +207,7 @@ impl OnlineHostBackendCfg for CeloSingleChainHost {
 
 /// Returns the proactive hint type for the host backend.
 #[cfg(feature = "eigenda")]
-fn proactive_hint_type() -> ExtendedHintType {
+const fn proactive_hint_type() -> ExtendedHintType {
     ExtendedHintType::Original(HintType::L2PayloadWitness)
 }
 
