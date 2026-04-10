@@ -13,6 +13,10 @@ exclude_members := "--exclude celo-registry --exclude execution-fixture"
 default:
   @just --list
 
+# Install git hooks (nightly fmt check on pre-commit)
+setup:
+  git config core.hooksPath .githooks
+
 # Test for the native target with all features.
 test:
   cargo nextest run --workspace --all-features {{exclude_members}}

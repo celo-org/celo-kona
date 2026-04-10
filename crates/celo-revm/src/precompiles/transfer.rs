@@ -1,10 +1,16 @@
 //! [`transfer` precompile](https://specs.celo.org/token_duality.html#the-transfer-precompile)
 //! For more details check [`transfer_run`] function.
+//!
+//! Note: `alloy-celo-evm` has a parallel implementation (`transfer_precompile`) that adapts the
+//! same logic for `alloy-evm`'s stateless `DynPrecompile` interface, which receives balance
+//! changes via `PrecompileInput::internals` rather than a full `ContextTr`. Both implementations
+//! must be kept in sync.
 
 use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
     context::{Cfg, ContextTr, JournalTr},
+    context_interface::journaled_state::account::JournaledAccountTr,
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
     primitives::{Address, Bytes, U256},
@@ -42,6 +48,9 @@ where
     ) {
         Ok(output) => {
             let underflow = result.gas.record_cost(output.gas_used);
+            // SAFETY: gas_used <= gas_limit is guaranteed by the EVM, so underflow is
+            // impossible. A panic here is intentional — silently returning OOG would risk
+            // consensus divergence, while a crash is recoverable.
             assert!(underflow, "Gas underflow is not possible");
             result.result = InstructionResult::Return;
             result.output = output.bytes;
@@ -136,9 +145,7 @@ fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    if was_cold {
-        if let Ok(mut journaled_account) = context.journal_mut().load_account_mut(address) {
-            journaled_account.unsafe_mark_cold();
-        }
+    if was_cold && let Ok(mut journaled_account) = context.journal_mut().load_account_mut(address) {
+        journaled_account.unsafe_mark_cold();
     }
 }

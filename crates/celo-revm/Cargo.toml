@@ -49,6 +49,7 @@ tracing.workspace = true
 
 # Optional
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
+reth-evm = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest.workspace = true
@@ -65,7 +66,7 @@ std = [
     "alloy-op-evm?/std",
 ]
 alloy-op-evm = ["dep:alloy-op-evm"]
-hashbrown = ["revm/hashbrown"]
+reth = ["dep:reth-evm"]
 serde = [
     "dep:serde",
     "revm/serde",

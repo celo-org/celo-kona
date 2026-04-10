@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Check formatting with nightly rustfmt (matches CI).
+# The rustfmt.toml uses nightly-only options, so stable rustfmt
+# silently ignores them and produces different output.
+if ! cargo +nightly fmt --all -- --check 2>/dev/null; then
+    echo "error: nightly rustfmt check failed. Run 'just f' to fix." >&2
+    exit 1
+fi

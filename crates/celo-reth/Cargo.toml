@@ -1,0 +1,122 @@
+[package]
+name = "celo-reth"
+description = "Celo EVM configuration for reth"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "celo-reth"
+path = "src/bin/celo_reth.rs"
+required-features = ["std"]
+
+[dependencies]
+# Reth
+reth-chainspec.workspace = true
+reth-consensus.workspace = true
+reth-consensus-common.workspace = true
+reth-engine-local.workspace = true
+reth-evm = { workspace = true, features = ["op"] }
+reth-execution-types.workspace = true
+reth-primitives-traits.workspace = true
+reth-storage-api.workspace = true
+reth-storage-errors.workspace = true
+reth-node-builder.workspace = true
+reth-node-api.workspace = true
+reth-provider.workspace = true
+reth-revm.workspace = true
+reth-transaction-pool.workspace = true
+reth-rpc-eth-api.workspace = true
+reth-rpc-eth-types.workspace = true
+
+# Ethereum
+alloy-eips.workspace = true
+alloy-sol-types.workspace = true
+alloy-evm.workspace = true
+alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-op-evm.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-network.workspace = true
+op-alloy-consensus.workspace = true
+op-alloy-rpc-types.workspace = true
+op-alloy-rpc-types-engine.workspace = true
+
+# Optimism
+reth-optimism-chainspec.workspace = true
+reth-optimism-consensus.workspace = true
+reth-optimism-forks.workspace = true
+reth-optimism-primitives.workspace = true
+reth-optimism-evm.workspace = true
+reth-optimism-node.workspace = true
+reth-optimism-storage.workspace = true
+reth-optimism-payload-builder.workspace = true
+reth-payload-util.workspace = true
+reth-optimism-txpool.workspace = true
+reth-optimism-cli.workspace = true
+reth-optimism-rpc.workspace = true
+
+# Celo
+alloy-celo-evm.workspace = true
+celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
+celo-alloy-rpc-types.workspace = true
+# optional_no_base_fee is required in production: reth sets disable_base_fee=true
+# for eth_call and gas estimation RPCs. Without this feature those calls would fail
+# with "insufficient funds for gas" because the base fee check cannot be skipped.
+celo-revm = { workspace = true, features = ["alloy-op-evm", "reth", "optional_no_base_fee"] }
+
+# Revm
+revm.workspace = true
+op-revm.workspace = true
+
+# Reth codecs and db
+reth-codecs.workspace = true
+reth-db-api.workspace = true
+
+# RPC
+jsonrpsee.workspace = true
+jsonrpsee-types.workspace = true
+
+# Misc
+alloy-rlp.workspace = true
+bytes.workspace = true
+clap.workspace = true
+eyre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+metrics.workspace = true
+reth-cli-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+default = ["std"]
+std = [
+    "alloy-consensus/std",
+    "alloy-eips/std",
+    "alloy-primitives/std",
+    "alloy-evm/std",
+    "alloy-op-evm/std",
+    "op-alloy-consensus/std",
+    "op-alloy-rpc-types-engine/std",
+    "op-revm/std",
+    "revm/std",
+    "reth-chainspec/std",
+    "reth-evm/std",
+    "reth-primitives-traits/std",
+    "reth-optimism-chainspec/std",
+    "reth-optimism-forks/std",
+    "reth-optimism-primitives/std",
+    "reth-optimism-evm/std",
+]

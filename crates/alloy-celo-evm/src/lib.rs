@@ -5,27 +5,140 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-use alloy_evm::{Database, Evm, EvmEnv, EvmFactory};
+use alloc::{borrow::Cow, format, vec::Vec};
+use alloy_evm::{
+    Database, Evm, EvmEnv, EvmFactory,
+    precompiles::{DynPrecompile, PrecompilesMap},
+};
+use alloy_op_evm::{OpTxError, map_op_err};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
-use celo_revm::{CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo};
+use celo_revm::{
+    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
+    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX},
+    precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
+};
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use op_revm::{OpHaltReason, OpSpecId, OpTransaction, OpTransactionError};
+use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, OpTransaction, precompiles::OpPrecompiles};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{BlockEnv, TxEnv},
-    context_interface::result::{EVMError, ResultAndState},
+    context_interface::{
+        Cfg,
+        result::{EVMError, ResultAndState},
+    },
+    handler::PrecompileProvider,
     inspector::NoOpInspector,
+    interpreter::InterpreterResult,
+    precompile::{PrecompileError, PrecompileOutput},
 };
 
 pub mod block;
+pub mod blocklist;
 pub mod cip64_storage;
 
-use cip64_storage::{Cip64Storage, get_tx_identifier};
+use blocklist::FeeCurrencyBlocklist;
+use cip64_storage::Cip64Storage;
+
+/// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
+/// them. Without this, `eth_call` panics on Isthmus+ because
+/// `operator_fee_scalar`/`operator_fee_constant` are `None`.
+fn default_l1_block_info(spec_id: OpSpecId) -> L1BlockInfo {
+    let mut info = L1BlockInfo::default();
+    if spec_id.is_enabled_in(OpSpecId::ISTHMUS) {
+        info.operator_fee_scalar = Some(U256::ZERO);
+        info.operator_fee_constant = Some(U256::ZERO);
+    }
+    info
+}
+
+/// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
+/// transfer precompile for the given spec.
+pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
+    let mut map = PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
+    map.extend_precompiles([(TRANSFER_ADDRESS, make_transfer_precompile(spec_id))]);
+    map
+}
+
+/// Creates the Celo transfer [`DynPrecompile`] for the given spec.
+fn make_transfer_precompile(spec_id: OpSpecId) -> DynPrecompile {
+    const fn coerce<
+        F: Fn(alloy_evm::precompiles::PrecompileInput<'_>) -> revm::precompile::PrecompileResult
+            + Send
+            + Sync
+            + 'static,
+    >(
+        f: F,
+    ) -> F {
+        f
+    }
+    DynPrecompile::from(coerce(move |input| transfer_precompile(spec_id, input))).stateful()
+}
+
+/// Transfer precompile implementation for use as a [`DynPrecompile`].
+///
+/// This duplicates the logic in `celo_revm::precompiles::transfer::transfer_run` because the two
+/// dispatch models are incompatible: `celo-revm`'s version operates on a full `ContextTr` (used
+/// by the handler-based precompile pipeline), while this version targets `alloy-evm`'s stateless
+/// `DynPrecompile` interface (balance changes go through `PrecompileInput::internals`). Both
+/// implementations must be kept in sync.
+fn transfer_precompile(
+    spec_id: OpSpecId,
+    mut input: alloy_evm::precompiles::PrecompileInput<'_>,
+) -> revm::precompile::PrecompileResult {
+    if input.is_static {
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "transfer precompile cannot be called in static context",
+        )));
+    }
+
+    if input.gas < TRANSFER_GAS_COST {
+        return Err(PrecompileError::OutOfGas);
+    }
+
+    let chain_id = input.internals.chain_id();
+    if input.caller != constants::get_addresses(chain_id).celo_token {
+        return Err(PrecompileError::Other(Cow::Borrowed(
+            "invalid caller for transfer precompile",
+        )));
+    }
+
+    if input.data.len() != 96 {
+        return Err(PrecompileError::Other(Cow::Borrowed("invalid input length")));
+    }
+
+    let from = Address::from_slice(&input.data[12..32]);
+    let to = Address::from_slice(&input.data[44..64]);
+    let value = U256::from_be_slice(&input.data[64..96]);
+
+    let revert_cold_status = !spec_id.is_enabled_in(OpSpecId::JOVIAN);
+    let revert_from_cold =
+        revert_cold_status && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
+    let revert_to_cold =
+        revert_cold_status && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
+
+    let result = input.internals.transfer(from, to, value);
+
+    if revert_from_cold && let Ok(mut account) = input.internals.load_account_mut(from) {
+        account.data.unsafe_mark_cold();
+    }
+    if revert_to_cold && let Ok(mut account) = input.internals.load_account_mut(to) {
+        account.data.unsafe_mark_cold();
+    }
+
+    match result {
+        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new())),
+        Ok(Some(transfer_err)) => Err(PrecompileError::Other(Cow::Owned(format!(
+            "transfer error occurred: {transfer_err:?}"
+        )))),
+        Err(db_err) => {
+            Err(PrecompileError::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))))
+        }
+    }
+}
 
 /// Celo EVM implementation.
 ///
@@ -33,13 +146,17 @@ use cip64_storage::{Cip64Storage, get_tx_identifier};
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// [`CeloEvm`](celo_revm::CeloEvm) type.
 #[allow(missing_debug_implementations)] // missing celo_revm::CeloContext Debug impl
-pub struct CeloEvm<DB: Database, I> {
-    inner: celo_revm::CeloEvm<DB, I>,
+pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
+    inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
+    blocklist: FeeCurrencyBlocklist,
+    /// Block timestamp of the last eviction call, used to avoid redundant eviction
+    /// on every `transact_raw` call within the same block.
+    last_evicted_timestamp: u64,
 }
 
-impl<DB: Database, I> CeloEvm<DB, I> {
+impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &CeloContext<DB> {
         &self.inner.inner.0.ctx
@@ -59,6 +176,7 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     pub fn create_fee_currency_context(&mut self) -> celo_revm::FeeCurrencyContext
     where
         I: Inspector<CeloContext<DB>>,
+        P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
         celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
@@ -69,17 +187,23 @@ impl<DB: Database, I> CeloEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> CeloEvm<DB, I> {
+impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// Creates a new Celo EVM instance.
     ///
     /// The `inspect` argument determines whether the configured [`Inspector`] of the given
     /// [`CeloEvm`](celo_revm::CeloEvm) should be invoked on [`Evm::transact`].
-    pub fn new(evm: celo_revm::CeloEvm<DB, I>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, cip64_storage: Cip64Storage::default() }
+    pub fn new(evm: celo_revm::CeloEvm<DB, I, P>, inspect: bool) -> Self {
+        Self {
+            inner: evm,
+            inspect,
+            cip64_storage: Cip64Storage::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            last_evicted_timestamp: 0,
+        }
     }
 }
 
-impl<DB: Database, I> Deref for CeloEvm<DB, I> {
+impl<DB: Database, I, P> Deref for CeloEvm<DB, I, P> {
     type Target = CeloContext<DB>;
 
     #[inline]
@@ -88,25 +212,26 @@ impl<DB: Database, I> Deref for CeloEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> DerefMut for CeloEvm<DB, I> {
+impl<DB: Database, I, P> DerefMut for CeloEvm<DB, I, P> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
     }
 }
 
-impl<DB, I> Evm for CeloEvm<DB, I>
+impl<DB, I, P> Evm for CeloEvm<DB, I, P>
 where
     DB: Database,
     I: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     type DB = DB;
     type Tx = CeloTransaction<TxEnv>;
-    type Error = EVMError<DB::Error, OpTransactionError>;
+    type Error = EVMError<DB::Error, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
-    type Precompiles = CeloPrecompiles;
+    type Precompiles = P;
     type Inspector = I;
 
     fn block(&self) -> &BlockEnv {
@@ -121,19 +246,66 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // Get a transaction identifier for storage - use a combination of caller and nonce
-        let tx_identifier = get_tx_identifier(tx.op_tx.base.caller, tx.op_tx.base.nonce);
+        // Capture fee_currency before execution (it's consumed by transact)
+        let fee_currency = tx.fee_currency;
 
-        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) };
+        // Only apply blocklist during block building, not during RPC simulation
+        // (eth_call, eth_estimateGas). RPC simulation disables the base fee check.
+        let is_block_building = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // CIP64 NOTE:
-        // Extract and store the cip64 info to a shared storage to be able to add the credit/debit
-        // logs when building the receipt in the receipts_builder (alloy-celo-evm)
+        // Evict stale blocklist entries using the current block timestamp,
+        // but only once per block to avoid redundant work on every transaction.
+        if is_block_building {
+            let block_timestamp: u64 = self.ctx().block.timestamp.to();
+            if block_timestamp != self.last_evicted_timestamp {
+                self.blocklist.evict(block_timestamp);
+                self.last_evicted_timestamp = block_timestamp;
+            }
+        }
 
-        // After execution, extract the UPDATED CIP-64 info from the context
-        // The handler modifies this during execution to set the reverted flag
-        if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.clone() {
-            self.cip64_storage.store_cip64_info(tx_identifier, cip64_info);
+        // Check if the fee currency is blocklisted — reject early without EVM execution.
+        if is_block_building
+            && let Some(fc) = fee_currency
+            && self.blocklist.is_blocked(fc)
+        {
+            return Err(EVMError::Transaction(OpTxError(
+                revm::context::result::InvalidTransaction::from(alloc::format!(
+                    "fee currency {fc} is temporarily blocklisted"
+                ))
+                .into(),
+            )));
+        }
+
+        let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
+            .map_err(map_op_err);
+
+        match &result {
+            Ok(_) => {
+                // CIP64 NOTE:
+                // Extract and store the cip64 info to a shared storage to be able to add the
+                // credit/debit logs when building the receipt in the receipts_builder.
+                if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.take() {
+                    self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
+                }
+            }
+            Err(e) if is_block_building && fee_currency.is_some() => {
+                // Only blocklist when the error is a fee-currency debit/credit failure,
+                // not for unrelated validation errors (nonce, gas limit, etc.) that
+                // happen to involve a CIP-64 tx.
+                let err_msg = alloc::format!("{e}");
+                if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
+                    || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
+                {
+                    let fc = fee_currency.unwrap();
+                    tracing::warn!(
+                        target: "celo",
+                        "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
+                    );
+                    let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                    self.blocklist.block_currency(fc, block_timestamp);
+                }
+            }
+            _ => {}
         }
 
         result
@@ -262,37 +434,95 @@ where
 }
 
 /// Factory producing [`CeloEvm`]s.
-#[derive(Debug, Default, Clone, Copy)]
-#[non_exhaustive]
-pub struct CeloEvmFactory;
+#[derive(Debug, Default, Clone)]
+pub struct CeloEvmFactory {
+    /// Shared CIP-64 storage. When set, all EVMs created by this factory will use this
+    /// storage instance, enabling the receipt builder to read CIP-64 data written by the EVM.
+    pub cip64_storage: Option<Cip64Storage>,
+    /// Shared fee currency blocklist. When set, all EVMs created by this factory will use
+    /// this blocklist to reject CIP-64 transactions for blocklisted currencies.
+    pub blocklist: Option<FeeCurrencyBlocklist>,
+}
 
-impl EvmFactory for CeloEvmFactory {
-    type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I>;
-    type Context<DB: Database> = CeloContext<DB>;
-    type Tx = CeloTransaction<TxEnv>;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> =
-        EVMError<DBError, OpTransactionError>;
-    type HaltReason = OpHaltReason;
-    type Spec = OpSpecId;
-    type BlockEnv = BlockEnv;
-    type Precompiles = CeloPrecompiles;
+impl CeloEvmFactory {
+    /// Creates a new factory with shared CIP-64 storage.
+    pub const fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
+        Self { cip64_storage: Some(cip64_storage), blocklist: None }
+    }
 
-    fn create_evm<DB: Database>(
+    /// Sets the shared fee currency blocklist.
+    pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
+        self.blocklist = Some(blocklist);
+        self
+    }
+}
+
+/// Creates a [`CeloEvm`] for testing with an in-memory database.
+#[cfg(test)]
+fn make_test_evm(
+    blocklist: FeeCurrencyBlocklist,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+    let spec_id = OpSpecId::FJORD;
+    let db = revm::database::InMemoryDB::default();
+    let mut cfg = revm::context::CfgEnv::<OpSpecId>::default();
+    cfg.chain_id = 42220;
+    CeloEvm {
+        inner: Context::celo()
+            .with_db(db)
+            .with_cfg(cfg)
+            .with_chain(default_l1_block_info(spec_id))
+            .build_celo_with_inspector(revm::inspector::NoOpInspector {})
+            .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
+        inspect: false,
+        cip64_storage: Cip64Storage::default(),
+        blocklist,
+        last_evicted_timestamp: 0,
+    }
+}
+
+impl CeloEvmFactory {
+    /// Shared initialization for both `create_evm` and `create_evm_with_inspector`.
+    fn build_evm<DB: Database, I: Inspector<CeloContext<DB>>>(
         &self,
         db: DB,
-        input: EvmEnv<OpSpecId>,
-    ) -> Self::Evm<DB, NoOpInspector> {
+        mut input: EvmEnv<OpSpecId>,
+        inspector: I,
+        inspect: bool,
+    ) -> CeloEvm<DB, I, PrecompilesMap> {
+        input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
         let spec_id = input.cfg_env.spec;
         CeloEvm {
             inner: Context::celo()
                 .with_db(db)
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
-                .build_celo_with_inspector(NoOpInspector {})
-                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
-            inspect: false,
-            cip64_storage: Cip64Storage::default(),
+                .with_chain(default_l1_block_info(spec_id))
+                .build_celo_with_inspector(inspector)
+                .with_precompiles(celo_precompiles_map(spec_id)),
+            inspect,
+            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
+            blocklist: self.blocklist.clone().unwrap_or_default(),
+            last_evicted_timestamp: 0,
         }
+    }
+}
+
+impl EvmFactory for CeloEvmFactory {
+    type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
+    type Context<DB: Database> = CeloContext<DB>;
+    type Tx = CeloTransaction<TxEnv>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
+    type HaltReason = OpHaltReason;
+    type Spec = OpSpecId;
+    type BlockEnv = BlockEnv;
+    type Precompiles = PrecompilesMap;
+
+    fn create_evm<DB: Database>(
+        &self,
+        db: DB,
+        input: EvmEnv<OpSpecId>,
+    ) -> Self::Evm<DB, NoOpInspector> {
+        self.build_evm(db, input, NoOpInspector {}, false)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -301,16 +531,153 @@ impl EvmFactory for CeloEvmFactory {
         input: EvmEnv<OpSpecId>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        let spec_id = input.cfg_env.spec;
-        CeloEvm {
-            inner: Context::celo()
-                .with_db(db)
-                .with_block(input.block_env)
-                .with_cfg(input.cfg_env)
-                .build_celo_with_inspector(inspector)
-                .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
-            inspect: true,
-            cip64_storage: Cip64Storage::default(),
+        self.build_evm(db, input, inspector, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_evm::Evm;
+    use celo_alloy_consensus::CeloTxType;
+    use op_revm::OpTransaction;
+
+    /// Build a CIP-64 `CeloTransaction<TxEnv>` for testing.
+    fn make_cip64_tx(fee_currency: Address) -> CeloTransaction<TxEnv> {
+        CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller: Address::with_last_byte(0x01),
+                    kind: TxKind::Call(Address::with_last_byte(0x02)),
+                    nonce: 0,
+                    gas_limit: 21_000,
+                    value: U256::ZERO,
+                    data: Bytes::new(),
+                    gas_price: 1_000_000_000,
+                    chain_id: Some(42220),
+                    gas_priority_fee: Some(100),
+                    access_list: Default::default(),
+                    blob_hashes: Vec::new(),
+                    max_fee_per_blob_gas: 0,
+                    tx_type: CeloTxType::Cip64 as u8,
+                    authorization_list: Default::default(),
+                },
+                enveloped_tx: Some(Bytes::default()),
+                deposit: Default::default(),
+            },
+            fee_currency: Some(fee_currency),
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        }
+    }
+
+    #[test]
+    fn test_blocklist_rejects_in_block_mode() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        let tx = make_cip64_tx(fc);
+        let result = evm.transact_raw(tx);
+
+        // The blocklisted currency should be rejected
+        assert!(result.is_err(), "Expected blocklisted currency to be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("blocklisted"), "Error should mention blocklist, got: {err_msg}");
+    }
+
+    #[test]
+    fn test_blocklist_allows_unblocked_currency() {
+        let blocked_fc = Address::with_last_byte(0xAA);
+        let other_fc = Address::with_last_byte(0xBB);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(blocked_fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // A different fee currency should not be blocked (it may fail later
+        // during execution for other reasons, but not at the blocklist check)
+        let tx = make_cip64_tx(other_fc);
+        let result = evm.transact_raw(tx);
+        // If it fails, it should NOT be a blocklist error
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Non-blocked currency should not get blocklist error, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_blocklist_does_not_block_native_tx() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // Native tx (no fee currency) should never be rejected by blocklist
+        let mut tx = make_cip64_tx(fc);
+        tx.fee_currency = None;
+        tx.op_tx.base.tx_type = 2; // EIP-1559
+
+        let result = evm.transact_raw(tx);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Native tx should not get blocklist error, got: {msg}"
+            );
+        }
+    }
+
+    /// Verify that non-debit/credit errors (e.g. unregistered currency) do NOT
+    /// cause the currency to be blocklisted. Only debit/credit failures should
+    /// trigger blocklisting.
+    #[test]
+    fn test_non_debit_error_does_not_blocklist() {
+        let fc = Address::with_last_byte(0xCC);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        let mut evm = make_test_evm(blocklist.clone());
+        // Set a non-zero basefee so the EVM is in "block building" mode
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+
+        // This CIP-64 tx will fail (fee currency not registered), but the
+        // error is NOT a debit/credit failure, so it should NOT be blocklisted.
+        let tx = make_cip64_tx(fc);
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err(), "Expected tx to fail");
+        assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
+    }
+
+    /// Verify that the blocklist is NOT enforced during RPC simulation
+    /// (eth_call / eth_estimateGas). RPC mode disables the base fee check,
+    /// which `transact_raw` uses as the signal for "not block building".
+    #[test]
+    fn test_blocklist_bypassed_in_rpc_simulation() {
+        let fc = Address::with_last_byte(0xAA);
+        let blocklist = FeeCurrencyBlocklist::default();
+        blocklist.block_currency(fc, 1000);
+
+        let mut evm = make_test_evm(blocklist);
+
+        // Enable RPC simulation mode: disable base fee check
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        // Even though the currency is blocklisted, transact_raw should NOT
+        // reject it — the blocklist only applies during block building.
+        let tx = make_cip64_tx(fc);
+        let result = evm.transact_raw(tx);
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("blocklisted"),
+                "Blocklist must not apply during RPC simulation, got: {msg}"
+            );
         }
     }
 }

@@ -25,3 +25,13 @@ jobs:
       service-account: celo-kona-gh@devopsre.iam.gserviceaccount.com
       workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos
       concurrency-group: ${{ github.workflow }}-build-${{ github.head_ref || github.ref }}
+
+  push_container_dev_reth:
+    name: Build and push celo-kona reth development image
+    uses: ./.github/workflows/push-container.yaml
+    with:
+      file: crates/celo-reth/Dockerfile
+      artifact-registry: us-west1-docker.pkg.dev/devopsre/dev-images/${{ github.event.repository.name }}-reth
+      service-account: celo-kona-gh@devopsre.iam.gserviceaccount.com
+      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos
+      concurrency-group: ${{ github.workflow }}-build-reth-${{ github.head_ref || github.ref }}

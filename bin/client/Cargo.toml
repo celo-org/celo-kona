@@ -33,9 +33,9 @@ kona-derive.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
-# Hokulea
-hokulea-eigenda.workspace = true
-hokulea-proof.workspace = true
+# Hokulea (optional – gated behind the `eigenda` feature)
+hokulea-eigenda = { workspace = true, optional = true }
+hokulea-proof = { workspace = true, optional = true }
 
 # General
 cfg-if.workspace = true
@@ -47,6 +47,7 @@ kona-preimage = { workspace = true, features = ["std"] }
 [features]
 default = ["client-tracing"]
 client-tracing = ["kona-std-fpvm/tracing"]
+eigenda = ["dep:hokulea-eigenda", "dep:hokulea-proof"]
 
 [[bin]]
 name = "celo-client"

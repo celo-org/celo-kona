@@ -69,7 +69,7 @@ where
     fn update_safe_head(&mut self, header: Sealed<Header>) {
         self.inner = Some(CeloStatelessL2Builder::new(
             self.rollup_config,
-            self.evm_factory,
+            self.evm_factory.clone(),
             self.trie_provider.clone(),
             self.trie_hinter.clone(),
             header,
