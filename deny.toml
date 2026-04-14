@@ -12,6 +12,8 @@ ignore = [
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
     "RUSTSEC-2025-0141",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand unsoundness with custom logger using rand::rng(); not triggered by our usage
+    "RUSTSEC-2026-0097",
 ]
 
 [licenses]
@@ -38,6 +40,7 @@ exceptions = [
     { allow = ["CC0-1.0"], name = "aurora-engine-modexp" },
     { allow = ["CC0-1.0"], name = "secp256k1-sys" },
     { allow = ["CC0-1.0"], name = "tiny-keccak" },
+    { allow = ["CC0-1.0"], name = "notify" },
 ]
 
 [[licenses.clarify]]
@@ -47,7 +50,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
 ignore = true
-ignore-sources = ["https://github.com/Layr-Labs/hokulea", "https://github.com/celo-org/hokulea"]
+ignore-sources = ["https://github.com/Layr-Labs/hokulea"]
 
 [bans]
 multiple-versions = "warn"
@@ -67,12 +70,12 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
     "https://github.com/Layr-Labs/hokulea",
-    "https://github.com/Layr-Labs/rust-kzg-bn254",
-    "https://github.com/op-rs/kona",
-    "https://github.com/celo-org/kona",
-    "https://github.com/celo-org/revm",
+    "https://github.com/Layr-Labs/rust-kzg-bn254.git",
     "https://github.com/celo-org/alloy",
-    "https://github.com/celo-org/hokulea"
+    # kona crates are pulled from the optimism monorepo via the
+    # kona-client/v1.2.13 tag (see 796c67c "point at upstream optimism
+    # kona-client/v1.2.13"), not from celo-org/optimism or op-rs/kona any more.
+    "https://github.com/ethereum-optimism/optimism",
 ]
 
 [sources.allow-org]

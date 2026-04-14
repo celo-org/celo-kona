@@ -7,6 +7,11 @@ pub const CELO_MAX_CODE_SIZE: usize = 0x10000;
 /// The system address used for Celo system calls.
 pub const CELO_SYSTEM_ADDRESS: Address = Address::ZERO;
 
+/// Error message prefix for CIP-64 fee currency debit failures.
+pub const FEE_DEBIT_ERROR_PREFIX: &str = "Failed to debit gas fees";
+/// Error message prefix for CIP-64 fee currency credit failures.
+pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
+
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 

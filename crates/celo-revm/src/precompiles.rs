@@ -276,6 +276,7 @@ mod tests {
                 balance: U256::from(0),
                 nonce: 0,
                 code_hash: bytecode.hash_slow(),
+                account_id: None,
                 code: Some(bytecode),
             };
             db.insert_account_info(celo_address, account_info);

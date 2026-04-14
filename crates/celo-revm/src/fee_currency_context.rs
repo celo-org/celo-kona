@@ -3,7 +3,8 @@ use alloy_primitives::map::HashMap;
 use revm::{
     Database, Inspector,
     context_interface::ContextTr,
-    handler::EvmTr,
+    handler::{EvmTr, PrecompileProvider},
+    interpreter::InterpreterResult,
     primitives::{Address, U256},
 };
 
@@ -37,10 +38,11 @@ impl FeeCurrencyContext {
     }
 
     /// Initialize with values read from the EVM
-    pub fn new_from_evm<DB, INSP>(evm: &mut CeloEvm<DB, INSP>) -> FeeCurrencyContext
+    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> FeeCurrencyContext
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
+        P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
         let currencies = get_currency_info(evm);
         let current_block_number = evm.ctx().block().number;
