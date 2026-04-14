@@ -39,7 +39,7 @@ run-client-native block_number l1_rpc l1_beacon_rpc l2_rpc rollup_node_rpc eigen
   cd $(git rev-parse --show-toplevel)
 
   echo "Running host program with native client program..."
-  cargo r --bin celo-host --release -- \
+  cargo r --bin celo-host --release --features eigenda -- \
     {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
@@ -70,7 +70,7 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
   cd $(git rev-parse --show-toplevel)
 
   echo "Running host program with native client program..."
-  cargo r --bin celo-host -- \
+  cargo r --bin celo-host --features eigenda -- \
     {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
