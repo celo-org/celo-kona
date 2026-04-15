@@ -224,22 +224,3 @@ op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", ta
 op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
 alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
 alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-
-# Redirect hokulea's transitive kona deps (which reference op-rs/kona) to the
-# same optimism monorepo source used by our workspace deps above.
-[patch."https://github.com/op-rs/kona"]
-kona-host = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-client = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-driver   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-derive   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-genesis  = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-protocol = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-registry = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-providers-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-mpt        = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-proof      = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-executor   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-std-fpvm   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-preimage   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-std-fpvm-proc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-kona-cli   = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
