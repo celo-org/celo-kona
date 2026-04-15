@@ -592,7 +592,7 @@ where
         // the historical behavior and break receipt roots.
         let is_cip64 =
             CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo && !is_deposit {
+        if is_cip64 && fees_in_celo {
             let mut tx = evm.ctx().tx().clone();
             tx.cip64_tx_info = Some(Cip64Info {
                 base_fee_in_erc20: Some(basefee),
