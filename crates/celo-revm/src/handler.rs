@@ -582,6 +582,10 @@ where
         }
 
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
+        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
+        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
+        // rate. The GASPRICE opcode will therefore return native pricing instead of the
+        // ERC20-denominated price during simulations. This is a known limitation.
         if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
