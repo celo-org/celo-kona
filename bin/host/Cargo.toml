@@ -61,7 +61,7 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 reqwest.workspace = true
 
 [features]
-default = ["single"]
+default = ["single", "eigenda"]
 single = []
 eigenda = ["dep:hokulea-proof", "dep:hokulea-host-bin", "celo-client/eigenda"]
 
