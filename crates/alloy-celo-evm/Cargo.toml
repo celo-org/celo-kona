@@ -27,10 +27,14 @@ revm.workspace = true
 op-revm.workspace = true
 celo-revm = { workspace = true, features = ["alloy-op-evm"] }
 spin.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-op-hardforks.workspace = true
+# Enable optional_no_base_fee so tests can disable the base-fee check
+# (simulating RPC mode where blocklist should be bypassed).
+revm = { workspace = true, features = ["optional_no_base_fee"] }
 
 [features]
 default = ["std"]
@@ -42,3 +46,10 @@ std = [
     "alloy-consensus/std",
     "op-alloy-consensus/std"
 ]
+# Enables accumulation of every `Cip64ReceiptData` in `Cip64Storage::all_entries`,
+# intended purely for post-execution inspection in tests. Leaving this on in
+# production would be a monotonic memory leak on long-running nodes (celo-reth),
+# since `store_cip64_info` is called for every CIP-64 tx. Enabled via dev-deps
+# in `kona-executor` so its unit tests can verify CIP-64 gas accounting against
+# op-geth fixtures; production binaries must never enable it.
+test-utils = []

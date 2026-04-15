@@ -82,7 +82,12 @@ test-utils = [
     "dep:alloy-provider",
     "dep:alloy-rpc-client",
     "dep:alloy-transport-http",
-    "kona-executor/test-utils"
+    "kona-executor/test-utils",
+    # `Cip64Storage::all_entries` and its accessor are feature-gated to avoid
+    # unbounded memory growth in production binaries; enable them here so the
+    # CIP-64 gas-accounting tests in `builder::core::cip64_gas_tests` can read
+    # back the post-execution entries.
+    "alloy-celo-evm/test-utils",
 ]
 
 [package.metadata.cargo-udeps.ignore]

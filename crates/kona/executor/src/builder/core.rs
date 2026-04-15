@@ -105,20 +105,20 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
-        let mut evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
+        let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
 
-        // Update the receipt builder to include the fee currency context and CIP-64 storage.
-        // We couldn't do this earlier because we need an EVM to populate the fee currency context.
-        let fee_currency_context = evm.create_fee_currency_context();
+        // Update the receipt builder with the shared CIP-64 storage from the EVM so that
+        // receipt data written during execution can be read when building receipts.
         let cip64_storage = evm.cip64_storage().clone();
-        let updated_receipt_builder =
-            CeloAlloyReceiptBuilder::new(fee_currency_context, cip64_storage.clone());
+        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(cip64_storage.clone());
         let factory = OpBlockExecutorFactory::<
             CeloAlloyReceiptBuilder,
             CeloRollupConfig,
             CeloEvmFactory,
         >::new(
-            updated_receipt_builder, self.config.clone(), *self.factory.evm_factory()
+            updated_receipt_builder,
+            self.config.clone(),
+            self.factory.evm_factory().clone(),
         );
 
         let ctx = OpBlockExecutionCtx {
@@ -200,9 +200,6 @@ mod test {
 #[cfg(test)]
 mod cip64_gas_tests {
     use crate::test_utils::load_and_execute_fixture;
-    use alloy_celo_evm::cip64_storage::get_tx_identifier;
-    use alloy_consensus::Transaction;
-    use celo_alloy_consensus::CeloTxType;
     use celo_revm::Cip64Info;
     use std::path::PathBuf;
 
@@ -217,17 +214,10 @@ mod cip64_gas_tests {
             .find(|e| e.file_name().to_string_lossy().contains(fixture_name))?
             .path();
 
-        let (outcome, fixture) = load_and_execute_fixture(fixture_path).await;
+        let (outcome, _fixture) = load_and_execute_fixture(fixture_path).await;
 
-        // Find the CIP-64 transaction and get its info from cip64_storage
-        for tx in fixture.executing_payload.recovered_transactions() {
-            let tx = tx.ok()?;
-            if tx.tx_type() == CeloTxType::Cip64 as u8 {
-                let tx_id = get_tx_identifier(tx.signer(), tx.nonce());
-                return outcome.cip64_storage.get_cip64_info(&tx_id);
-            }
-        }
-        None
+        // Get the first CIP-64 entry from the accumulated storage
+        outcome.cip64_storage.all_entries().into_iter().next().map(|data| data.cip64_info)
     }
 
     /// Test that verifies the CIP-64 gas calculation matches op-geth for the

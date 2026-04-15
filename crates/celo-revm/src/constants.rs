@@ -7,9 +7,12 @@ pub const CELO_MAX_CODE_SIZE: usize = 0x10000;
 /// The system address used for Celo system calls.
 pub const CELO_SYSTEM_ADDRESS: Address = Address::ZERO;
 
+/// Error message prefix for CIP-64 fee currency debit failures.
+pub const FEE_DEBIT_ERROR_PREFIX: &str = "Failed to debit gas fees";
+/// Error message prefix for CIP-64 fee currency credit failures.
+pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
+
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
-pub const CELO_ALFAJORES_CHAIN_ID: u64 = 44787;
-pub const CELO_BAKLAVA_CHAIN_ID: u64 = 62320;
 pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 
 pub struct CeloAddresses {
@@ -33,24 +36,6 @@ lazy_static! {
         );
 
         m.insert(
-            CELO_ALFAJORES_CHAIN_ID,
-            CeloAddresses {
-                celo_token: address!("0xF194afDf50B03e69Bd7D057c1Aa9e10c9954E4C9"),
-                fee_handler: address!("0xEAaFf71AB67B5d0eF34ba62Ea06Ac3d3E2dAAA38"),
-                fee_currency_directory: address!("0x9212Fb72ae65367A7c887eC4Ad9bE310BAC611BF"),
-            },
-        );
-
-        m.insert(
-            CELO_BAKLAVA_CHAIN_ID,
-            CeloAddresses {
-                celo_token: address!("0xdDc9bE57f553fe75752D61606B94CBD7e0264eF8"),
-                fee_handler: address!("0xeed0A69c51079114C280f7b936C79e24bD94013e"),
-                fee_currency_directory: address!("0xD59E1599F45e42Eb356202B2C714D6C7b734C034"),
-            },
-        );
-
-        m.insert(
             CELO_SEPOLIA_CHAIN_ID,
             CeloAddresses {
                 celo_token: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
@@ -63,9 +48,19 @@ lazy_static! {
     };
 }
 
-/// Returns the addresses for the given chain ID, or Mainnet addresses if not found.
+/// Returns the addresses for the given chain ID, or Celo Mainnet addresses if not found.
+///
+/// Logs a warning for unknown chain IDs since the Celo Mainnet addresses are almost
+/// certainly wrong on other chains and will cause fee debit/credit to target
+/// non-existent or incorrect contracts.
 pub fn get_addresses(chain_id: u64) -> &'static CeloAddresses {
-    CELO_ADDRESSES
-        .get(&chain_id)
-        .unwrap_or(&CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID])
+    CELO_ADDRESSES.get(&chain_id).unwrap_or_else(|| {
+        tracing::warn!(
+            target: "celo::constants",
+            chain_id,
+            "Unknown chain ID — falling back to Celo Mainnet contract addresses. \
+             Fee currency operations will likely fail on this chain."
+        );
+        &CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID]
+    })
 }

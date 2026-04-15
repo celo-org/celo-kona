@@ -76,16 +76,19 @@ pub struct TxCip64 {
     /// A gas cost is charged, though at a discount relative to the cost of
     /// accessing outside the list.
     pub access_list: AccessList,
+    /// The address of the whitelisted currency to be used to pay for gas.
+    /// This is a Celo-specific field not present in Ethereum transactions.
+    /// None means the native currency is used.
+    pub fee_currency: Option<Address>,
     /// Input has two uses depending if `to` field is Create or Call.
     /// pub init: An unlimited size byte array specifying the
     /// EVM-code for the account initialisation procedure CREATE,
     /// data: An unlimited size byte array specifying the
     /// input data of the message call, formally Td.
+    ///
+    /// NOTE: This field MUST be the last field in the struct because
+    /// `reth_codecs::Compact` requires `Bytes` fields to be last.
     pub input: Bytes,
-    /// The address of the whitelisted currency to be used to pay for gas.
-    /// This is a Celo-specific field not present in Ethereum transactions.
-    /// None means the native currency is used.
-    pub fee_currency: Option<Address>,
 }
 
 impl TxCip64 {
