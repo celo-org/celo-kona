@@ -209,9 +209,9 @@ where
         // Convert costs to fee currency
         let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
-        // effective_gas_price can be lower than base_fee_in_erc20 when the
-        // priority fee check is disabled. Clamp to 0 in that case.
-        let tip_gas_price = effective_gas_price.saturating_sub(base_fee_in_erc20);
+        let tip_gas_price = effective_gas_price
+            .checked_sub(base_fee_in_erc20)
+            .expect("effective_gas_price >= base_fee_in_erc20 enforced by validate_env");
 
         let tx_fee_tip_in_erc20 = U256::from(
             tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
