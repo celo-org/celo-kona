@@ -60,9 +60,6 @@ clap = { workspace = true, features = ["derive", "env"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 reqwest.workspace = true
 
-# KZG
-ark-ff.workspace = true
-
 [features]
 default = ["single"]
 single = []
