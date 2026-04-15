@@ -483,11 +483,11 @@ where
                     Some(self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?)
                 };
                 validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
-                // Return early — CIP-64 validation is complete. The revm
-                // `validate_tx_env` would classify 0x7b as `Custom` and skip
-                // its base fee check, but we must not fall through because it
-                // would also bypass chain-ID enforcement for custom types.
-                return Ok(());
+                // CIP-64-specific validation (chain-ID + priority fee) is complete.
+                // Fall through to `self.mainnet.validate_env(evm)` for generic
+                // checks (block gas limit, EIP-7825 gas cap, EIP-3860 initcode
+                // size). CIP-64 maps to `Custom` in revm, so its gas-price
+                // match arm is a no-op and chain-ID is re-checked harmlessly.
             }
             _ => {
                 // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
