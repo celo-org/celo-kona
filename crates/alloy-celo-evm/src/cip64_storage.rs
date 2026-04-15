@@ -45,8 +45,7 @@ impl Cip64Storage {
         self.receipt_queue.lock().push_back(data);
     }
 
-    /// Pops the next CIP-64 receipt data from the queue.
-    /// Returns the merged logs and fee_currency for receipt building.
+    /// Pops the next CIP-64 receipt data from the queue for receipt building.
     pub fn pop_cip64_receipt_data(&self) -> Option<Cip64ReceiptData> {
         self.receipt_queue.lock().pop_front()
     }
