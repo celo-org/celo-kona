@@ -585,6 +585,22 @@ where
         if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
+
+        // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
+        // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
+        // rather than `None`. Without this the receipt encoding would differ from
+        // the historical behavior and break receipt roots.
+        let is_cip64 =
+            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
+        if is_cip64 && fees_in_celo && !is_deposit {
+            let mut tx = evm.ctx().tx().clone();
+            tx.cip64_tx_info = Some(Cip64Info {
+                base_fee_in_erc20: Some(basefee),
+                ..Default::default()
+            });
+            evm.ctx().set_tx(tx);
+        }
+
         let (tx, journal) = evm.ctx().tx_journal_mut();
 
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
