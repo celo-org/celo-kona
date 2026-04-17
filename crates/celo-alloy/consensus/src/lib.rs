@@ -10,10 +10,15 @@ mod receipt;
 pub use receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope};
 
 pub mod transaction;
-pub use transaction::{CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64};
+pub use transaction::{
+    CeloPooledTransaction, CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
+};
 
 mod block;
 pub use block::CeloBlock;
+
+#[cfg(feature = "reth")]
+mod reth_compat;
 
 /// Bincode-compatible serde implementations for consensus types.
 ///

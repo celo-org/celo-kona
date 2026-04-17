@@ -483,11 +483,11 @@ where
                     Some(self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?)
                 };
                 validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
-                // CIP-64-specific validation (chain-ID + priority fee) is complete.
-                // Fall through to `self.mainnet.validate_env(evm)` for generic
-                // checks (block gas limit, EIP-7825 gas cap, EIP-3860 initcode
-                // size). CIP-64 maps to `Custom` in revm, so its gas-price
-                // match arm is a no-op and chain-ID is re-checked harmlessly.
+                // Return early — CIP-64 validation is complete. The revm
+                // `validate_tx_env` would classify 0x7b as `Custom` and skip
+                // its base fee check, but we must not fall through because it
+                // would also bypass chain-ID enforcement for custom types.
+                return Ok(());
             }
             _ => {
                 // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
@@ -582,29 +582,9 @@ where
         }
 
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
-        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
-        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
-        // rate. The GASPRICE opcode will therefore return native pricing instead of the
-        // ERC20-denominated price during simulations. This is a known limitation.
         if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
-
-        // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
-        // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
-        // rather than `None`. Without this the receipt encoding would differ from
-        // the historical behavior and break receipt roots.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo {
-            let mut tx = evm.ctx().tx().clone();
-            tx.cip64_tx_info = Some(Cip64Info {
-                base_fee_in_erc20: Some(basefee),
-                ..Default::default()
-            });
-            evm.ctx().set_tx(tx);
-        }
-
         let (tx, journal) = evm.ctx().tx_journal_mut();
 
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;

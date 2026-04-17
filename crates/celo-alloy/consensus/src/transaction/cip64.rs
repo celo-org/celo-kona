@@ -20,6 +20,7 @@ use core::mem;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "reth", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[doc(alias = "Cip64Transaction", alias = "TransactionCip64", alias = "Cip64Tx")]
 pub struct TxCip64 {
