@@ -185,12 +185,12 @@ impl From<CeloTypedTransaction> for CeloTransactionRequest {
 impl From<CeloTxEnvelope> for CeloTransactionRequest {
     fn from(value: CeloTxEnvelope) -> Self {
         match value {
+            CeloTxEnvelope::Legacy(tx) => tx.into(),
             CeloTxEnvelope::Eip2930(tx) => tx.into(),
             CeloTxEnvelope::Eip1559(tx) => tx.into(),
             CeloTxEnvelope::Eip7702(tx) => tx.into(),
             CeloTxEnvelope::Cip64(tx) => tx.into(),
             CeloTxEnvelope::Deposit(tx) => tx.into(),
-            _ => Default::default(),
         }
     }
 }
