@@ -78,11 +78,7 @@ use {
     reth_primitives_traits::TxTy,
 };
 
-/// The Celo EIP-1559 base fee floor in wei (25 Gwei).
-///
-/// Applied as `max(computed_base_fee, CELO_BASE_FEE_FLOOR)` for blocks before Jovian activation.
-/// After Jovian, `min_base_fee` is read from the parent block's `extraData` instead.
-pub const CELO_BASE_FEE_FLOOR: u64 = 25_000_000_000;
+pub use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR as CELO_BASE_FEE_FLOOR;
 
 /// Compute the next block's base fee for Celo.
 ///
