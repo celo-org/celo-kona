@@ -70,7 +70,9 @@ impl FeeCurrencyLimits {
                 let (Ok(addr), Ok(frac)) =
                     (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>())
             {
-                map.insert(addr, frac);
+                if (0.0..=1.0).contains(&frac) {
+                    map.insert(addr, frac);
+                }
             }
         }
         map
@@ -84,7 +86,7 @@ impl FeeCurrencyLimits {
         block_gas_limit: u64,
     ) -> Option<u64> {
         let fc = fee_currency?;
-        let fraction = self.limits.get(&fc).copied().unwrap_or(self.default_limit);
+        let fraction = self.limits.get(&fc).copied().unwrap_or(self.default_limit).clamp(0.0, 1.0);
         Some((block_gas_limit as f64 * fraction) as u64)
     }
 }
@@ -285,6 +287,22 @@ mod tests {
     fn test_parse_limits_no_equals_sign() {
         let limits = FeeCurrencyLimits::parse_limits("0x765DE816845861e75A25fCA122bb6898B8B1282a");
         assert!(limits.is_empty(), "Entry without = should be ignored");
+    }
+
+    #[test]
+    fn test_parse_limits_out_of_range_fractions() {
+        let limits = FeeCurrencyLimits::parse_limits(
+            "0x765DE816845861e75A25fCA122bb6898B8B1282a=-0.1,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=1.5",
+        );
+        assert!(limits.is_empty(), "Fractions outside 0.0..=1.0 should be rejected");
+    }
+
+    #[test]
+    fn test_parse_limits_boundary_fractions_accepted() {
+        let limits = FeeCurrencyLimits::parse_limits(
+            "0x765DE816845861e75A25fCA122bb6898B8B1282a=0.0,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=1.0",
+        );
+        assert_eq!(limits.len(), 2, "0.0 and 1.0 should both be accepted");
     }
 
     #[test]
