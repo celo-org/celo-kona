@@ -57,7 +57,6 @@ use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, CeloTxType, Tx
 use celo_revm::CeloTransaction;
 use core::hash::{Hash, Hasher};
 use op_alloy_consensus::{OpTransaction, TxDeposit};
-use op_revm::OpTransactionError;
 use reth_codecs::{
     Compact,
     alloy::transaction::{CompactEnvelope, Envelope, FromTxCompact, ToTxCompact},
@@ -437,10 +436,6 @@ impl FromTxWithEncoded<CeloConsensusTx> for CeloTransaction<TxEnv> {
         Self::from_encoded_tx(&tx.inner, caller, encoded)
     }
 }
-
-// Silence unused-import warnings for the error alias pulled in above.
-#[allow(dead_code)]
-type _CeloTxErr = OpTransactionError;
 
 // ---------------------------------------------------------------------------
 // Reth Compact / bincode / database traits — all transparent over inner.
