@@ -12,13 +12,13 @@ use crate::{
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_evm::{EvmEnv, env::BlockEnvironment, rpc::EthTxEnvError};
 use alloy_network::TxSigner;
-use alloy_primitives::{Address, Bytes, Signature, U256, keccak256};
+use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
 use celo_alloy_consensus::{
     CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope, CeloTxEnvelope,
 };
 use celo_alloy_rpc_types::CeloTransactionReceipt;
-use celo_revm::CeloTransaction;
+use celo_revm::{CeloTransaction, contracts::core_contracts::getExchangeRateCall};
 use op_alloy_rpc_types::OpTransactionRequest;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::ConfigureEvm;
@@ -89,38 +89,33 @@ pub struct CeloTransactionRequest {
     pub fee_currency: Option<alloy_primitives::Address>,
 }
 
+/// Helper struct for single-pass serde of [`CeloTransactionRequest`].
+///
+/// Uses `#[serde(flatten)]` so that the inner `OpTransactionRequest` fields and
+/// `feeCurrency` are serialized/deserialized in one pass without an intermediate
+/// `serde_json::Value` allocation.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CeloTransactionRequestHelper {
+    #[serde(flatten)]
+    inner: OpTransactionRequest,
+    /// A missing key or explicit JSON `null` is treated as `None` (native fee).
+    /// Any other value that fails to parse as an `Address` is a hard error, so
+    /// clients that intended a CIP-64 tx don't silently fall back to a native-fee tx.
+    #[serde(rename = "feeCurrency", default, skip_serializing_if = "Option::is_none")]
+    fee_currency: Option<alloy_primitives::Address>,
+}
+
 impl serde::Serialize for CeloTransactionRequest {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut value = serde_json::to_value(&self.inner).map_err(serde::ser::Error::custom)?;
-        if let Some(fc) = self.fee_currency &&
-            let Some(obj) = value.as_object_mut()
-        {
-            obj.insert(
-                "feeCurrency".to_string(),
-                serde_json::to_value(fc).map_err(serde::ser::Error::custom)?,
-            );
-        }
-        value.serialize(serializer)
+        CeloTransactionRequestHelper { inner: self.inner.clone(), fee_currency: self.fee_currency }
+            .serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for CeloTransactionRequest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut value = serde_json::Value::deserialize(deserializer)?;
-        // Extract and parse `feeCurrency` if present. A missing key or explicit
-        // JSON `null` is treated as `None`; any other value that fails to parse
-        // as an Address is a hard error, so clients that intended a CIP-64 tx
-        // don't silently fall back to a native-fee tx.
-        let fee_currency = match value.as_object_mut().and_then(|obj| obj.remove("feeCurrency")) {
-            None | Some(serde_json::Value::Null) => None,
-            Some(v) => Some(
-                serde_json::from_value::<alloy_primitives::Address>(v)
-                    .map_err(serde::de::Error::custom)?,
-            ),
-        };
-        let inner: OpTransactionRequest =
-            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Ok(Self { inner, fee_currency })
+        let helper = CeloTransactionRequestHelper::deserialize(deserializer)?;
+        Ok(Self { inner: helper.inner, fee_currency: helper.fee_currency })
     }
 }
 
@@ -586,13 +581,6 @@ impl Debug for CeloFeeApi {
 /// JSON-RPC server error code for call execution failures.
 const RPC_SERVER_ERROR: i32 = -32000;
 
-/// Pre-computed selector for `getExchangeRate(address)`.
-/// keccak256("getExchangeRate(address)")[..4]
-static GET_EXCHANGE_RATE_SELECTOR: std::sync::LazyLock<[u8; 4]> = std::sync::LazyLock::new(|| {
-    let hash = keccak256("getExchangeRate(address)");
-    [hash[0], hash[1], hash[2], hash[3]]
-});
-
 impl CeloFeeApi {
     /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
     ///
@@ -605,9 +593,9 @@ impl CeloFeeApi {
         fee_currency: Address,
         block_id: Option<alloy_eips::BlockId>,
     ) -> Result<(U256, U256), jsonrpsee_types::ErrorObjectOwned> {
-        let mut calldata = Vec::with_capacity(36);
-        calldata.extend_from_slice(GET_EXCHANGE_RATE_SELECTOR.as_slice());
-        calldata.extend_from_slice(fee_currency.into_word().as_slice());
+        use alloy_sol_types::SolCall;
+
+        let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
 
         let request = CeloTransactionRequest {
             inner: OpTransactionRequest::default()
@@ -618,25 +606,23 @@ impl CeloFeeApi {
 
         let result = (self.eth_call)(request, block_id).await?;
 
-        if result.len() < 64 {
+        let decoded = getExchangeRateCall::abi_decode_returns(&result).map_err(|e| {
             tracing::warn!(
                 target: "celo::rpc",
                 ?fee_currency,
                 len = result.len(),
-                "Exchange rate response too short"
+                %e,
+                "Failed to decode exchange rate response"
             );
-            return Err(jsonrpsee_types::ErrorObject::owned(
+            jsonrpsee_types::ErrorObject::owned(
                 RPC_SERVER_ERROR,
-                format!(
-                    "Invalid exchange rate response for {fee_currency}: expected >=64 bytes, got {}",
-                    result.len()
-                ),
+                format!("Invalid exchange rate response for {fee_currency}: {e}"),
                 None::<()>,
-            ));
-        }
+            )
+        })?;
 
-        let numerator = U256::from_be_slice(&result[0..32]);
-        let denominator = U256::from_be_slice(&result[32..64]);
+        let numerator = decoded.numerator;
+        let denominator = decoded.denominator;
 
         if denominator.is_zero() {
             tracing::warn!(

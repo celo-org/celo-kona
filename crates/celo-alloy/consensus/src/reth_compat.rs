@@ -177,9 +177,9 @@ impl Compact for CeloTxType {
                 COMPACT_EXTENDED_IDENTIFIER_FLAG => {
                     let extended = buf.get_u8();
                     match extended {
-                        4 => Self::Eip7702,
-                        123 => Self::Cip64,
-                        126 => Self::Deposit,
+                        x if x == Self::Eip7702 as u8 => Self::Eip7702,
+                        x if x == Self::Cip64 as u8 => Self::Cip64,
+                        x if x == Self::Deposit as u8 => Self::Deposit,
                         _ => panic!("Unsupported CeloTxType identifier: {extended}"),
                     }
                 }

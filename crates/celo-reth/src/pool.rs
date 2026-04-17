@@ -337,7 +337,7 @@ impl PoolTransaction for CeloPoolTx {
     ) -> reth_primitives_traits::WithEncoded<Recovered<Self::Consensus>> {
         // The cached native fees aren't plumbed through here because
         // `execute_best_transactions` uses `into_consensus()` not this path.
-        // Log a warning for CIP-64 txs so unexpected callers are visible.
+        // Log at debug level for CIP-64 txs so unexpected callers are visible.
         if self.fee_currency.is_some() {
             tracing::debug!(
                 target: "celo::pool",
