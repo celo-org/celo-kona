@@ -448,11 +448,7 @@ impl From<CeloReceiptEnvelope> for CeloReceipt {
             CeloReceiptEnvelope::Eip1559(receipt) => Self::Eip1559(receipt.receipt),
             CeloReceiptEnvelope::Eip7702(receipt) => Self::Eip7702(receipt.receipt),
             CeloReceiptEnvelope::Cip64(receipt) => Self::Cip64(receipt.receipt),
-            CeloReceiptEnvelope::Deposit(receipt) => Self::Deposit(OpDepositReceipt {
-                deposit_nonce: receipt.receipt.deposit_nonce,
-                deposit_receipt_version: receipt.receipt.deposit_receipt_version,
-                inner: receipt.receipt.inner,
-            }),
+            CeloReceiptEnvelope::Deposit(receipt) => Self::Deposit(receipt.receipt),
         }
     }
 }
