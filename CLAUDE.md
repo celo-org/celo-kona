@@ -5,7 +5,7 @@
 This repo contains two things built on a shared Celo EVM:
 
 1. **celo-reth** — a full Celo L2 execution node, extending [op-reth](https://github.com/ethereum-optimism/optimism/tree/develop/rust/op-reth) (the OP Stack reth node) with Celo-specific pool, payload, and RPC logic.
-2. **kona crates** — Celo extensions to [Kona](https://github.com/op-rs/kona) (the OP Stack ZK/fault proof client), used by Celo's [op-succinct fork](https://github.com/celo-org/op-succinct/) for ZK fault proofs.
+2. **kona crates** — Celo extensions to [Kona](https://github.com/ethereum-optimism/optimism/tree/develop/rust/kona) (the OP Stack ZK/fault proof client), used by Celo's [op-succinct fork](https://github.com/celo-org/op-succinct/) for ZK fault proofs.
 
 The core Celo EVM additions are **Fee Abstraction** (CIP-64 tx type — pay gas in ERC20 tokens) and **Token Duality** (native CELO ↔ ERC20 via transfer precompile). These live in `celo-revm` and `alloy-celo-evm`, shared by both celo-reth and kona.
 
