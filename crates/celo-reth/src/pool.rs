@@ -130,9 +130,17 @@ impl ExchangeRate {
 #[derive(Debug, Clone)]
 pub struct CeloPoolTx {
     inner: InnerPoolTx,
-    /// Native-equivalent max_fee_per_gas. Same as original for non-CIP-64 txs.
+    /// Native-equivalent max_fee_per_gas.
+    ///
+    /// For non-CIP-64 txs: same as `inner.max_fee_per_gas()`.
+    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
+    /// [`Self::apply_exchange_rate`].
     native_max_fee_per_gas: u128,
     /// Native-equivalent max_priority_fee_per_gas.
+    ///
+    /// For non-CIP-64 txs: same as `inner.max_priority_fee_per_gas()`.
+    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
+    /// [`Self::apply_exchange_rate`].
     native_max_priority_fee_per_gas: Option<u128>,
     /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
     fee_currency: Option<Address>,
