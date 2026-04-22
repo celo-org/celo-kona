@@ -807,12 +807,12 @@ fn apply_exchange_rates_to_valid_tx(
     // leaving stale reserved balance in `cumulative_fc_costs`.
     let mut reserved_cumulative: Option<(Address, Address, U256)> = None;
     if let Some(fc) = tx.fee_currency() {
-        let old_fee = tx.inner.max_fee_per_gas();
-        let old_priority_fee = tx.inner.max_priority_fee_per_gas();
+        let max_fee_fc = tx.inner.max_fee_per_gas();
+        let max_priority_fee_fc = tx.inner.max_priority_fee_per_gas();
 
         // Look up exchange rate, check ERC20 balance, and simulate debit
         // in a single EVM instance.
-        let required_fc = U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(old_fee));
+        let required_fc = U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc));
         let sender = tx.sender();
         CeloPoolMetrics::exchange_rate_lookup();
         let result =
@@ -833,11 +833,11 @@ fn apply_exchange_rates_to_valid_tx(
 
         // Check: fee cap must be >= base fee floor converted to FC.
         let base_fee_floor_fc = rate.to_fc(base_fee_floor as u128);
-        if old_fee < base_fee_floor_fc {
+        if max_fee_fc < base_fee_floor_fc {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                old_fee,
+                max_fee_fc,
                 base_fee_floor_fc,
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
@@ -849,8 +849,8 @@ fn apply_exchange_rates_to_valid_tx(
         // The effective tip is min(max_fee - base_fee_floor_fc, priority_fee),
         // matching op-geth's EffectiveGasTipIntCmp(minTip, baseFeeFloor).
         let min_tip_fc = rate.to_fc(minimum_priority_fee);
-        let actual_priority = old_priority_fee.unwrap_or(0);
-        let effective_tip = old_fee.saturating_sub(base_fee_floor_fc).min(actual_priority);
+        let actual_priority = max_priority_fee_fc.unwrap_or(0);
+        let effective_tip = max_fee_fc.saturating_sub(base_fee_floor_fc).min(actual_priority);
         if effective_tip < min_tip_fc {
             tracing::warn!(
                 target: "celo::pool",
@@ -873,8 +873,8 @@ fn apply_exchange_rates_to_valid_tx(
             ?fc,
             numerator = rate.numerator,
             denominator = rate.denominator,
-            old_max_fee = old_fee,
-            new_max_fee = tx.native_max_fee_per_gas,
+            max_fee_fc,
+            max_fee_native = tx.native_max_fee_per_gas,
             "Applied exchange rate to CIP-64 pool tx"
         );
 
