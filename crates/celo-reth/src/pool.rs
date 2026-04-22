@@ -565,6 +565,13 @@ fn lookup_rate_and_balance_impl(
             Some(ExchangeRate { numerator, denominator })
         });
 
+    // If rate lookup failed, the caller will reject the tx as UnregisteredCurrency
+    // regardless of balance/debit — skip the remaining EVM calls to avoid wasted
+    // work (and adversarial-tx DoS amplification).
+    if rate.is_none() {
+        return FcLookupResult { rate, balance: None, debit_ok: None };
+    }
+
     // 2. Check ERC20 balance (only if requested)
     let balance = balance_check.as_ref().and_then(|(sender, _required)| {
         let bal_calldata = IFeeCurrencyERC20::balanceOfCall { account: *sender }.abi_encode();
