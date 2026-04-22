@@ -6,4 +6,4 @@ use alloy_primitives::{B256, b256};
 pub(crate) const SHA256_EMPTY: B256 =
     b256!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
-pub use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR;
+pub(crate) use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR;

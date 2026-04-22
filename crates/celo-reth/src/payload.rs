@@ -68,11 +68,10 @@ impl FeeCurrencyLimits {
             }
             if let Some((addr_str, frac_str)) = pair.split_once('=') &&
                 let (Ok(addr), Ok(frac)) =
-                    (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>())
+                    (addr_str.trim().parse::<Address>(), frac_str.trim().parse::<f64>()) &&
+                (0.0..=1.0).contains(&frac)
             {
-                if (0.0..=1.0).contains(&frac) {
-                    map.insert(addr, frac);
-                }
+                map.insert(addr, frac);
             }
         }
         map
