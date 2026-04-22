@@ -728,15 +728,27 @@ enum CeloPoolRejection {
     /// The fee currency is not registered in the FeeCurrencyDirectory.
     UnregisteredCurrency(Address),
     /// The sender has insufficient ERC20 balance for the fee currency.
-    InsufficientBalance(Address),
+    InsufficientBalance {
+        currency: Address,
+        sender: Address,
+        required: U256,
+        balance: U256,
+        /// True when rejection is due to cumulative cost across pending txs.
+        cumulative: bool,
+    },
     /// The fee cap (in FC terms) is below the base fee floor converted to FC.
-    BelowBaseFeeFloor(Address),
+    BelowBaseFeeFloor { currency: Address, max_fee_fc: u128, base_fee_floor_fc: u128 },
     /// The priority fee (in FC terms) is below the minimum tip converted to FC.
     BelowMinTip { currency: Address, min_tip_fc: u128, actual: u128 },
     /// The `debitGasFees()` simulation failed (e.g. token is paused or blacklisted).
-    DebitSimulationFailed(Address),
+    DebitSimulationFailed { currency: Address, sender: Address },
     /// The transaction fee (cost - value) exceeds the configured fee cap.
-    ExceedsFeeCap { max_tx_fee_wei: u128, tx_fee_cap_wei: u128 },
+    ExceedsFeeCap {
+        max_tx_fee_wei: u128,
+        tx_fee_cap_wei: u128,
+        /// Set when the tx uses a CIP-64 fee currency.
+        fee_currency: Option<Address>,
+    },
 }
 
 impl std::fmt::Display for CeloPoolRejection {
@@ -745,26 +757,56 @@ impl std::fmt::Display for CeloPoolRejection {
             Self::UnregisteredCurrency(fc) => {
                 write!(f, "unregistered fee-currency address {fc}")
             }
-            Self::InsufficientBalance(fc) => {
-                write!(f, "insufficient ERC20 balance for fee-currency {fc}")
+            Self::InsufficientBalance { currency, sender, required, balance, cumulative } => {
+                if *cumulative {
+                    write!(
+                        f,
+                        "cumulative fee-currency cost ({required}) exceeds balance ({balance}) \
+                         for sender {sender} in fee-currency {currency}"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "insufficient fee-currency balance: required {required}, \
+                         available {balance} for sender {sender} in fee-currency {currency}"
+                    )
+                }
             }
-            Self::BelowBaseFeeFloor(fc) => {
-                write!(f, "fee cap below base fee floor for fee-currency {fc}")
+            Self::BelowBaseFeeFloor { currency, max_fee_fc, base_fee_floor_fc } => {
+                write!(
+                    f,
+                    "fee cap ({max_fee_fc}) below base fee floor ({base_fee_floor_fc}) \
+                     for fee-currency {currency}"
+                )
             }
             Self::BelowMinTip { currency, min_tip_fc, actual } => {
                 write!(
                     f,
-                    "CIP-64 priority fee {actual} below minimum {min_tip_fc} for fee-currency {currency}"
+                    "CIP-64 priority fee {actual} below minimum {min_tip_fc} \
+                     for fee-currency {currency}"
                 )
             }
-            Self::DebitSimulationFailed(fc) => {
-                write!(f, "debitGasFees simulation failed for fee-currency {fc}")
-            }
-            Self::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei } => {
+            Self::DebitSimulationFailed { currency, sender } => {
                 write!(
                     f,
-                    "tx fee ({max_tx_fee_wei} wei) exceeds the configured cap ({tx_fee_cap_wei} wei)"
+                    "debitGasFees simulation failed for sender {sender} \
+                     in fee-currency {currency}"
                 )
+            }
+            Self::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei, fee_currency } => {
+                if let Some(fc) = fee_currency {
+                    write!(
+                        f,
+                        "tx fee ({max_tx_fee_wei} wei) exceeds the configured cap \
+                         ({tx_fee_cap_wei} wei) for fee-currency {fc}"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "tx fee ({max_tx_fee_wei} wei) exceeds the configured cap \
+                         ({tx_fee_cap_wei} wei)"
+                    )
+                }
             }
         }
     }
@@ -776,9 +818,9 @@ impl PoolTransactionError for CeloPoolRejection {
     fn is_bad_transaction(&self) -> bool {
         match self {
             // Insufficient balance is transient — balance may change.
-            Self::InsufficientBalance(_) => false,
+            Self::InsufficientBalance { .. } => false,
             // Debit simulation failure is transient — token state may change.
-            Self::DebitSimulationFailed(_) => false,
+            Self::DebitSimulationFailed { .. } => false,
             // Fee cap rejection is permanent — the tx's gas cost won't change.
             Self::ExceedsFeeCap { .. } => true,
             _ => true,
@@ -867,7 +909,11 @@ fn apply_exchange_rates_to_valid_tx(
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
             CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
-            return Err(CeloPoolRejection::BelowBaseFeeFloor(fc));
+            return Err(CeloPoolRejection::BelowBaseFeeFloor {
+                currency: fc,
+                max_fee_fc,
+                base_fee_floor_fc,
+            });
         }
 
         // Check: effective tip must meet the minimum tip converted to FC.
@@ -917,7 +963,13 @@ fn apply_exchange_rates_to_valid_tx(
                     "Rejecting CIP-64 tx: insufficient fee currency balance"
                 );
                 CeloPoolMetrics::cip64_rejection("insufficient_balance");
-                return Err(CeloPoolRejection::InsufficientBalance(fc));
+                return Err(CeloPoolRejection::InsufficientBalance {
+                    currency: fc,
+                    sender,
+                    required: required_fc,
+                    balance,
+                    cumulative: false,
+                });
             }
 
             // Cumulative balance check: ensure the total cost across all pending
@@ -933,7 +985,8 @@ fn apply_exchange_rates_to_valid_tx(
             {
                 let mut costs = cumulative_fc_costs.lock().unwrap_or_else(|e| e.into_inner());
                 let entry = costs.entry((sender, fc)).or_default();
-                if entry.saturating_add(required_fc) > balance {
+                let cumulative_required = entry.saturating_add(required_fc);
+                if cumulative_required > balance {
                     tracing::warn!(
                         target: "celo::pool",
                         ?fc,
@@ -944,7 +997,13 @@ fn apply_exchange_rates_to_valid_tx(
                         "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
                     );
                     CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
-                    return Err(CeloPoolRejection::InsufficientBalance(fc));
+                    return Err(CeloPoolRejection::InsufficientBalance {
+                        currency: fc,
+                        sender,
+                        required: cumulative_required,
+                        balance,
+                        cumulative: true,
+                    });
                 }
                 *entry = entry.saturating_add(required_fc);
             }
@@ -962,7 +1021,7 @@ fn apply_exchange_rates_to_valid_tx(
             );
             CeloPoolMetrics::cip64_rejection("debit_simulation_failed");
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
-            return Err(CeloPoolRejection::DebitSimulationFailed(fc));
+            return Err(CeloPoolRejection::DebitSimulationFailed { currency: fc, sender });
         }
     }
 
@@ -985,7 +1044,11 @@ fn apply_exchange_rates_to_valid_tx(
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             }
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
-            return Err(CeloPoolRejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
+            return Err(CeloPoolRejection::ExceedsFeeCap {
+                max_tx_fee_wei,
+                tx_fee_cap_wei: cap,
+                fee_currency: tx.fee_currency(),
+            });
         }
     }
 
@@ -1503,7 +1566,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance { .. })));
     }
 
     #[test]
@@ -1530,7 +1593,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor { .. })));
     }
 
     #[test]
@@ -1580,7 +1643,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
     }
 
     // -----------------------------------------------------------------------
@@ -1945,7 +2008,7 @@ mod tests {
             &cumulative,
         );
         assert!(
-            matches!(r2, Err(CeloPoolRejection::InsufficientBalance(_))),
+            matches!(r2, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
             "Second tx should fail cumulative check; got {r2:?}"
         );
     }
@@ -2032,7 +2095,7 @@ mod tests {
             None,
             &cumulative,
         );
-        assert!(matches!(r2, Err(CeloPoolRejection::InsufficientBalance(_))));
+        assert!(matches!(r2, Err(CeloPoolRejection::InsufficientBalance { .. })));
 
         // Clear (simulates on_new_head_block)
         cumulative.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -2082,7 +2145,7 @@ mod tests {
             None,
             &cumulative,
         );
-        assert!(matches!(r1, Err(CeloPoolRejection::DebitSimulationFailed(_))));
+        assert!(matches!(r1, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
         assert_eq!(
             cumulative.lock().unwrap_or_else(|e| e.into_inner()).get(&(sender, fc)).copied(),
             None,
