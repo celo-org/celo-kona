@@ -624,15 +624,17 @@ impl CeloFeeApi {
         let numerator = decoded.numerator;
         let denominator = decoded.denominator;
 
-        if denominator.is_zero() {
+        if numerator.is_zero() || denominator.is_zero() {
             tracing::warn!(
                 target: "celo::rpc",
                 ?fee_currency,
-                "Exchange rate denominator is zero"
+                %numerator,
+                %denominator,
+                "Exchange rate has zero numerator or denominator"
             );
             return Err(jsonrpsee_types::ErrorObject::owned(
                 RPC_SERVER_ERROR,
-                format!("Exchange rate denominator is zero for {fee_currency}"),
+                format!("Exchange rate has zero component for {fee_currency}"),
                 None::<()>,
             ));
         }
