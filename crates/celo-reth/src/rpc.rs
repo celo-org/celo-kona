@@ -10,7 +10,11 @@ use crate::{
     signed_tx::CeloConsensusTx,
 };
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
-use alloy_evm::{EvmEnv, env::BlockEnvironment, rpc::EthTxEnvError};
+use alloy_evm::{
+    EvmEnv,
+    env::BlockEnvironment,
+    rpc::{CallFeesError, EthTxEnvError},
+};
 use alloy_network::TxSigner;
 use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
@@ -134,6 +138,25 @@ impl AsMut<TransactionRequest> for CeloTransactionRequest {
 impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
     fn try_into_sim_tx(self) -> Result<CeloTransactionSigned, ValueError<Self>> {
         let fee_currency = self.fee_currency;
+
+        // CIP-64 is EIP-1559-based. If the caller sets only `gasPrice` (legacy)
+        // alongside `feeCurrency`, the inner OP conversion produces a Legacy tx
+        // and fee_currency would be silently dropped — the user would think
+        // they're simulating in the ERC-20 but actually simulate with native
+        // CELO. Reject early so `eth_call` fails the same way `eth_sendTransaction`
+        // does (intentional divergence from op-geth, which silently drops on
+        // both paths).
+        if fee_currency.is_some() {
+            let inner_ref = self.inner.as_ref();
+            if inner_ref.gas_price.is_some() && !inner_ref.has_eip1559_fields() {
+                return Err(ValueError::new_static(
+                    self,
+                    "CIP-64 feeCurrency requires EIP-1559 fee fields \
+                     (maxFeePerGas / maxPriorityFeePerGas); legacy gasPrice is not compatible",
+                ));
+            }
+        }
+
         self.inner
             .try_into_sim_tx()
             .map(|op_tx| {
@@ -179,6 +202,26 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
         evm_env: &EvmEnv<Spec, Block>,
     ) -> Result<CeloTransaction<TxEnv>, Self::Err> {
         let fee_currency = self.fee_currency;
+
+        // Same guard as `try_into_sim_tx`: reject `{gasPrice, feeCurrency}`
+        // early so `eth_estimateGas` fails consistently with `eth_sendTransaction`.
+        if fee_currency.is_some() {
+            let inner_ref = self.inner.as_ref();
+            if inner_ref.gas_price.is_some() && !inner_ref.has_eip1559_fields() {
+                // Log the CIP-64-specific reason; the returned error type is
+                // constrained to `EthTxEnvError` (foreign type, orphan rule) so
+                // the RPC message will be the generic `ConflictingFeeFieldsInRequest`
+                // text rather than a Celo-specific one.
+                tracing::warn!(
+                    target: "celo::rpc",
+                    ?fee_currency,
+                    "CIP-64 feeCurrency requires EIP-1559 fee fields; \
+                     legacy gasPrice is not compatible"
+                );
+                return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
+            }
+        }
+
         let mut op_tx: op_revm::OpTransaction<TxEnv> = self.inner.try_into_tx_env(evm_env)?;
         // When fee_currency is set, ensure the tx_type is CIP-64 (0x7b) so the handler
         // applies fee currency validation and intrinsic gas.
@@ -1374,7 +1417,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn try_into_sim_tx_fee_currency_ignored_for_legacy() {
+    fn try_into_sim_tx_rejects_gas_price_with_fee_currency() {
         use alloy_network::TransactionBuilder;
 
         let fc = Address::with_last_byte(0xCC);
@@ -1389,21 +1432,32 @@ mod tests {
         };
 
         let result = req.try_into_sim_tx();
-        match result {
-            Ok(tx) => {
-                // The tx should NOT be CIP-64 — fee_currency wrapping only
-                // applies when the inner OP tx produces EIP-1559.
-                assert!(
-                    !matches!(tx.envelope(), CeloTxEnvelope::Cip64(_)),
-                    "Legacy request with fee_currency should not produce CIP-64 tx"
-                );
-            }
-            Err(_) => {
-                // It's also acceptable for the conversion to fail for legacy
-                // requests — the key invariant is that it doesn't produce a
-                // malformed CIP-64 envelope.
-            }
-        }
+        assert!(result.is_err(), "gasPrice + feeCurrency must be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("CIP-64") || err_msg.contains("maxFeePerGas"),
+            "Error should mention CIP-64 or EIP-1559 fields, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn try_into_tx_env_rejects_gas_price_with_fee_currency() {
+        use alloy_evm::rpc::TryIntoTxEnv;
+        use alloy_network::TransactionBuilder;
+
+        let fc = Address::with_last_byte(0xCC);
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .with_gas_price(1_000_000_000)
+                .with_nonce(0)
+                .with_chain_id(42220),
+            fee_currency: Some(fc),
+        };
+
+        let evm_env: EvmEnv<op_revm::OpSpecId, revm::context::BlockEnv> = EvmEnv::default();
+        let result: Result<_, EthTxEnvError> = req.try_into_tx_env(&evm_env);
+        assert!(result.is_err(), "gasPrice + feeCurrency must be rejected in tx_env path");
     }
 
     // -----------------------------------------------------------------------
