@@ -892,6 +892,7 @@ fn apply_exchange_rates_to_valid_tx(
                     ?fc,
                     ?sender,
                     ?required_fc,
+                    ?balance,
                     "Rejecting CIP-64 tx: insufficient fee currency balance"
                 );
                 CeloPoolMetrics::cip64_rejection("insufficient_balance");
