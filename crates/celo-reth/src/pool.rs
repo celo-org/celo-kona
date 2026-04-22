@@ -537,7 +537,10 @@ fn lookup_rate_and_balance_impl(
 
     let state = match provider.latest() {
         Ok(s) => s,
-        Err(_) => return FcLookupResult { rate: None, balance: None, debit_ok: None },
+        Err(e) => {
+            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest state for FC lookup");
+            return FcLookupResult { rate: None, balance: None, debit_ok: None };
+        }
     };
     let db = StateProviderDatabase::new(state);
     let mut evm = Context::celo().with_db(db).build_celo();
@@ -550,10 +553,16 @@ fn lookup_rate_and_balance_impl(
             rate_calldata.into(),
             POOL_SYSTEM_CALL_GAS_LIMIT,
         )
+        .inspect_err(|e| {
+            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "EVM system call failed for exchange rate lookup");
+        })
         .ok()
         .and_then(|result| match result {
             ExecutionResult::Success { output, .. } => Some(output.into_data()),
-            _ => None,
+            other => {
+                tracing::warn!(target: "celo::pool", ?fee_currency, ?other, "Exchange rate query returned non-success");
+                None
+            }
         })
         .and_then(|output| {
             let r = getExchangeRateCall::abi_decode_returns(&output).ok()?;
