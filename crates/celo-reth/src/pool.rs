@@ -304,7 +304,18 @@ impl Typed2718 for CeloPoolTx {
 
 impl InMemorySize for CeloPoolTx {
     fn size(&self) -> usize {
-        self.inner.size() + core::mem::size_of::<u128>() * 2 + core::mem::size_of::<U256>()
+        let Self {
+            inner,
+            native_max_fee_per_gas,
+            native_max_priority_fee_per_gas,
+            fee_currency,
+            native_cost,
+        } = self;
+        inner.size() +
+            core::mem::size_of_val(native_max_fee_per_gas) +
+            core::mem::size_of_val(native_max_priority_fee_per_gas) +
+            core::mem::size_of_val(fee_currency) +
+            core::mem::size_of_val(native_cost)
     }
 }
 
