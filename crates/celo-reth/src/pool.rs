@@ -698,12 +698,13 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
     }
 }
 
-/// Rejection reason for a CIP-64 pool transaction.
+/// Rejection reason for Celo pool validation.
 ///
+/// Most variants are CIP-64-specific, but `ExceedsFeeCap` applies to all tx types.
 /// Implements [`PoolTransactionError`] directly so it can be passed to
 /// [`InvalidPoolTransactionError::other`] without separate error structs.
 #[derive(Debug)]
-enum Cip64Rejection {
+enum CeloPoolRejection {
     /// The fee currency is not registered in the FeeCurrencyDirectory.
     UnregisteredCurrency(Address),
     /// The sender has insufficient ERC20 balance for the fee currency.
@@ -718,7 +719,7 @@ enum Cip64Rejection {
     ExceedsFeeCap { max_tx_fee_wei: u128, tx_fee_cap_wei: u128 },
 }
 
-impl std::fmt::Display for Cip64Rejection {
+impl std::fmt::Display for CeloPoolRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnregisteredCurrency(fc) => {
@@ -749,9 +750,9 @@ impl std::fmt::Display for Cip64Rejection {
     }
 }
 
-impl std::error::Error for Cip64Rejection {}
+impl std::error::Error for CeloPoolRejection {}
 
-impl PoolTransactionError for Cip64Rejection {
+impl PoolTransactionError for CeloPoolRejection {
     fn is_bad_transaction(&self) -> bool {
         match self {
             // Insufficient balance is transient — balance may change.
@@ -801,7 +802,7 @@ fn apply_exchange_rates_to_valid_tx(
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
     cumulative_fc_costs: &CumulativeFcCosts,
-) -> Result<(), Cip64Rejection> {
+) -> Result<(), CeloPoolRejection> {
     let tx = match valid_tx {
         ValidTransaction::Valid(tx) => tx,
         ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
@@ -831,7 +832,7 @@ fn apply_exchange_rates_to_valid_tx(
                     "Rejecting CIP-64 tx: unregistered fee currency"
                 );
                 CeloPoolMetrics::cip64_rejection("unregistered_currency");
-                return Err(Cip64Rejection::UnregisteredCurrency(fc));
+                return Err(CeloPoolRejection::UnregisteredCurrency(fc));
             }
         };
 
@@ -846,7 +847,7 @@ fn apply_exchange_rates_to_valid_tx(
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
             CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
-            return Err(Cip64Rejection::BelowBaseFeeFloor(fc));
+            return Err(CeloPoolRejection::BelowBaseFeeFloor(fc));
         }
 
         // Check: effective tip must meet the minimum tip converted to FC.
@@ -864,7 +865,7 @@ fn apply_exchange_rates_to_valid_tx(
                 "Rejecting CIP-64 tx: effective tip below minimum"
             );
             CeloPoolMetrics::cip64_rejection("below_min_tip");
-            return Err(Cip64Rejection::BelowMinTip {
+            return Err(CeloPoolRejection::BelowMinTip {
                 currency: fc,
                 min_tip_fc,
                 actual: effective_tip,
@@ -896,7 +897,7 @@ fn apply_exchange_rates_to_valid_tx(
                     "Rejecting CIP-64 tx: insufficient fee currency balance"
                 );
                 CeloPoolMetrics::cip64_rejection("insufficient_balance");
-                return Err(Cip64Rejection::InsufficientBalance(fc));
+                return Err(CeloPoolRejection::InsufficientBalance(fc));
             }
 
             // Cumulative balance check: ensure the total cost across all pending
@@ -923,7 +924,7 @@ fn apply_exchange_rates_to_valid_tx(
                         "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
                     );
                     CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
-                    return Err(Cip64Rejection::InsufficientBalance(fc));
+                    return Err(CeloPoolRejection::InsufficientBalance(fc));
                 }
                 *entry = entry.saturating_add(required_fc);
             }
@@ -941,7 +942,7 @@ fn apply_exchange_rates_to_valid_tx(
             );
             CeloPoolMetrics::cip64_rejection("debit_simulation_failed");
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
-            return Err(Cip64Rejection::DebitSimulationFailed(fc));
+            return Err(CeloPoolRejection::DebitSimulationFailed(fc));
         }
 
         CeloPoolMetrics::cip64_accepted();
@@ -964,7 +965,7 @@ fn apply_exchange_rates_to_valid_tx(
         if max_tx_fee_wei > cap {
             CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
-            return Err(Cip64Rejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
+            return Err(CeloPoolRejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
         }
     }
 
@@ -1455,7 +1456,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::UnregisteredCurrency(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::UnregisteredCurrency(_))));
     }
 
     #[test]
@@ -1478,7 +1479,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::InsufficientBalance(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance(_))));
     }
 
     #[test]
@@ -1505,7 +1506,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::BelowBaseFeeFloor(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor(_))));
     }
 
     #[test]
@@ -1532,7 +1533,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::BelowMinTip { .. })));
+        assert!(matches!(result, Err(CeloPoolRejection::BelowMinTip { .. })));
     }
 
     #[test]
@@ -1555,7 +1556,7 @@ mod tests {
             None,
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::DebitSimulationFailed(_))));
+        assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed(_))));
     }
 
     // -----------------------------------------------------------------------
@@ -1614,7 +1615,7 @@ mod tests {
             Some(1_000_000_000_000),
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+        assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
 
     #[test]
@@ -1634,7 +1635,7 @@ mod tests {
             Some(1_000_000_000_000),
             &empty_cumulative_costs(),
         );
-        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+        assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
 
     #[test]
@@ -1689,7 +1690,7 @@ mod tests {
             &empty_cumulative_costs(),
         );
         assert!(
-            matches!(result, Err(Cip64Rejection::BelowMinTip { actual: 100, .. })),
+            matches!(result, Err(CeloPoolRejection::BelowMinTip { actual: 100, .. })),
             "Should reject: effective tip (100) < min tip (150), got {result:?}"
         );
     }
@@ -1785,7 +1786,7 @@ mod tests {
             &empty_cumulative_costs(),
         );
         assert!(
-            matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })),
+            matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
             "High gas CIP-64 tx should exceed fee cap after rate conversion; got {result:?}"
         );
     }
@@ -1920,7 +1921,7 @@ mod tests {
             &cumulative,
         );
         assert!(
-            matches!(r2, Err(Cip64Rejection::InsufficientBalance(_))),
+            matches!(r2, Err(CeloPoolRejection::InsufficientBalance(_))),
             "Second tx should fail cumulative check; got {r2:?}"
         );
     }
@@ -2007,7 +2008,7 @@ mod tests {
             None,
             &cumulative,
         );
-        assert!(matches!(r2, Err(Cip64Rejection::InsufficientBalance(_))));
+        assert!(matches!(r2, Err(CeloPoolRejection::InsufficientBalance(_))));
 
         // Clear (simulates on_new_head_block)
         cumulative.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -2057,7 +2058,7 @@ mod tests {
             None,
             &cumulative,
         );
-        assert!(matches!(r1, Err(Cip64Rejection::DebitSimulationFailed(_))));
+        assert!(matches!(r1, Err(CeloPoolRejection::DebitSimulationFailed(_))));
         assert_eq!(
             cumulative.lock().unwrap_or_else(|e| e.into_inner()).get(&(sender, fc)).copied(),
             None,
@@ -2111,7 +2112,7 @@ mod tests {
             Some(1_000_000_000_000),
             &cumulative,
         );
-        assert!(matches!(result, Err(Cip64Rejection::ExceedsFeeCap { .. })));
+        assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
         assert_eq!(
             cumulative.lock().unwrap_or_else(|e| e.into_inner()).get(&(sender, fc)).copied(),
             None,
