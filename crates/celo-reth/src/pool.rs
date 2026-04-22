@@ -362,17 +362,21 @@ impl PoolTransaction for CeloPoolTx {
     fn into_consensus_with2718(
         self,
     ) -> reth_primitives_traits::WithEncoded<Recovered<Self::Consensus>> {
-        // The cached native fees aren't plumbed through here because
-        // `execute_best_transactions` uses `into_consensus()` not this path.
-        // Log at debug level for CIP-64 txs so unexpected callers are visible.
-        if self.fee_currency.is_some() {
-            tracing::debug!(
-                target: "celo::pool",
-                tx_hash = %self.inner.hash(),
-                "CIP-64 tx going through into_consensus_with2718 — cached native fees will be lost"
-            );
-        }
-        self.inner.into_consensus_with2718()
+        let native_max_fee = self.native_max_fee_per_gas;
+        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let with_encoded = self.inner.into_consensus_with2718();
+        // Preserve the cached 2718 encoding while re-wrapping the inner
+        // CeloConsensusTx with native-equivalent fees. The cached fees are
+        // non-consensus (invisible to encoding/hashing), so the bytes remain valid.
+        with_encoded.map(|rec| {
+            rec.map(|tx| {
+                CeloConsensusTx::with_native_fees(
+                    tx.into_envelope(),
+                    native_max_fee,
+                    native_max_priority_fee,
+                )
+            })
+        })
     }
 
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
