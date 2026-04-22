@@ -2132,7 +2132,6 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types",
  "anyhow",
- "ark-ff 0.5.0",
  "async-trait",
  "celo-alloy-network",
  "celo-alloy-rpc-types-engine",
