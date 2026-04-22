@@ -84,6 +84,8 @@ celo-revm = { version = "1.0.0", path = "crates/celo-revm", default-features = f
 celo-registry = { version = "1.0.0", path = "crates/kona/registry", default-features = false }
 celo-otel = { version = "1.0.0", path = "crates/celo-otel", default-features = false }
 celo-reth = { version = "0.1.0", path = "crates/celo-reth", default-features = false }
+# TODO: When bumping kona past https://github.com/ethereum-optimism/optimism/commit/8fbd06ec,
+# configure the correct max_sequencer_drift via the new configurable parameter.
 
 # Binaries
 kona-host = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
