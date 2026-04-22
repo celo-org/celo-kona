@@ -418,6 +418,13 @@ impl<T> IsTyped2718 for CeloReceipt<T> {
     }
 }
 
+impl<T: InMemorySize> InMemorySize for CeloCip64Receipt<T> {
+    fn size(&self) -> usize {
+        let Self { inner, base_fee } = self;
+        inner.size() + core::mem::size_of_val(base_fee)
+    }
+}
+
 impl InMemorySize for CeloReceipt {
     fn size(&self) -> usize {
         match self {
@@ -425,7 +432,7 @@ impl InMemorySize for CeloReceipt {
             Self::Eip2930(receipt) |
             Self::Eip1559(receipt) |
             Self::Eip7702(receipt) => receipt.size(),
-            Self::Cip64(receipt) => receipt.inner.size() + core::mem::size_of::<Option<u128>>(),
+            Self::Cip64(receipt) => receipt.size(),
             Self::Deposit(receipt) => receipt.size(),
         }
     }
