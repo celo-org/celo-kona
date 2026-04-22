@@ -8,8 +8,12 @@
 //! defined in this crate (`CeloTxEnvelope`, `TxCip64`, etc.). Moving them to `celo-reth`
 //! would be a compiler error.
 
-use crate::transaction::{
-    CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64, pooled::CeloPooledTransaction,
+use crate::{
+    CeloCip64Receipt,
+    transaction::{
+        CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
+        pooled::CeloPooledTransaction,
+    },
 };
 use alloy_consensus::{
     Sealed,
@@ -19,6 +23,13 @@ use alloy_consensus::{
 use alloy_primitives::B256;
 use op_alloy_consensus::{OpTransaction, TxDeposit};
 use reth_primitives_traits::{InMemorySize, SignedTransaction};
+
+impl InMemorySize for CeloCip64Receipt {
+    fn size(&self) -> usize {
+        let Self { inner, base_fee } = self;
+        inner.size() + core::mem::size_of_val(base_fee)
+    }
+}
 
 impl InMemorySize for TxCip64 {
     #[inline]
