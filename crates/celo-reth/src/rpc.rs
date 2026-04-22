@@ -580,8 +580,8 @@ type AsyncThunk<R> = Box<
     dyn Fn() -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<R>> + Send>> + Send + Sync,
 >;
 
-/// Type-erased wrapper for the parts of the Eth API needed by gas price
-/// and fee history RPC overrides.
+/// Type-erased wrapper for the parts of the Eth API needed by gas price,
+/// fee history, and transaction-signing RPC overrides.
 pub struct CeloFeeApi {
     gas_price: AsyncThunk<U256>,
     priority_fee: AsyncThunk<U256>,
@@ -612,6 +612,12 @@ pub struct CeloFeeApi {
     block_by_number: AsyncFn<alloy_rpc_types_eth::BlockNumberOrTag, Option<CeloRpcBlock>>,
     block_receipts:
         AsyncFn<alloy_rpc_types_eth::BlockNumberOrTag, Option<Vec<CeloTransactionReceipt>>>,
+    send_transaction: AsyncFn<CeloTransactionRequest, alloy_primitives::B256>,
+    sign_transaction_rpc: AsyncFn<CeloTransactionRequest, Bytes>,
+    fill_transaction_rpc: AsyncFn<
+        CeloTransactionRequest,
+        alloy_rpc_types_eth::FillTransaction<CeloTransactionSigned>,
+    >,
     fee_currency_directory: Address,
 }
 
@@ -684,6 +690,54 @@ impl CeloFeeApi {
 
         Ok((numerator, denominator))
     }
+
+    /// Fill fee defaults for CIP-64 transactions.
+    ///
+    /// When `fee_currency` is set and fee fields are missing, converts native-wei
+    /// suggested fees to fee-currency units via the on-chain exchange rate. This
+    /// mirrors op-geth's `setLondonFeeDefaults` → `ConvertToCurrency` logic.
+    ///
+    /// Does nothing for non-CIP-64 requests or when the caller already provided
+    /// both `max_fee_per_gas` and `max_priority_fee_per_gas`.
+    async fn fill_cip64_fee_defaults(
+        &self,
+        request: &mut CeloTransactionRequest,
+    ) -> Result<(), jsonrpsee_types::ErrorObjectOwned> {
+        let fc = match request.fee_currency.filter(|fc| *fc != Address::ZERO) {
+            Some(fc) => fc,
+            None => return Ok(()),
+        };
+
+        if request.as_ref().max_fee_per_gas.is_some() &&
+            request.as_ref().max_priority_fee_per_gas.is_some()
+        {
+            return Ok(());
+        }
+
+        let (num, denom) = self.exchange_rate(fc, None).await?;
+
+        // Fill priority fee if missing: native tip → fee-currency tip.
+        if request.as_ref().max_priority_fee_per_gas.is_none() {
+            let native_tip = (self.priority_fee)().await?;
+            let tip_fc = native_tip * num / denom;
+            request.as_mut().max_priority_fee_per_gas = Some(tip_fc.to::<u128>());
+        }
+
+        // Fill max fee if missing: (native base_fee + tip) → fee-currency.
+        // `max_priority_fee_per_gas` is already in FC units at this point — either
+        // the caller provided it (always in FC units for CIP-64) or we just
+        // converted it above.
+        if request.as_ref().max_fee_per_gas.is_none() {
+            let block =
+                (self.block_by_number)(alloy_rpc_types_eth::BlockNumberOrTag::Latest).await?;
+            let native_base_fee = block.and_then(|b| b.header.base_fee_per_gas).unwrap_or_default();
+            let base_fee_fc = U256::from(native_base_fee) * num / denom;
+            let tip_fc = U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0));
+            request.as_mut().max_fee_per_gas = Some((base_fee_fc + tip_fc).to::<u128>());
+        }
+
+        Ok(())
+    }
 }
 
 /// Build a [`jsonrpsee::RpcModule`] with fee-currency-aware `eth_gasPrice` and
@@ -731,6 +785,45 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             }
         })
         .expect("eth_maxPriorityFeePerGas registration");
+
+    module
+}
+
+/// Build a [`jsonrpsee::RpcModule`] that overrides `eth_sendTransaction`,
+/// `eth_signTransaction`, and `eth_fillTransaction` to fill fee-currency-
+/// converted fee defaults for CIP-64 transactions before delegating to the
+/// standard implementations.
+///
+/// Without this override, a CIP-64 request that omits `maxFeePerGas` /
+/// `maxPriorityFeePerGas` either fails (`eth_sendTransaction`) or gets
+/// native-wei values that are misinterpreted as fee-currency units
+/// (`eth_signTransaction`, `eth_fillTransaction`).
+pub fn celo_tx_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeApi>> {
+    let mut module = jsonrpsee::RpcModule::new(api);
+
+    module
+        .register_async_method("eth_sendTransaction", |params, ctx, _| async move {
+            let mut request: CeloTransactionRequest = params.one()?;
+            ctx.fill_cip64_fee_defaults(&mut request).await?;
+            (ctx.send_transaction)(request).await
+        })
+        .expect("eth_sendTransaction registration");
+
+    module
+        .register_async_method("eth_signTransaction", |params, ctx, _| async move {
+            let mut request: CeloTransactionRequest = params.one()?;
+            ctx.fill_cip64_fee_defaults(&mut request).await?;
+            (ctx.sign_transaction_rpc)(request).await
+        })
+        .expect("eth_signTransaction registration");
+
+    module
+        .register_async_method("eth_fillTransaction", |params, ctx, _| async move {
+            let mut request: CeloTransactionRequest = params.one()?;
+            ctx.fill_cip64_fee_defaults(&mut request).await?;
+            (ctx.fill_transaction_rpc)(request).await
+        })
+        .expect("eth_fillTransaction registration");
 
     module
 }
@@ -1078,9 +1171,30 @@ where
                 Box::pin(async move { EthApiServer::block_by_number(&*ea, block_num, true).await })
             })
         },
-        block_receipts: Box::new(move |block_num| {
+        block_receipts: {
             let ea = ea.clone();
-            Box::pin(async move { EthApiServer::block_receipts(&*ea, block_num.into()).await })
+            Box::new(move |block_num| {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::block_receipts(&*ea, block_num.into()).await })
+            })
+        },
+        send_transaction: {
+            let ea = ea.clone();
+            Box::new(move |req| {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::send_transaction(&*ea, req).await })
+            })
+        },
+        sign_transaction_rpc: {
+            let ea = ea.clone();
+            Box::new(move |req| {
+                let ea = ea.clone();
+                Box::pin(async move { EthApiServer::sign_transaction(&*ea, req).await })
+            })
+        },
+        fill_transaction_rpc: Box::new(move |req| {
+            let ea = ea.clone();
+            Box::pin(async move { EthApiServer::fill_transaction(&*ea, req).await })
         }),
         fee_currency_directory,
     }
@@ -1531,6 +1645,9 @@ mod tests {
             }),
             block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
             block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
             fee_currency_directory: Address::ZERO,
         })
     }
@@ -1551,6 +1668,120 @@ mod tests {
         let module = celo_fee_history_module(make_noop_fee_api());
         let method_names: Vec<_> = module.method_names().collect();
         assert!(method_names.contains(&"eth_feeHistory"), "Missing eth_feeHistory");
+    }
+
+    #[test]
+    fn tx_module_registers_methods() {
+        let module = celo_tx_module(make_noop_fee_api());
+        let method_names: Vec<_> = module.method_names().collect();
+        assert!(method_names.contains(&"eth_sendTransaction"), "Missing eth_sendTransaction");
+        assert!(method_names.contains(&"eth_signTransaction"), "Missing eth_signTransaction");
+        assert!(method_names.contains(&"eth_fillTransaction"), "Missing eth_fillTransaction");
+    }
+
+    #[tokio::test]
+    async fn fill_cip64_fee_defaults_converts_native_to_fc() {
+        // Native gas_price=25 Gwei, priority_fee=1 Gwei, rate: num=2, denom=1.
+        // Expected: max_priority_fee = 1 Gwei * 2 = 2 Gwei.
+        //           max_fee = (25 Gwei * 2) + (1 Gwei * 2) = 52 Gwei.
+        //
+        // Note: block_by_number returns None → base_fee defaults to 0, so
+        // max_fee = 0 + tip_fc. To test the base fee path properly we need
+        // a mock block. Use the gas_price oracle as a proxy: the gas price
+        // module returns 25 Gwei (which IS base_fee + tip in reth), so we
+        // set priority_fee=1 Gwei and derive base_fee from the block.
+        let base_fee_native: u64 = 25_000_000_000;
+        let priority_fee_native: u64 = 1_000_000_000;
+
+        let api = Arc::new(CeloFeeApi {
+            gas_price: Box::new(move || {
+                Box::pin(async move { Ok(U256::from(base_fee_native + priority_fee_native)) })
+            }),
+            priority_fee: Box::new(move || {
+                Box::pin(async move { Ok(U256::from(priority_fee_native)) })
+            }),
+            eth_call: Box::new({
+                let rate_bytes = encode_exchange_rate(2, 1);
+                move |_, _| {
+                    let b = rate_bytes.clone();
+                    Box::pin(async move { Ok(b) })
+                }
+            }),
+            fee_history: Box::new(|_, _, _| {
+                Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
+            }),
+            block_by_number: Box::new(move |_| {
+                // Return a mock block with the native base fee.
+                let inner_header = alloy_consensus::Header {
+                    base_fee_per_gas: Some(base_fee_native),
+                    ..Default::default()
+                };
+                let header =
+                    alloy_rpc_types_eth::Header { inner: inner_header, ..Default::default() };
+                let block = alloy_rpc_types_eth::Block { header, ..Default::default() };
+                Box::pin(async move { Ok(Some(block)) })
+            }),
+            block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fee_currency_directory: Address::ZERO,
+        });
+
+        let fc = Address::with_last_byte(0xBB);
+        let mut request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default(),
+            fee_currency: Some(fc),
+        };
+
+        api.fill_cip64_fee_defaults(&mut request).await.expect("should succeed");
+
+        let expected_tip_fc = priority_fee_native as u128 * 2;
+        let expected_max_fee_fc = (base_fee_native as u128 * 2) + expected_tip_fc;
+
+        assert_eq!(
+            request.as_ref().max_priority_fee_per_gas,
+            Some(expected_tip_fc),
+            "priority fee should be native * rate"
+        );
+        assert_eq!(
+            request.as_ref().max_fee_per_gas,
+            Some(expected_max_fee_fc),
+            "max fee should be (base_fee + tip) * rate"
+        );
+    }
+
+    #[tokio::test]
+    async fn fill_cip64_fee_defaults_skips_non_cip64() {
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 2, 1);
+        let mut request =
+            CeloTransactionRequest { inner: OpTransactionRequest::default(), fee_currency: None };
+
+        api.fill_cip64_fee_defaults(&mut request).await.expect("should succeed");
+        assert_eq!(
+            request.as_ref().max_priority_fee_per_gas,
+            None,
+            "should not fill for non-CIP-64"
+        );
+        assert_eq!(request.as_ref().max_fee_per_gas, None, "should not fill for non-CIP-64");
+    }
+
+    #[tokio::test]
+    async fn fill_cip64_fee_defaults_respects_user_provided_fees() {
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 2, 1);
+        let fc = Address::with_last_byte(0xBB);
+        let mut request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default().max_fee_per_gas(42).max_priority_fee_per_gas(7),
+            fee_currency: Some(fc),
+        };
+
+        api.fill_cip64_fee_defaults(&mut request).await.expect("should succeed");
+        assert_eq!(request.as_ref().max_fee_per_gas, Some(42), "should not overwrite user fee");
+        assert_eq!(
+            request.as_ref().max_priority_fee_per_gas,
+            Some(7),
+            "should not overwrite user tip"
+        );
     }
 
     #[test]
@@ -1745,6 +1976,9 @@ mod tests {
             }),
             block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
             block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
             fee_currency_directory: Address::ZERO,
         })
     }
@@ -1793,6 +2027,9 @@ mod tests {
             }),
             block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
             block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
             fee_currency_directory: Address::ZERO,
         });
         let module = celo_gas_price_module(api);
@@ -1836,6 +2073,9 @@ mod tests {
             }),
             block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
             block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
             fee_currency_directory: Address::ZERO,
         });
 
