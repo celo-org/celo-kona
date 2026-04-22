@@ -631,11 +631,15 @@ pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> 
 /// from submitting multiple CIP-64 transactions that individually pass the
 /// per-tx balance check but collectively exceed their ERC20 balance.
 ///
-/// Costs are not decremented when transactions are evicted or replaced within a
-/// block interval, making rejection conservative. With 1s block times the map is
-/// cleared frequently enough that this is unlikely to affect users.
+/// # Lifecycle
 ///
-/// Cleared on each new head block (when balances may have changed).
+/// - **Reserved** atomically with the per-tx balance check (optimistic lock).
+/// - **Rolled back** via [`rollback_cumulative_fc_cost`] if admission-time checks fail *after* the
+///   reservation (debit simulation, fee cap).
+/// - **Not decremented** on post-admission eviction or replacement within a block interval —
+///   revalidating every pool event is cost-prohibitive, and subsequent rejections are merely
+///   conservative, not wrong. With ~1s block times the staleness window is brief.
+/// - **Cleared wholesale** on each new head block, when balances may have changed.
 type CumulativeFcCosts = Arc<Mutex<HashMap<(Address, Address), U256>>>;
 
 /// Wraps a [`TransactionValidator`] and applies fee-currency exchange rates
