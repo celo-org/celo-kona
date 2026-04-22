@@ -353,7 +353,10 @@ impl Decodable2718 for CeloConsensusTx {
 
 impl InMemorySize for CeloConsensusTx {
     fn size(&self) -> usize {
-        self.inner.size() + core::mem::size_of::<Option<u128>>() * 2
+        let Self { inner, cached_native_max_fee, cached_native_max_priority_fee } = self;
+        inner.size() +
+            core::mem::size_of_val(cached_native_max_fee) +
+            core::mem::size_of_val(cached_native_max_priority_fee)
     }
 }
 
