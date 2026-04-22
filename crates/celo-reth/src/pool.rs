@@ -60,6 +60,14 @@ impl CeloPoolMetrics {
 }
 
 /// Inner OP pool transaction type.
+///
+/// This is `reth_optimism_txpool::OpPooledTransaction` (the pool wrapper), NOT
+/// `op_alloy_consensus::OpPooledTransaction` (the devp2p wire envelope) —
+/// upstream reuses the name for two different concepts. The wire-envelope
+/// equivalent here is `celo_alloy_consensus::CeloPooledTransaction` (the
+/// second type parameter below).
+///
+/// `CeloPoolTx` wraps this to add native-equivalent fee caching for CIP-64.
 type InnerPoolTx = OpPooledTransaction<CeloTransactionSigned, CeloPooledTransaction>;
 
 // ---------------------------------------------------------------------------
