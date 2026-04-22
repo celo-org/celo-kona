@@ -944,8 +944,6 @@ fn apply_exchange_rates_to_valid_tx(
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
             return Err(CeloPoolRejection::DebitSimulationFailed(fc));
         }
-
-        CeloPoolMetrics::cip64_accepted();
     }
 
     // Fee cap check: applies to both CIP-64 (using native-equivalent cost) and native txs.
@@ -963,10 +961,16 @@ fn apply_exchange_rates_to_valid_tx(
             u128::MAX
         });
         if max_tx_fee_wei > cap {
-            CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
+            if tx.fee_currency().is_some() {
+                CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
+            }
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
             return Err(CeloPoolRejection::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei: cap });
         }
+    }
+
+    if tx.fee_currency().is_some() {
+        CeloPoolMetrics::cip64_accepted();
     }
 
     // All checks passed — the cumulative reservation (if any) was already
