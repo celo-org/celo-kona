@@ -1167,7 +1167,7 @@ where
                     self.on_new_block();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    tracing::info!(
+                    tracing::warn!(
                         target: "celo::pool",
                         "Canonical state stream closed, stopping Celo pool maintainer"
                     );
