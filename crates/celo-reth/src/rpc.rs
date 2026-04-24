@@ -841,7 +841,7 @@ pub(crate) fn cip64_native_tip(
     rate_num: U256,
     rate_denom: U256,
 ) -> u128 {
-    if rate_num.is_zero() {
+    if rate_num.is_zero() || rate_denom.is_zero() {
         return 0;
     }
     let base_fee_fc = U256::from(base_fee_native) * rate_num / rate_denom;
