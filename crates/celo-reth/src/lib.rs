@@ -204,7 +204,11 @@ where
     }
 
     fn evm_env(&self, header: &Header) -> Result<EvmEnv<OpSpecId>, Self::Error> {
-        Ok(EvmEnv::for_op_block(header, self.chain_spec(), self.chain_spec().chain().id()))
+        Ok(alloy_op_evm::evm_env_for_op_block(
+            header,
+            self.chain_spec(),
+            self.chain_spec().chain().id(),
+        ))
     }
 
     fn next_evm_env(
@@ -212,7 +216,7 @@ where
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnv<OpSpecId>, Self::Error> {
-        Ok(EvmEnv::for_op_next_block(
+        Ok(alloy_op_evm::evm_env_for_op_next_block(
             parent,
             NextEvmEnvAttributes {
                 timestamp: attributes.timestamp,
