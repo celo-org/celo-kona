@@ -594,10 +594,16 @@ fn lookup_rate_and_balance_impl(
                 bal_calldata.into(),
                 POOL_SYSTEM_CALL_GAS_LIMIT,
             )
+            .inspect_err(|e| {
+                tracing::warn!(target: "celo::pool", %e, ?fee_currency, "EVM system call failed for balance check");
+            })
             .ok()?;
         let output = match result {
             ExecutionResult::Success { output, .. } => output.into_data(),
-            _ => return None,
+            other => {
+                tracing::warn!(target: "celo::pool", ?fee_currency, ?other, "Balance check returned non-success");
+                return None;
+            }
         };
         let balance = IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output).ok()?;
         Some(balance)
@@ -629,8 +635,14 @@ fn lookup_rate_and_balance_impl(
         match result {
             Ok(ExecutionResult::Success { .. }) => Some(true),
             Ok(ExecutionResult::Revert { .. }) => Some(false),
-            // Halt or EVM-level error: inconclusive, don't reject
-            _ => None,
+            Ok(other) => {
+                tracing::warn!(target: "celo::pool", ?fee_currency, ?other, "Debit simulation returned non-success/revert");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(target: "celo::pool", %e, ?fee_currency, "EVM system call failed for debit simulation");
+                None
+            }
         }
     });
 
