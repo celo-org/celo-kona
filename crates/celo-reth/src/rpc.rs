@@ -243,6 +243,19 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
             // Build a CIP-64 tx directly so fee_currency is preserved.
             let req = self.inner.as_ref();
 
+            // Reject {gasPrice + feeCurrency}: CIP-64 is EIP-1559-style and
+            // gasPrice is not compatible. Without this guard, gasPrice would
+            // be silently ignored, producing a CIP-64 tx that doesn't match
+            // the caller's intent.
+            if req.gas_price.is_some() {
+                tracing::warn!(
+                    target: "celo::rpc",
+                    ?fc,
+                    "CIP-64 feeCurrency is not compatible with legacy gasPrice"
+                );
+                return Err(SignTxRequestError::InvalidTransactionRequest);
+            }
+
             // Validate required fields — defaulting to 0 would produce a
             // seemingly valid but nonsensical CIP-64 transaction.
             let chain_id = req.chain_id.ok_or(SignTxRequestError::InvalidTransactionRequest)?;
