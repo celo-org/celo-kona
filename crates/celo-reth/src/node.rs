@@ -330,7 +330,8 @@ where
     >;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
+        let RollupArgs { disable_txpool_gossip, compute_pending_block, discovery_v4, .. } =
+            self.args;
         let blocklist = self.blocklist.clone();
         let celo_txs =
             CeloPayloadTransactions::new(self.fee_currency_limits.clone(), blocklist.clone());
@@ -339,7 +340,7 @@ where
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
             .payload(BasicPayloadServiceBuilder::new(
-                OpPayloadBuilder::new(false).with_transactions(celo_txs),
+                OpPayloadBuilder::new(compute_pending_block).with_transactions(celo_txs),
             ))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
@@ -361,9 +362,9 @@ where
             Default::default(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
-            None, // historical_rpc
+            self.args.historical_rpc.clone(),
             self.args.enable_tx_conditional,
-            0, // min_suggested_priority_fee
+            self.args.min_suggested_priority_fee,
         )
     }
 }
