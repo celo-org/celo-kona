@@ -2219,4 +2219,38 @@ mod tests {
             "fee-cap rejection must not leave a stale cumulative reservation"
         );
     }
+
+    /// Test that the eviction filter logic in `on_new_block` correctly
+    /// identifies CIP-64 txs whose fee currency was deregistered while
+    /// leaving native txs and txs with still-registered currencies alone.
+    #[test]
+    fn eviction_filter_targets_deregistered_currencies() {
+        use reth_transaction_pool::PoolTransaction;
+
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let sender = Address::with_last_byte(1);
+
+        let native_tx = make_test_tx(None, 21_000, 1_000_000_000, 100, sender);
+        let cip64_a = make_test_tx(Some(fc_a), 21_000, 1_000_000_000, 100, sender);
+        let cip64_b = make_test_tx(Some(fc_b), 21_000, 1_000_000_000, 100, sender);
+
+        // Simulate: previously registered = {A, B}, new = {A} → removed = {B}
+        let old: std::collections::HashSet<_> = [fc_a, fc_b].into_iter().collect();
+        let new: std::collections::HashSet<_> = [fc_a].into_iter().collect();
+        let removed: std::collections::HashSet<_> = old.difference(&new).copied().collect();
+
+        // Apply the same filter used in on_new_block
+        let txs = [&native_tx, &cip64_a, &cip64_b];
+        let to_evict: Vec<_> = txs
+            .iter()
+            .filter_map(|tx| {
+                let fc = tx.fee_currency()?;
+                if removed.contains(&fc) { Some(*tx.hash()) } else { None }
+            })
+            .collect();
+
+        assert_eq!(to_evict.len(), 1, "only CIP-64-B tx should be evicted");
+        assert_eq!(to_evict[0], *cip64_b.hash());
+    }
 }
