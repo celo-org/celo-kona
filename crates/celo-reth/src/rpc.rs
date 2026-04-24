@@ -1076,12 +1076,17 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 // Fetch receipts to get per-tx gas_used for gas-weighted percentiles
                 // (matching op-geth's processBlock which weights by gas_used).
                 let receipts = (ctx.block_receipts)(block_tag).await?.unwrap_or_default();
-                let gas_used_list: Vec<u64> = if receipts.len() == txs.len() {
-                    receipts.iter().map(|r| r.inner.gas_used).collect()
-                } else {
-                    // Fallback: equal weight if receipt count doesn't match
-                    vec![1u64; txs.len()]
-                };
+                if receipts.len() != txs.len() {
+                    tracing::error!(
+                        target: "celo::rpc",
+                        block_num,
+                        tx_count = txs.len(),
+                        receipt_count = receipts.len(),
+                        "eth_feeHistory: block or receipts missing while reward percentiles are requested"
+                    );
+                    continue;
+                }
+                let gas_used_list: Vec<u64> = receipts.iter().map(|r| r.inner.gas_used).collect();
 
                 // Build (tip, gas_used) pairs and sort by tip
                 let mut tip_gas: Vec<(u128, u64)> =
