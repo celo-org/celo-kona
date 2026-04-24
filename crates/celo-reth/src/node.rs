@@ -587,13 +587,8 @@ where
             } else {
                 celo_next_block_base_fee(self.chain_spec(), parent.header(), header.timestamp())
             };
-            // If the expected base fee can be computed, validate it. When
-            // `celo_next_block_base_fee` returns `None` (e.g. dev mode with
-            // an empty genesis extra-data under Holocene), skip the check and
-            // fall back to OP's default behavior (trusted sequencer).
-            if let Some(expected) = expected &&
-                expected != base_fee
-            {
+            let expected = expected.ok_or(ConsensusError::BaseFeeMissing)?;
+            if expected != base_fee {
                 return Err(ConsensusError::BaseFeeDiff(GotExpected { expected, got: base_fee }));
             }
         }
