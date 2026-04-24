@@ -229,14 +229,17 @@ where
             let is_dev = ctx.config().dev.dev;
             let cs = ctx.chain_spec();
             let base_fee_floor_fn: crate::pool::BaseFeeFloorFn = std::sync::Arc::new(
-                move |_header: &dyn alloy_consensus::BlockHeader, next_ts: u64| {
-                    // Dev mode or post-Jovian: no pool-level floor. Under Jovian the floor
-                    // is encoded in extraData and enforced by the consensus layer.
-                    // Use the *next* block's timestamp (not the parent's) to match the
-                    // consensus validation path — the floor is disabled starting at the
-                    // first Jovian block, not the block after it.
-                    if is_dev || cs.is_jovian_active_at_timestamp(next_ts) {
-                        0
+                move |header: &dyn alloy_consensus::BlockHeader, next_ts: u64| {
+                    if is_dev {
+                        return 0;
+                    }
+                    if cs.is_jovian_active_at_timestamp(next_ts) {
+                        // Post-Jovian: min_base_fee is encoded in the parent's extraData.
+                        match op_alloy_consensus::decode_jovian_extra_data(header.extra_data()) {
+                            Ok((_, _, min_base_fee)) => min_base_fee,
+                            // Malformed extraData; fall through, consensus will reject.
+                            Err(_) => 0,
+                        }
                     } else {
                         crate::CELO_BASE_FEE_FLOOR
                     }

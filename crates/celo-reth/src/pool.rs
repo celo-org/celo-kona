@@ -675,7 +675,8 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// from the chain spec (which parses the parent's `extraData`).
     base_fee_floor: Arc<std::sync::atomic::AtomicU64>,
     /// Computes the base fee floor for the next block given the current tip block.
-    /// This closure captures the chain spec and calls `celo_next_block_base_fee`.
+    /// Returns the base fee floor for the next block given the tip block's header
+    /// and estimated next-block timestamp.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
