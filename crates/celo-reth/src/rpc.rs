@@ -1857,14 +1857,12 @@ mod tests {
         // Three entries with equal gas; percentile maps to sorted index.
         // sorted tips: 10, 20, 30 (each with gas=1)
         let tip_gas = [(10u128, 1u64), (20u128, 1u64), (30u128, 1u64)];
-        // p=0: threshold=0, first entry cumgas=1 > 0 → tip=10
-        // p=50: threshold=1 (50% of 3 = 1.5 → cast to 1), first entry cumgas=1 → 1 > 1 false,
-        //        second cumgas=2 > 1 → tip=20
-        // p=100: threshold=3 (100% of 3), all entries: last cumgas=3, not > 3 → fall through →
-        // last=30
+        // p=0: threshold=0, first entry cumgas=1 >= 0 → tip=10
+        // p=50: threshold=1 (50% of 3 = 1.5 → cast to 1), first entry cumgas=1 >= 1 → tip=10
+        // p=100: threshold=3 (100% of 3), all entries: last cumgas=3 >= 3 → tip=30
         let result = compute_gas_weighted_percentiles(&tip_gas, &[0.0, 50.0, 100.0]);
         assert_eq!(result[0], 10);
-        assert_eq!(result[1], 20);
+        assert_eq!(result[1], 10);
         assert_eq!(result[2], 30);
     }
 
