@@ -918,7 +918,7 @@ pub(crate) fn compute_gas_weighted_percentiles(
             let mut cum_gas: u64 = 0;
             for &(tip, gas) in tip_gas {
                 cum_gas += gas;
-                if cum_gas > threshold {
+                if cum_gas >= threshold {
                     return tip;
                 }
             }
