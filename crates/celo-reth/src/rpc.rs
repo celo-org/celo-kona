@@ -443,6 +443,16 @@ impl<Provider> CeloReceiptConverter<Provider> {
             None
         };
 
+        // In Jovian, blob_gas_used is repurposed to store the DA footprint value,
+        // matching the upstream OpReceiptBuilder logic.
+        if chain_spec.is_jovian_active_at_timestamp(timestamp) {
+            use alloy_eips::Encodable2718;
+            let da_size = op_revm::estimate_tx_compressed_size(tx_signed.encoded_2718().as_ref())
+                .saturating_div(1_000_000)
+                .saturating_mul(l1_block_info.da_footprint_gas_scalar.unwrap_or_default().into());
+            core_receipt.blob_gas_used = Some(da_size);
+        }
+
         let op_fields = OpReceiptFieldsBuilder::new(timestamp, block_number)
             .l1_block_info(chain_spec, tx_signed, l1_block_info)?
             .build();
