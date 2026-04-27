@@ -38,7 +38,10 @@ use reth_optimism_node::{
     OpEngineApiBuilder, OpEngineValidatorBuilder,
     node::{OpAddOns, OpNetworkBuilder, OpPayloadBuilder, OpPoolBuilder},
 };
-use reth_optimism_payload_builder::OpPayloadTypes;
+use reth_optimism_payload_builder::{
+    OpPayloadTypes,
+    config::{OpDAConfig, OpGasLimitConfig},
+};
 use reth_optimism_primitives::DepositReceipt;
 use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
@@ -62,12 +65,28 @@ pub struct CeloNode {
     pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     /// Per-fee-currency block space limits.
     pub fee_currency_limits: FeeCurrencyLimits,
+    /// Data availability configuration for the OP payload builder.
+    ///
+    /// Used to throttle the size of the data availability payloads (configured
+    /// by the batcher via the `miner_` API). By default no throttling is applied.
+    pub da_config: OpDAConfig,
+    /// Gas limit configuration for the OP payload builder.
+    ///
+    /// Used to control the gas limit of blocks produced by the OP builder
+    /// (configured by the batcher via the `miner_` API).
+    pub gas_limit_config: OpGasLimitConfig,
 }
 
 impl CeloNode {
     /// Creates a new instance with the given rollup args.
     pub fn new(args: RollupArgs) -> Self {
-        Self { args, blocklist: Default::default(), fee_currency_limits: Default::default() }
+        Self {
+            args,
+            blocklist: Default::default(),
+            fee_currency_limits: Default::default(),
+            da_config: OpDAConfig::default(),
+            gas_limit_config: OpGasLimitConfig::default(),
+        }
     }
 
     /// Sets the shared fee currency blocklist.
@@ -82,6 +101,18 @@ impl CeloNode {
     /// Sets the per-fee-currency block space limits.
     pub fn with_fee_currency_limits(mut self, limits: FeeCurrencyLimits) -> Self {
         self.fee_currency_limits = limits;
+        self
+    }
+
+    /// Configure the data availability configuration for the payload builder.
+    pub fn with_da_config(mut self, da_config: OpDAConfig) -> Self {
+        self.da_config = da_config;
+        self
+    }
+
+    /// Configure the gas limit configuration for the payload builder.
+    pub fn with_gas_limit_config(mut self, gas_limit_config: OpGasLimitConfig) -> Self {
+        self.gas_limit_config = gas_limit_config;
         self
     }
 }
@@ -340,7 +371,10 @@ where
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
             .payload(BasicPayloadServiceBuilder::new(
-                OpPayloadBuilder::new(compute_pending_block).with_transactions(celo_txs),
+                OpPayloadBuilder::new(compute_pending_block)
+                    .with_da_config(self.da_config.clone())
+                    .with_gas_limit_config(self.gas_limit_config.clone())
+                    .with_transactions(celo_txs),
             ))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
@@ -359,8 +393,8 @@ where
                 BasicEngineValidatorBuilder::default(),
                 reth_node_builder::rpc::Identity::new(),
             ),
-            Default::default(),
-            Default::default(),
+            self.da_config.clone(),
+            self.gas_limit_config.clone(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
