@@ -45,11 +45,10 @@ impl Default for FeeCurrencyLimits {
 impl FeeCurrencyLimits {
     /// Returns the built-in per-currency gas limit defaults for the given chain.
     ///
-    /// Matches op-geth's `miner/celo_defaults.go`, which only ships defaults for
-    /// Celo Mainnet. Other chains (including Celo Sepolia) get an empty map and
-    /// thus fall back to `default_limit` for every currency — operators are
-    /// expected to pass `--celo.feecurrency.limits` on testnets if they want
-    /// non-default behavior.
+    /// Celo Mainnet matches op-geth's `miner/celo_defaults.go`. Celo Sepolia
+    /// ships the same fractions for the equivalent stablecoins on the testnet.
+    /// Other chains get an empty map and fall back to `default_limit` for
+    /// every currency.
     pub fn defaults_for_chain(chain_id: u64) -> HashMap<Address, f64> {
         use alloy_primitives::address;
         match chain_id {
@@ -59,6 +58,13 @@ impl FeeCurrencyLimits {
                 (address!("cebA9300f2b948710d2653dD7B07f33A8B32118C"), 0.9), // USDC
                 (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
                 (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
+            ]),
+            celo_revm::constants::CELO_SEPOLIA_CHAIN_ID => HashMap::from([
+                (address!("EF4d55D6dE8e8d73232827Cd1e9b2F2dBb45bC80"), 0.9), // cUSD
+                (address!("e19447B12cb0d0220B2a501D8382be2f61CcF92a"), 0.9), // USDT
+                (address!("bf1441Ea57f43f35f713431001f35742c88071c7"), 0.9), // USDC
+                (address!("6B172e333e2978484261D7eCC3DE491E79764BbC"), 0.5), // cEUR
+                (address!("13d68A1Bf4a8cB7d9feF54EF70401871b666269c"), 0.5), // cREAL
             ]),
             _ => HashMap::new(),
         }
@@ -320,16 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn test_defaults_for_sepolia_is_empty() {
-        // Matches op-geth: only Celo Mainnet ships built-in fee currency limit
-        // defaults; Sepolia (and other testnets) get an empty map.
+    fn test_celo_sepolia_defaults() {
         let defaults =
             FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_SEPOLIA_CHAIN_ID);
-        assert!(defaults.is_empty());
+        assert_eq!(defaults.len(), 5);
     }
 
     #[test]
-    fn test_mainnet_defaults() {
+    fn test_celo_mainnet_defaults() {
         let defaults =
             FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_MAINNET_CHAIN_ID);
         assert_eq!(defaults.len(), 5);
