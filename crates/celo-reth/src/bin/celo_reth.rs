@@ -58,10 +58,10 @@ fn main() {
             // If no explicit limits are provided, fall back to the chain's
             // built-in defaults (op-geth-matching for mainnet; empty elsewhere).
             let chain_id = builder.config().chain.chain().id();
-            let limits = match celo_args.fee_currency_limits.as_deref() {
-                Some(s) => FeeCurrencyLimits::parse_limits(s),
-                None => FeeCurrencyLimits::defaults_for_chain(chain_id),
-            };
+            let limits = celo_args.fee_currency_limits.as_deref().map_or_else(
+                || FeeCurrencyLimits::defaults_for_chain(chain_id),
+                FeeCurrencyLimits::parse_limits,
+            );
             let fee_currency_limits =
                 FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
 
