@@ -3,7 +3,7 @@
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
     node::{CeloNode, RollupArgs},
-    payload::FeeCurrencyLimits,
+    payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
     rpc::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
@@ -33,7 +33,11 @@ pub struct CeloArgs {
     /// Default block space fraction for fee currencies not listed in `--celo.feecurrency.limits`.
     ///
     /// Native CELO transactions are always unrestricted regardless of this setting.
-    #[arg(long = "celo.feecurrency.default", value_name = "FRACTION", default_value = "0.5")]
+    #[arg(
+        long = "celo.feecurrency.default",
+        value_name = "FRACTION",
+        default_value_t = DEFAULT_FEE_CURRENCY_LIMIT_FRACTION,
+    )]
     pub fee_currency_default: f64,
 }
 

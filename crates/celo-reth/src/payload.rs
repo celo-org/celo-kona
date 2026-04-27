@@ -19,6 +19,10 @@ use std::collections::HashMap;
 // FeeCurrencyLimits — parsed CLI configuration
 // ---------------------------------------------------------------------------
 
+/// Default fraction of block gas allowed for fee currencies that are not
+/// explicitly configured. Matches op-geth's `DefaultFeeCurrencyLimit`.
+pub const DEFAULT_FEE_CURRENCY_LIMIT_FRACTION: f64 = 0.5;
+
 /// Per-fee-currency block space limits.
 ///
 /// Each entry maps a fee currency address to the maximum fraction of block gas
@@ -34,7 +38,7 @@ pub struct FeeCurrencyLimits {
 
 impl Default for FeeCurrencyLimits {
     fn default() -> Self {
-        Self { limits: HashMap::new(), default_limit: 0.5 }
+        Self { limits: HashMap::new(), default_limit: DEFAULT_FEE_CURRENCY_LIMIT_FRACTION }
     }
 }
 
