@@ -156,6 +156,15 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
                      (maxFeePerGas / maxPriorityFeePerGas); legacy gasPrice is not compatible",
                 ));
             }
+            // CIP-64 has no `authorizationList` field, so EIP-7702 authorizations
+            // would be silently dropped on conversion to CIP-64 — producing a tx
+            // that doesn't match caller intent. Reject instead.
+            if inner_ref.authorization_list.is_some() {
+                return Err(ValueError::new_static(
+                    self,
+                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList",
+                ));
+            }
         }
 
         self.inner
@@ -221,6 +230,17 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
                 );
                 return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
             }
+            // CIP-64 has no `authorizationList` field — silently dropping
+            // EIP-7702 authorizations would let `eth_estimateGas` return a
+            // gas figure for a tx the caller did not actually request.
+            if inner_ref.authorization_list.is_some() {
+                tracing::warn!(
+                    target: "celo::rpc",
+                    ?fee_currency,
+                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
+                );
+                return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
+            }
         }
 
         let mut op_tx: op_revm::OpTransaction<TxEnv> = self.inner.try_into_tx_env(evm_env)?;
@@ -253,6 +273,20 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
                     target: "celo::rpc",
                     ?fc,
                     "CIP-64 feeCurrency is not compatible with legacy gasPrice"
+                );
+                return Err(SignTxRequestError::InvalidTransactionRequest);
+            }
+
+            // CIP-64 has no `authorizationList` field. Without this guard the
+            // authorization data would be silently dropped from the signed tx,
+            // so a request that pairs `feeCurrency` with EIP-7702 authorizations
+            // would produce a CIP-64 tx that materially differs from caller
+            // intent (e.g. delegations the caller expected to perform are gone).
+            if req.authorization_list.is_some() {
+                tracing::warn!(
+                    target: "celo::rpc",
+                    ?fc,
+                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
                 );
                 return Err(SignTxRequestError::InvalidTransactionRequest);
             }
@@ -1608,6 +1642,45 @@ mod tests {
         let evm_env: EvmEnv<op_revm::OpSpecId, revm::context::BlockEnv> = EvmEnv::default();
         let result: Result<_, EthTxEnvError> = req.try_into_tx_env(&evm_env);
         assert!(result.is_err(), "gasPrice + feeCurrency must be rejected in tx_env path");
+    }
+
+    /// CIP-64 has no `authorizationList` field. A request that pairs `feeCurrency`
+    /// with EIP-7702 authorizations would silently drop the auth list on
+    /// conversion to CIP-64, signing a tx that no longer matches caller intent.
+    fn auth_list_request_with_fee_currency() -> CeloTransactionRequest {
+        use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+        use alloy_network::TransactionBuilder7702;
+
+        let auth = SignedAuthorization::new_unchecked(
+            Authorization { chain_id: U256::ZERO, address: Address::ZERO, nonce: 0 },
+            0,
+            U256::ZERO,
+            U256::ZERO,
+        );
+        let mut inner = OpTransactionRequest::default();
+        TransactionBuilder7702::set_authorization_list(&mut inner, vec![auth]);
+        CeloTransactionRequest { inner, fee_currency: Some(Address::with_last_byte(0xCC)) }
+    }
+
+    #[test]
+    fn try_into_sim_tx_rejects_authorization_list_with_fee_currency() {
+        let result = auth_list_request_with_fee_currency().try_into_sim_tx();
+        assert!(result.is_err(), "authorizationList + feeCurrency must be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("authorizationList"),
+            "Error should mention authorizationList, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn try_into_tx_env_rejects_authorization_list_with_fee_currency() {
+        use alloy_evm::rpc::TryIntoTxEnv;
+
+        let evm_env: EvmEnv<op_revm::OpSpecId, revm::context::BlockEnv> = EvmEnv::default();
+        let result: Result<_, EthTxEnvError> =
+            auth_list_request_with_fee_currency().try_into_tx_env(&evm_env);
+        assert!(result.is_err(), "authorizationList + feeCurrency must be rejected in tx_env path");
     }
 
     // -----------------------------------------------------------------------
