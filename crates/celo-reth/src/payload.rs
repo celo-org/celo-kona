@@ -39,20 +39,25 @@ impl Default for FeeCurrencyLimits {
 }
 
 impl FeeCurrencyLimits {
-    /// Returns the default per-currency gas limit fractions for Celo Mainnet.
+    /// Returns the built-in per-currency gas limit defaults for the given chain.
     ///
-    /// Matches op-geth's `miner/celo_defaults.go`:
-    /// - cUSD, USDT, USDC: 0.9 (high-confidence stablecoins)
-    /// - cEUR, cREAL: 0.5 (default)
-    pub fn mainnet_defaults() -> HashMap<Address, f64> {
+    /// Matches op-geth's `miner/celo_defaults.go`, which only ships defaults for
+    /// Celo Mainnet. Other chains (including Celo Sepolia) get an empty map and
+    /// thus fall back to `default_limit` for every currency — operators are
+    /// expected to pass `--celo.feecurrency.limits` on testnets if they want
+    /// non-default behavior.
+    pub fn defaults_for_chain(chain_id: u64) -> HashMap<Address, f64> {
         use alloy_primitives::address;
-        HashMap::from([
-            (address!("765DE816845861e75A25fCA122bb6898B8B1282a"), 0.9), // cUSD
-            (address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e"), 0.9), // USDT
-            (address!("cebA9300f2b948710d2653dD7B07f33A8B32118C"), 0.9), // USDC
-            (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
-            (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
-        ])
+        match chain_id {
+            celo_revm::constants::CELO_MAINNET_CHAIN_ID => HashMap::from([
+                (address!("765DE816845861e75A25fCA122bb6898B8B1282a"), 0.9), // cUSD
+                (address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e"), 0.9), // USDT
+                (address!("cebA9300f2b948710d2653dD7B07f33A8B32118C"), 0.9), // USDC
+                (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
+                (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
+            ]),
+            _ => HashMap::new(),
+        }
     }
 
     /// Parse the `--celo.feecurrency.limits` CLI value.
@@ -305,8 +310,24 @@ mod tests {
     }
 
     #[test]
+    fn test_defaults_for_unknown_chain_is_empty() {
+        let defaults = FeeCurrencyLimits::defaults_for_chain(0xdead_beef);
+        assert!(defaults.is_empty(), "Unknown chains should fall back to default_limit");
+    }
+
+    #[test]
+    fn test_defaults_for_sepolia_is_empty() {
+        // Matches op-geth: only Celo Mainnet ships built-in fee currency limit
+        // defaults; Sepolia (and other testnets) get an empty map.
+        let defaults =
+            FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_SEPOLIA_CHAIN_ID);
+        assert!(defaults.is_empty());
+    }
+
+    #[test]
     fn test_mainnet_defaults() {
-        let defaults = FeeCurrencyLimits::mainnet_defaults();
+        let defaults =
+            FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_MAINNET_CHAIN_ID);
         assert_eq!(defaults.len(), 5);
         // cUSD, USDT, USDC = 0.9
         assert_eq!(
