@@ -525,6 +525,8 @@ pub struct CeloEthApiBuilder {
     pub sequencer_url: Option<String>,
     /// Headers to use for the sequencer client requests.
     pub sequencer_headers: Vec<String>,
+    /// Minimum suggested priority fee (tip) in wei.
+    pub min_suggested_priority_fee: u64,
 }
 
 impl CeloEthApiBuilder {
@@ -537,6 +539,12 @@ impl CeloEthApiBuilder {
     /// Sets the headers to use for the sequencer client requests.
     pub fn with_sequencer_headers(mut self, sequencer_headers: Vec<String>) -> Self {
         self.sequencer_headers = sequencer_headers;
+        self
+    }
+
+    /// Sets the minimum suggested priority fee (tip) in wei.
+    pub const fn with_min_suggested_priority_fee(mut self, min: u64) -> Self {
+        self.min_suggested_priority_fee = min;
         self
     }
 }
@@ -563,7 +571,7 @@ where
     type EthApi = OpEthApi<N, CeloRpcConvert<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        let Self { sequencer_url, sequencer_headers } = self;
+        let Self { sequencer_url, sequencer_headers, min_suggested_priority_fee } = self;
 
         let rpc_converter =
             RpcConverter::new(CeloReceiptConverter::new(ctx.components.provider().clone()))
@@ -581,7 +589,7 @@ where
             None
         };
 
-        Ok(OpEthApi::new(eth_api, sequencer_client, U256::from(1_000_000_u64), None))
+        Ok(OpEthApi::new(eth_api, sequencer_client, U256::from(min_suggested_priority_fee), None))
     }
 }
 

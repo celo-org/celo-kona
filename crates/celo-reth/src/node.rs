@@ -352,7 +352,8 @@ where
             RpcAddOns::new(
                 CeloEthApiBuilder::default()
                     .with_sequencer(self.args.sequencer.clone())
-                    .with_sequencer_headers(self.args.sequencer_headers.clone()),
+                    .with_sequencer_headers(self.args.sequencer_headers.clone())
+                    .with_min_suggested_priority_fee(self.args.min_suggested_priority_fee),
                 OpEngineValidatorBuilder::default(),
                 OpEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
