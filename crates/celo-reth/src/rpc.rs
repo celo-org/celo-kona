@@ -785,7 +785,8 @@ impl CeloFeeApi {
         if request.as_ref().max_priority_fee_per_gas.is_none() {
             let native_tip = (self.priority_fee)().await?;
             let tip_fc = native_tip * num / denom;
-            request.as_mut().max_priority_fee_per_gas = Some(tip_fc.to::<u128>());
+            request.as_mut().max_priority_fee_per_gas =
+                Some(fee_default_to_u128(tip_fc, "maxPriorityFeePerGas")?);
         }
 
         // Fill max fee if missing: (native base_fee + tip) → fee-currency.
@@ -798,11 +799,29 @@ impl CeloFeeApi {
             let native_base_fee = block.and_then(|b| b.header.base_fee_per_gas).unwrap_or_default();
             let base_fee_fc = U256::from(native_base_fee) * num / denom;
             let tip_fc = U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0));
-            request.as_mut().max_fee_per_gas = Some((base_fee_fc + tip_fc).to::<u128>());
+            request.as_mut().max_fee_per_gas =
+                Some(fee_default_to_u128(base_fee_fc + tip_fc, "maxFeePerGas")?);
         }
 
         Ok(())
     }
+}
+
+/// Narrow a fee-currency-denominated fee value to `u128`, surfacing an RPC
+/// error on overflow rather than silently wrapping. The Ethereum tx fee
+/// fields only hold `u128`, but the scaled `U256` is bounded only by the
+/// on-chain exchange rate.
+fn fee_default_to_u128(
+    value: U256,
+    field: &'static str,
+) -> Result<u128, jsonrpsee_types::ErrorObjectOwned> {
+    u128::try_from(value).map_err(|_| {
+        jsonrpsee_types::ErrorObject::owned(
+            RPC_SERVER_ERROR,
+            format!("Fee-currency default for {field} overflows u128"),
+            None::<()>,
+        )
+    })
 }
 
 /// Build a [`jsonrpsee::RpcModule`] with fee-currency-aware `eth_gasPrice` and
@@ -1861,6 +1880,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fill_cip64_fee_defaults_errors_on_u128_overflow() {
+        // tip_fc = u128::MAX * 2 does not fit in u128.
+        let api = make_test_fee_api(25_000_000_000, u128::MAX, 2, 1);
+        let mut request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default(),
+            fee_currency: Some(Address::with_last_byte(0xBB)),
+        };
+        let err = api.fill_cip64_fee_defaults(&mut request).await.unwrap_err();
+        assert!(err.message().contains("overflows u128"), "got: {}", err.message());
+    }
+
+    #[tokio::test]
     async fn fill_cip64_fee_defaults_skips_non_cip64() {
         let api = make_test_fee_api(25_000_000_000, 1_000_000, 2, 1);
         let mut request =
@@ -2066,7 +2097,7 @@ mod tests {
     /// and exchange rate returned for any fee currency.
     fn make_test_fee_api(
         gas_price: u64,
-        priority_fee: u64,
+        priority_fee: u128,
         rate_num: u128,
         rate_denom: u128,
     ) -> Arc<CeloFeeApi> {
