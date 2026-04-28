@@ -284,7 +284,11 @@ where
                 // CIP64 NOTE:
                 // Extract and store the cip64 info to a shared storage to be able to add the
                 // credit/debit logs when building the receipt in the receipts_builder.
-                if let Some(cip64_info) = self.inner.inner.0.ctx.tx.cip64_tx_info.take() {
+                // Only enqueue during block building: RPC simulation paths (eth_call,
+                // eth_estimateGas) never drain the FIFO, so a stale entry would be popped
+                // by the next real block's first CIP-64 tx and corrupt its receipt.
+                let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
+                if is_block_building && let Some(cip64_info) = cip64_info {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
@@ -652,6 +656,46 @@ mod tests {
         let result = evm.transact_raw(tx);
         assert!(result.is_err(), "Expected tx to fail");
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
+    }
+
+    /// Verify that RPC simulation paths (eth_call / eth_estimateGas) never
+    /// enqueue CIP-64 receipt data. The receipt builder only runs during real
+    /// block execution, so any entry left here would be popped by the next
+    /// real block's first CIP-64 tx and corrupt its receipt logs / base fee.
+    ///
+    /// The handler still populates `cip64_tx_info` during simulation for
+    /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
+    /// `transact_raw`, not the handler.
+    #[test]
+    fn test_cip64_storage_not_polluted_by_rpc_simulation() {
+        use revm::state::AccountInfo;
+
+        let blocklist = FeeCurrencyBlocklist::default();
+        let mut evm = make_test_evm(blocklist);
+
+        // Fund the caller so the balance check passes during simulated execution.
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        // RPC simulation mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        // Native-fee CIP-64 tx (`fee_currency = 0x0`): the handler sets
+        // `cip64_tx_info = Some(..)` on this path even when base fee is
+        // disabled, so the only line of defense against polluting the FIFO is
+        // the `is_block_building` gate in `transact_raw`.
+        let mut tx = make_cip64_tx(Address::ZERO);
+        tx.fee_currency = Some(Address::ZERO);
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok(), "simulated tx should succeed: {result:?}");
+
+        assert!(
+            evm.cip64_storage.pop_cip64_receipt_data().is_none(),
+            "RPC simulation must not enqueue CIP-64 receipt data"
+        );
     }
 
     /// Verify that the blocklist is NOT enforced during RPC simulation
