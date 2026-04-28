@@ -149,11 +149,10 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
         // both paths).
         if fee_currency.is_some() {
             let inner_ref = self.inner.as_ref();
-            if inner_ref.gas_price.is_some() && !inner_ref.has_eip1559_fields() {
+            if inner_ref.gas_price.is_some() {
                 return Err(ValueError::new_static(
                     self,
-                    "CIP-64 feeCurrency requires EIP-1559 fee fields \
-                     (maxFeePerGas / maxPriorityFeePerGas); legacy gasPrice is not compatible",
+                    "CIP-64 is not compatible with legacy gasPrice",
                 ));
             }
             // CIP-64 has no `authorizationList` field, so EIP-7702 authorizations
@@ -217,7 +216,7 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
         // early so `eth_estimateGas` fails consistently with `eth_sendTransaction`.
         if fee_currency.is_some() {
             let inner_ref = self.inner.as_ref();
-            if inner_ref.gas_price.is_some() && !inner_ref.has_eip1559_fields() {
+            if inner_ref.gas_price.is_some() {
                 // Log the CIP-64-specific reason; the returned error type is
                 // constrained to `EthTxEnvError` (foreign type, orphan rule) so
                 // the RPC message will be the generic `ConflictingFeeFieldsInRequest`
@@ -225,8 +224,7 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
                 tracing::warn!(
                     target: "celo::rpc",
                     ?fee_currency,
-                    "CIP-64 feeCurrency requires EIP-1559 fee fields; \
-                     legacy gasPrice is not compatible"
+                    "CIP-64 is not compatible with legacy gasPrice"
                 );
                 return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
             }
