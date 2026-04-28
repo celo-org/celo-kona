@@ -173,6 +173,19 @@ impl OpTransaction for CeloTxEnvelope {
     }
 }
 
+// SDM post-exec txs are unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
+// so this conversion is never invoked in practice. Provided to satisfy the
+// `PayloadBuilderBuilder` trait bound `TxTy<Node::Types>: From<Sealed<TxPostExec>>` introduced in
+// kona-node v1.5.0 / op-reth v2.2.2.
+impl From<Sealed<TxPostExec>> for CeloTxEnvelope {
+    fn from(_value: Sealed<TxPostExec>) -> Self {
+        unreachable!(
+            "SDM post-exec transactions are not supported on Celo; \
+             `RollupConfig::is_sdm_active` always returns false."
+        )
+    }
+}
+
 // =============================================================================
 // CeloTxEnvelope additional methods
 // =============================================================================

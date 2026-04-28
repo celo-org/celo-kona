@@ -30,6 +30,9 @@ alloy-eips = { workspace = true, features = ["serde"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde"] }
 alloy-primitives = { workspace = true, features = ["map", "rlp", "serde"] }
 
+# Reth
+reth-rpc-traits = { workspace = true, optional = true }
+
 # Serde
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -56,7 +59,9 @@ std = [
     "alloy-rpc-types-eth/std",
     "celo-alloy-consensus/std",
     "op-alloy-consensus/std",
+    "reth-rpc-traits?/std",
 ]
+reth = ["dep:reth-rpc-traits"]
 arbitrary = [
     "std",
     "dep:arbitrary",

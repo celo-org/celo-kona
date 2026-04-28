@@ -9,4 +9,9 @@ mod receipt;
 pub use receipt::CeloTransactionReceipt;
 
 mod transaction;
-pub use transaction::{CeloTransaction, CeloTransactionRequest};
+pub use transaction::{
+    CeloTransaction, CeloTransactionInfo, CeloTransactionRequest, cip64_effective_gas_price,
+};
+
+#[cfg(feature = "reth")]
+mod reth_compat;

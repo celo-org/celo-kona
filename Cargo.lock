@@ -2093,6 +2093,7 @@ dependencies = [
  "derive_more",
  "op-alloy-consensus",
  "op-alloy-rpc-types",
+ "reth-rpc-traits",
  "serde",
  "serde_json",
  "similar-asserts",

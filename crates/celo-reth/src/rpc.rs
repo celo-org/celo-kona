@@ -7,7 +7,6 @@
 use crate::{
     primitives::{CeloPrimitives, CeloTransactionSigned},
     receipt::CeloReceipt,
-    signed_tx::CeloConsensusTx,
 };
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_eips::Encodable2718;
@@ -22,7 +21,10 @@ use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
 use celo_alloy_consensus::{
     CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope, CeloTxEnvelope,
 };
-use celo_alloy_rpc_types::{CeloTransaction as CeloRpcTransaction, CeloTransactionReceipt};
+use celo_alloy_rpc_types::{
+    CeloTransaction as CeloRpcTransaction, CeloTransactionInfo, CeloTransactionReceipt,
+    cip64_effective_gas_price,
+};
 use celo_revm::{
     CeloTransaction,
     contracts::core_contracts::getExchangeRateCall,
@@ -219,7 +221,7 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
                             cip64, sig,
                         ));
                     }
-                    Ok(CeloConsensusTx::new(celo_tx))
+                    Ok(celo_tx)
                 }
                 Err(rejected) => Err(ValueError::new_static(
                     Self { inner: (*rejected).into(), fee_currency },
@@ -323,9 +325,7 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
                 fee_currency: Some(fc),
             };
             let sig = signer.sign_transaction(&mut cip64).await?;
-            Ok(CeloConsensusTx::new(CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
-                cip64, sig,
-            ))))
+            Ok(CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(cip64, sig)))
         } else {
             SignableTxRequest::<op_alloy_consensus::OpTxEnvelope>::try_build_and_sign(
                 self.inner, signer,
@@ -334,7 +334,6 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
             .and_then(|op_tx| {
                 op_tx_to_celo(op_tx).map_err(|_| SignTxRequestError::InvalidTransactionRequest)
             })
-            .map(CeloConsensusTx::new)
         }
     }
 }
@@ -510,46 +509,9 @@ impl<Provider> CeloReceiptConverter<Provider> {
     }
 }
 
-/// Compute the effective gas price for a CIP-64 tx given its fee-currency-denominated
-/// base fee.
-///
-/// Equivalent to `min(max_fee_per_gas, base_fee + max_priority_fee_per_gas)` — same
-/// formula used elsewhere in reth/alloy, but entirely in `u128` space.
-///
-/// Avoids narrowing `base_fee_in_erc20` (a `u128`) to `u64` before calling the
-/// alloy-consensus `effective_gas_price` helper: for fee currencies with high
-/// exchange-rate numerators (cheap token, expensive CELO), `base_fee_in_erc20` can
-/// exceed `u64::MAX`, and the narrowing cast would wrap and report an incorrect
-/// `effectiveGasPrice` in RPC receipts.
-#[inline]
-fn cip64_effective_gas_price(
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    base_fee: u128,
-) -> u128 {
-    max_fee_per_gas.min(base_fee.saturating_add(max_priority_fee_per_gas))
-}
-
 // ---------------------------------------------------------------------------
-// CeloTxInfoMapper / CeloTransactionInfo
+// CeloTxInfoMapper
 // ---------------------------------------------------------------------------
-
-/// Per-tx metadata produced by [`CeloTxInfoMapper`] and consumed by
-/// [`FromConsensusTx`](reth_rpc_traits::FromConsensusTx) for [`CeloRpcTransaction`].
-///
-/// Wraps [`op_alloy_consensus::transaction::OpTransactionInfo`] (which carries deposit metadata)
-/// and adds the fee-currency-denominated base fee for CIP-64 transactions, sourced from the
-/// CIP-64 receipt.
-/// The FC base fee lets us report a meaningful `gasPrice` for CIP-64 RPC responses; without
-/// it we'd be forced to mix native and FC units (see `cip64_effective_gas_price`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CeloTransactionInfo {
-    /// Standard OP transaction info (block context + deposit metadata).
-    pub inner: op_alloy_consensus::transaction::OpTransactionInfo,
-    /// FC-denominated base fee from the CIP-64 receipt. `None` for non-CIP-64 txs or when the
-    /// receipt isn't available.
-    pub cip64_fc_base_fee: Option<u128>,
-}
 
 /// Celo extension of [`OpTxInfoMapper`](reth_optimism_rpc::eth::transaction::OpTxInfoMapper).
 ///
@@ -619,50 +581,6 @@ where
             inner: OpTransactionInfo::new(tx_info, deposit_meta),
             cip64_fc_base_fee,
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FromConsensusTx for CeloTransaction (RPC response)
-// ---------------------------------------------------------------------------
-
-/// Build a [`CeloRpcTransaction`] from a recovered consensus tx + the metadata produced by
-/// [`CeloTxInfoMapper`].
-///
-/// Non-CIP-64 paths delegate to [`CeloRpcTransaction::from_transaction`], which mirrors
-/// `op_alloy_rpc_types::Transaction::from_transaction` (deposits report `gasPrice = 0`;
-/// other types report `effective_tip + base_fee`, falling back to `max_fee_per_gas`).
-///
-/// CIP-64 needs an override: `gasPrice` must be in fee-currency units, computed via
-/// `cip64_effective_gas_price` against the FC base fee from the receipt — the same
-/// formula the receipt path uses, so `eth_getTransactionByHash` and
-/// `eth_getTransactionReceipt` report the same number. If the receipt isn't reachable
-/// we fall back to `max_fee_per_gas` (still FC-denominated — never mixed with native wei).
-impl reth_rpc_traits::FromConsensusTx<CeloTransactionSigned> for CeloRpcTransaction {
-    type TxInfo = CeloTransactionInfo;
-    type Err = core::convert::Infallible;
-
-    fn from_consensus_tx(
-        tx: CeloTransactionSigned,
-        signer: Address,
-        tx_info: Self::TxInfo,
-    ) -> Result<Self, Self::Err> {
-        use alloy_consensus::Transaction as _;
-
-        let recovered =
-            alloy_consensus::transaction::Recovered::new_unchecked(tx.into_envelope(), signer);
-        let mut out = Self::from_transaction(recovered, tx_info.inner);
-
-        if matches!(out.inner.inner.inner(), CeloTxEnvelope::Cip64(_)) {
-            let fc_max_fee = out.inner.inner.max_fee_per_gas();
-            let fc_prio = out.inner.inner.max_priority_fee_per_gas().unwrap_or(0);
-            let effective = tx_info
-                .cip64_fc_base_fee
-                .map_or(fc_max_fee, |fc_bf| cip64_effective_gas_price(fc_max_fee, fc_prio, fc_bf));
-            out.inner.effective_gas_price = Some(effective);
-        }
-
-        Ok(out)
     }
 }
 
@@ -2202,7 +2120,7 @@ mod tests {
         };
 
         let tx = req.try_into_sim_tx().expect("EIP-1559 with fee_currency should succeed");
-        match tx.envelope() {
+        match &tx {
             CeloTxEnvelope::Cip64(signed) => {
                 assert_eq!(signed.tx().fee_currency, Some(fc));
             }
@@ -2570,7 +2488,7 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = CeloTxEnvelope::Deposit(alloy_consensus::Sealed::new(deposit));
-        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+        let consensus_tx = envelope;
 
         // The mapper would populate these from the receipt. For the L1Block system deposit,
         // `deposit_nonce` equals the L2 block number — matching op-geth's `nonce` field.
@@ -2641,7 +2559,7 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = CeloTxEnvelope::Cip64(tx.into_signed(Signature::test_signature()));
-        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+        let consensus_tx = envelope;
 
         let tx_info = CeloTransactionInfo {
             inner: OpTransactionInfo::new(
@@ -2714,7 +2632,7 @@ mod tests {
             Default::default(),
         );
         let envelope = CeloTxEnvelope::Cip64(signed);
-        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+        let consensus_tx = envelope;
 
         // Native base fee on the block header — must NOT be used for CIP-64; we assert below
         // that the resulting gasPrice is the FC-derived value, not anything involving this.
@@ -2783,7 +2701,7 @@ mod tests {
             Default::default(),
         );
         let envelope = CeloTxEnvelope::Cip64(signed);
-        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+        let consensus_tx = envelope;
 
         let tx_info = CeloTransactionInfo {
             inner: OpTransactionInfo::new(
