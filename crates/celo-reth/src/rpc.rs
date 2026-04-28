@@ -783,8 +783,13 @@ impl CeloFeeApi {
         if request.as_ref().max_priority_fee_per_gas.is_none() {
             let native_tip = (self.priority_fee)().await?;
             let tip_fc = native_tip * num / denom;
-            request.as_mut().max_priority_fee_per_gas =
-                Some(fee_default_to_u128(tip_fc, "maxPriorityFeePerGas")?);
+            let mut tip = fee_default_to_u128(tip_fc, "maxPriorityFeePerGas")?;
+            // Clamp to a caller-provided max fee so the suggested tip never
+            // makes the request invalid (priority > max fee).
+            if let Some(max_fee) = request.as_ref().max_fee_per_gas {
+                tip = tip.min(max_fee);
+            }
+            request.as_mut().max_priority_fee_per_gas = Some(tip);
         }
 
         // Fill max fee if missing: (native base_fee + tip) → fee-currency.
@@ -1902,6 +1907,31 @@ mod tests {
             "should not fill for non-CIP-64"
         );
         assert_eq!(request.as_ref().max_fee_per_gas, None, "should not fill for non-CIP-64");
+    }
+
+    #[tokio::test]
+    async fn fill_cip64_fee_defaults_clamps_filled_tip_to_user_max_fee() {
+        // Oracle suggests a 1_000_000 FC tip, but the user provided
+        // max_fee_per_gas=500. The filled tip must be clamped to 500.
+        let api = make_test_fee_api(25_000_000_000, 1_000_000, 1, 1);
+        let fc = Address::with_last_byte(0xBB);
+        let mut request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default().max_fee_per_gas(500),
+            fee_currency: Some(fc),
+        };
+
+        api.fill_cip64_fee_defaults(&mut request).await.expect("should succeed");
+
+        assert_eq!(
+            request.as_ref().max_priority_fee_per_gas,
+            Some(500),
+            "filled tip should be clamped to user-provided max fee"
+        );
+        assert_eq!(
+            request.as_ref().max_fee_per_gas,
+            Some(500),
+            "user-provided max fee should be preserved"
+        );
     }
 
     #[tokio::test]
