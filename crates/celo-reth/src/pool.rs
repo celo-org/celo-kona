@@ -1165,18 +1165,18 @@ pub struct CeloPoolMaintainer<Pool, P> {
     provider: P,
     fee_currency_directory: Address,
     /// Cached set of registered currencies. Only scan pool when this changes.
-    registered_currencies: std::collections::HashSet<Address>,
+    ///
+    /// `None` means the maintainer has never observed a successful query,
+    /// so no diff baseline exists yet. Diffing against an empty baseline
+    /// would silently miss currencies removed during a startup outage,
+    /// leaving stale CIP-64 txs in the pool — see [`Self::on_new_block`].
+    registered_currencies: Option<std::collections::HashSet<Address>>,
 }
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P> {
     /// Create a new [`CeloPoolMaintainer`].
-    pub fn new(pool: Pool, provider: P, fee_currency_directory: Address) -> Self {
-        Self {
-            pool,
-            provider,
-            fee_currency_directory,
-            registered_currencies: std::collections::HashSet::new(),
-        }
+    pub const fn new(pool: Pool, provider: P, fee_currency_directory: Address) -> Self {
+        Self { pool, provider, fee_currency_directory, registered_currencies: None }
     }
 }
 
@@ -1228,10 +1228,10 @@ where
         mut self,
         mut events: reth_provider::CanonStateNotifications<crate::primitives::CeloPrimitives>,
     ) {
-        // Initialize the cache
-        if let Some(currencies) = self.query_registered_currencies() {
-            self.registered_currencies = currencies;
-        }
+        // Try to seed the cache. If this fails, [`Self::on_new_block`]
+        // detects the uninitialized state on its first successful query
+        // and scans the full pool against the freshly observed registry.
+        self.on_new_block();
 
         loop {
             match events.recv().await {
@@ -1265,39 +1265,56 @@ where
             return;
         };
 
-        // Only scan pool if the registered set actually changed.
-        if new_currencies == self.registered_currencies {
-            return;
-        }
-
-        let removed_currencies: std::collections::HashSet<_> =
-            self.registered_currencies.difference(&new_currencies).copied().collect();
-
-        if !removed_currencies.is_empty() {
-            let all_txs = self.pool.all_transactions();
-            let to_evict: Vec<TxHash> = all_txs
-                .pending
-                .iter()
-                .chain(all_txs.queued.iter())
-                .filter_map(|vtx| {
-                    let fc = vtx.transaction.fee_currency()?;
-                    if removed_currencies.contains(&fc) { Some(*vtx.hash()) } else { None }
-                })
-                .collect();
-
-            if !to_evict.is_empty() {
-                CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
-                tracing::info!(
-                    target: "celo::pool",
-                    count = to_evict.len(),
-                    ?removed_currencies,
-                    "Evicting CIP-64 txs with deregistered fee currencies"
-                );
-                self.pool.remove_transactions(to_evict);
+        let to_evict: Vec<TxHash> = match self.registered_currencies.as_ref() {
+            // Cache is up to date — nothing to evict.
+            Some(old) if *old == new_currencies => Vec::new(),
+            Some(old) => {
+                let removed: std::collections::HashSet<_> =
+                    old.difference(&new_currencies).copied().collect();
+                if removed.is_empty() {
+                    Vec::new()
+                } else {
+                    tracing::info!(
+                        target: "celo::pool",
+                        ?removed,
+                        "Detected deregistered fee currencies"
+                    );
+                    self.pool_txs_with_currency(|fc| removed.contains(fc))
+                }
             }
+            // First successful query (e.g. startup query failed and left
+            // the cache empty). Diffing against an empty baseline would
+            // silently miss currencies that were deregistered during the
+            // outage, so scan the whole pool against the current registry.
+            None => self.pool_txs_with_currency(|fc| !new_currencies.contains(fc)),
+        };
+
+        if !to_evict.is_empty() {
+            CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
+            tracing::info!(
+                target: "celo::pool",
+                count = to_evict.len(),
+                "Evicting CIP-64 txs with unregistered fee currencies"
+            );
+            self.pool.remove_transactions(to_evict);
         }
 
-        self.registered_currencies = new_currencies;
+        self.registered_currencies = Some(new_currencies);
+    }
+
+    /// Collect hashes of pooled CIP-64 transactions whose fee currency
+    /// matches `pred`.
+    fn pool_txs_with_currency(&self, pred: impl Fn(&Address) -> bool) -> Vec<TxHash> {
+        let all_txs = self.pool.all_transactions();
+        all_txs
+            .pending
+            .iter()
+            .chain(all_txs.queued.iter())
+            .filter_map(|vtx| {
+                let fc = vtx.transaction.fee_currency()?;
+                pred(&fc).then(|| *vtx.hash())
+            })
+            .collect()
     }
 }
 
@@ -2251,6 +2268,39 @@ mod tests {
             .collect();
 
         assert_eq!(to_evict.len(), 1, "only CIP-64-B tx should be evicted");
+        assert_eq!(to_evict[0], *cip64_b.hash());
+    }
+
+    /// Test that the uninitialized-cache filter (used after a failed
+    /// startup query) evicts pooled CIP-64 txs whose currency is not in
+    /// the freshly observed registry — including currencies removed
+    /// before the maintainer ever saw a successful query.
+    #[test]
+    fn uninitialized_filter_evicts_unregistered_currencies() {
+        use reth_transaction_pool::PoolTransaction;
+
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let sender = Address::with_last_byte(1);
+
+        let native_tx = make_test_tx(None, 21_000, 1_000_000_000, 100, sender);
+        let cip64_a = make_test_tx(Some(fc_a), 21_000, 1_000_000_000, 100, sender);
+        let cip64_b = make_test_tx(Some(fc_b), 21_000, 1_000_000_000, 100, sender);
+
+        // Cache uninitialized; first successful query observes only {A}.
+        // B is no longer registered (was removed during the startup outage).
+        let new: std::collections::HashSet<_> = [fc_a].into_iter().collect();
+
+        let txs = [&native_tx, &cip64_a, &cip64_b];
+        let to_evict: Vec<_> = txs
+            .iter()
+            .filter_map(|tx| {
+                let fc = tx.fee_currency()?;
+                if !new.contains(&fc) { Some(*tx.hash()) } else { None }
+            })
+            .collect();
+
+        assert_eq!(to_evict.len(), 1, "only the unregistered CIP-64-B tx should be evicted");
         assert_eq!(to_evict[0], *cip64_b.hash());
     }
 }
