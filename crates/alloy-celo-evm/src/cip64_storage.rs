@@ -50,6 +50,11 @@ impl Cip64Storage {
         self.receipt_queue.lock().pop_front()
     }
 
+    /// Number of receipt entries waiting to be drained. Should be zero between blocks.
+    pub fn pending_receipt_count(&self) -> usize {
+        self.receipt_queue.lock().len()
+    }
+
     /// Returns all stored CIP-64 receipt data entries (not consumed by this call).
     ///
     /// Only available when the `test-utils` feature is enabled — this is a

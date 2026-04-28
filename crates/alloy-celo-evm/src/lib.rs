@@ -495,6 +495,19 @@ impl CeloEvmFactory {
     ) -> CeloEvm<DB, I, PrecompilesMap> {
         input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
         let spec_id = input.cfg_env.spec;
+        // Defense in depth for the receipt FIFO: when constructing a block-building EVM,
+        // the shared queue should be empty — pending entries mean a previous block leaked
+        // (or a non-block-building path enqueued without draining). Debug-only; the real
+        // protection is the `is_block_building` gate in `transact_raw`.
+        if !input.cfg_env.disable_base_fee
+            && let Some(storage) = &self.cip64_storage
+        {
+            let pending = storage.pending_receipt_count();
+            debug_assert!(
+                pending == 0,
+                "Cip64Storage queue not empty at block start: {pending} entries leaked"
+            );
+        }
         CeloEvm {
             inner: Context::celo()
                 .with_db(db)
@@ -696,6 +709,22 @@ mod tests {
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
             "RPC simulation must not enqueue CIP-64 receipt data"
         );
+    }
+
+    /// Verify that the block-start `debug_assert!` fires when the receipt FIFO has
+    /// pending entries. This is a regression guard: any future leak (sim path
+    /// enqueuing without draining, executor failing to consume entries, etc.) will
+    /// trip this on the next block-building EVM creation rather than silently
+    /// corrupting that block's receipts.
+    #[test]
+    #[should_panic(expected = "queue not empty at block start")]
+    fn test_block_start_panics_on_leaked_cip64_entry() {
+        use celo_revm::Cip64Info;
+        let storage = Cip64Storage::default();
+        storage.store_cip64_info(None, Cip64Info::default());
+        let factory = CeloEvmFactory::with_cip64_storage(storage);
+        let _evm = factory
+            .create_evm(revm::database::InMemoryDB::default(), EvmEnv::<OpSpecId>::default());
     }
 
     /// Verify that the blocklist is NOT enforced during RPC simulation
