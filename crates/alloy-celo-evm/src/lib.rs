@@ -499,9 +499,14 @@ impl CeloEvmFactory {
         // the shared queue should be empty — pending entries mean a previous block leaked
         // (or a non-block-building path enqueued without draining). Debug-only; the real
         // protection is the `is_block_building` gate in `transact_raw`.
-        if !input.cfg_env.disable_base_fee
-            && let Some(storage) = &self.cip64_storage
-        {
+        //
+        // Without `optional_no_base_fee` the base-fee check cannot be skipped, so every
+        // EVM constructed here is a block-building EVM and the assertion always applies.
+        #[cfg(feature = "optional_no_base_fee")]
+        let is_block_building = !input.cfg_env.disable_base_fee;
+        #[cfg(not(feature = "optional_no_base_fee"))]
+        let is_block_building = true;
+        if is_block_building && let Some(storage) = &self.cip64_storage {
             let pending = storage.pending_receipt_count();
             debug_assert!(
                 pending == 0,
