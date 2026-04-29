@@ -12,6 +12,12 @@ pub const FEE_DEBIT_ERROR_PREFIX: &str = "Failed to debit gas fees";
 /// Error message prefix for CIP-64 fee currency credit failures.
 pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 
+/// The Celo EIP-1559 base fee floor in wei (25 Gwei).
+///
+/// Applied as `max(computed_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR)` for blocks before
+/// Jovian activation. After Jovian, `min_base_fee` from the parent block's `extraData` is used.
+pub const CELO_EIP_1559_BASE_FEE_FLOOR: u64 = 25_000_000_000;
+
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 

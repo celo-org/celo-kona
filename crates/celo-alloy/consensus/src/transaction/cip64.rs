@@ -20,6 +20,7 @@ use core::mem;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "reth", derive(reth_codecs::Compact))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[doc(alias = "Cip64Transaction", alias = "TransactionCip64", alias = "Cip64Tx")]
 pub struct TxCip64 {
@@ -102,16 +103,29 @@ impl TxCip64 {
     /// transaction.
     #[inline]
     pub fn size(&self) -> usize {
-        mem::size_of::<ChainId>() + // chain_id
-        mem::size_of::<u64>() + // nonce
-        mem::size_of::<u64>() + // gas_limit
-        mem::size_of::<u128>() + // max_fee_per_gas
-        mem::size_of::<u128>() + // max_priority_fee_per_gas
-        self.to.size() + // to
-        mem::size_of::<U256>() + // value
-        self.access_list.size() + // access_list
-        self.input.len() + // input
-        self.fee_currency.as_ref().map_or(0, |_| mem::size_of::<Address>()) // fee_currency
+        let Self {
+            chain_id,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            to,
+            value,
+            access_list,
+            fee_currency,
+            input,
+        } = self;
+        mem::size_of_val(chain_id)
+            + mem::size_of_val(nonce)
+            + mem::size_of_val(gas_limit)
+            + mem::size_of_val(max_fee_per_gas)
+            + mem::size_of_val(max_priority_fee_per_gas)
+            + to.size()
+            + mem::size_of_val(value)
+            + access_list.size()
+            + mem::size_of_val(fee_currency)
+            + mem::size_of_val(input)
+            + input.len()
     }
 }
 

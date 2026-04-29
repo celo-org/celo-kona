@@ -32,8 +32,7 @@ tracing.workspace = true
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-op-hardforks.workspace = true
-# Enable optional_no_base_fee so tests can disable the base-fee check
-# (simulating RPC mode where blocklist should be bypassed).
+# Tests exercise RPC-simulation paths that need to disable the base-fee check.
 revm = { workspace = true, features = ["optional_no_base_fee"] }
 
 [features]
@@ -53,3 +52,8 @@ std = [
 # in `kona-executor` so its unit tests can verify CIP-64 gas accounting against
 # op-geth fixtures; production binaries must never enable it.
 test-utils = []
+# Passthrough of revm's `optional_no_base_fee` feature, gating the simulation-only
+# code paths that read/write `CfgEnv::disable_base_fee`. Enable on RPC-serving
+# binaries (celo-reth); leave off on consensus-strict ones (kona) so the
+# base-fee check cannot be bypassed.
+optional_no_base_fee = ["celo-revm/optional_no_base_fee"]
