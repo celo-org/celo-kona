@@ -188,6 +188,7 @@ reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "7680d6d
 reth-static-file-types = { git = "https://github.com/paradigmxyz/reth", rev = "7680d6d8a931c0af4f4eed26e971596970238b54", default-features = false }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "7680d6d8a931c0af4f4eed26e971596970238b54" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "7680d6d8a931c0af4f4eed26e971596970238b54" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "7680d6d8a931c0af4f4eed26e971596970238b54" }
 
 # OP Reth
 reth-optimism-chainspec = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.3.1", default-features = false }
