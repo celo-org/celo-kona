@@ -2105,19 +2105,26 @@ mod tests {
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         handler.run(&mut evm).expect("handler run");
 
-        // Either cip64_info is None (debit was skipped because is_balance_check
-        // is gated upstream too), or it's Some with no credit fields populated.
-        // Pin the credit-side fields specifically, since the mutation makes
-        // credit run after debit completes normally.
+        // Pin on the credit's downstream side effect: if credit runs, the
+        // fee_handler receives a base-fee ERC20 credit. The mutation
+        // (`||` → `&&`) lets credit through; the original guard skips it.
+        // Asserting on the balance holds regardless of whether debit also
+        // short-circuited — no silent pass when cip64_tx_info is None.
+        let fee_handler = get_addresses(0).fee_handler;
+        let fee_handler_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, fee_handler).expect("handler balance");
+        assert_eq!(
+            fee_handler_balance,
+            U256::ZERO,
+            "credit must not run when balance check is disabled; the mutation \
+             that lets credit through would deposit base-fee here"
+        );
+
+        // Confirming check: if debit ran and populated cip64_tx_info, the
+        // credit-side fields must also be empty.
         if let Some(info) = evm.ctx().tx().cip64_tx_info.clone() {
-            assert_eq!(
-                info.credit_gas_used, 0,
-                "credit must not run when balance check is disabled"
-            );
-            assert!(
-                info.logs_post.is_empty(),
-                "credit logs must be empty when credit is skipped"
-            );
+            assert_eq!(info.credit_gas_used, 0);
+            assert!(info.logs_post.is_empty());
         }
     }
 
