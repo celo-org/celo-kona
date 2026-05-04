@@ -1881,4 +1881,76 @@ mod tests {
         // Credit should generate Transfer event logs (from sender refund + tip/base to recipients)
         assert!(!info.logs_post.is_empty(), "Credit should generate logs");
     }
+
+    /// Symmetric to `test_cip64_insufficient_balance`: when the fee currency
+    /// contract reverts on `creditGasFees`, the error must surface with
+    /// `FEE_CREDIT_ERROR_PREFIX` so that the alloy-celo-evm blocklist trigger
+    /// fires. Set up by replacing the FeeCurrency contract code with a minimal
+    /// misbehaving variant: succeeds on `debitGasFees(0x58cf9672)`, reverts on
+    /// every other call (including `creditGasFees`).
+    #[test]
+    fn test_cip64_credit_failure_attaches_prefix() {
+        use alloy_primitives::hex;
+        use revm::state::Bytecode;
+
+        // Bytecode (decompiled):
+        //   if (bytes4(calldata) == 0x58cf9672) return ""; else revert("");
+        // Selectors: debitGasFees=0x58cf9672, creditGasFees=0x6a30b253.
+        let misbehaving =
+            Bytecode::new_raw(hex!("60003560e01c6358cf96721460145760006000fd5b60006000f3").into());
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+
+        // Overwrite the FeeCurrency contract code with the misbehaving variant.
+        // The directory still registers TEST_FEE_CURRENCY with a valid oracle
+        // and intrinsic gas, so validation reaches the contract call.
+        db.insert_account_info(
+            TEST_FEE_CURRENCY,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: misbehaving.hash_slow(),
+                account_id: None,
+                code: Some(misbehaving),
+            },
+        );
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let result = evm.replay();
+        assert!(
+            result.is_err(),
+            "Credit revert should propagate as an error: {result:?}"
+        );
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains(FEE_CREDIT_ERROR_PREFIX),
+            "Credit failure must surface via FEE_CREDIT_ERROR_PREFIX so the \
+             alloy-celo-evm blocklist trigger fires. Got: {err_str}"
+        );
+    }
 }
