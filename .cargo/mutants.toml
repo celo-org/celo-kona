@@ -1,0 +1,48 @@
+# cargo-mutants configuration for celo-kona. cargo-mutants auto-discovers
+# `.cargo/mutants.toml`, so:
+#   cargo mutants -p alloy-celo-evm
+#   cargo mutants -p celo-revm
+# is enough — no `--config` flag needed.
+
+# Use nextest to match `just test`.
+test_tool = "nextest"
+
+# cargo-mutants drives `cargo test --package <pkg>`, not `--workspace`, so the
+# `--exclude` flags from `just test` are moot (they require `--workspace`).
+# We also drop `--all-features`: it is incompatible with celo-revm's `reth`
+# feature when the package is tested in isolation (the feature relies on
+# trait impls supplied through the wider workspace's feature unification).
+# Default features cover all production code paths.
+additional_cargo_test_args = []
+
+# Exclude obvious non-logic locations.
+exclude_globs = [
+    "crates/*/src/lib.rs",
+    "**/tests/**",
+    "**/testdata/**",
+    "**/fixtures/**",
+]
+
+# Ignore cosmetic mutations on logging macros — these never affect correctness
+# and dilute the survivor list.
+#
+# Also skip the `cfg(feature = "reth")` `reth_evm::TransactionEnv` impls in
+# `celo-revm/src/transaction.rs`. That feature is incompatible with
+# package-isolated builds (see the `additional_cargo_test_args` comment), so
+# these mutations cannot run end-to-end and would surface as false survivors.
+exclude_re = [
+    "tracing::(info|warn|error|debug|trace)!",
+    "info!|warn!|error!|debug!|trace!",
+    "reth_evm::TransactionEnv",
+    # `log_and_warn_gas_cost` is a diagnostic-only helper called after a
+    # successful CIP-64 credit. It returns `Ok(())` on every reachable path
+    # (the `?` on `currency_intrinsic_gas_cost` is dead in practice — the
+    # currency is always registered by the time we get here), and the inner
+    # arithmetic only feeds `info!`/`warn!` log lines. Mutations are either
+    # equivalent or only observable via log assertions.
+    "log_and_warn_gas_cost",
+]
+
+# Generous timeouts. Some Celo tests do real EVM execution.
+timeout_multiplier = 5.0
+minimum_test_timeout = 60
