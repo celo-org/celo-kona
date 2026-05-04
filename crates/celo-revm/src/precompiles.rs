@@ -96,6 +96,27 @@ mod tests {
     };
 
     #[test]
+    fn contains_transfer_and_op_precompile_addresses() {
+        let precompiles = CeloPrecompiles::default();
+        // Transfer precompile is Celo-specific; op_precompiles does not contain it,
+        // so this case exercises the `*address == TRANSFER_ADDRESS` branch.
+        assert!(<CeloPrecompiles as PrecompileProvider<
+            CeloContext<EmptyDB>,
+        >>::contains(&precompiles, &TRANSFER_ADDRESS,));
+        // ECRECOVER (0x01) is a stock op/Ethereum precompile — exercises the
+        // `op_precompiles.contains(address)` branch.
+        let ecrecover = Address::with_last_byte(1);
+        assert!(<CeloPrecompiles as PrecompileProvider<
+            CeloContext<EmptyDB>,
+        >>::contains(&precompiles, &ecrecover,));
+        // A random address is neither — both branches must be false.
+        let random = address!("0x000000000000000000000000000000000000beef");
+        assert!(!<CeloPrecompiles as PrecompileProvider<
+            CeloContext<EmptyDB>,
+        >>::contains(&precompiles, &random,));
+    }
+
+    #[test]
     fn test_celo_precompiles_count() {
         let celo_precompiles = CeloPrecompiles::default();
         let op_precompiles = OpPrecompiles::default();
