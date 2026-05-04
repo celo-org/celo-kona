@@ -723,3 +723,34 @@ mod tests {
         assert!(CeloTxType::Deposit.is_deposit());
     }
 }
+
+#[cfg(all(test, feature = "k256"))]
+mod proptests {
+    use super::CeloTxEnvelope;
+    use alloy_eips::{Decodable2718, Encodable2718};
+    use arbitrary::Arbitrary;
+    use proptest::prelude::*;
+
+    proptest! {
+        // EIP-2718 encode -> decode must be the identity. Critical because the
+        // envelope must preserve the tagged-vs-untagged distinction for legacy
+        // txs (the in-protocol merkle tree commits to the exact byte form).
+        #[test]
+        fn prop_eip2718_roundtrip(
+            seed in proptest::collection::vec(any::<u8>(), 256..4096),
+        ) {
+            let original =
+                match CeloTxEnvelope::arbitrary(&mut arbitrary::Unstructured::new(&seed)) {
+                    Ok(t) => t,
+                    Err(_) => return Ok(()),
+                };
+            let bytes = original.encoded_2718();
+            let mut slice = bytes.as_slice();
+            let decoded = CeloTxEnvelope::decode_2718(&mut slice)
+                .expect("self-encoded envelope must decode");
+            prop_assert!(slice.is_empty(), "decoder left {} bytes unconsumed", slice.len());
+            // Re-encode: round-trip must be byte-identical (preserves tagged/untagged).
+            prop_assert_eq!(decoded.encoded_2718(), bytes);
+        }
+    }
+}

@@ -1958,6 +1958,7 @@ dependencies = [
  "bytes",
  "modular-bitfield",
  "op-alloy-consensus",
+ "proptest",
  "rand 0.9.4",
  "reth-codecs",
  "reth-db-api",

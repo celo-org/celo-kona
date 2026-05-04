@@ -47,6 +47,7 @@ arbitrary = { workspace = true, features = ["derive"] }
 alloy-eips = { workspace = true, features = ["arbitrary"] }
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
+proptest = "1.11"
 
 [features]
 default = ["std"]
