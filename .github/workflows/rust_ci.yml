@@ -30,6 +30,31 @@ jobs:
       - name: cargo test
         run: just test
 
+  cargo-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: mutants
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Compute PR diff
+        run: git diff "origin/${{ github.base_ref }}...HEAD" > pr.diff
+      - name: cargo mutants --in-diff
+        run: cargo mutants --in-diff pr.diff -p celo-revm -p alloy-celo-evm
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: mutants.out
+
   cargo-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 40
