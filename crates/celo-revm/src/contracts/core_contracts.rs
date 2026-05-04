@@ -69,9 +69,9 @@ const ERROR_STRING_SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
 
 /// Extract the revert message from the output of an [ExecutionResult::Revert]
 pub fn get_revert_message(output: Bytes) -> String {
-    // Check if the output is long enough to contain the selector
-    // and if it starts with the Error(string) selector.
-    if output.len() >= ERROR_STRING_SELECTOR.len() && output.starts_with(&ERROR_STRING_SELECTOR) {
+    // `starts_with` returns false whenever `output` is shorter than the prefix,
+    // so a separate length check would be redundant.
+    if output.starts_with(&ERROR_STRING_SELECTOR) {
         // The actual ABI-encoded string data follows the selector.
         let abi_encoded_string_data = &output[ERROR_STRING_SELECTOR.len()..];
 
@@ -520,5 +520,47 @@ pub(crate) mod tests {
             },
         );
         assert_eq!(currency_info, expected);
+    }
+
+    /// ABI-encoded `Error("hello")` revert payload.
+    fn encode_error_string(msg: &str) -> Bytes {
+        // selector + abi.encode(string)
+        let mut out = ERROR_STRING_SELECTOR.to_vec();
+        out.extend_from_slice(&<sol_data::String as SolType>::abi_encode(&msg.to_string()));
+        out.into()
+    }
+
+    #[test]
+    fn get_revert_message_decodes_error_string_payload() {
+        let bytes = encode_error_string("hello");
+        assert_eq!(get_revert_message(bytes), "hello");
+    }
+
+    #[test]
+    fn get_revert_message_handles_non_error_payload() {
+        // Output that doesn't start with the Error(string) selector should fall
+        // through to the diagnostic format.
+        let weird = Bytes::from_static(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00]);
+        let msg = get_revert_message(weird);
+        assert!(msg.starts_with("no revert message:"));
+    }
+
+    #[test]
+    fn get_revert_message_handles_short_payload() {
+        // Shorter than the 4-byte selector — must not panic on slicing.
+        for len in 0..4usize {
+            let short = Bytes::from(vec![0u8; len]);
+            let msg = get_revert_message(short);
+            assert!(msg.starts_with("no revert message:"));
+        }
+    }
+
+    #[test]
+    fn get_revert_message_handles_corrupt_string_payload() {
+        // Selector matches but the body is not a valid ABI-encoded string.
+        let mut bad = ERROR_STRING_SELECTOR.to_vec();
+        bad.extend_from_slice(&[0xFF; 8]);
+        let msg = get_revert_message(bad.into());
+        assert!(msg.starts_with("could not decode:"));
     }
 }
