@@ -577,13 +577,23 @@ mod tests {
         }
     }
 
-    /// Pins `status_or_post_state -> Default` (which is PostState) by
-    /// asserting the EIP-658 enum variant.
+    /// Pins `status_or_post_state -> Default`. `Eip658Value::default()` is
+    /// `Eip658(true)`, so we have to assert against a *failed* receipt to
+    /// distinguish — the default would mask a successful tx.
     #[test]
-    fn receipt_envelope_status_or_post_state_returns_eip658() {
-        for (env, ty) in all_receipt_envelopes() {
+    fn receipt_envelope_status_or_post_state_forwards_failure() {
+        for ty in [
+            CeloTxType::Legacy,
+            CeloTxType::Eip2930,
+            CeloTxType::Eip1559,
+            CeloTxType::Eip7702,
+            CeloTxType::Cip64,
+            CeloTxType::Deposit,
+        ] {
+            let dep_nonce = matches!(ty, CeloTxType::Deposit).then_some(1);
+            let env = make_receipt_envelope(ty, false, 1, dep_nonce, None, None);
             let s = <CeloReceiptEnvelope as TxReceipt>::status_or_post_state(&env);
-            assert!(matches!(s, Eip658Value::Eip658(true)), "{ty:?}: {s:?}");
+            assert_eq!(s, Eip658Value::Eip658(false), "{ty:?}: {s:?}");
         }
     }
 

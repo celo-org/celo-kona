@@ -1022,6 +1022,44 @@ mod tests {
         assert!(env.is_cip64());
     }
 
+    /// Pins `recover_signer -> Ok(Default)`. Use a real signed CIP-64 tx
+    /// (from the consensus k256 test fixtures) and assert the recovered
+    /// signer is the known address.
+    #[cfg(feature = "k256")]
+    #[test]
+    fn envelope_recover_signer_returns_known_signer_for_cip64() {
+        use alloy_primitives::address;
+
+        // Same fixture as `recover_signer_cip64` in cip64.rs.
+        let tx = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0x705,
+            gas_limit: 0x3644c,
+            to: address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0").into(),
+            value: U256::from(0_u64),
+            input: hex!(
+                "0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563"
+            )
+            .into(),
+            max_fee_per_gas: 0x26442dbed,
+            max_priority_fee_per_gas: 0x4d7ee,
+            access_list: AccessList::default(),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
+        };
+        let sig = Signature::from_scalars_and_parity(
+            alloy_primitives::b256!(
+                "0xaa0cfaa3df893578b3504062b862428f0e4a94046370cf2a4fd6c392c0760dd8"
+            ),
+            alloy_primitives::b256!(
+                "0x1337d022bbb8faed78a9707e6c38d51f575816e7f85aa540f3d37a9081c58a71"
+            ),
+            false,
+        );
+        let signer = address!("0xefe945ee33ce4ab037ff4d1e1384d0efcd95f37b");
+        let envelope = CeloTxEnvelope::Cip64(tx.into_signed(sig));
+        assert_eq!(envelope.recover_signer().unwrap(), signer);
+    }
+
     /// Pins `try_from_eth_envelope` for the supported branches and Eip4844
     /// rejection.
     #[test]

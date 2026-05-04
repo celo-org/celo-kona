@@ -81,5 +81,12 @@ serde-bincode-compat = [
 # `.cargo/mutants.toml`) compiles the signer-recovery tests, which are
 # `#[cfg(all(test, feature = "k256"))]`-gated and would surface as false
 # survivors during mutation testing of the trait-forwarding code.
+#
+# Note: `arbitrary` and `serde-bincode-compat` would similarly enable the
+# arbitrary/bincode-compat impl mutants, but the latter has a doctest that
+# references the (currently private) `serde_bincode_compat` module path —
+# enabling it would break `cargo test --doc`. Those impls are excluded in
+# `.cargo/mutants.toml` via the `serde_bincode_compat` and `arbitrary::Arbitrary`
+# patterns.
 dev = ["k256"]
 

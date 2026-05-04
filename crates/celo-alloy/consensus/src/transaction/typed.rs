@@ -688,4 +688,72 @@ mod tests {
             assert!(!buf.is_empty(), "{ty:?} must write bytes");
         }
     }
+
+    /// Pins `eip2718_encode_with_type -> ()` by calling the trait method
+    /// directly (NOT via `eip2718_encode`, which dispatches differently)
+    /// and asserting the output is non-empty per variant.
+    #[test]
+    fn eip2718_encode_with_type_writes_bytes_per_variant() {
+        let sig = Signature::test_signature();
+        for (tx, ty) in all_variants() {
+            let ty_byte = tx.tx_type() as u8;
+            let mut buf = Vec::new();
+            <CeloTypedTransaction as RlpEcdsaEncodableTx>::eip2718_encode_with_type(
+                &tx, &sig, ty_byte, &mut buf,
+            );
+            assert!(!buf.is_empty(), "{ty:?} must write bytes");
+        }
+    }
+
+    /// Pins `network_encode_with_type -> ()` per variant.
+    #[test]
+    fn network_encode_with_type_writes_bytes_per_variant() {
+        let sig = Signature::test_signature();
+        for (tx, ty) in all_variants() {
+            let ty_byte = tx.tx_type() as u8;
+            let mut buf = Vec::new();
+            <CeloTypedTransaction as RlpEcdsaEncodableTx>::network_encode_with_type(
+                &tx, &sig, ty_byte, &mut buf,
+            );
+            assert!(!buf.is_empty(), "{ty:?} must write bytes");
+        }
+    }
+
+    /// Pins `tx_hash_with_type -> Default` per variant.
+    #[test]
+    fn tx_hash_with_type_distinguishes_variants() {
+        let sig = Signature::test_signature();
+        let mut hashes = Vec::new();
+        for (tx, _) in all_variants() {
+            let ty_byte = tx.tx_type() as u8;
+            let h = <CeloTypedTransaction as RlpEcdsaEncodableTx>::tx_hash_with_type(
+                &tx, &sig, ty_byte,
+            );
+            assert_ne!(h, B256::ZERO);
+            hashes.push(h);
+        }
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), hashes.len(), "all variants must hash distinctly");
+    }
+
+    /// Pins the trait `RlpEcdsaEncodableTx::tx_hash` impl (line 276) which
+    /// forwards to the inherent `Self::tx_hash`. The inherent call site is
+    /// pinned by `tx_hash_distinguishes_variants` above, but the trait
+    /// dispatch site needs a separate test that calls via the trait.
+    #[test]
+    fn rlp_ecdsa_encodable_tx_hash_distinguishes_variants() {
+        let sig = Signature::test_signature();
+        let mut hashes = Vec::new();
+        for (tx, _) in all_variants() {
+            let h = <CeloTypedTransaction as RlpEcdsaEncodableTx>::tx_hash(&tx, &sig);
+            assert_ne!(h, B256::ZERO);
+            hashes.push(h);
+        }
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), hashes.len());
+    }
 }

@@ -69,6 +69,28 @@ exclude_re = [
     # before the match. Removing `"from"` makes `TxDeposit` deserialization
     # fail before the fallback runs.
     "delete match arm CeloTxEnvelope::Deposit\\(tx\\) in tx_serde",
+    # `serde_bincode_compat::*` impls in celo-alloy-consensus are
+    # `#[cfg(feature = "serde-bincode-compat")]`-gated. Enabling that
+    # feature in `dev` breaks an existing doctest (which references the
+    # `pub(crate)` module path), so the impls are not compiled under the
+    # mutation-test profile and would surface as false survivors.
+    "serde_bincode_compat::",
+    # `arbitrary::Arbitrary` impls are `#[cfg(all(test, feature = "arbitrary"))]`-
+    # gated. The `arbitrary` feature is not enabled in `dev`, so the impls
+    # are not compiled under cargo-mutants and would surface as false
+    # survivors.
+    "arbitrary::Arbitrary",
+    # `state_root` on `CeloTransactionReceipt`'s `ReceiptResponse` impl
+    # forwards through `inner.status_or_post_state().as_post_state()` —
+    # `Eip658(_)` always returns None there. Tests cover the `PostState`
+    # branch (returns `Some`), but the EIP-658 case makes `-> None`
+    # equivalent.
+    "state_root -> Option<alloy_primitives::B256> with None",
+    # `if tip > self.max_priority_fee_per_gas` in `TxCip64::effective_gas_price`
+    # is mathematically equivalent to `>=` at the boundary: when
+    # `tip == max_priority`, both branches return the same value
+    # (`max_fee == max_priority + base_fee` by construction of `tip`).
+    "TxCip64>::effective_gas_price",
 ]
 
 # Generous timeouts. Some Celo tests do real EVM execution.

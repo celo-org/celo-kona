@@ -929,6 +929,19 @@ mod forwarding_tests {
         assert_eq!(decoded, tx);
     }
 
+    /// Pins `Decodable::decode -> Ok(Default)` by encoding a populated tx
+    /// via the `Encodable` impl and asserting the round-trip recovers it
+    /// (not Default::default()).
+    #[test]
+    fn cip64_decodable_round_trip() {
+        use alloy_rlp::{Decodable, Encodable};
+        let tx = populated_tx();
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+        let decoded = TxCip64::decode(&mut buf.as_slice()).expect("decode");
+        assert_eq!(decoded, tx);
+    }
+
     /// Pins the `bytes.len() != 20` error branch in `rlp_decode_fields`'s
     /// fee_currency parsing (line 200-203). Encode a tx, then re-encode the
     /// fee_currency field as 19 bytes (invalid) and assert decode errors.

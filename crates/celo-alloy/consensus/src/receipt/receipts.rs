@@ -455,15 +455,20 @@ mod tests {
     }
 
     /// Pins TxReceipt forwarders for `CeloCip64Receipt`: status_or_post_state,
-    /// status, bloom, cumulative_gas_used, logs.
+    /// status, bloom, cumulative_gas_used, logs. Asserts the *failed* status
+    /// case for `status_or_post_state` because `Eip658Value::default()` is
+    /// `Eip658(true)` — the default would mask a successful tx.
     #[test]
     fn cip64_receipt_tx_receipt_forwards_each_accessor() {
-        let r = populated_cip64_receipt();
-        assert_eq!(r.status_or_post_state(), Eip658Value::Eip658(true));
+        let mut r = populated_cip64_receipt();
         assert!(<CeloCip64Receipt as TxReceipt>::status(&r));
         assert_eq!(<CeloCip64Receipt as TxReceipt>::bloom(&r), r.bloom_slow());
         assert_eq!(<CeloCip64Receipt as TxReceipt>::cumulative_gas_used(&r), 12_345);
         assert_eq!(<CeloCip64Receipt as TxReceipt>::logs(&r).len(), 1);
+        // Flip status to false and re-assert — distinguishes the default
+        // (Eip658(true)) from an actual forwarder.
+        r.inner.status = Eip658Value::Eip658(false);
+        assert_eq!(r.status_or_post_state(), Eip658Value::Eip658(false));
     }
 
     /// Pins `status -> false` against a failed receipt.
@@ -472,6 +477,30 @@ mod tests {
         let mut r = populated_cip64_receipt();
         r.inner.status = Eip658Value::Eip658(false);
         assert!(!<CeloCip64Receipt as TxReceipt>::status(&r));
+    }
+
+    /// Pins `if buf.len() < header.payload_length` (line 132) against the
+    /// `<` → `>` mutation. With `<` (original), trailing bytes after a
+    /// well-formed receipt are tolerated by `rlp_decode_with_bloom` (the
+    /// function consumes only `payload_length` bytes). With `>` (mutation),
+    /// trailing bytes trigger `InputTooShort` because `buf.len() >
+    /// payload_length` becomes true.
+    #[test]
+    fn cip64_receipt_rlp_decode_tolerates_trailing_bytes() {
+        use alloy_rlp::Encodable as _;
+
+        let r = populated_cip64_receipt().with_bloom();
+        let mut buf = Vec::new();
+        r.encode(&mut buf);
+        // Append junk after the receipt's encoded form.
+        buf.extend_from_slice(&[0xFF, 0xFE, 0xFD]);
+        let mut slice = &buf[..];
+        // Direct call into the inherent decoder — `Decodable::decode` for
+        // `ReceiptWithBloom` may apply outer-level length checks that mask
+        // the boundary we want to pin.
+        let decoded = <CeloCip64Receipt as RlpDecodableReceipt>::rlp_decode_with_bloom(&mut slice)
+            .expect("must accept trailing bytes");
+        assert_eq!(decoded.receipt, r.receipt);
     }
 
     /// Pins `RlpEncodableReceipt::rlp_encoded_length_with_bloom -> 0|1` by
