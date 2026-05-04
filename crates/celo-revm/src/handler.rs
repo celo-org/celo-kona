@@ -1695,6 +1695,15 @@ mod tests {
             result.is_err(),
             "Insufficient ERC20 balance should be rejected: {result:?}"
         );
+        // The blocklist trigger in alloy-celo-evm matches on FEE_DEBIT_ERROR_PREFIX
+        // to decide whether to blocklist the fee currency. If this prefix ever
+        // diverges from the wrap site, the blocklist silently stops firing.
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains(FEE_DEBIT_ERROR_PREFIX),
+            "Debit failure must surface via FEE_DEBIT_ERROR_PREFIX so the \
+             alloy-celo-evm blocklist trigger fires. Got: {err_str}"
+        );
     }
 
     #[test]
