@@ -333,4 +333,103 @@ mod tests {
             }
         }
     }
+
+    /// The defining invariant of token duality: an ERC20 `transfer(to, value)`
+    /// on the CELO token must produce the same balance deltas as a native CELO
+    /// transfer of the same value. Run both transactions from clean DBs and
+    /// assert caller and recipient end at identical balances.
+    ///
+    /// Both transactions use `gas_price = 0` (the `TxEnv::default()`) so gas
+    /// charges don't perturb the comparison — only transfer effects matter.
+    #[test]
+    fn test_token_duality_equivalence() {
+        let celo_address = get_addresses(1).celo_token;
+        let caller = address!("0x2222222222222222222222222222222222222222");
+        let recipient = address!("0x3333333333333333333333333333333333333333");
+        let value = U256::from(3);
+
+        sol! {
+            function transfer(address to, uint256 value) public returns (bool success);
+        }
+
+        // ERC20 path: caller calls celo_address.transfer(recipient, value),
+        // which routes through the transfer precompile.
+        let mut evm_erc20 = Context::celo()
+            .with_db(make_celo_test_db(celo_address, caller))
+            .build_celo();
+        let tx_erc20 = CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller,
+                    kind: TxKind::Call(celo_address),
+                    data: transferCall {
+                        to: recipient,
+                        value,
+                    }
+                    .abi_encode()
+                    .into(),
+                    ..TxEnv::default()
+                },
+                ..OpTransaction::default()
+            },
+            ..CeloTransaction::default()
+        };
+        let out_erc20 = evm_erc20
+            .transact(tx_erc20)
+            .expect("ERC20 tx should not error");
+        assert!(
+            matches!(out_erc20.result, ExecutionResult::Success { .. }),
+            "ERC20 transfer should succeed: {:?}",
+            out_erc20.result
+        );
+
+        // Native path: a plain value transfer to the recipient.
+        let mut evm_native = Context::celo()
+            .with_db(make_celo_test_db(celo_address, caller))
+            .build_celo();
+        let tx_native = CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller,
+                    kind: TxKind::Call(recipient),
+                    value,
+                    ..TxEnv::default()
+                },
+                ..OpTransaction::default()
+            },
+            ..CeloTransaction::default()
+        };
+        let out_native = evm_native
+            .transact(tx_native)
+            .expect("native tx should not error");
+        assert!(
+            matches!(out_native.result, ExecutionResult::Success { .. }),
+            "Native transfer should succeed: {:?}",
+            out_native.result
+        );
+
+        // Compare post-state balances. With gas_price=0 and identical starting
+        // balances, both paths must net to the same deltas.
+        let erc20_caller = out_erc20.state.get(&caller).unwrap().info.balance;
+        let erc20_recipient = out_erc20
+            .state
+            .get(&recipient)
+            .map(|a| a.info.balance)
+            .unwrap_or(U256::ZERO);
+        let native_caller = out_native.state.get(&caller).unwrap().info.balance;
+        let native_recipient = out_native
+            .state
+            .get(&recipient)
+            .map(|a| a.info.balance)
+            .unwrap_or(U256::ZERO);
+
+        assert_eq!(
+            erc20_caller, native_caller,
+            "Caller balance must be identical between ERC20 and native transfer paths"
+        );
+        assert_eq!(
+            erc20_recipient, native_recipient,
+            "Recipient balance must be identical between ERC20 and native transfer paths"
+        );
+    }
 }
