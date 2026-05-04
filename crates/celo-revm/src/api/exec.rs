@@ -217,4 +217,35 @@ mod tests {
         let db_account = evm.ctx().db_mut().load_account(target).expect("loaded");
         assert_eq!(db_account.info.balance, balance);
     }
+
+    /// `InspectEvm::set_inspector` must overwrite `self.inner.0.inspector`. The
+    /// `replace … with ()` mutation drops the assignment — observable by
+    /// constructing the EVM with one inspector marker, swapping in a second
+    /// distinguishable marker, then consuming the EVM via `into_inspector` and
+    /// checking which marker came back out.
+    #[test]
+    fn set_inspector_replaces_inner_inspector() {
+        use revm::Inspector;
+        use revm::database::EmptyDB;
+        use revm::interpreter::interpreter_types::InterpreterTypes;
+
+        // A distinguishable inspector that carries an integer marker. The
+        // marker is the only state we care about, so we leave every Inspector
+        // method at its default no-op.
+        #[derive(Debug)]
+        struct MarkerInspector(u32);
+        impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for MarkerInspector {}
+
+        let ctx = Context::celo().with_db(EmptyDB::default());
+        let mut evm = ctx.build_celo_with_inspector::<MarkerInspector>(MarkerInspector(1));
+        evm.set_inspector(MarkerInspector(2));
+        // After the swap, `into_inspector` must yield the new marker. The
+        // `replace … with ()` mutation makes set_inspector a no-op, leaving
+        // the original marker (1) in place.
+        let final_inspector: MarkerInspector = evm.into_inspector();
+        assert_eq!(
+            final_inspector.0, 2,
+            "set_inspector must replace the inner inspector"
+        );
+    }
 }
