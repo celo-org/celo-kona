@@ -2316,3 +2316,58 @@ mod tests {
         assert_eq!(to_evict[0], *cip64_b.hash());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Differential test against a u256 oracle. The contract: `to_native`/`to_fc`
+    // saturate to `u128::MAX` *only* when the true mathematical result exceeds
+    // `u128`. A naive u128 implementation saturates whenever the intermediate
+    // product overflows — even when the final quotient fits — so this is the
+    // test that catches a regression to that form.
+    fn oracle_to_native(rate: ExchangeRate, amount: u128) -> u128 {
+        let r = (U256::from(amount) * U256::from(rate.denominator)) / U256::from(rate.numerator);
+        u128::try_from(r).unwrap_or(u128::MAX)
+    }
+
+    fn oracle_to_fc(rate: ExchangeRate, amount: u128) -> u128 {
+        let r = (U256::from(amount) * U256::from(rate.numerator)) / U256::from(rate.denominator);
+        u128::try_from(r).unwrap_or(u128::MAX)
+    }
+
+    fn rate_strategy() -> impl Strategy<Value = ExchangeRate> {
+        (any::<u128>(), any::<u128>())
+            .prop_filter("nonzero", |(n, d)| *n > 0 && *d > 0)
+            .prop_map(|(numerator, denominator)| ExchangeRate { numerator, denominator })
+    }
+
+    proptest! {
+        #[test]
+        fn prop_to_native_matches_oracle(
+            rate in rate_strategy(),
+            amount in any::<u128>(),
+        ) {
+            prop_assert_eq!(
+                rate.to_native(amount),
+                oracle_to_native(rate, amount),
+                "to_native: rate {}/{}, amount {}",
+                rate.numerator, rate.denominator, amount,
+            );
+        }
+
+        #[test]
+        fn prop_to_fc_matches_oracle(
+            rate in rate_strategy(),
+            amount in any::<u128>(),
+        ) {
+            prop_assert_eq!(
+                rate.to_fc(amount),
+                oracle_to_fc(rate, amount),
+                "to_fc: rate {}/{}, amount {}",
+                rate.numerator, rate.denominator, amount,
+            );
+        }
+    }
+}

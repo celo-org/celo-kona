@@ -101,6 +101,7 @@ reth-cli-util.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+proptest = "1.11"
 
 [features]
 default = ["std"]
