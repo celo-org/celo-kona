@@ -57,3 +57,11 @@ test-utils = []
 # binaries (celo-reth); leave off on consensus-strict ones (kona) so the
 # base-fee check cannot be bypassed.
 optional_no_base_fee = ["celo-revm/optional_no_base_fee"]
+
+# `dev` is a no-op marker feature so the workspace-level
+# `additional_cargo_test_args = ["--features", "dev"]` in `.cargo/mutants.toml`
+# resolves on this crate too. celo-revm's `dev` feature gates additional
+# `optional_balance_check` / `optional_no_base_fee` cfg fields used in
+# mutation-targeted tests; alloy-celo-evm doesn't need any of those, so this
+# feature is intentionally empty.
+dev = []

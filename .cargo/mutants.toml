@@ -12,8 +12,14 @@ test_tool = "nextest"
 # We also drop `--all-features`: it is incompatible with celo-revm's `reth`
 # feature when the package is tested in isolation (the feature relies on
 # trait impls supplied through the wider workspace's feature unification).
-# Default features cover all production code paths.
-additional_cargo_test_args = []
+#
+# We do enable the `dev` feature so that the optional disable_* cfg fields
+# (used in mutation-targeted tests in handler.rs) compile. Without these
+# features, `is_balance_check_disabled()` / `is_base_fee_check_disabled()` are
+# constant `false`, which makes some `||` mutations in `cip64_credit_fee_currency`
+# observably equivalent. With the feature enabled, those code paths become
+# exercisable from tests.
+additional_cargo_test_args = ["--features", "dev"]
 
 # Exclude obvious non-logic locations.
 exclude_globs = [
