@@ -362,7 +362,290 @@ impl FromRecoveredTx<CeloTxEnvelope> for CeloTransaction<TxEnv> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::primitives::Address;
+    use alloy_consensus::Sealed;
+    use alloy_consensus::SignableTransaction;
+    use alloy_consensus::transaction::Either;
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
+    use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+    use alloy_primitives::{Address, Signature, U256};
+    use revm::primitives::TxKind;
+
+    fn addr(b: u8) -> Address {
+        Address::with_last_byte(b)
+    }
+
+    fn b256_with_byte(b: u8) -> B256 {
+        let mut bytes = [0u8; 32];
+        bytes[31] = b;
+        B256::from(bytes)
+    }
+
+    /// Construct a CIP-64-shaped CeloTransaction with deliberately distinct
+    /// field values so every forwarding accessor can be observed.
+    /// Note: `source_hash` is left zero; op-revm's `OpTransaction::tx_type` flips
+    /// to DEPOSIT whenever source_hash is non-zero.
+    fn populated_tx() -> CeloTransaction<TxEnv> {
+        CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    tx_type: CeloTxType::Cip64 as u8,
+                    caller: addr(0xAA),
+                    gas_limit: 21_000,
+                    gas_price: 99,
+                    kind: TxKind::Call(addr(0xBB)),
+                    value: U256::from(7u64),
+                    data: Bytes::from_static(&[0xDE, 0xAD]),
+                    nonce: 42,
+                    chain_id: Some(0xa4ec),
+                    access_list: AccessList(vec![AccessListItem {
+                        address: addr(0xDD),
+                        storage_keys: vec![b256_with_byte(0xEE)],
+                    }]),
+                    gas_priority_fee: Some(11),
+                    blob_hashes: vec![b256_with_byte(0xCC)],
+                    max_fee_per_blob_gas: 13,
+                    authorization_list: vec![Either::Left(SignedAuthorization::new_unchecked(
+                        Authorization {
+                            chain_id: U256::from(0xa4ec_u64),
+                            address: addr(0xFF),
+                            nonce: 99,
+                        },
+                        0,
+                        U256::from(1u64),
+                        U256::from(2u64),
+                    ))],
+                },
+                enveloped_tx: Some(Bytes::from_static(&[0x01, 0x02, 0x03])),
+                deposit: DepositTransactionParts::default(),
+            },
+            fee_currency: Some(addr(0x77)),
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        }
+    }
+
+    fn populated_deposit_tx() -> CeloTransaction<TxEnv> {
+        let mut tx = populated_tx();
+        tx.op_tx.deposit = DepositTransactionParts {
+            source_hash: b256_with_byte(0xEE),
+            mint: Some(17),
+            is_system_transaction: true,
+        };
+        tx
+    }
+
+    #[test]
+    fn transaction_trait_forwards_every_field() {
+        let tx = populated_tx();
+        assert_eq!(tx.tx_type(), CeloTxType::Cip64 as u8);
+        assert_eq!(tx.caller(), addr(0xAA));
+        assert_eq!(tx.gas_limit(), 21_000);
+        assert_eq!(tx.value(), U256::from(7u64));
+        assert_eq!(tx.input(), &Bytes::from_static(&[0xDE, 0xAD]));
+        assert_eq!(<CeloTransaction<TxEnv> as Transaction>::nonce(&tx), 42);
+        assert_eq!(tx.kind(), TxKind::Call(addr(0xBB)));
+        assert_eq!(tx.chain_id(), Some(0xa4ec));
+        assert_eq!(tx.max_priority_fee_per_gas(), Some(11));
+        assert_eq!(tx.max_fee_per_gas(), 99);
+        assert_eq!(tx.gas_price(), 99);
+        assert_eq!(tx.blob_versioned_hashes(), &[b256_with_byte(0xCC)][..]);
+        assert_eq!(tx.max_fee_per_blob_gas(), 13);
+
+        // Access list must round-trip through the trait. The
+        // `Some(empty())` mutation on `access_list()` would surface as a zero
+        // count here.
+        let access_list_items: Vec<_> = tx.access_list().expect("Some").collect();
+        assert_eq!(access_list_items.len(), 1);
+
+        // Authorization list must report >0 length and yield the entry.
+        assert_eq!(tx.authorization_list_len(), 1);
+        assert_eq!(tx.authorization_list().count(), 1);
+    }
+
+    #[test]
+    fn op_tx_tr_forwards_deposit_fields() {
+        let tx = populated_deposit_tx();
+        assert_eq!(tx.source_hash(), Some(b256_with_byte(0xEE)));
+        assert_eq!(tx.mint(), Some(17));
+        assert!(tx.is_system_transaction());
+    }
+
+    #[test]
+    fn celo_tx_tr_returns_fee_currency() {
+        let tx = populated_tx();
+        assert_eq!(tx.fee_currency(), Some(addr(0x77)));
+    }
+
+    #[test]
+    fn is_cip64_distinguishes_tx_types() {
+        let mut tx = populated_tx();
+        assert!(tx.is_cip64());
+        // tx_type other than Cip64 → not cip64.
+        tx.op_tx.base.tx_type = CeloTxType::Eip1559 as u8;
+        assert!(!tx.is_cip64());
+    }
+
+    #[test]
+    fn is_fee_in_celo_treats_zero_addr_as_native() {
+        let mut tx = populated_tx();
+        // Non-zero fee currency → ERC20.
+        assert!(!tx.is_fee_in_celo());
+        // None → native.
+        tx.fee_currency = None;
+        assert!(tx.is_fee_in_celo());
+        // Some(ZERO) → still native (matches op-geth).
+        tx.fee_currency = Some(Address::ZERO);
+        assert!(tx.is_fee_in_celo());
+    }
+
+    #[test]
+    fn effective_gas_price_overrides_when_set() {
+        let mut tx = populated_tx();
+        tx.effective_gas_price = Some(123_456);
+        assert_eq!(tx.effective_gas_price(99), 123_456);
+        // Without override, falls back to op-tx behavior.
+        tx.effective_gas_price = None;
+        // (max_fee_per_gas - base_fee).min(max_priority) + base_fee = (99-90).min(11) + 90 = 99
+        assert_eq!(tx.effective_gas_price(90), 99);
+    }
+
+    #[test]
+    fn op_tx_env_encoded_bytes_forwards_enveloped_tx() {
+        let tx = populated_tx();
+        let bytes = <CeloTransaction<TxEnv> as alloy_op_evm::block::OpTxEnv>::encoded_bytes(&tx);
+        assert_eq!(bytes, Some(&Bytes::from_static(&[0x01, 0x02, 0x03])));
+    }
+
+    #[test]
+    fn new_system_tx_sets_caller_kind_data_and_gas() {
+        let caller = addr(0x11);
+        let target = addr(0x22);
+        let data = Bytes::from_static(&[0x55, 0x66]);
+        let tx = CeloTransaction::<TxEnv>::new_system_tx_with_gas_limit(
+            caller,
+            target,
+            data.clone(),
+            12_345,
+        );
+        assert_eq!(tx.caller(), caller);
+        assert_eq!(tx.gas_limit(), 12_345);
+        assert_eq!(tx.kind(), TxKind::Call(target));
+        assert_eq!(tx.input(), &data);
+    }
+
+    #[test]
+    fn new_system_tx_with_caller_uses_30m_gas_limit() {
+        let tx = CeloTransaction::<TxEnv>::new_system_tx_with_caller(
+            addr(0x11),
+            addr(0x22),
+            Bytes::new(),
+        );
+        // Default L1-style system tx limit per `new_system_tx_with_caller`.
+        assert_eq!(tx.gas_limit(), 30_000_000);
+    }
+
+    fn cip64_envelope() -> (TxCip64, CeloTxEnvelope) {
+        let tx = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0x705,
+            gas_limit: 0x3644c,
+            to: TxKind::Call(addr(0x99)),
+            value: U256::from(123u64),
+            input: Bytes::from_static(&[0xCA, 0xFE]),
+            max_fee_per_gas: 0x26442dbed,
+            max_priority_fee_per_gas: 0x4d7ee,
+            access_list: AccessList(vec![AccessListItem {
+                address: addr(0x44),
+                storage_keys: vec![b256_with_byte(0x33)],
+            }]),
+            fee_currency: Some(addr(0x55)),
+        };
+        let signed = tx.clone().into_signed(Signature::test_signature());
+        (tx, CeloTxEnvelope::Cip64(signed))
+    }
+
+    #[test]
+    fn from_encoded_tx_cip64_populates_all_fields() {
+        let (tx, envelope) = cip64_envelope();
+        let caller = addr(0xAB);
+        let encoded = Bytes::from_static(&[0xFE, 0xED]);
+        let out = CeloTransaction::<TxEnv>::from_encoded_tx(&envelope, caller, encoded.clone());
+
+        assert_eq!(out.tx_type(), CeloTxType::Cip64 as u8);
+        assert_eq!(out.caller(), caller);
+        assert_eq!(out.gas_limit(), tx.gas_limit);
+        assert_eq!(out.gas_price(), tx.max_fee_per_gas);
+        assert_eq!(out.kind(), tx.to);
+        assert_eq!(out.value(), tx.value);
+        assert_eq!(out.input(), &tx.input);
+        assert_eq!(
+            <CeloTransaction<TxEnv> as Transaction>::nonce(&out),
+            tx.nonce
+        );
+        assert_eq!(out.chain_id(), Some(tx.chain_id));
+        assert_eq!(
+            out.max_priority_fee_per_gas(),
+            Some(tx.max_priority_fee_per_gas)
+        );
+        assert_eq!(out.fee_currency(), tx.fee_currency);
+        assert_eq!(out.op_tx.enveloped_tx, Some(encoded));
+        // access_list field assignment must round-trip — the
+        // `delete field access_list` mutation defaults this to empty.
+        assert_eq!(out.op_tx.base.access_list.0.len(), 1);
+    }
+
+    #[test]
+    fn from_encoded_tx_deposit_populates_all_fields() {
+        let dep = TxDeposit {
+            source_hash: b256_with_byte(0x77),
+            from: addr(0xAB),
+            to: TxKind::Call(addr(0x88)),
+            mint: 555,
+            value: U256::from(42u64),
+            gas_limit: 21_000,
+            is_system_transaction: true,
+            input: Bytes::from_static(&[0xCA, 0xFE]),
+        };
+        let envelope =
+            CeloTxEnvelope::Deposit(Sealed::new_unchecked(dep.clone(), b256_with_byte(0)));
+        let caller = addr(0xCD);
+        let out =
+            CeloTransaction::<TxEnv>::from_encoded_tx(&envelope, caller, Bytes::from_static(&[1]));
+
+        // Deposit branch sets only a subset of TxEnv fields explicitly; the rest
+        // come from `..Default::default()`. The mutants targeting these specific
+        // fields must observe the deposit's values, not zeros.
+        assert_eq!(out.caller(), caller);
+        assert_eq!(out.gas_limit(), dep.gas_limit);
+        assert_eq!(out.kind(), dep.to);
+        assert_eq!(out.value(), dep.value);
+        assert_eq!(out.input(), &dep.input);
+        assert_eq!(out.source_hash(), Some(dep.source_hash));
+        assert_eq!(out.mint(), Some(dep.mint));
+        assert!(out.is_system_transaction());
+        assert_eq!(out.fee_currency(), None);
+        // Assert on the raw base.tx_type, not Transaction::tx_type — the
+        // latter routes through OpTransaction's deposit-detection logic, which
+        // would mask a "delete field tx_type" mutation in the deposit branch.
+        assert_eq!(
+            out.op_tx.base.tx_type,
+            CeloTxEnvelope::Deposit(Sealed::new_unchecked(dep, b256_with_byte(0))).ty()
+        );
+    }
+
+    #[test]
+    fn from_recovered_tx_round_trips_encoded_bytes() {
+        let (_, envelope) = cip64_envelope();
+        let caller = addr(0xAB);
+        let out = CeloTransaction::<TxEnv>::from_recovered_tx(&envelope, caller);
+        // The `from_recovered_tx -> Default::default()` mutation surfaces here:
+        // a default CeloTransaction has tx_type=0 (Legacy) and no fee_currency.
+        assert_eq!(out.tx_type(), CeloTxType::Cip64 as u8);
+        assert!(out.fee_currency().is_some());
+        // And the encoded payload must be present (it's what `from_recovered_tx`
+        // computes via `encoded_2718`).
+        assert!(out.op_tx.enveloped_tx.is_some());
+    }
 
     #[test]
     fn test_cip64_transaction_fields() {
@@ -386,10 +669,7 @@ mod tests {
         assert_eq!(cip64_tx.tx_type(), CeloTxType::Cip64 as u8);
         // Verify common fields access
         assert_eq!(cip64_tx.gas_limit(), 10);
-        assert_eq!(
-            cip64_tx.kind(),
-            revm::primitives::TxKind::Call(Address::ZERO)
-        );
+        assert_eq!(cip64_tx.kind(), TxKind::Call(Address::ZERO));
         // Verify gas related calculations
         assert_eq!(cip64_tx.effective_gas_price(90), 95);
         assert_eq!(cip64_tx.max_fee_per_gas(), 100);
