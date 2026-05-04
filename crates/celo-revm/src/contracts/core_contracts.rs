@@ -563,4 +563,112 @@ pub(crate) mod tests {
         let msg = get_revert_message(bad.into());
         assert!(msg.starts_with("could not decode:"));
     }
+
+    /// Build an InMemoryDB with `code` deployed at `addr`.
+    fn db_with_code(addr: Address, code: &[u8]) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        let bytecode = Bytecode::new_raw(Bytes::copy_from_slice(code));
+        db.insert_account_info(
+            addr,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                account_id: None,
+                code: Some(bytecode),
+            },
+        );
+        db
+    }
+
+    /// `call` must surface `ExecutionResult::Halt` as `ExecutionFailed("halt: …")`.
+    /// Bytecode `0xfe` is the canonical INVALID opcode and produces a halt.
+    #[test]
+    fn call_surfaces_halt_arm() {
+        // Pick an address well clear of any standard or Celo precompile.
+        let halt_addr = address!("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let ctx = Context::celo().with_db(db_with_code(halt_addr, &[0xfe]));
+        let mut evm = ctx.build_celo();
+
+        let err = call(&mut evm, halt_addr, Bytes::new(), None).unwrap_err();
+        match err {
+            CoreContractError::ExecutionFailed(msg) => {
+                assert!(
+                    msg.starts_with("halt:"),
+                    "INVALID opcode must surface as a halt error, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed(halt:), got: {other:?}"),
+        }
+    }
+
+    /// `call` must surface `ExecutionResult::Revert` as `ExecutionFailed("revert: …")`,
+    /// with the inner message decoded from the revert payload. Bytecode emits
+    /// `revert(0, 0)` so the payload is empty (`get_revert_message` then yields a
+    /// "no revert message" diagnostic, which is still a revert-prefixed string).
+    #[test]
+    fn call_surfaces_revert_arm() {
+        // PUSH1 0x00 PUSH1 0x00 REVERT — and an address well clear of any precompile.
+        let revert_addr = address!("0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
+        let ctx =
+            Context::celo().with_db(db_with_code(revert_addr, &[0x60, 0x00, 0x60, 0x00, 0xfd]));
+        let mut evm = ctx.build_celo();
+
+        let err = call(&mut evm, revert_addr, Bytes::new(), None).unwrap_err();
+        match err {
+            CoreContractError::ExecutionFailed(msg) => {
+                assert!(
+                    msg.starts_with("revert:"),
+                    "explicit REVERT must surface as a revert error, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed(revert:), got: {other:?}"),
+        }
+    }
+
+    /// `get_exchange_rate` rejects a zero numerator (the `||` validation).
+    /// Without the `||`, a numerator of 0 paired with a non-zero denominator
+    /// would slip through and corrupt downstream fee math (divide-by-… or
+    /// nonsensical exchange rates).
+    #[test]
+    fn get_exchange_rate_rejects_zero_numerator() {
+        let oracle_address = address!("0x1111111111111111111111111111111111111112");
+        let mut db = make_celo_test_db();
+        // Override numerator (slot 0) to zero — denominator (slot 1) stays at 10.
+        db.insert_account_storage(oracle_address, U256::from(0), U256::ZERO)
+            .unwrap();
+
+        let ctx = Context::celo().with_db(db);
+        let mut evm = ctx.build_celo();
+
+        let directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
+        let rate = get_exchange_rate(&mut evm, directory, TEST_FEE_CURRENCY);
+        assert!(
+            rate.is_none(),
+            "exchange rate with zero numerator must be rejected, got: {rate:?}"
+        );
+    }
+
+    /// Symmetric to the numerator case: a zero denominator must also yield
+    /// `None`. Together with the numerator test, both sides of the `||` are
+    /// pinned — a `&&` mutation lets either case slip through and would fail
+    /// here (the rate would come back as `Some(_)`).
+    #[test]
+    fn get_exchange_rate_rejects_zero_denominator() {
+        let oracle_address = address!("0x1111111111111111111111111111111111111112");
+        let mut db = make_celo_test_db();
+        // Override denominator (slot 1) to zero — numerator (slot 0) stays at 20.
+        db.insert_account_storage(oracle_address, U256::from(1), U256::ZERO)
+            .unwrap();
+
+        let ctx = Context::celo().with_db(db);
+        let mut evm = ctx.build_celo();
+
+        let directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
+        let rate = get_exchange_rate(&mut evm, directory, TEST_FEE_CURRENCY);
+        assert!(
+            rate.is_none(),
+            "exchange rate with zero denominator must be rejected, got: {rate:?}"
+        );
+    }
 }
