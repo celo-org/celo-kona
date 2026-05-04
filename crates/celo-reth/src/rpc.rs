@@ -782,7 +782,8 @@ impl CeloFeeApi {
         // Fill priority fee if missing: native tip → fee-currency tip.
         if request.as_ref().max_priority_fee_per_gas.is_none() {
             let native_tip = (self.priority_fee)().await?;
-            let tip_fc = native_tip * num / denom;
+            let tip_fc = scale_by_rate(native_tip, num, denom)
+                .ok_or_else(|| rate_overflow_error("maxPriorityFeePerGas default"))?;
             let mut tip = fee_default_to_u128(tip_fc, "maxPriorityFeePerGas")?;
             // Clamp to a caller-provided max fee so the suggested tip never
             // makes the request invalid (priority > max fee).
@@ -800,7 +801,8 @@ impl CeloFeeApi {
             let block =
                 (self.block_by_number)(alloy_rpc_types_eth::BlockNumberOrTag::Latest).await?;
             let native_base_fee = block.and_then(|b| b.header.base_fee_per_gas).unwrap_or_default();
-            let base_fee_fc = U256::from(native_base_fee) * num / denom;
+            let base_fee_fc = scale_by_rate(U256::from(native_base_fee), num, denom)
+                .ok_or_else(|| rate_overflow_error("maxFeePerGas default"))?;
             let tip_fc = U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0));
             request.as_mut().max_fee_per_gas =
                 Some(fee_default_to_u128(base_fee_fc + tip_fc, "maxFeePerGas")?);
@@ -825,6 +827,22 @@ fn fee_default_to_u128(
             None::<()>,
         )
     })
+}
+
+/// Scale `base` by an exchange rate. Returns `None` on overflow so callers
+/// can surface either an RPC error or a degenerate-rate fallback as
+/// appropriate — `num` is bounded only by `U256::MAX`, so unchecked `*` can
+/// panic on adversarial on-chain rates.
+fn scale_by_rate(base: U256, num: U256, denom: U256) -> Option<U256> {
+    base.checked_mul(num).map(|v| v / denom)
+}
+
+fn rate_overflow_error(method: &'static str) -> jsonrpsee_types::ErrorObjectOwned {
+    jsonrpsee_types::ErrorObject::owned(
+        RPC_SERVER_ERROR,
+        format!("{method}: exchange-rate scaling overflowed U256"),
+        None::<()>,
+    )
 }
 
 /// Build a [`jsonrpsee::RpcModule`] with fee-currency-aware `eth_gasPrice` and
@@ -852,7 +870,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_price * num / denom)
+                    scale_by_rate(base_price, num, denom)
+                        .ok_or_else(|| rate_overflow_error("eth_gasPrice"))
                 }
                 None => Ok(base_price),
             }
@@ -866,7 +885,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    Ok::<_, jsonrpsee_types::ErrorObjectOwned>(base_tip * num / denom)
+                    scale_by_rate(base_tip, num, denom)
+                        .ok_or_else(|| rate_overflow_error("eth_maxPriorityFeePerGas"))
                 }
                 None => Ok(base_tip),
             }
@@ -920,7 +940,10 @@ pub fn celo_tx_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeA
 /// Computes: `min(max_fee_fc - base_fee_fc, priority_fee_fc) * rate_denom / rate_num`
 /// where `base_fee_fc = base_fee_native * rate_num / rate_denom`.
 ///
-/// Returns `0` if `rate_num` is zero (degenerate rate).
+/// Returns `0` if either rate component is zero (degenerate rate) or if either
+/// scaling step overflows `U256` (extreme rate). Overflow is treated the same
+/// as a degenerate rate — the tx is effectively skipped from `eth_feeHistory`
+/// reward percentiles rather than panicking the handler.
 pub(crate) fn cip64_native_tip(
     max_fee_fc: u128,
     priority_fee_fc: u128,
@@ -931,10 +954,14 @@ pub(crate) fn cip64_native_tip(
     if rate_num.is_zero() || rate_denom.is_zero() {
         return 0;
     }
-    let base_fee_fc = U256::from(base_fee_native) * rate_num / rate_denom;
+    let Some(base_fee_fc) = scale_by_rate(U256::from(base_fee_native), rate_num, rate_denom) else {
+        return 0;
+    };
     let tip_fc =
         U256::from(max_fee_fc).saturating_sub(base_fee_fc).min(U256::from(priority_fee_fc));
-    let native_tip = tip_fc * rate_denom / rate_num;
+    let Some(native_tip) = scale_by_rate(tip_fc, rate_denom, rate_num) else {
+        return 0;
+    };
     native_tip.try_into().unwrap_or_else(|_| {
         tracing::warn!(
             target: "celo::rpc",
@@ -2063,6 +2090,20 @@ mod tests {
         // We handle this by using rate_num=0 check (which returns 0 early).
         // Test verifies rate_num=0 path doesn't panic.
         let result = cip64_native_tip(1_000_000, 500, 100, U256::ZERO, U256::ZERO);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn cip64_tip_returns_zero_when_forward_scaling_overflows() {
+        let result = cip64_native_tip(1_000_000, 500, 2, U256::MAX, U256::from(1u64));
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn cip64_tip_returns_zero_when_reverse_scaling_overflows() {
+        // base_fee_native=0 keeps the forward step trivial so we exercise only
+        // the reverse `tip_fc * rate_denom` overflow.
+        let result = cip64_native_tip(u128::MAX, u128::MAX, 0, U256::from(1u64), U256::MAX);
         assert_eq!(result, 0);
     }
 
