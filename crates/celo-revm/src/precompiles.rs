@@ -285,6 +285,156 @@ mod tests {
         ));
     }
 
+    /// Build a CallInputs for the transfer precompile that moves `value` from the
+    /// account at last byte 1 to the account at last byte 2.
+    fn build_transfer_inputs(value: u8) -> CallInputs {
+        let mut input_vec = vec![0u8; 96];
+        input_vec[31] = 1;
+        input_vec[63] = 2;
+        input_vec[95] = value;
+        CallInputs {
+            target_address: TRANSFER_ADDRESS,
+            bytecode_address: TRANSFER_ADDRESS,
+            // Mainnet address for the CELO token (the only authorized caller).
+            caller: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
+            input: CallInput::Bytes(Bytes::from(input_vec)),
+            value: CallValue::Transfer(U256::from(value)),
+            return_memory_offset: 0..0,
+            gas_limit: TRANSFER_GAS_COST,
+            known_bytecode: None,
+            scheme: CallScheme::Call,
+            is_static: false,
+        }
+    }
+
+    /// Build a context with the given spec set (chain_id is mainnet so the CELO
+    /// token caller check passes), and the `from` account funded.
+    fn build_transfer_ctx(spec: OpSpecId, from: Address) -> CeloContext<InMemoryDB> {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            from,
+            AccountInfo {
+                balance: U256::from(100),
+                ..Default::default()
+            },
+        );
+        Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.caller = from;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.chain_id = CELO_MAINNET_CHAIN_ID;
+                cfg.spec = spec;
+            })
+            .with_db(db)
+    }
+
+    /// Pre-Jovian, both `from` and `to` start cold (not in the journal). After
+    /// the precompile runs, both must be marked cold again so a subsequent SLOAD
+    /// or BALANCE pays the cold-access surcharge — matching the original Celo L1
+    /// implementation. This pins all three pieces of the cold-revert path:
+    /// `revert_cold_status = !spec.is_enabled_in(JOVIAN)`, the `&&` short-circuit
+    /// against `account_cold_status`, and `revert_account_cold_status` actually
+    /// flipping the bit back via `unsafe_mark_cold`.
+    #[test]
+    fn transfer_pre_jovian_keeps_accounts_cold() {
+        let mut precompiles = CeloPrecompiles::default();
+        let from = Address::with_last_byte(1);
+        let to = Address::with_last_byte(2);
+        let mut ctx = build_transfer_ctx(OpSpecId::ISTHMUS, from);
+
+        let res = precompiles.run(&mut ctx, &build_transfer_inputs(10));
+        assert!(matches!(
+            res,
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::Return,
+                ..
+            }))
+        ));
+
+        // Both addresses should report cold on next load — they were warmed by
+        // `journal.transfer` and then explicitly re-cold-marked by the precompile.
+        let from_load = ctx.journal_mut().load_account(from).unwrap();
+        assert!(
+            from_load.is_cold,
+            "pre-Jovian: from must be cold after transfer precompile"
+        );
+        let to_load = ctx.journal_mut().load_account(to).unwrap();
+        assert!(
+            to_load.is_cold,
+            "pre-Jovian: to must be cold after transfer precompile"
+        );
+    }
+
+    /// Post-Jovian (the cold-revert quirk is removed), `from` and `to` end warm
+    /// after the transfer precompile runs. This kills the mutants that flip the
+    /// `!spec.is_enabled_in(JOVIAN)` guard or change `&&` → `||` in the
+    /// `revert_*_cold = revert_cold_status && account_cold_status(...)` lines —
+    /// either would erroneously re-cold-mark the accounts under Jovian.
+    #[test]
+    fn transfer_jovian_warms_accounts() {
+        let mut precompiles = CeloPrecompiles::default();
+        let from = Address::with_last_byte(1);
+        let to = Address::with_last_byte(2);
+        let mut ctx = build_transfer_ctx(OpSpecId::JOVIAN, from);
+
+        let res = precompiles.run(&mut ctx, &build_transfer_inputs(10));
+        assert!(matches!(
+            res,
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::Return,
+                ..
+            }))
+        ));
+
+        let from_load = ctx.journal_mut().load_account(from).unwrap();
+        assert!(
+            !from_load.is_cold,
+            "Jovian: from must be warm after transfer precompile"
+        );
+        let to_load = ctx.journal_mut().load_account(to).unwrap();
+        assert!(
+            !to_load.is_cold,
+            "Jovian: to must be warm after transfer precompile"
+        );
+    }
+
+    /// Pre-Jovian, but the accounts are already warm before the precompile is
+    /// called. They must stay warm — the precompile only re-cold-marks accounts
+    /// that *it* warmed. This kills `account_cold_status -> true`, which would
+    /// claim the accounts were cold and then re-cold them.
+    #[test]
+    fn transfer_pre_jovian_pre_warm_stays_warm() {
+        let mut precompiles = CeloPrecompiles::default();
+        let from = Address::with_last_byte(1);
+        let to = Address::with_last_byte(2);
+        let mut ctx = build_transfer_ctx(OpSpecId::ISTHMUS, from);
+
+        // Warm both accounts up front (puts them in the journal as warm).
+        let _ = ctx.journal_mut().load_account(from).unwrap();
+        let _ = ctx.journal_mut().load_account(to).unwrap();
+
+        let res = precompiles.run(&mut ctx, &build_transfer_inputs(10));
+        assert!(matches!(
+            res,
+            Ok(Some(InterpreterResult {
+                result: InstructionResult::Return,
+                ..
+            }))
+        ));
+
+        let from_load = ctx.journal_mut().load_account(from).unwrap();
+        assert!(
+            !from_load.is_cold,
+            "pre-Jovian + pre-warm: from must remain warm"
+        );
+        let to_load = ctx.journal_mut().load_account(to).unwrap();
+        assert!(
+            !to_load.is_cold,
+            "pre-Jovian + pre-warm: to must remain warm"
+        );
+    }
+
     fn make_celo_test_db(celo_address: Address, caller: Address) -> InMemoryDB {
         let mut db = InMemoryDB::default();
 
