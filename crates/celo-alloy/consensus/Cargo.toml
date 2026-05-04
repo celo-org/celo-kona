@@ -77,4 +77,9 @@ serde-bincode-compat = [
     "alloy-consensus/serde-bincode-compat",
     "op-alloy-consensus/serde-bincode-compat",
 ]
+# Enables k256 so the workspace-level `--features dev` (set in
+# `.cargo/mutants.toml`) compiles the signer-recovery tests, which are
+# `#[cfg(all(test, feature = "k256"))]`-gated and would surface as false
+# survivors during mutation testing of the trait-forwarding code.
+dev = ["k256"]
 

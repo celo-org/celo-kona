@@ -55,3 +55,8 @@ arbitrary = [
     "alloy-primitives/rand",
     "op-alloy-consensus/arbitrary"
 ]
+# Enables k256 so the workspace-level `--features dev` (set in
+# `.cargo/mutants.toml`) compiles the `recovered_transactions*` methods,
+# which are otherwise `#[cfg(feature = "k256")]`-gated and would surface
+# as false survivors during mutation testing.
+dev = ["k256"]

@@ -287,7 +287,342 @@ mod tx_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_consensus::{SignableTransaction, TxEip7702, transaction::Recovered};
+    use alloy_eips::{
+        eip2930::AccessListItem,
+        eip7702::{Authorization, SignedAuthorization},
+    };
+    use alloy_primitives::{Bytes, Signature, address, b256, hex};
+    use celo_alloy_consensus::TxCip64;
+
+    fn cip64_tx() -> TxCip64 {
+        TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0x705,
+            gas_limit: 0x3644c,
+            to: address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0").into(),
+            // Non-zero, non-default value to pin the `value -> Default` mutation
+            // on the wrapper's forwarding accessor.
+            value: U256::from(0xabc_u64),
+            input: Bytes::copy_from_slice(&hex!(
+                "0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563"
+            )),
+            max_fee_per_gas: 0x26442dbed,
+            max_priority_fee_per_gas: 0x4d7ee,
+            access_list: AccessList::default(),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
+        }
+    }
+
+    fn cip64_sig() -> Signature {
+        // Same canonical scalars used by `cip64_tx`'s real-world fixture in
+        // `celo-alloy-consensus`. The signature is invalid for our edited
+        // value/input but the wrapper accessors don't verify signatures.
+        Signature::from_scalars_and_parity(
+            b256!("0xaa0cfaa3df893578b3504062b862428f0e4a94046370cf2a4fd6c392c0760dd8"),
+            b256!("0x1337d022bbb8faed78a9707e6c38d51f575816e7f85aa540f3d37a9081c58a71"),
+            false,
+        )
+    }
+
+    fn cip64_signer() -> Address {
+        address!("0xefe945ee33ce4ab037ff4d1e1384d0efcd95f37b")
+    }
+
+    /// Builds a `CeloTransaction` with deliberately distinct, non-default
+    /// values for every accessor. Pins the trait forwarding methods against
+    /// constant-replacement mutations.
+    fn populated_cip64_tx() -> CeloTransaction {
+        let envelope = CeloTxEnvelope::Cip64(cip64_tx().into_signed(cip64_sig()));
+        CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: Some(b256!(
+                    "0x3333333333333333333333333333333333333333333333333333333333333333"
+                )),
+                block_number: Some(789),
+                transaction_index: Some(7),
+                effective_gas_price: Some(0x100_000_000),
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
+        }
+    }
+
+    #[test]
+    fn typed2718_ty_forwards_envelope_type() {
+        let tx = populated_cip64_tx();
+        // CIP-64 tx type is 0x7b — distinct from the 0/1 constant mutants.
+        assert_eq!(tx.ty(), 0x7b);
+    }
+
+    #[test]
+    fn transaction_trait_forwards_every_field() {
+        let tx = populated_cip64_tx();
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::chain_id(&tx), Some(0xa4ec));
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::nonce(&tx), 0x705);
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::gas_limit(&tx), 0x3644c);
+        // CIP-64 has no legacy gas_price field — the wrapper returns None.
+        // The `gas_price -> None` mutant is exercised by
+        // `transaction_gas_price_returns_some_for_legacy` below.
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::gas_price(&tx), None);
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::max_fee_per_gas(&tx),
+            0x26442dbed,
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::max_priority_fee_per_gas(&tx),
+            Some(0x4d7ee),
+        );
+        // CeloTxEnvelope cannot hold an EIP-4844 tx; max_fee_per_blob_gas /
+        // blob_versioned_hashes always return None. The corresponding
+        // `-> None` mutations are equivalent and excluded in `.cargo/mutants.toml`.
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::max_fee_per_blob_gas(&tx),
+            None,
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::priority_fee_or_price(&tx),
+            0x4d7ee,
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::effective_gas_price(&tx, Some(100)),
+            // base_fee=100 + max_priority=0x4d7ee, capped by max_fee=0x26442dbed.
+            100 + 0x4d7ee,
+        );
+        assert!(<CeloTransaction as alloy_consensus::Transaction>::is_dynamic_fee(&tx));
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::kind(&tx),
+            TxKind::Call(address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0")),
+        );
+        assert!(!<CeloTransaction as alloy_consensus::Transaction>::is_create(&tx));
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::to(&tx),
+            Some(address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0")),
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::value(&tx),
+            U256::from(0xabc_u64),
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::input(&tx).len(),
+            cip64_tx().input.len(),
+        );
+        // CIP-64 has an access list field but our fixture leaves it empty;
+        // assert Some(empty) so the `-> None` mutation is caught.
+        assert!(
+            <CeloTransaction as alloy_consensus::Transaction>::access_list(&tx)
+                .expect("Some access list")
+                .iter()
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::blob_versioned_hashes(&tx),
+            None,
+        );
+        // CIP-64 has no authorization list; the wrapper returns None.
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::authorization_list(&tx),
+            None,
+        );
+    }
+
+    /// Pins `gas_price -> None` against a Legacy envelope (which carries a
+    /// real gas_price). The CIP-64 forwarding test above pins the
+    /// `Some(0)` / `Some(1)` mutants by asserting `None`.
+    #[test]
+    fn transaction_gas_price_returns_some_for_legacy() {
+        use alloy_consensus::TxLegacy;
+        let legacy = TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 0,
+            gas_price: 0x12345,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = CeloTxEnvelope::Legacy(legacy.into_signed(Signature::test_signature()));
+        let tx = CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: None,
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: None,
+        };
+        assert_eq!(
+            <CeloTransaction as alloy_consensus::Transaction>::gas_price(&tx),
+            Some(0x12345),
+        );
+    }
+
+    /// Pins `is_dynamic_fee -> false` by exercising it on a Legacy envelope
+    /// (which is not dynamic-fee), and by asserting `true` for the CIP-64
+    /// envelope above.
+    #[test]
+    fn transaction_is_dynamic_fee_returns_false_for_legacy() {
+        // Build a Legacy envelope with a no-op signature; the type never
+        // reads it back.
+        use alloy_consensus::TxLegacy;
+        let legacy = TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let signed = legacy.into_signed(Signature::test_signature());
+        let envelope = CeloTxEnvelope::Legacy(signed);
+        let tx = CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: Some(1),
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: None,
+        };
+        assert!(!<CeloTransaction as alloy_consensus::Transaction>::is_dynamic_fee(&tx));
+    }
+
+    /// Pins `is_create -> true` and `to -> None` by using a contract-creation
+    /// envelope (TxKind::Create).
+    #[test]
+    fn transaction_is_create_returns_true_for_creation() {
+        let mut inner_tx = cip64_tx();
+        inner_tx.to = TxKind::Create;
+        let envelope = CeloTxEnvelope::Cip64(inner_tx.into_signed(cip64_sig()));
+        let tx = CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: None,
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: None,
+        };
+        assert!(<CeloTransaction as alloy_consensus::Transaction>::is_create(&tx));
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::to(&tx), None);
+        assert_eq!(<CeloTransaction as alloy_consensus::Transaction>::kind(&tx), TxKind::Create,);
+    }
+
+    /// Pins `access_list -> None` and `-> Some(empty)` against an envelope
+    /// with a populated access list.
+    #[test]
+    fn transaction_access_list_returns_populated_list() {
+        let access = AccessList(vec![AccessListItem {
+            address: address!("0xdd00000000000000000000000000000000000004"),
+            storage_keys: vec![b256!(
+                "0x4444444444444444444444444444444444444444444444444444444444444444"
+            )],
+        }]);
+        let mut inner_tx = cip64_tx();
+        inner_tx.access_list = access;
+        let envelope = CeloTxEnvelope::Cip64(inner_tx.into_signed(cip64_sig()));
+        let tx = CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: None,
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: None,
+        };
+        let list = <CeloTransaction as alloy_consensus::Transaction>::access_list(&tx)
+            .expect("Some access list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].address, address!("0xdd00000000000000000000000000000000000004"));
+    }
+
+    /// Pins `authorization_list -> None` and `-> Some(empty)` against an
+    /// EIP-7702 envelope that has a populated authorization list.
+    #[test]
+    fn transaction_authorization_list_returns_populated_list() {
+        let auth = SignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(0xa4ec_u64),
+                address: address!("0xff00000000000000000000000000000000000005"),
+                nonce: 99,
+            },
+            0,
+            U256::from(1_u64),
+            U256::from(2_u64),
+        );
+        let inner = TxEip7702 {
+            chain_id: 0xa4ec,
+            nonce: 1,
+            gas_limit: 21_000,
+            max_fee_per_gas: 1_000,
+            max_priority_fee_per_gas: 100,
+            to: address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0"),
+            value: U256::ZERO,
+            access_list: AccessList::default(),
+            authorization_list: vec![auth],
+            input: Bytes::new(),
+        };
+        let envelope = CeloTxEnvelope::Eip7702(inner.into_signed(Signature::test_signature()));
+        let tx = CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(envelope, cip64_signer()),
+                block_hash: None,
+                block_number: None,
+                transaction_index: None,
+                effective_gas_price: None,
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+            fee_currency: None,
+        };
+        let list = <CeloTransaction as alloy_consensus::Transaction>::authorization_list(&tx)
+            .expect("Some authorization list");
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn transaction_response_forwards_every_field() {
+        let tx = populated_cip64_tx();
+        // tx_hash is derived from the signed envelope; just assert it's non-zero.
+        assert_ne!(
+            <CeloTransaction as alloy_network_primitives::TransactionResponse>::tx_hash(&tx),
+            B256::ZERO,
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_network_primitives::TransactionResponse>::block_hash(&tx),
+            Some(b256!("0x3333333333333333333333333333333333333333333333333333333333333333")),
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_network_primitives::TransactionResponse>::block_number(&tx),
+            Some(789),
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_network_primitives::TransactionResponse>::transaction_index(
+                &tx
+            ),
+            Some(7),
+        );
+        assert_eq!(
+            <CeloTransaction as alloy_network_primitives::TransactionResponse>::from(&tx),
+            cip64_signer(),
+        );
+    }
 
     #[test]
     fn can_deserialize_deposit() {

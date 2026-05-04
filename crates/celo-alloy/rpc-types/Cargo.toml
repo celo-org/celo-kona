@@ -65,3 +65,6 @@ arbitrary = [
 ]
 k256 = ["alloy-rpc-types-eth/k256", "celo-alloy-consensus/k256", "op-alloy-consensus/k256"]
 serde = ["celo-alloy-consensus/serde", "op-alloy-consensus/serde"]
+# No-op feature so workspace-level `--features dev` (set in
+# `.cargo/mutants.toml`) resolves on this crate.
+dev = []

@@ -204,3 +204,229 @@ impl TransactionBuilder7702 for CeloTransactionRequest {
         self.as_mut().set_authorization_list(authorization_list);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_eips::eip7702::Authorization;
+    use alloy_primitives::{B256, Bytes, Signature, address, b256};
+    use celo_alloy_consensus::TxCip64;
+
+    fn dummy_sig() -> Signature {
+        Signature::test_signature()
+    }
+
+    fn legacy_tx() -> TxLegacy {
+        TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 7,
+            gas_price: 11,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x000000000000000000000000000000000000aaaa")),
+            value: U256::from(13_u64),
+            input: Bytes::from_static(&[0xDE, 0xAD]),
+        }
+    }
+
+    fn deposit_tx() -> TxDeposit {
+        TxDeposit {
+            source_hash: B256::ZERO,
+            from: address!("0x000000000000000000000000000000000000bbbb"),
+            to: TxKind::Call(address!("0x000000000000000000000000000000000000cccc")),
+            mint: 0,
+            value: U256::from(123_u64),
+            gas_limit: 50_000,
+            is_system_transaction: false,
+            input: Bytes::from_static(&[0x01, 0x02, 0x03]),
+        }
+    }
+
+    /// Pins the `access_list` builder against `-> Default`. Asserts the
+    /// returned request carries the access list we set.
+    #[test]
+    fn access_list_builder_sets_field() {
+        let access = AccessList::default();
+        let req = CeloTransactionRequest::default().access_list(access.clone());
+        assert_eq!(req.as_ref().access_list, Some(access));
+    }
+
+    /// Pins the `input` builder against `-> Default`.
+    #[test]
+    fn input_builder_sets_field() {
+        let payload = Bytes::from_static(&[0xCA, 0xFE]);
+        let req = CeloTransactionRequest::default().input(TransactionInput::new(payload.clone()));
+        assert_eq!(req.as_ref().input.input(), Some(&payload));
+    }
+
+    /// Pins `From<TxDeposit>::from -> Default` AND each `delete field` mutant
+    /// inside the explicit struct literal (from / to / value / gas / input).
+    /// Asserting each field separately ensures any deletion shows up.
+    #[test]
+    fn from_tx_deposit_populates_every_explicit_field() {
+        let req: CeloTransactionRequest = deposit_tx().into();
+        let inner = req.as_ref();
+        assert_eq!(inner.from, Some(address!("0x000000000000000000000000000000000000bbbb")));
+        assert_eq!(
+            inner.to,
+            Some(TxKind::Call(address!("0x000000000000000000000000000000000000cccc"))),
+        );
+        assert_eq!(inner.value, Some(U256::from(123_u64)));
+        assert_eq!(inner.gas, Some(50_000));
+        assert_eq!(inner.input.input(), Some(&Bytes::from_static(&[0x01, 0x02, 0x03])));
+    }
+
+    /// Pins `From<Sealed<TxDeposit>>::from -> Default` by checking that the
+    /// sealed wrapper unwraps to the same fields as the bare TxDeposit case.
+    #[test]
+    fn from_sealed_tx_deposit_forwards_to_inner() {
+        let dep = deposit_tx();
+        let sealed = Sealed::new_unchecked(dep.clone(), dep.tx_hash());
+        let req: CeloTransactionRequest = sealed.into();
+        let inner = req.as_ref();
+        assert_eq!(inner.from, Some(dep.from));
+        assert_eq!(inner.to, Some(dep.to));
+        assert_eq!(inner.value, Some(dep.value));
+        assert_eq!(inner.gas, Some(dep.gas_limit));
+    }
+
+    /// Pins `From<Signed<T>>::from -> Default` against a signed legacy tx.
+    /// Under the `k256` feature `from` is set to the recovered signer; we
+    /// just assert the rest of the fields round-trip and `from` is populated.
+    #[test]
+    fn from_signed_legacy_populates_inner_request() {
+        let signed = legacy_tx().into_signed(dummy_sig());
+        let req: CeloTransactionRequest = signed.into();
+        let inner = req.as_ref();
+        assert_eq!(inner.nonce, Some(7));
+        assert_eq!(inner.gas, Some(21_000));
+        assert_eq!(inner.value, Some(U256::from(13_u64)));
+        assert_eq!(
+            inner.to,
+            Some(TxKind::Call(address!("0x000000000000000000000000000000000000aaaa"))),
+        );
+        assert_eq!(inner.input.input(), Some(&Bytes::from_static(&[0xDE, 0xAD])));
+        // With the `k256` feature on (enabled via the `dev` feature), `from`
+        // is the recovered signer; without it, `from` is None. Either way the
+        // mutation `-> Default` (which would zero `nonce/value/...`) is
+        // already caught by the assertions above.
+    }
+
+    /// Pins `From<CeloTypedTransaction>::from -> Default` AND ensures every
+    /// match arm dispatches to the corresponding inner-type conversion.
+    #[test]
+    fn from_celo_typed_transaction_dispatches_each_variant() {
+        let cases: Vec<CeloTypedTransaction> = vec![
+            legacy_tx().into(),
+            CeloTypedTransaction::Eip2930(TxEip2930 {
+                chain_id: 0xa4ec,
+                nonce: 1,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(address!("0x0000000000000000000000000000000000000a01")),
+                value: U256::from(2_u64),
+                access_list: AccessList::default(),
+                input: Bytes::new(),
+            }),
+            CeloTypedTransaction::Eip1559(TxEip1559 {
+                chain_id: 0xa4ec,
+                nonce: 1,
+                gas_limit: 21_000,
+                max_fee_per_gas: 100,
+                max_priority_fee_per_gas: 1,
+                to: TxKind::Call(address!("0x0000000000000000000000000000000000000a02")),
+                value: U256::from(3_u64),
+                access_list: AccessList::default(),
+                input: Bytes::new(),
+            }),
+            CeloTypedTransaction::Eip7702(TxEip7702 {
+                chain_id: 0xa4ec,
+                nonce: 1,
+                gas_limit: 21_000,
+                max_fee_per_gas: 100,
+                max_priority_fee_per_gas: 1,
+                to: address!("0x0000000000000000000000000000000000000a03"),
+                value: U256::from(4_u64),
+                access_list: AccessList::default(),
+                authorization_list: vec![],
+                input: Bytes::new(),
+            }),
+            CeloTypedTransaction::Cip64(TxCip64 {
+                chain_id: 0xa4ec,
+                nonce: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(address!("0x0000000000000000000000000000000000000a04")),
+                value: U256::from(5_u64),
+                input: Bytes::new(),
+                max_fee_per_gas: 100,
+                max_priority_fee_per_gas: 1,
+                access_list: AccessList::default(),
+                fee_currency: Some(address!("0x0000000000000000000000000000000000000aff")),
+            }),
+            CeloTypedTransaction::Deposit(deposit_tx()),
+        ];
+
+        for (idx, typed) in cases.into_iter().enumerate() {
+            let req: CeloTransactionRequest = typed.into();
+            let inner = req.as_ref();
+            // Every variant sets a recipient; default-constructed request has none.
+            assert!(inner.to.is_some(), "case {idx} should set `to`");
+        }
+    }
+
+    /// Pins `From<CeloTxEnvelope>::from -> Default` AND each match arm.
+    #[test]
+    fn from_celo_tx_envelope_dispatches_each_variant() {
+        let cip64_envelope = CeloTxEnvelope::Cip64(
+            TxCip64 {
+                chain_id: 0xa4ec,
+                nonce: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(address!("0x0000000000000000000000000000000000000b01")),
+                value: U256::from(7_u64),
+                input: Bytes::new(),
+                max_fee_per_gas: 100,
+                max_priority_fee_per_gas: 1,
+                access_list: AccessList::default(),
+                fee_currency: None,
+            }
+            .into_signed(dummy_sig()),
+        );
+        let req: CeloTransactionRequest = cip64_envelope.into();
+        assert_eq!(
+            req.as_ref().to,
+            Some(TxKind::Call(address!("0x0000000000000000000000000000000000000b01"))),
+        );
+
+        // Deposit branch flows through `From<TxDeposit>` (already pinned).
+        let dep_envelope = CeloTxEnvelope::Deposit(Sealed::new_unchecked(
+            deposit_tx(),
+            b256!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        ));
+        let req: CeloTransactionRequest = dep_envelope.into();
+        assert_eq!(req.as_ref().from, Some(address!("0x000000000000000000000000000000000000bbbb")),);
+    }
+
+    /// Pins both `authorization_list -> None` and `-> Some(empty)`, plus
+    /// `set_authorization_list -> ()`. Builds a request, sets a one-element
+    /// authorization list, and reads it back.
+    #[test]
+    fn authorization_list_round_trips() {
+        let auth = SignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(0xa4ec_u64),
+                address: address!("0x000000000000000000000000000000000000c001"),
+                nonce: 99,
+            },
+            0,
+            U256::from(1_u64),
+            U256::from(2_u64),
+        );
+        let mut req = CeloTransactionRequest::default();
+        // Pre-set: list is None.
+        assert!(TransactionBuilder7702::authorization_list(&req).is_none());
+        TransactionBuilder7702::set_authorization_list(&mut req, vec![auth]);
+        let list = TransactionBuilder7702::authorization_list(&req).expect("Some list");
+        assert_eq!(list.len(), 1);
+    }
+}

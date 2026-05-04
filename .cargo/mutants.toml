@@ -27,6 +27,12 @@ exclude_globs = [
     "**/tests/**",
     "**/testdata/**",
     "**/fixtures/**",
+    # `reth_compat.rs` is `#[cfg(feature = "reth")]`-gated. The `reth`
+    # feature relies on workspace-level feature unification (e.g.
+    # `MaybeSerde` impls supplied by other crates) and does not compile when
+    # cargo-mutants drives `cargo test --package celo-alloy-consensus` in
+    # isolation. Mutants here would all surface as false survivors.
+    "**/reth_compat.rs",
 ]
 
 # Ignore cosmetic mutations on logging macros — these never affect correctness
@@ -47,6 +53,22 @@ exclude_re = [
     # arithmetic only feeds `info!`/`warn!` log lines. Mutations are either
     # equivalent or only observable via log assertions.
     "log_and_warn_gas_cost",
+    # `CeloTxEnvelope` cannot hold an EIP-4844 transaction — none of its
+    # variants carry blob fields, so `max_fee_per_blob_gas` and
+    # `blob_versioned_hashes` always return `None` for the wrapped accessors
+    # in `celo-alloy-rpc-types::transaction`. The `-> None` mutations are
+    # equivalent; the `Some(...)` variants are pinned by tests asserting
+    # `None`.
+    "max_fee_per_blob_gas -> Option<u128> with None",
+    "blob_versioned_hashes -> Option<&\\[B256\\]> with None",
+    # `CeloTxEnvelope::Deposit(tx) => tx.from` arm in the
+    # `tx_serde::TryFrom<CeloTransactionSerdeHelper>` impl is unreachable
+    # via JSON: `OptionalFields.from` and `TxDeposit.from` both target the
+    # top-level `"from"` key under serde flatten, so any JSON containing
+    # `"from"` populates `OptionalFields.from = Some(_)` and short-circuits
+    # before the match. Removing `"from"` makes `TxDeposit` deserialization
+    # fail before the fallback runs.
+    "delete match arm CeloTxEnvelope::Deposit\\(tx\\) in tx_serde",
 ]
 
 # Generous timeouts. Some Celo tests do real EVM execution.

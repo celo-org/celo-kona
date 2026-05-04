@@ -153,6 +153,105 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::Eip658Value;
+    use alloy_network_primitives::ReceiptResponse;
+    use alloy_primitives::{Bloom, address, b256};
+
+    /// Build a `CeloTransactionReceipt` with deliberately distinct, non-default
+    /// values for every accessor exercised by `ReceiptResponse`. Used to pin the
+    /// trait's forwarding methods against constant-replacement mutations.
+    fn populated_receipt() -> CeloTransactionReceipt {
+        let inner_envelope = CeloReceiptEnvelope::Eip1559(ReceiptWithBloom {
+            receipt: Receipt {
+                status: Eip658Value::Eip658(true),
+                cumulative_gas_used: 999_999,
+                logs: vec![],
+            },
+            logs_bloom: Bloom::default(),
+        });
+
+        CeloTransactionReceipt {
+            inner: alloy_rpc_types_eth::TransactionReceipt {
+                inner: inner_envelope,
+                transaction_hash: b256!(
+                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                ),
+                transaction_index: Some(7),
+                block_hash: Some(b256!(
+                    "0x2222222222222222222222222222222222222222222222222222222222222222"
+                )),
+                block_number: Some(12_345),
+                gas_used: 21_000,
+                effective_gas_price: 1_000_000_007,
+                blob_gas_used: Some(3_000),
+                blob_gas_price: Some(42),
+                from: address!("0xff00000000000000000000000000000000000001"),
+                to: Some(address!("0xee00000000000000000000000000000000000002")),
+                contract_address: Some(address!("0xcc00000000000000000000000000000000000003")),
+            },
+            l1_block_info: L1BlockInfo::default(),
+            base_fee: None,
+        }
+    }
+
+    #[test]
+    fn receipt_response_forwards_every_field() {
+        let r = populated_receipt();
+        assert_eq!(
+            r.contract_address(),
+            Some(address!("0xcc00000000000000000000000000000000000003"))
+        );
+        assert!(r.status());
+        assert_eq!(
+            r.block_hash(),
+            Some(b256!("0x2222222222222222222222222222222222222222222222222222222222222222"))
+        );
+        assert_eq!(r.block_number(), Some(12_345));
+        assert_eq!(
+            r.transaction_hash(),
+            b256!("0x1111111111111111111111111111111111111111111111111111111111111111")
+        );
+        assert_eq!(r.transaction_index(), Some(7));
+        assert_eq!(r.gas_used(), 21_000);
+        assert_eq!(r.effective_gas_price(), 1_000_000_007);
+        assert_eq!(r.blob_gas_used(), Some(3_000));
+        assert_eq!(r.blob_gas_price(), Some(42));
+        assert_eq!(r.from(), address!("0xff00000000000000000000000000000000000001"));
+        assert_eq!(r.to(), Some(address!("0xee00000000000000000000000000000000000002")));
+        assert_eq!(r.cumulative_gas_used(), 999_999);
+        // EIP-658 (post-byzantium) receipts carry a status, not a post-state root.
+        assert_eq!(r.state_root(), None);
+    }
+
+    /// Pins `state_root -> None`. Pre-byzantium receipts encode a post-state
+    /// root via `Eip658Value::PostState`; the wrapper must surface it via
+    /// `state_root()`. The default forwarding test above pins `-> Some(_)`
+    /// by asserting None on the EIP-658 case.
+    #[test]
+    fn receipt_response_state_root_forwards_post_state() {
+        let post_state =
+            b256!("0x9999999999999999999999999999999999999999999999999999999999999999");
+        let mut r = populated_receipt();
+        if let CeloReceiptEnvelope::Eip1559(ref mut rb) = r.inner.inner {
+            rb.receipt.status = Eip658Value::PostState(post_state);
+        } else {
+            unreachable!()
+        }
+        assert_eq!(r.state_root(), Some(post_state));
+    }
+
+    /// `status()` for a failed receipt must round-trip false. Pins the
+    /// `status -> true` mutation against a receipt where the inner status is false.
+    #[test]
+    fn receipt_response_status_forwards_false() {
+        let mut r = populated_receipt();
+        if let CeloReceiptEnvelope::Eip1559(ref mut rb) = r.inner.inner {
+            rb.receipt.status = Eip658Value::Eip658(false);
+        } else {
+            unreachable!()
+        }
+        assert!(!r.status());
+    }
 
     // <https://github.com/alloy-rs/op-alloy/issues/18>
     #[test]

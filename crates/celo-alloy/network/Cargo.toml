@@ -25,6 +25,12 @@ alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer.workspace = true
 
+[dev-dependencies]
+alloy-eips = { workspace = true }
+alloy-signer-local = { version = "=1.6.3" }
+op-alloy-consensus = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [features]
 std = [
     "celo-alloy-consensus/std",
@@ -34,3 +40,6 @@ serde = [
     "celo-alloy-consensus/serde",
     "celo-alloy-rpc-types/serde"
 ]
+# No-op feature so workspace-level `--features dev` (set in
+# `.cargo/mutants.toml`) resolves on this crate.
+dev = []

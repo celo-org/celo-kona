@@ -111,9 +111,36 @@ impl CeloPayloadAttributes {
 mod test {
     use super::*;
     use alloc::vec;
-    use alloy_primitives::{Address, B64, B256, b64};
+    use alloy_primitives::{Address, B64, B256, b64, hex};
     use alloy_rpc_types_engine::PayloadAttributes;
     use core::str::FromStr;
+
+    /// Real signed CIP-64 transaction observed on Baklava (see
+    /// `celo-alloy-consensus::transaction::cip64::recover_signer_cip64`). Used to
+    /// exercise the iterator methods with bytes that round-trip through
+    /// `CeloTxEnvelope::decode_2718`.
+    const ENCODED_CIP64_TX: &[u8] = &hex!(
+        "0x7bf8a882a4ec8207058304d7ee85026442dbed8303644c947a1e295c4babdf229776680c93ed0f73d069abc080a4cac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563c0942f25deb3848c207fc8e0c34035b3ba7fc157602b80a0aa0cfaa3df893578b3504062b862428f0e4a94046370cf2a4fd6c392c0760dd8a01337d022bbb8faed78a9707e6c38d51f575816e7f85aa540f3d37a9081c58a71"
+    );
+
+    fn attributes_with_transactions(txs: Option<Vec<Bytes>>) -> CeloPayloadAttributes {
+        CeloPayloadAttributes {
+            op_payload_attributes: OpPayloadAttributes {
+                payload_attributes: PayloadAttributes {
+                    timestamp: 0,
+                    prev_randao: B256::ZERO,
+                    suggested_fee_recipient: Address::ZERO,
+                    withdrawals: Default::default(),
+                    parent_beacon_block_root: None,
+                },
+                transactions: txs,
+                no_tx_pool: None,
+                gas_limit: None,
+                eip_1559_params: None,
+                min_base_fee: None,
+            },
+        }
+    }
 
     #[test]
     fn test_serde_roundtrip_attributes_pre_holocene() {
@@ -187,5 +214,109 @@ mod test {
         };
         let extra_data = attributes.get_holocene_extra_data(BaseFeeParams::new(80, 60));
         assert_eq!(extra_data.unwrap(), Bytes::copy_from_slice(&[0, 0, 0, 0, 80, 0, 0, 0, 60]));
+    }
+
+    /// `decode_eip_1559_params` should round-trip through `op_payload_attributes`.
+    /// The expected tuple is `(0x10, 0x0a)` — distinct from the constant-replacement
+    /// mutants `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)` and from `None`.
+    #[test]
+    fn decode_eip_1559_params_returns_op_layer_value() {
+        let attributes = CeloPayloadAttributes {
+            op_payload_attributes: OpPayloadAttributes {
+                eip_1559_params: Some(b64!("000000100000000a")),
+                ..Default::default()
+            },
+        };
+        // Encoded form is `denominator | elasticity`; decoded tuple is
+        // `(elasticity, denominator)` per op-alloy's contract.
+        assert_eq!(attributes.decode_eip_1559_params(), Some((0x0a, 0x10)));
+    }
+
+    #[test]
+    fn decode_eip_1559_params_returns_none_when_unset() {
+        let attributes = CeloPayloadAttributes {
+            op_payload_attributes: OpPayloadAttributes {
+                eip_1559_params: None,
+                ..Default::default()
+            },
+        };
+        assert_eq!(attributes.decode_eip_1559_params(), None);
+    }
+
+    #[test]
+    fn decoded_transactions_yields_one_for_one_encoded_input() {
+        let attributes =
+            attributes_with_transactions(Some(vec![Bytes::copy_from_slice(ENCODED_CIP64_TX)]));
+        let decoded: Vec<_> = attributes.decoded_transactions().collect();
+        assert_eq!(decoded.len(), 1);
+        let tx = decoded.into_iter().next().unwrap().expect("decode should succeed");
+        // Cip64 envelope variant carries the chain id from the encoded tx (0xa4ec).
+        assert!(matches!(tx, CeloTxEnvelope::Cip64(_)));
+    }
+
+    #[test]
+    fn decoded_transactions_is_empty_when_no_transactions() {
+        let attributes = attributes_with_transactions(None);
+        assert_eq!(attributes.decoded_transactions().count(), 0);
+
+        let attributes = attributes_with_transactions(Some(vec![]));
+        assert_eq!(attributes.decoded_transactions().count(), 0);
+    }
+
+    /// Pins the `if !buf.is_empty()` guard that rejects encoded transactions with
+    /// trailing bytes. Without the `!`, trailing bytes would silently parse.
+    #[test]
+    fn decoded_transactions_rejects_trailing_bytes() {
+        let mut padded = ENCODED_CIP64_TX.to_vec();
+        padded.push(0xff);
+        let attributes = attributes_with_transactions(Some(vec![padded.into()]));
+        let decoded: Vec<_> = attributes.decoded_transactions().collect();
+        assert_eq!(decoded.len(), 1);
+        assert!(decoded.into_iter().next().unwrap().is_err());
+    }
+
+    #[test]
+    fn decoded_transactions_with_encoded_pairs_bytes_with_decoded() {
+        let bytes = Bytes::copy_from_slice(ENCODED_CIP64_TX);
+        let attributes = attributes_with_transactions(Some(vec![bytes.clone()]));
+        let entries: Vec<_> = attributes.decoded_transactions_with_encoded().collect();
+        assert_eq!(entries.len(), 1);
+        let with_encoded = entries.into_iter().next().unwrap().expect("decode should succeed");
+        assert_eq!(with_encoded.encoded_bytes(), &bytes);
+        assert!(matches!(with_encoded.into_value(), CeloTxEnvelope::Cip64(_)));
+    }
+
+    #[test]
+    fn decoded_transactions_with_encoded_is_empty_when_no_transactions() {
+        let attributes = attributes_with_transactions(None);
+        assert_eq!(attributes.decoded_transactions_with_encoded().count(), 0);
+    }
+
+    #[cfg(feature = "k256")]
+    #[test]
+    fn recovered_transactions_returns_signer_for_signed_input() {
+        use alloy_primitives::address;
+        let attributes =
+            attributes_with_transactions(Some(vec![Bytes::copy_from_slice(ENCODED_CIP64_TX)]));
+        let recovered: Vec<_> = attributes.recovered_transactions().collect();
+        assert_eq!(recovered.len(), 1);
+        let recovered_tx = recovered.into_iter().next().unwrap().expect("recovery should succeed");
+        assert_eq!(recovered_tx.signer(), address!("0xefe945ee33ce4ab037ff4d1e1384d0efcd95f37b"));
+    }
+
+    #[cfg(feature = "k256")]
+    #[test]
+    fn recovered_transactions_with_encoded_pairs_bytes_with_signer() {
+        use alloy_primitives::address;
+        let bytes = Bytes::copy_from_slice(ENCODED_CIP64_TX);
+        let attributes = attributes_with_transactions(Some(vec![bytes.clone()]));
+        let entries: Vec<_> = attributes.recovered_transactions_with_encoded().collect();
+        assert_eq!(entries.len(), 1);
+        let with_encoded = entries.into_iter().next().unwrap().expect("recovery should succeed");
+        assert_eq!(with_encoded.encoded_bytes(), &bytes);
+        assert_eq!(
+            with_encoded.into_value().signer(),
+            address!("0xefe945ee33ce4ab037ff4d1e1384d0efcd95f37b")
+        );
     }
 }

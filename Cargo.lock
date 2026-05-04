@@ -1973,12 +1973,16 @@ name = "celo-alloy-network"
 version = "1.0.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-network",
  "alloy-primitives",
  "alloy-rpc-types-eth",
  "alloy-signer",
+ "alloy-signer-local",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types",
+ "op-alloy-consensus",
+ "tokio",
 ]
 
 [[package]]
