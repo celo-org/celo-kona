@@ -128,6 +128,122 @@ mod tests {
     use alloy_primitives::{U256, address};
     use revm::{Context, context_interface::ContextTr, handler::EvmTr};
 
+    fn ctx_with_currency(currency: Address, rate_num: u64, rate_den: u64) -> FeeCurrencyContext {
+        let mut currencies = HashMap::default();
+        currencies.insert(
+            currency,
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(rate_num), U256::from(rate_den)),
+                intrinsic_gas: 12_345,
+            },
+        );
+        FeeCurrencyContext::new(currencies, None)
+    }
+
+    #[test]
+    fn currency_exchange_rate_native_paths() {
+        let ctx = FeeCurrencyContext::default();
+        // None → identity rate.
+        assert_eq!(
+            ctx.currency_exchange_rate(None).unwrap(),
+            (U256::ONE, U256::ONE)
+        );
+        // Zero address → identity rate. The `||` short-circuit must hold; flipping
+        // to `&&` would force `unwrap()` on None (panic) — covered by the case above.
+        assert_eq!(
+            ctx.currency_exchange_rate(Some(Address::ZERO)).unwrap(),
+            (U256::ONE, U256::ONE)
+        );
+    }
+
+    #[test]
+    fn currency_exchange_rate_registered() {
+        let c = address!("0x2222222222222222222222222222222222222222");
+        let ctx = ctx_with_currency(c, 7, 3);
+        assert_eq!(
+            ctx.currency_exchange_rate(Some(c)).unwrap(),
+            (U256::from(7), U256::from(3))
+        );
+    }
+
+    #[test]
+    fn currency_exchange_rate_unregistered_errors() {
+        let ctx = FeeCurrencyContext::default();
+        let c = address!("0x3333333333333333333333333333333333333333");
+        assert!(ctx.currency_exchange_rate(Some(c)).is_err());
+    }
+
+    #[test]
+    fn celo_to_currency_native_pass_through() {
+        let ctx = FeeCurrencyContext::default();
+        let amount = U256::from(1_000u64);
+        assert_eq!(ctx.celo_to_currency(None, amount).unwrap(), amount);
+        assert_eq!(
+            ctx.celo_to_currency(Some(Address::ZERO), amount).unwrap(),
+            amount
+        );
+    }
+
+    #[test]
+    fn celo_to_currency_scales_by_rate() {
+        // rate 5/2: 100 native CELO → 250 currency. Picked so that
+        // `* / 2` differs from both `* % 2` (=0) and the unmutated value.
+        let c = address!("0x4444444444444444444444444444444444444444");
+        let ctx = ctx_with_currency(c, 5, 2);
+        let out = ctx.celo_to_currency(Some(c), U256::from(100u64)).unwrap();
+        assert_eq!(out, U256::from(250u64));
+    }
+
+    #[test]
+    fn currency_to_celo_native_pass_through() {
+        let ctx = FeeCurrencyContext::default();
+        let amount = U256::from(1_000u64);
+        assert_eq!(ctx.currency_to_celo(None, amount).unwrap(), amount);
+        assert_eq!(
+            ctx.currency_to_celo(Some(Address::ZERO), amount).unwrap(),
+            amount
+        );
+    }
+
+    #[test]
+    fn currency_to_celo_inverts_rate() {
+        // Same rate 5/2 going the other way: 250 currency → 100 native CELO.
+        let c = address!("0x5555555555555555555555555555555555555555");
+        let ctx = ctx_with_currency(c, 5, 2);
+        let out = ctx.currency_to_celo(Some(c), U256::from(250u64)).unwrap();
+        assert_eq!(out, U256::from(100u64));
+    }
+
+    #[test]
+    fn celo_to_currency_unregistered_errors() {
+        let ctx = FeeCurrencyContext::default();
+        let c = address!("0x6666666666666666666666666666666666666666");
+        assert!(ctx.celo_to_currency(Some(c), U256::from(1u64)).is_err());
+        assert!(ctx.currency_to_celo(Some(c), U256::from(1u64)).is_err());
+    }
+
+    #[test]
+    fn currency_intrinsic_gas_cost_native_is_zero() {
+        let ctx = FeeCurrencyContext::default();
+        assert_eq!(ctx.currency_intrinsic_gas_cost(None).unwrap(), 0);
+        assert_eq!(
+            ctx.currency_intrinsic_gas_cost(Some(Address::ZERO))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn max_allowed_currency_intrinsic_gas_cost_is_3x() {
+        let c = address!("0x7777777777777777777777777777777777777777");
+        let ctx = ctx_with_currency(c, 1, 1);
+        // ctx_with_currency sets intrinsic_gas to 12_345.
+        assert_eq!(
+            ctx.max_allowed_currency_intrinsic_gas_cost(c).unwrap(),
+            12_345 * 3
+        );
+    }
+
     #[test]
     fn test_new_from_evm() {
         let ctx = Context::celo().with_db(make_celo_test_db());
