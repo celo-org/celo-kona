@@ -163,3 +163,58 @@ where
         h.run_system_call(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CeloBuilder, DefaultCelo};
+    use alloy_primitives::U256;
+    use revm::{Context, context::BlockEnv, context_interface::ContextTr, database::EmptyDB};
+
+    /// `ExecuteEvm::set_block` must actually update the EVM's block context.
+    /// The `replace ... with ()` mutation makes this a no-op and would surface
+    /// here as a stale block number.
+    #[test]
+    fn set_block_replaces_evm_block_context() {
+        let ctx = Context::celo().with_db(EmptyDB::default());
+        let mut evm = ctx.build_celo();
+
+        // Pick a block number that isn't 0 (the default), so the mutation is
+        // unambiguously observable.
+        let custom_block = BlockEnv {
+            number: U256::from(123_456u64),
+            ..BlockEnv::default()
+        };
+        evm.set_block(custom_block);
+        assert_eq!(evm.ctx().block().number, U256::from(123_456u64));
+    }
+
+    /// `ExecuteCommitEvm::commit` writes the committed state back into the
+    /// EVM's database. The `replace ... with ()` mutation drops the write —
+    /// observable by reading back the committed account balance.
+    #[test]
+    fn commit_persists_state_to_db() {
+        use alloy_primitives::map::HashMap;
+        use revm::database::InMemoryDB;
+        use revm::primitives::Address;
+        use revm::state::{Account, AccountInfo};
+
+        let ctx = Context::celo().with_db(InMemoryDB::default());
+        let mut evm = ctx.build_celo();
+
+        let target = Address::with_last_byte(0x42);
+        let balance = U256::from(987_654_321u64);
+        let mut account = Account::from(AccountInfo {
+            balance,
+            ..Default::default()
+        });
+        account.mark_touch();
+        let mut state = HashMap::default();
+        state.insert(target, account);
+
+        evm.commit(state);
+        // After commit, the account must be readable from the underlying DB.
+        let db_account = evm.ctx().db_mut().load_account(target).expect("loaded");
+        assert_eq!(db_account.info.balance, balance);
+    }
+}
