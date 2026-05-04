@@ -147,13 +147,10 @@ pub struct CeloPoolTx {
     /// Cost checked against the sender's native CELO balance.
     ///
     /// - Non-CIP-64 txs: same as `inner.cost()` (`gas_limit * max_fee + value`).
-    /// - CIP-64 txs, before [`Self::apply_exchange_rate`] runs: just `value`, because gas is paid
-    ///   in the fee currency and we don't yet know the native equivalent. Seeding from
-    ///   `inner.cost()` would over-count the FC-denominated gas as if it were native CELO, causing
-    ///   the inner validator's balance check to reject otherwise-valid txs whose sender has plenty
-    ///   of ERC20 balance but little CELO.
-    /// - CIP-64 txs, after [`Self::apply_exchange_rate`] runs: `gas_limit * native_max_fee +
-    ///   value`.
+    /// - CIP-64 txs: just `value`. Gas is paid in the fee currency and is checked separately
+    ///   against the sender's ERC20 balance, so it must not be added to the native-CELO cost —
+    ///   doing so would reject otherwise-valid txs whose sender has plenty of ERC20 balance but
+    ///   only `value` worth of CELO.
     native_cost: U256,
 }
 
@@ -180,9 +177,9 @@ impl CeloPoolTx {
         // For CIP-64 txs the raw `inner.cost()` is `gas_limit * max_fee + value`
         // in *fee-currency* units — treating that as native CELO would reject
         // valid txs whose sender funded gas with ERC20 but holds only `value`
-        // in CELO. Seed `native_cost` with just `value` and let
-        // `apply_exchange_rate` fill in the real native-equivalent gas cost
-        // once the rate is known.
+        // in CELO. Use just `value`: gas is paid in the fee currency and is
+        // checked separately against the sender's ERC20 balance, so it must
+        // not be added to the native-CELO requirement.
         let native_cost = if fee_currency.is_some() { inner.value() } else { *inner.cost() };
         Self {
             inner,
@@ -196,7 +193,9 @@ impl CeloPoolTx {
     /// Apply an exchange rate to convert fee-currency values to native equivalents.
     ///
     /// No-op for native (non-CIP-64) transactions — their fee fields are already
-    /// denominated in native CELO.
+    /// denominated in native CELO. `native_cost` is intentionally left unchanged:
+    /// CIP-64 gas is paid in the fee currency, so the native-CELO requirement is
+    /// just `value` and was seeded correctly by [`Self::new`].
     pub fn apply_exchange_rate(&mut self, rate: ExchangeRate) {
         if self.fee_currency.is_none() {
             return;
@@ -204,11 +203,6 @@ impl CeloPoolTx {
         self.native_max_fee_per_gas = rate.to_native(self.inner.max_fee_per_gas());
         self.native_max_priority_fee_per_gas =
             self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(v));
-        // Recompute cost using native-equivalent fees:
-        // gas_limit * native_max_fee + value (gas is paid in FC, only value is in native CELO)
-        self.native_cost = U256::from(self.inner.gas_limit())
-            .saturating_mul(U256::from(self.native_max_fee_per_gas))
-            .saturating_add(self.inner.value());
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
@@ -694,8 +688,9 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
-    /// Maximum transaction fee in wei (cost - value). `None` or `Some(0)` disables the check.
-    /// For CIP-64 txs, the native-equivalent cost is used after exchange rate conversion.
+    /// Maximum transaction fee in wei (`gas_limit * max_fee_per_gas`). `None` or
+    /// `Some(0)` disables the check. For CIP-64 txs, this uses the native-equivalent
+    /// max fee after exchange-rate conversion.
     tx_fee_cap: Option<u128>,
     /// Cumulative per-(sender, fee_currency) ERC20 costs for pending CIP-64 txs.
     cumulative_fc_costs: CumulativeFcCosts,
@@ -755,7 +750,7 @@ enum CeloPoolRejection {
     BelowMinTip { currency: Address, min_tip_fc: u128, actual: u128 },
     /// The `debitGasFees()` simulation failed (e.g. token is paused or blacklisted).
     DebitSimulationFailed { currency: Address, sender: Address },
-    /// The transaction fee (cost - value) exceeds the configured fee cap.
+    /// The transaction fee (`gas_limit * max_fee_per_gas`) exceeds the configured fee cap.
     ExceedsFeeCap {
         max_tx_fee_wei: u128,
         tx_fee_cap_wei: u128,
@@ -1038,12 +1033,13 @@ fn apply_exchange_rates_to_valid_tx(
         }
     }
 
-    // Fee cap check: applies to both CIP-64 (using native-equivalent cost) and native txs.
-    // For CIP-64 txs, native_cost was recomputed by apply_exchange_rate above.
+    // Fee cap check: applies to both CIP-64 (using native-equivalent fee) and native txs.
+    // We derive the gas fee from `gas_limit * max_fee_per_gas` rather than `cost - value`,
+    // because for CIP-64 `native_cost` excludes gas (gas is paid in fee currency, not CELO).
     if let Some(cap) = tx_fee_cap &&
         cap > 0
     {
-        let fee_cost = tx.cost().saturating_sub(tx.value());
+        let fee_cost = U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas()));
         let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
             tracing::warn!(
                 target: "celo::pool",
@@ -1402,9 +1398,10 @@ mod tests {
         let rate = ExchangeRate { numerator: 2, denominator: 1 };
         tx.apply_exchange_rate(rate);
 
-        // native_max_fee = 1000 * 1 / 2 = 500
-        // native_cost = gas_limit * native_max_fee + value = 100 * 500 + 0 = 50_000
-        assert_eq!(*tx.cost(), U256::from(50_000));
+        // For CIP-64, gas is paid in fee currency, so native_cost stays at `value`
+        // (== 0 here) — including native-equivalent gas would falsely reject senders
+        // who hold ERC20 for gas but little CELO.
+        assert_eq!(*tx.cost(), U256::ZERO);
     }
 
     #[test]
