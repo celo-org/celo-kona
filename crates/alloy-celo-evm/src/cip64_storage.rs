@@ -66,18 +66,20 @@ impl Cip64Storage {
 
     /// Merges CIP-64 pre/post logs with the main execution logs.
     pub fn merge_logs(cip64_info: &Cip64Info, main_logs: Vec<Log>) -> Vec<Log> {
-        let capacity = cip64_info.logs_pre.len() + main_logs.len() + cip64_info.logs_post.len();
-        let mut merged = Vec::with_capacity(capacity);
-        merged.extend_from_slice(&cip64_info.logs_pre);
-        merged.extend(main_logs);
-        merged.extend_from_slice(&cip64_info.logs_post);
-        merged
+        cip64_info
+            .logs_pre
+            .iter()
+            .cloned()
+            .chain(main_logs)
+            .chain(cip64_info.logs_post.iter().cloned())
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Address;
 
     #[test]
     fn receipt_queue_drained_by_pop() {
@@ -92,5 +94,66 @@ mod tests {
         assert_eq!(storage.receipt_queue.lock().len(), 100);
         while storage.pop_cip64_receipt_data().is_some() {}
         assert_eq!(storage.receipt_queue.lock().len(), 0);
+    }
+
+    #[test]
+    fn pending_receipt_count_tracks_queue() {
+        let storage = Cip64Storage::default();
+        assert_eq!(storage.pending_receipt_count(), 0);
+        storage.store_cip64_info(None, Cip64Info::default());
+        assert_eq!(storage.pending_receipt_count(), 1);
+        storage.store_cip64_info(None, Cip64Info::default());
+        storage.store_cip64_info(None, Cip64Info::default());
+        assert_eq!(storage.pending_receipt_count(), 3);
+        storage.pop_cip64_receipt_data();
+        assert_eq!(storage.pending_receipt_count(), 2);
+    }
+
+    #[test]
+    fn all_entries_accumulates_without_consuming() {
+        let storage = Cip64Storage::default();
+        let fc = Some(Address::with_last_byte(7));
+        storage.store_cip64_info(fc, Cip64Info::default());
+        storage.store_cip64_info(None, Cip64Info::default());
+        // pop one — `all_entries` must still report both.
+        storage.pop_cip64_receipt_data();
+        let entries = storage.all_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].fee_currency, fc);
+        assert_eq!(entries[1].fee_currency, None);
+    }
+
+    fn log_with_addr(b: u8) -> Log {
+        Log { address: Address::with_last_byte(b), data: Default::default() }
+    }
+
+    #[test]
+    fn merge_logs_orders_pre_main_post() {
+        let info = Cip64Info {
+            logs_pre: vec![log_with_addr(1), log_with_addr(2)],
+            logs_post: vec![log_with_addr(5)],
+            ..Default::default()
+        };
+        let main = vec![log_with_addr(3), log_with_addr(4)];
+        let merged = Cip64Storage::merge_logs(&info, main);
+        let addrs: Vec<u8> = merged.iter().map(|l| l.address.0[19]).collect();
+        assert_eq!(addrs, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn merge_logs_empty_inputs() {
+        let info = Cip64Info::default();
+        assert!(Cip64Storage::merge_logs(&info, vec![]).is_empty());
+    }
+
+    #[test]
+    fn merge_logs_only_main() {
+        // Empty pre/post is the common case for non-CIP-64 paths reusing this
+        // helper; the merge must not introduce phantom logs around `main`.
+        let info = Cip64Info::default();
+        let main = vec![log_with_addr(9)];
+        let merged = Cip64Storage::merge_logs(&info, main);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].address, Address::with_last_byte(9));
     }
 }
