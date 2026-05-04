@@ -1856,8 +1856,7 @@ mod tests {
         assert!(result.is_ok(), "Handler run should succeed: {result:?}");
 
         // Check that cip64_tx_info was populated with gas values
-        let ctx = evm.ctx();
-        let cip64_info = ctx.tx().cip64_tx_info.as_ref();
+        let cip64_info = evm.ctx().tx().cip64_tx_info.clone();
         assert!(
             cip64_info.is_some(),
             "CIP-64 info should be set after execution"
@@ -1880,6 +1879,42 @@ mod tests {
 
         // Credit should generate Transfer event logs (from sender refund + tip/base to recipients)
         assert!(!info.logs_post.is_empty(), "Credit should generate logs");
+
+        // base_fee_in_erc20 must equal the converted basefee (basefee * num/den = 1 * 20/10 = 2).
+        // Pins `cip64_get_base_fee_in_erc20` against `Ok(0)` / `Ok(1)` mutations.
+        assert_eq!(
+            info.base_fee_in_erc20,
+            Some(2),
+            "base_fee_in_erc20 must reflect the test DB's 20/10 exchange rate at basefee=1"
+        );
+
+        // Pin balance distribution to anchor the credit math (refund / tip / base
+        // arithmetic). Caller's net charge is `effective_gas_price * gas_used`.
+        // Beneficiary receives `tip_gas_price * gas_used`. Fee handler receives
+        // `base_fee_in_erc20 * gas_used`. With effective_gas_price=12, tip=10,
+        // base_fee_in_erc20=2 — these three balance changes always sum to the
+        // caller's debit, regardless of gas_used.
+        let fee_handler = get_addresses(0).fee_handler;
+        let caller_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, sender).expect("caller balance");
+        let beneficiary_balance = erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, beneficiary)
+            .expect("beneficiary balance");
+        let fee_handler_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, fee_handler).expect("handler balance");
+        let charged = fc_balance - caller_balance;
+        assert_eq!(
+            beneficiary_balance + fee_handler_balance,
+            charged,
+            "tip + base_fee distribution must equal the caller's debit"
+        );
+        // tip:base ratio is 10:2 == 5:1 (independent of gas_used). This pins the
+        // ratio between the two recipient credits so that arithmetic mutations on
+        // `tip_gas_price` / `base_tx_charge` change one side without the other.
+        assert_eq!(
+            beneficiary_balance,
+            fee_handler_balance * U256::from(5u64),
+            "beneficiary tip must be 5x fee_handler base (tip_gas_price/base_fee_in_erc20 = 10/2)"
+        );
     }
 
     /// Symmetric to `test_cip64_insufficient_balance`: when the fee currency
@@ -1951,6 +1986,649 @@ mod tests {
             err_str.contains(FEE_CREDIT_ERROR_PREFIX),
             "Credit failure must surface via FEE_CREDIT_ERROR_PREFIX so the \
              alloy-celo-evm blocklist trigger fires. Got: {err_str}"
+        );
+    }
+
+    /// `reset_warmness_to_default` ORs `AccountStatus::Cold` into every journal
+    /// account after fee currency context loading. We observe this directly:
+    /// after `validate_env`, every account that was loaded by the system calls
+    /// (the FeeCurrencyDirectory, the MockOracle, etc.) must have the Cold bit
+    /// set on its journal status. This pins both the function-body mutation
+    /// (`replace … with ()`) and the bitwise-op mutation (`|=` → `&=` clears
+    /// the Touched/LoadedAsNotExisting bits but never sets Cold for an account
+    /// that wasn't already cold).
+    #[test]
+    fn reset_warmness_to_default_marks_journal_accounts_cold() {
+        use revm::state::AccountStatus;
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        handler
+            .validate_env(&mut evm)
+            .expect("validate_env should run context loading");
+
+        let directory = get_addresses(0).fee_currency_directory;
+        let state = &evm.ctx().journal_mut().state;
+        let dir_account = state
+            .get(&directory)
+            .expect("FeeCurrencyDirectory must be in the journal after context loading");
+        assert!(
+            dir_account.status.contains(AccountStatus::Cold),
+            "directory account must have the Cold bit set after \
+             reset_warmness_to_default; status: {:?}",
+            dir_account.status
+        );
+        // Same for the MockOracle — directory.getExchangeRate routes to the
+        // oracle's getExchangeRate, so this account is also touched during
+        // context loading.
+        let oracle = address!("0x1111111111111111111111111111111111111112");
+        let oracle_account = state
+            .get(&oracle)
+            .expect("MockOracle must be in the journal after context loading");
+        assert!(
+            oracle_account.status.contains(AccountStatus::Cold),
+            "oracle account must have the Cold bit set; status: {:?}",
+            oracle_account.status
+        );
+    }
+
+    /// Pins the third `||` (between `is_balance_check_disabled` and
+    /// `is_base_fee_disabled`) of the early-return guard in
+    /// `cip64_credit_fee_currency`. Without `optional_balance_check`, both
+    /// flags are constant `false` and the third `||` is observably equivalent
+    /// to `&&` — only with the feature enabled does the mutation flip behavior:
+    ///   Original: false || false || true || false = true → return early.
+    ///   `&&` mutation: false || false || (true && false) = false → credit runs.
+    /// Gated behind `optional_balance_check` so default-feature builds aren't
+    /// affected; cargo-mutants enables it via `--features dev` (mutants.toml).
+    #[cfg(feature = "optional_balance_check")]
+    #[test]
+    fn cip64_credit_skipped_when_balance_check_disabled() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+                cfg.disable_balance_check = true;
+            });
+
+        let mut evm = ctx.build_celo();
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        handler.run(&mut evm).expect("handler run");
+
+        // Either cip64_info is None (debit was skipped because is_balance_check
+        // is gated upstream too), or it's Some with no credit fields populated.
+        // Pin the credit-side fields specifically, since the mutation makes
+        // credit run after debit completes normally.
+        if let Some(info) = evm.ctx().tx().cip64_tx_info.clone() {
+            assert_eq!(
+                info.credit_gas_used, 0,
+                "credit must not run when balance check is disabled"
+            );
+            assert!(
+                info.logs_post.is_empty(),
+                "credit logs must be empty when credit is skipped"
+            );
+        }
+    }
+
+    /// `cip64_credit_fee_currency` re-routes the fee recipient from the
+    /// beneficiary to the fee handler when the beneficiary is `Address::ZERO`.
+    /// Test: zero beneficiary → fee_handler must receive the tip credit. With
+    /// the `==` → `!=` mutation the rerouting reverses, and the (zero) beneficiary
+    /// gets the tip — observable as a fee_handler balance that's missing the tip.
+    #[test]
+    fn cip64_zero_beneficiary_routes_fees_to_fee_handler() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                // Zero beneficiary — the credit path must reroute fees to the fee_handler.
+                block.beneficiary = Address::ZERO;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        handler.run(&mut evm).expect("handler run");
+
+        let fee_handler = get_addresses(0).fee_handler;
+        let fee_handler_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, fee_handler).expect("handler balance");
+        // With effective_gas_price=12 and base_fee_in_erc20=2, the recipient
+        // (whether beneficiary or fee_handler) gets tip + base = 12 * gas_used.
+        // The exact value depends on gas_used, but it must be strictly positive.
+        assert!(
+            fee_handler_balance > U256::ZERO,
+            "fee_handler must receive the tip+base credits when beneficiary is zero, got: \
+             {fee_handler_balance}"
+        );
+    }
+
+    /// Pins `validate_priority_fee_tx` reachability: a CIP-64 tx with
+    /// `max_priority_fee > max_fee` must fail validation with
+    /// `PriorityFeeGreaterThanMaxFee`. The `delete match arm Cip64` mutation
+    /// drops to the `_` branch which falls through to mainnet validation,
+    /// where `TransactionType::Custom` performs no priority-fee check — letting
+    /// the invalid tx slip through.
+    #[test]
+    fn cip64_validate_env_rejects_priority_fee_above_max_fee() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                // Priority fee greater than max fee: invalid.
+                tx.op_tx.base.gas_priority_fee = Some(200);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| block.basefee = 1)
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .validate_env(&mut evm)
+            .expect_err("priority > max fee must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("PriorityFeeGreaterThanMaxFee"),
+            "expected PriorityFeeGreaterThanMaxFee, got: {err_str}"
+        );
+    }
+
+    /// The CIP-64 intrinsic gas (50_000 in the test fixture) must be added to
+    /// `gas.initial_gas` when `fee_currency` is `Some(non-zero)`. With a
+    /// gas_limit of 50_000:
+    ///   - Original (`!=`): initial_gas = 21_000 + 50_000 = 71_000 > 50_000
+    ///     → CallGasCostMoreThanGasLimit.
+    ///   - Mutation (`!=` → `==`): the intrinsic add is gated on
+    ///     `Some(zero)`, so for our non-zero fee_currency the intrinsic isn't
+    ///     added — initial_gas stays at 21_000, validation passes, the tx
+    ///     succeeds (or fails for a different reason).
+    #[test]
+    fn cip64_validate_initial_gas_adds_intrinsic_for_nonzero_fee_currency() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        // gas_limit=50_000 sits between the basic 21_000 intrinsic and the
+        // 21_000 + 50_000 = 71_000 CIP-64 intrinsic.
+        let result = run_cip64_tx(sender, fc_balance, 50_000, 100, 10, 1, beneficiary);
+        let err = result.expect_err("CIP-64 with gas_limit < CIP-64 intrinsic must fail");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("CallGasCostMoreThanGasLimit"),
+            "expected CallGasCostMoreThanGasLimit, got: {err_str}"
+        );
+    }
+
+    /// Pins the EIP-7623 floor-gas check: when `floor_gas == gas_limit`, the
+    /// strict `>` must yield false (no error). The `>` → `==` and `>` → `>=`
+    /// mutations both turn the comparison true at equality, raising a spurious
+    /// `GasFloorMoreThanGasLimit`. Use a non-CIP-64 EIP-1559 tx so the CIP-64
+    /// intrinsic isn't added and `initial_gas == 21_000` doesn't trip the
+    /// earlier gas-limit check.
+    #[test]
+    fn validate_celo_initial_tx_gas_floor_check_strict_inequality() {
+        let ctx = Context::celo()
+            .with_db(InMemoryDB::default())
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = TransactionType::Eip1559 as u8;
+                tx.op_tx.base.gas_limit = 21_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(0);
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| block.basefee = 1)
+            // ISTHMUS maps to PRAGUE, so the EIP-7623 floor check runs.
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::ISTHMUS;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let gas = handler
+            .validate_celo_initial_tx_gas(&mut evm)
+            .expect("floor_gas == gas_limit must not trip the strict `>` check");
+        assert_eq!(gas.floor_gas, 21_000);
+        assert_eq!(gas.initial_gas, 21_000);
+    }
+
+    /// Pins the `!is_deposit` gate around `validate_account_nonce_and_code`:
+    /// for a non-deposit tx with a wrong nonce, validation must fail with
+    /// `NonceTooHigh` (or similar). Removing the `!` (`delete !` mutation)
+    /// flips the gate, so non-deposit txs skip nonce validation entirely and
+    /// the bad nonce slips through.
+    #[test]
+    fn validate_against_state_rejects_bad_nonce_on_non_deposit() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                // Account nonce is 0; tx nonce is 5 — too high.
+                tx.op_tx.base.nonce = 5;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect_err("non-deposit tx with bad nonce must fail validation");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce"),
+            "expected nonce-related error, got: {err_str}"
+        );
+    }
+
+    /// Pins the strict `>` in the native-fee balance check at line 664:
+    /// `tx.value() > new_balance && !is_balance_check_disabled`. With
+    /// `value == new_balance`, the original passes and the `==` / `>=`
+    /// mutations both trip a spurious `LackOfFundForMaxFee`. We use a CIP-64
+    /// ERC20-fee tx so the native CELO balance is what's checked here (the
+    /// `else` branch), then set `value = caller_celo_balance` exactly.
+    #[test]
+    fn validate_against_state_native_value_equal_to_balance_passes() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // make_celo_test_db_with_fee_currency funds the sender with exactly 1 CELO.
+        let caller_celo_balance = U256::from(1_000_000_000_000_000_000u128);
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                // value == caller's native CELO balance.
+                tx.op_tx.base.value = caller_celo_balance;
+                tx.op_tx.base.kind = revm::primitives::TxKind::Call(beneficiary);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        // Validation must pass — value == balance is not "lack of funds" under
+        // the strict `>` comparison.
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect("value == balance must pass the strict `>` check");
+    }
+
+    /// Pins the `!is_balance_check_disabled` half of the same line-664 guard
+    /// without needing the optional `optional_balance_check` feature: with
+    /// `is_balance_check_disabled() == false` (default), the original `!false`
+    /// is `true`, so the guard fires when `value > balance`. The `delete !`
+    /// mutation makes the half just `is_balance_check_disabled` — `false` —
+    /// so the AND collapses to false, the guard never fires, and the
+    /// LackOfFundForMaxFee error is suppressed.
+    #[test]
+    fn validate_against_state_native_value_above_balance_errors() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                // value far exceeds caller's 1 CELO native balance — must error.
+                tx.op_tx.base.value = U256::from(10_000_000_000_000_000_000u128);
+                tx.op_tx.base.kind = revm::primitives::TxKind::Call(beneficiary);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect_err("value > balance must trip LackOfFundForMaxFee under default cfg");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("LackOfFundForMaxFee"),
+            "expected LackOfFundForMaxFee, got: {err_str}"
+        );
+    }
+
+    /// `validate_against_state_and_deduct_caller` writes a `Cip64Info { base_fee_in_erc20 }`
+    /// record for native-fee CIP-64 transactions (so the receipt builder still
+    /// emits `base_fee: Some(basefee)`). The `==` → `!=` mutation reverses
+    /// `is_cip64`, so the record is only written for non-CIP-64 txs; the
+    /// `delete field base_fee_in_erc20` mutation drops the field, leaving it
+    /// `None` from the struct's `Default`. Both surface here as the wrong
+    /// `base_fee_in_erc20`.
+    #[test]
+    fn cip64_native_fee_records_base_fee_in_erc20() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let db = make_celo_test_db_with_fee_currency(sender, U256::ZERO);
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                // Native-fee CIP-64: zero-address fee currency.
+                tx.fee_currency = Some(Address::ZERO);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                // Use a non-trivial basefee so `Some(0)` (the default-from-mutation
+                // case) doesn't accidentally match the correct value.
+                block.basefee = 7;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        handler
+            .validate_against_state_and_deduct_caller(&mut evm)
+            .expect("validation should pass for native-fee CIP-64");
+
+        let info = evm
+            .ctx()
+            .tx()
+            .cip64_tx_info
+            .clone()
+            .expect("native-fee CIP-64 must populate cip64_tx_info");
+        assert_eq!(
+            info.base_fee_in_erc20,
+            Some(7),
+            "base_fee_in_erc20 must equal the native basefee for native-fee CIP-64"
+        );
+    }
+
+    /// Forces `debit_gas_refunded > 0` by setting the sender's ERC20 balance
+    /// equal to the full debit amount, so `debitGasFees`'s `_balances[from] -= amount`
+    /// SSTOREs a non-zero slot to zero (refund-eligible) and same for `_totalSupply`.
+    /// This makes `debit_raw_gas = debit_used + debit_refunded` differ from
+    /// `debit_used * debit_refunded`: with the `*` mutation the saturating_sub
+    /// underflows `max_allowed_currency_intrinsic_gas_cost` to 0, the credit
+    /// call gets zero gas, and the whole tx fails. We assert the tx succeeds —
+    /// pinning the `+` arithmetic against the `*` mutation.
+    #[test]
+    fn cip64_debit_refund_kept_in_max_allowed() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        // gas_limit * effective_gas_price = 100_000 * 12 = 1_200_000.
+        // Set fc_balance to exactly the debit amount so both _balances[sender]
+        // and _totalSupply hit non-zero → zero (SSTORE refund).
+        let fc_balance = U256::from(1_200_000u64);
+
+        let result = run_cip64_tx(sender, fc_balance, 100_000, 100, 10, 1, beneficiary);
+        let exec = result.expect("tx must succeed: max_allowed_gas_cost must remain > 0");
+        assert!(
+            exec.is_success(),
+            "credit must not be starved of gas — debit_raw_gas computed via `*` \
+             saturates max_allowed to 0 and the tx fails: {exec:?}"
+        );
+    }
+
+    /// SSTORE non-zero → zero in the main tx body produces a refund. The
+    /// caller's ERC20 net charge is then `effective_gas_price * (gas_limit -
+    /// (remaining + refunded))` where `remaining + refunded` is exactly the
+    /// quantity computed at line 222. Pins both `+` → `*` (which collapses the
+    /// refund credit to ~0 when refunded is non-zero) and `+` → `-` (which
+    /// subtracts the refund instead of adding it). With a refund of 4800 and
+    /// gas_price=12, the expected delta vs. a refund-free run is `12 * 4800 *
+    /// 2 = 115_200` units of ERC20 (factor of 2 because both `+`'s are
+    /// observable with non-zero refund).
+    #[test]
+    fn cip64_main_tx_refund_credits_caller() {
+        use revm::state::Bytecode;
+
+        // SSTORE 0 over slot 0, then STOP.
+        let target_addr = address!("0xa0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0");
+        let target_code = Bytecode::new_raw(Bytes::from_static(&[
+            0x60, 0x00, // PUSH1 0x00 (value)
+            0x60, 0x00, // PUSH1 0x00 (key)
+            0x55, // SSTORE
+            0x00, // STOP
+        ]));
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+
+        // Deploy the SSTORE-refund contract and pre-populate slot 0 with a non-zero
+        // value so the SSTORE is a non-zero → zero transition (refund-eligible).
+        db.insert_account_info(
+            target_addr,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 1,
+                code_hash: target_code.hash_slow(),
+                account_id: None,
+                code: Some(target_code),
+            },
+        );
+        db.insert_account_storage(target_addr, U256::ZERO, U256::from(1))
+            .unwrap();
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 200_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.base.kind = revm::primitives::TxKind::Call(target_addr);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        handler.run(&mut evm).expect("handler run");
+
+        // The credit-side balance distribution must still satisfy:
+        //   tip + base = caller_debit
+        // (regardless of refund magnitude). The tip:base ratio (10:2) holds too.
+        let fee_handler = get_addresses(0).fee_handler;
+        let caller_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, sender).expect("caller balance");
+        let beneficiary_balance = erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, beneficiary)
+            .expect("beneficiary balance");
+        let fee_handler_balance =
+            erc20::get_balance(&mut evm, TEST_FEE_CURRENCY, fee_handler).expect("handler balance");
+        let charged = fc_balance - caller_balance;
+        assert_eq!(
+            beneficiary_balance + fee_handler_balance,
+            charged,
+            "tip + base credits must sum to caller's net debit even with refunds"
+        );
+        assert_eq!(
+            beneficiary_balance,
+            fee_handler_balance * U256::from(5u64),
+            "tip:base ratio must remain 5:1 with refunds"
+        );
+
+        // The relationship `caller_charged == effective_gas_price * spent_sub_refunded`
+        // is the load-bearing invariant. spent_sub_refunded = gas_used reported in
+        // the credit's tip computation (`tip * spent_sub_refunded` and
+        // `base * spent_sub_refunded`). So spent_sub_refunded = fee_handler_balance / 2.
+        let spent_sub_refunded = fee_handler_balance / U256::from(2u64);
+        assert_eq!(
+            charged,
+            spent_sub_refunded * U256::from(12u64),
+            "caller debit must equal effective_gas_price * spent_sub_refunded"
+        );
+
+        // Sanity-check that a refund actually happened — otherwise this test
+        // wouldn't exercise the `+ → -` mutation. With basic intrinsic 21000
+        // and CIP-64 intrinsic 50000 (= 71000 starting), the SSTORE 1→0
+        // refund should yield a non-trivial reduction in spent_sub_refunded
+        // versus a hypothetical no-refund baseline (~76_000 spent without
+        // refund). We assert it's at least 2_000 below that to confirm refund
+        // applied (and avoid a brittle exact match).
+        assert!(
+            spent_sub_refunded < U256::from(74_000u64),
+            "refund must reduce spent_sub_refunded below the ~76k no-refund \
+             baseline; got {spent_sub_refunded}"
         );
     }
 }
