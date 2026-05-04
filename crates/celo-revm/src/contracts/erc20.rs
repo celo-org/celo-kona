@@ -280,6 +280,34 @@ mod tests {
     }
 
     #[test]
+    fn get_balance_returns_stored_balance() {
+        use crate::{CeloBuilder, DefaultCelo};
+        use op_revm::OpSpecId;
+        use revm::Context;
+
+        let contract_addr = address!("0x765DE816845861e75A25fCA122bb6898B8B1282a");
+        let account_addr = address!("0xBFce5EF4F16522D9059dA2776e4619F893A955cf");
+        // Pick a value that is neither 0 nor 1 so the
+        // `replace -> Ok(Default::default())` mutation is observable.
+        let stored_balance = U256::from(987_654_321u64);
+
+        let db = make_mento_usdm_db(contract_addr, account_addr, stored_balance);
+        let ctx = Context::celo()
+            .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::CANYON)
+            .with_db(db);
+        let mut evm = ctx.build_celo();
+
+        let balance = get_balance(&mut evm, contract_addr, account_addr).expect("balance lookup");
+        assert_eq!(balance, stored_balance);
+
+        // An account with no `_balances` entry should report zero (the storage
+        // default), and the call must still succeed without erroring.
+        let other_account = address!("0x1111111111111111111111111111111111111111");
+        let zero_balance = get_balance(&mut evm, contract_addr, other_account).expect("balance");
+        assert_eq!(zero_balance, U256::ZERO);
+    }
+
+    #[test]
     fn test_debit_gas_fees_calldata_structure() {
         let from = address!("0x1111111111111111111111111111111111111111");
         let value = U256::from(500u64);
