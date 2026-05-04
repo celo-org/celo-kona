@@ -722,3 +722,251 @@ mod tests {
         assert_eq!(format!("0x7b{}", hex::encode(buf)), expected_encoded_tx);
     }
 }
+
+/// Tests that don't need k256 (forwarding/encoding/size assertions).
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use alloy_eips::{eip2718::IsTyped2718, eip2930::AccessListItem};
+    use alloy_primitives::{address, b256, hex};
+    use alloy_rpc_types_eth::TransactionRequest;
+    use std::{vec, vec::Vec};
+
+    /// Builds a TxCip64 with deliberately distinct, non-default values for
+    /// every accessor. Used by the trait-forwarding test below to pin each
+    /// constant-replacement mutant.
+    fn populated_tx() -> TxCip64 {
+        TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0x705,
+            gas_limit: 0x3644c,
+            to: TxKind::Call(address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0")),
+            // Non-zero, non-default value pins `value -> Default`.
+            value: U256::from(0xabc_u64),
+            input: Bytes::copy_from_slice(&hex!(
+                "0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563"
+            )),
+            max_fee_per_gas: 0x26442dbed,
+            max_priority_fee_per_gas: 0x4d7ee,
+            access_list: AccessList(vec![AccessListItem {
+                address: address!("0xdd00000000000000000000000000000000000004"),
+                storage_keys: vec![b256!(
+                    "0x4444444444444444444444444444444444444444444444444444444444444444"
+                )],
+            }]),
+            fee_currency: Some(address!("0x2f25deb3848c207fc8e0c34035b3ba7fc157602b")),
+        }
+    }
+
+    /// Pins every `Transaction` accessor against `-> Default`/`-> 0|1`/`->
+    /// None`. CIP-64 has no gas_price (returns None), no blob fields
+    /// (returns None), and no authorization list (returns None) — those are
+    /// asserted as None and pin the `Some(...)` mutants. The
+    /// `max_fee_per_blob_gas -> None` and `blob_versioned_hashes -> None`
+    /// mutants are equivalent and excluded in `.cargo/mutants.toml`.
+    #[test]
+    fn cip64_transaction_trait_forwards_every_field() {
+        let tx = populated_tx();
+        assert_eq!(tx.chain_id(), Some(0xa4ec));
+        assert_eq!(tx.nonce(), 0x705);
+        assert_eq!(tx.gas_limit(), 0x3644c);
+        assert_eq!(<TxCip64 as Transaction>::gas_price(&tx), None);
+        assert_eq!(tx.max_fee_per_gas(), 0x26442dbed);
+        assert_eq!(tx.max_priority_fee_per_gas(), Some(0x4d7ee));
+        assert_eq!(tx.max_fee_per_blob_gas(), None);
+        assert_eq!(tx.priority_fee_or_price(), 0x4d7ee);
+        // base_fee=100 → tip = max_fee - base = 0x26442dbed - 100 > max_priority,
+        // so effective is max_priority + base_fee.
+        assert_eq!(tx.effective_gas_price(Some(100)), 0x4d7ee + 100);
+        // base_fee=None → returns max_fee_per_gas directly.
+        assert_eq!(tx.effective_gas_price(None), 0x26442dbed);
+        assert!(tx.is_dynamic_fee());
+        assert_eq!(tx.kind(), TxKind::Call(address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0")),);
+        assert!(!tx.is_create());
+        assert_eq!(tx.value(), U256::from(0xabc_u64));
+        assert_eq!(tx.input().len(), populated_tx().input.len());
+        let access = tx.access_list().expect("Some access list");
+        assert_eq!(access.len(), 1);
+        assert_eq!(tx.blob_versioned_hashes(), None);
+        assert_eq!(tx.authorization_list(), None);
+    }
+
+    /// Pins `effective_gas_price` strict-inequality branch (line 256). When
+    /// `tip <= max_priority`, the function returns `max_fee_per_gas`. With
+    /// `>` flipped to `<` it'd return `max_priority + base_fee`.
+    #[test]
+    fn cip64_effective_gas_price_when_tip_at_priority_returns_max_fee() {
+        let mut tx = populated_tx();
+        tx.max_fee_per_gas = 100;
+        tx.max_priority_fee_per_gas = 100;
+        // base_fee=0 → tip = 100 - 0 = 100, NOT > max_priority(100).
+        // Falls through to else → returns max_fee_per_gas (100).
+        assert_eq!(tx.effective_gas_price(Some(0)), 100);
+    }
+
+    /// Pins `is_create -> false` against a contract-creation tx
+    /// (TxKind::Create) where real returns true.
+    #[test]
+    fn cip64_is_create_returns_true_for_creation() {
+        let mut tx = populated_tx();
+        tx.to = TxKind::Create;
+        assert!(tx.is_create());
+        assert_eq!(tx.kind(), TxKind::Create);
+    }
+
+    /// Pins `Typed2718::ty -> 0|1` and `IsTyped2718::is_type` arms.
+    #[test]
+    fn cip64_typed2718_returns_cip64_type_id() {
+        let tx = populated_tx();
+        use alloy_consensus::Typed2718;
+        assert_eq!(<TxCip64 as Typed2718>::ty(&tx), 0x7b);
+        assert!(<TxCip64 as IsTyped2718>::is_type(0x7b));
+        assert!(!<TxCip64 as IsTyped2718>::is_type(0x7a));
+        assert!(!<TxCip64 as IsTyped2718>::is_type(0x7c));
+    }
+
+    /// Pins the `size()` arithmetic against `+ -> -|*` and `-> 0|1`. The
+    /// sum is dominated by the input.len() term so any flip changes the
+    /// result. We assert size() equals the explicit per-field sum.
+    #[test]
+    fn cip64_size_equals_explicit_field_sum() {
+        let tx = populated_tx();
+        let expected = core::mem::size_of_val(&tx.chain_id)
+            + core::mem::size_of_val(&tx.nonce)
+            + core::mem::size_of_val(&tx.gas_limit)
+            + core::mem::size_of_val(&tx.max_fee_per_gas)
+            + core::mem::size_of_val(&tx.max_priority_fee_per_gas)
+            + tx.to.size()
+            + core::mem::size_of_val(&tx.value)
+            + tx.access_list.size()
+            + core::mem::size_of_val(&tx.fee_currency)
+            + core::mem::size_of_val(&tx.input)
+            + tx.input.len();
+        assert_eq!(tx.size(), expected);
+    }
+
+    /// Pins `SignableTransaction::set_chain_id -> ()`.
+    #[test]
+    fn cip64_set_chain_id_mutates_field() {
+        let mut tx = populated_tx();
+        tx.set_chain_id(0xfade);
+        assert_eq!(tx.chain_id, 0xfade);
+    }
+
+    /// Pins `SignableTransaction::encode_for_signing -> ()` and
+    /// `payload_len_for_signature -> 0|1`. The encoded buffer's length must
+    /// equal the claimed payload_len.
+    #[test]
+    fn cip64_signable_encoding_matches_claimed_length() {
+        let tx = populated_tx();
+        let mut buf = Vec::new();
+        tx.encode_for_signing(&mut buf);
+        assert!(buf.len() > 1);
+        assert_eq!(buf.len(), tx.payload_len_for_signature());
+        // First byte is the tx_type prefix (0x7b).
+        assert_eq!(buf[0], 0x7b);
+    }
+
+    /// Pins each `delete field` mutation in `From<TxCip64> for
+    /// TransactionRequest` (lines 364-374). Each request field must reflect
+    /// the source tx field.
+    #[test]
+    fn cip64_into_transaction_request_populates_every_field() {
+        let tx = populated_tx();
+        let req: TransactionRequest = tx.clone().into();
+        assert_eq!(req.chain_id, Some(tx.chain_id));
+        assert_eq!(req.nonce, Some(tx.nonce));
+        assert_eq!(req.gas, Some(tx.gas_limit));
+        assert_eq!(req.max_fee_per_gas, Some(tx.max_fee_per_gas));
+        assert_eq!(req.max_priority_fee_per_gas, Some(tx.max_priority_fee_per_gas));
+        assert_eq!(
+            req.to,
+            Some(TxKind::Call(address!("0x7a1e295c4babdf229776680c93ed0f73d069abc0"))),
+        );
+        assert_eq!(req.value, Some(tx.value));
+        assert_eq!(req.access_list, Some(tx.access_list));
+        assert_eq!(req.transaction_type, Some(0x7b));
+        assert_eq!(req.input.input(), Some(&tx.input));
+    }
+
+    /// `From<TxCip64>` for a contract-creation tx must leave `to = None`,
+    /// not `Some(Default)`. Pins the `if let TxKind::Call(to) ... else None`
+    /// branch against `Default::default()` substitution.
+    #[test]
+    fn cip64_into_transaction_request_creation_leaves_to_none() {
+        let mut tx = populated_tx();
+        tx.to = TxKind::Create;
+        let req: TransactionRequest = tx.into();
+        assert_eq!(req.to, None);
+    }
+
+    /// Pins `RlpEcdsaEncodableTx::rlp_encoded_fields_length` against
+    /// `-> 0|1`. The length must equal the actual `rlp_encode_fields`
+    /// output length.
+    #[test]
+    fn cip64_rlp_encoded_fields_length_matches_actual() {
+        use alloy_consensus::transaction::RlpEcdsaEncodableTx;
+        let tx = populated_tx();
+        let mut buf = Vec::new();
+        tx.rlp_encode_fields(&mut buf);
+        assert_eq!(buf.len(), tx.rlp_encoded_fields_length());
+    }
+
+    /// Pins the `fee_currency: None -> [] as &[u8]` encoding branch in
+    /// `rlp_encode_fields` (lines 160-163) and the corresponding
+    /// `rlp_decode_fields` branch (line 198). Round-trip a tx with
+    /// fee_currency=None and assert it decodes back to None.
+    #[test]
+    fn cip64_rlp_round_trip_with_none_fee_currency() {
+        use alloy_consensus::transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx};
+        let mut tx = populated_tx();
+        tx.fee_currency = None;
+        let mut buf = Vec::new();
+        tx.rlp_encode_fields(&mut buf);
+        let mut slice = buf.as_slice();
+        let decoded = TxCip64::rlp_decode_fields(&mut slice).expect("decodes");
+        assert_eq!(decoded.fee_currency, None);
+        assert_eq!(decoded, tx);
+    }
+
+    /// Pins the `bytes.len() != 20` error branch in `rlp_decode_fields`'s
+    /// fee_currency parsing (line 200-203). Encode a tx, then re-encode the
+    /// fee_currency field as 19 bytes (invalid) and assert decode errors.
+    #[test]
+    fn cip64_rlp_decode_rejects_wrong_fee_currency_length() {
+        use alloy_consensus::transaction::RlpEcdsaDecodableTx;
+        use alloy_rlp::Encodable as _;
+        let tx = populated_tx();
+        let mut buf = Vec::new();
+        // Encode all fields up to fee_currency (the last one), then write a
+        // bogus 19-byte fee_currency.
+        tx.chain_id.encode(&mut buf);
+        tx.nonce.encode(&mut buf);
+        tx.max_priority_fee_per_gas.encode(&mut buf);
+        tx.max_fee_per_gas.encode(&mut buf);
+        tx.gas_limit.encode(&mut buf);
+        tx.to.encode(&mut buf);
+        tx.value.encode(&mut buf);
+        tx.input.0.encode(&mut buf);
+        tx.access_list.encode(&mut buf);
+        // 19-byte address (1 byte too short) — should error.
+        let bogus: &[u8] = &[0xab; 19];
+        bogus.encode(&mut buf);
+        let mut slice = buf.as_slice();
+        let result = TxCip64::rlp_decode_fields(&mut slice);
+        assert!(result.is_err(), "decode must reject 19-byte fee_currency");
+    }
+
+    /// Suppresses unused-import warnings for items only used by
+    /// k256-feature-gated tests above.
+    #[allow(dead_code)]
+    fn _unused() -> Address {
+        Address::ZERO
+    }
+
+    /// Suppresses unused-import warning for B256 (only used by k256 tests).
+    #[allow(dead_code)]
+    fn _unused_b256() -> B256 {
+        B256::ZERO
+    }
+}

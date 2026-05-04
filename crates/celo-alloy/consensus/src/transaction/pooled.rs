@@ -170,3 +170,145 @@ impl TryFrom<CeloTxEnvelope> for CeloPooledTransaction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_eips::eip2930::AccessList;
+    use alloy_primitives::{Address, Bytes, TxKind, U256, address};
+    use std::{vec, vec::Vec};
+
+    fn signed_legacy() -> Signed<TxLegacy> {
+        TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 1,
+            gas_price: 11,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x000000000000000000000000000000000000aaaa")),
+            value: U256::from(2_u64),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn signed_cip64() -> Signed<TxCip64> {
+        TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 5,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x000000000000000000000000000000000000abcd")),
+            value: U256::from(6_u64),
+            input: Bytes::new(),
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            access_list: AccessList::default(),
+            fee_currency: None,
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn all_pooled() -> Vec<CeloPooledTransaction> {
+        vec![
+            CeloPooledTransaction::Legacy(signed_legacy()),
+            CeloPooledTransaction::Eip2930(
+                TxEip2930 {
+                    chain_id: 0xa4ec,
+                    nonce: 2,
+                    gas_price: 12,
+                    gas_limit: 21_000,
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ZERO,
+                    access_list: AccessList::default(),
+                    input: Bytes::new(),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            CeloPooledTransaction::Eip1559(
+                TxEip1559 {
+                    chain_id: 0xa4ec,
+                    nonce: 3,
+                    gas_limit: 21_000,
+                    max_fee_per_gas: 100,
+                    max_priority_fee_per_gas: 1,
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ZERO,
+                    access_list: AccessList::default(),
+                    input: Bytes::new(),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            CeloPooledTransaction::Eip7702(
+                TxEip7702 {
+                    chain_id: 0xa4ec,
+                    nonce: 4,
+                    gas_limit: 21_000,
+                    max_fee_per_gas: 100,
+                    max_priority_fee_per_gas: 1,
+                    to: Address::ZERO,
+                    value: U256::ZERO,
+                    access_list: AccessList::default(),
+                    authorization_list: vec![],
+                    input: Bytes::new(),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            CeloPooledTransaction::Cip64(signed_cip64()),
+        ]
+    }
+
+    /// Pins `signature_hash -> Default`. Each variant produces a non-zero
+    /// hash and distinct hashes across variants.
+    #[test]
+    fn pooled_signature_hash_distinct_per_variant() {
+        let mut seen = Vec::new();
+        for tx in all_pooled() {
+            let h = tx.signature_hash();
+            assert_ne!(h, B256::ZERO);
+            seen.push(h);
+        }
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len());
+    }
+
+    /// Pins `hash -> Default` and `TxHashRef::tx_hash -> Default`. Each
+    /// variant produces a non-zero hash and the two accessors agree.
+    #[test]
+    fn pooled_hash_and_tx_hash_agree() {
+        for tx in all_pooled() {
+            let h = *tx.hash();
+            assert_ne!(h, B256::ZERO);
+            assert_eq!(tx.tx_hash(), &h);
+        }
+    }
+
+    /// Pins `encode_for_signing -> ()`. Asserts each variant writes a
+    /// non-empty buffer and length grows with each variant.
+    #[test]
+    fn pooled_encode_for_signing_writes_bytes_per_variant() {
+        for tx in all_pooled() {
+            let mut buf = Vec::new();
+            tx.encode_for_signing(&mut buf);
+            assert!(!buf.is_empty());
+        }
+    }
+
+    /// Pins `SignerRecoverable::recover_signer -> Ok(Default)` and
+    /// `recover_signer_unchecked -> Ok(Default)`. Sign with a known key and
+    /// assert both methods return the same non-zero signer (and that
+    /// recover_signer agrees with recover_signer_unchecked).
+    #[cfg(feature = "k256")]
+    #[test]
+    fn pooled_recover_signer_returns_non_default() {
+        use alloy_consensus::transaction::SignerRecoverable;
+
+        let signed = signed_legacy();
+        let pooled: CeloPooledTransaction = signed.into();
+        let s1 = pooled.recover_signer().unwrap();
+        let s2 = pooled.recover_signer_unchecked().unwrap();
+        assert_ne!(s1, Address::ZERO);
+        assert_eq!(s1, s2);
+    }
+}

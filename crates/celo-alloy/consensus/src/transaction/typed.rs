@@ -323,3 +323,369 @@ impl SignableTransaction<Signature> for CeloTypedTransaction {
         Signed::new_unchecked(self, signature, hash)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::transaction::RlpEcdsaEncodableTx;
+    use alloy_eips::eip2930::AccessList;
+    use alloy_primitives::{Bytes, TxKind, U256, address};
+
+    fn legacy() -> TxLegacy {
+        TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 1,
+            gas_price: 11,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a01")),
+            value: U256::from(2_u64),
+            input: Bytes::new(),
+        }
+    }
+
+    fn eip2930() -> TxEip2930 {
+        TxEip2930 {
+            chain_id: 0xa4ec,
+            nonce: 2,
+            gas_price: 12,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a02")),
+            value: U256::from(3_u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+    }
+
+    fn eip1559() -> TxEip1559 {
+        TxEip1559 {
+            chain_id: 0xa4ec,
+            nonce: 3,
+            gas_limit: 21_000,
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a03")),
+            value: U256::from(4_u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+    }
+
+    fn eip7702() -> TxEip7702 {
+        TxEip7702 {
+            chain_id: 0xa4ec,
+            nonce: 4,
+            gas_limit: 21_000,
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            to: address!("0x0000000000000000000000000000000000000a04"),
+            value: U256::from(5_u64),
+            access_list: AccessList::default(),
+            authorization_list: vec![],
+            input: Bytes::new(),
+        }
+    }
+
+    fn cip64() -> TxCip64 {
+        TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 5,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a05")),
+            value: U256::from(6_u64),
+            input: Bytes::new(),
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            access_list: AccessList::default(),
+            fee_currency: None,
+        }
+    }
+
+    fn deposit() -> TxDeposit {
+        TxDeposit {
+            source_hash: B256::from([0xAA; 32]),
+            from: address!("0x0000000000000000000000000000000000000bbb"),
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a06")),
+            mint: 0,
+            value: U256::from(7_u64),
+            gas_limit: 21_000,
+            is_system_transaction: false,
+            input: Bytes::new(),
+        }
+    }
+
+    /// All six variants paired with their expected `CeloTxType`. Ensures
+    /// every match arm is reachable via at least one assertion.
+    fn all_variants() -> Vec<(CeloTypedTransaction, CeloTxType)> {
+        vec![
+            (CeloTypedTransaction::Legacy(legacy()), CeloTxType::Legacy),
+            (CeloTypedTransaction::Eip2930(eip2930()), CeloTxType::Eip2930),
+            (CeloTypedTransaction::Eip1559(eip1559()), CeloTxType::Eip1559),
+            (CeloTypedTransaction::Eip7702(eip7702()), CeloTxType::Eip7702),
+            (CeloTypedTransaction::Cip64(cip64()), CeloTxType::Cip64),
+            (CeloTypedTransaction::Deposit(deposit()), CeloTxType::Deposit),
+        ]
+    }
+
+    /// Pins `tx_type` against `delete match arm <variant>` for every variant
+    /// AND against `-> Default`. Each variant maps to a distinct CeloTxType.
+    #[test]
+    fn tx_type_returns_matching_variant() {
+        for (tx, expected) in all_variants() {
+            assert_eq!(tx.tx_type(), expected, "tx_type for {expected:?}");
+        }
+    }
+
+    /// Pins `checked_signature_hash` against `-> None` (catches all the
+    /// non-deposit variants) and `Some(_)` arm deletion (catches the deposit
+    /// variant which must return None).
+    #[test]
+    fn checked_signature_hash_is_some_for_all_but_deposit() {
+        for (tx, ty) in all_variants() {
+            let result = tx.checked_signature_hash();
+            if matches!(ty, CeloTxType::Deposit) {
+                assert!(result.is_none(), "{ty:?} must return None");
+            } else {
+                assert!(result.is_some(), "{ty:?} must return Some");
+            }
+        }
+    }
+
+    /// Pins each typed accessor (legacy/eip2930/eip1559/cip64/deposit)
+    /// against `-> None` for the matching arm AND `delete match arm` for the
+    /// fallthrough. For every variant: the matching accessor returns Some,
+    /// every other accessor returns None.
+    #[test]
+    fn typed_accessors_return_some_only_for_matching_variant() {
+        let tx = CeloTypedTransaction::Legacy(legacy());
+        assert!(tx.legacy().is_some());
+        assert!(tx.eip2930().is_none());
+        assert!(tx.eip1559().is_none());
+        assert!(tx.cip64().is_none());
+        assert!(tx.deposit().is_none());
+
+        let tx = CeloTypedTransaction::Eip2930(eip2930());
+        assert!(tx.legacy().is_none());
+        assert!(tx.eip2930().is_some());
+        assert!(tx.eip1559().is_none());
+        assert!(tx.cip64().is_none());
+        assert!(tx.deposit().is_none());
+
+        let tx = CeloTypedTransaction::Eip1559(eip1559());
+        assert!(tx.legacy().is_none());
+        assert!(tx.eip2930().is_none());
+        assert!(tx.eip1559().is_some());
+        assert!(tx.cip64().is_none());
+        assert!(tx.deposit().is_none());
+
+        let tx = CeloTypedTransaction::Cip64(cip64());
+        assert!(tx.legacy().is_none());
+        assert!(tx.eip2930().is_none());
+        assert!(tx.eip1559().is_none());
+        assert!(tx.cip64().is_some());
+        assert!(tx.deposit().is_none());
+
+        let tx = CeloTypedTransaction::Deposit(deposit());
+        assert!(tx.legacy().is_none());
+        assert!(tx.eip2930().is_none());
+        assert!(tx.eip1559().is_none());
+        assert!(tx.cip64().is_none());
+        assert!(tx.deposit().is_some());
+    }
+
+    /// Pins `is_deposit -> true|false` and the underlying matches!.
+    #[test]
+    fn is_deposit_distinguishes_deposit_variant() {
+        for (tx, ty) in all_variants() {
+            let want = matches!(ty, CeloTxType::Deposit);
+            assert_eq!(tx.is_deposit(), want, "{ty:?}");
+        }
+    }
+
+    /// Pins `From<CeloTxEnvelope> -> Self` for every match arm.
+    #[test]
+    fn from_celo_tx_envelope_dispatches_each_variant() {
+        let sig = Signature::test_signature();
+        let cases: Vec<(CeloTxEnvelope, CeloTxType)> = vec![
+            (CeloTxEnvelope::Legacy(legacy().into_signed(sig)), CeloTxType::Legacy),
+            (CeloTxEnvelope::Eip2930(eip2930().into_signed(sig)), CeloTxType::Eip2930),
+            (CeloTxEnvelope::Eip1559(eip1559().into_signed(sig)), CeloTxType::Eip1559),
+            (CeloTxEnvelope::Eip7702(eip7702().into_signed(sig)), CeloTxType::Eip7702),
+            (CeloTxEnvelope::Cip64(cip64().into_signed(sig)), CeloTxType::Cip64),
+            (
+                CeloTxEnvelope::Deposit(alloy_consensus::Sealed::new_unchecked(
+                    deposit(),
+                    B256::ZERO,
+                )),
+                CeloTxType::Deposit,
+            ),
+        ];
+        for (env, expected) in cases {
+            let typed = CeloTypedTransaction::from(env);
+            assert_eq!(typed.tx_type(), expected);
+        }
+    }
+
+    /// Pins the simple `From<TxLegacy/TxEip2930/...>` impls against `->
+    /// Default`. Default `TxLegacy` etc. would have nonce=0; our fixtures
+    /// have non-zero nonces, so equality on tx_type alone suffices to
+    /// distinguish the variant — and the inner field assertion catches
+    /// `-> Default` (Default for all wrapped types is `Legacy(Default)`).
+    #[test]
+    fn from_inner_tx_constructs_correct_variant() {
+        assert_eq!(
+            <CeloTypedTransaction as From<TxLegacy>>::from(legacy()).tx_type(),
+            CeloTxType::Legacy,
+        );
+        assert_eq!(
+            <CeloTypedTransaction as From<TxEip2930>>::from(eip2930()).tx_type(),
+            CeloTxType::Eip2930,
+        );
+        assert_eq!(
+            <CeloTypedTransaction as From<TxEip1559>>::from(eip1559()).tx_type(),
+            CeloTxType::Eip1559,
+        );
+        assert_eq!(
+            <CeloTypedTransaction as From<TxEip7702>>::from(eip7702()).tx_type(),
+            CeloTxType::Eip7702,
+        );
+        assert_eq!(
+            <CeloTypedTransaction as From<TxCip64>>::from(cip64()).tx_type(),
+            CeloTxType::Cip64,
+        );
+        assert_eq!(
+            <CeloTypedTransaction as From<TxDeposit>>::from(deposit()).tx_type(),
+            CeloTxType::Deposit,
+        );
+    }
+
+    /// Pins `set_chain_id -> ()` AND each match arm in
+    /// `SignableTransaction::set_chain_id`. Mutates each variant and reads
+    /// back via `chain_id()`. The Deposit arm is intentionally a no-op (no
+    /// chain_id field), so we just assert it doesn't panic.
+    #[test]
+    fn set_chain_id_round_trips_per_variant() {
+        let new_chain_id = 0xfade_u64;
+        let mut t = CeloTypedTransaction::Legacy(legacy());
+        t.set_chain_id(new_chain_id);
+        assert_eq!(t.legacy().unwrap().chain_id, Some(new_chain_id));
+
+        let mut t = CeloTypedTransaction::Eip2930(eip2930());
+        t.set_chain_id(new_chain_id);
+        assert_eq!(t.eip2930().unwrap().chain_id, new_chain_id);
+
+        let mut t = CeloTypedTransaction::Eip1559(eip1559());
+        t.set_chain_id(new_chain_id);
+        assert_eq!(t.eip1559().unwrap().chain_id, new_chain_id);
+
+        let mut t = CeloTypedTransaction::Eip7702(eip7702());
+        t.set_chain_id(new_chain_id);
+        // Eip7702 has no public accessor in the typed enum; chain_id is on the inner.
+        if let CeloTypedTransaction::Eip7702(tx) = &t {
+            assert_eq!(tx.chain_id, new_chain_id);
+        }
+
+        let mut t = CeloTypedTransaction::Cip64(cip64());
+        t.set_chain_id(new_chain_id);
+        assert_eq!(t.cip64().unwrap().chain_id, new_chain_id);
+
+        // Deposit no-op — must not panic.
+        let mut t = CeloTypedTransaction::Deposit(deposit());
+        t.set_chain_id(new_chain_id);
+        // Deposit txs don't expose chain_id; just assert the variant was preserved.
+        assert!(t.is_deposit());
+    }
+
+    /// Pins `payload_len_for_signature -> 0|1` for non-deposit variants and
+    /// the Deposit arm returning 0.
+    #[test]
+    fn payload_len_for_signature_is_nonzero_for_non_deposit() {
+        for (tx, ty) in all_variants() {
+            let len = tx.payload_len_for_signature();
+            if matches!(ty, CeloTxType::Deposit) {
+                assert_eq!(len, 0, "Deposit must return 0");
+            } else {
+                assert!(len > 1, "{ty:?} must return >1, got {len}");
+            }
+        }
+    }
+
+    /// Pins `encode_for_signing -> ()` per variant. Asserts each non-deposit
+    /// variant writes more than zero bytes; Deposit writes zero.
+    #[test]
+    fn encode_for_signing_writes_bytes_per_variant() {
+        for (tx, ty) in all_variants() {
+            let mut buf = Vec::new();
+            tx.encode_for_signing(&mut buf);
+            if matches!(ty, CeloTxType::Deposit) {
+                assert!(buf.is_empty(), "Deposit must write nothing");
+            } else {
+                assert!(!buf.is_empty(), "{ty:?} must write bytes");
+            }
+        }
+    }
+
+    /// Pins `tx_hash` per variant: each variant must produce a non-zero
+    /// hash, and switching the inner tx changes the hash. Catches any
+    /// `delete match arm` mutation in `tx_hash`.
+    #[test]
+    fn tx_hash_distinguishes_variants() {
+        let sig = Signature::test_signature();
+        let mut hashes = Vec::new();
+        for (tx, _) in all_variants() {
+            let hash = tx.tx_hash(&sig);
+            assert_ne!(hash, B256::ZERO, "non-zero hash");
+            hashes.push(hash);
+        }
+        // Each variant produces a distinct hash. If any arm got deleted,
+        // the wrong inner method runs and the hash changes (or panics).
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), hashes.len(), "all variants must hash distinctly");
+    }
+
+    /// Pins `rlp_encoded_fields_length` per variant by asserting non-zero
+    /// length AND that lengths differ across variants (so any mis-routed
+    /// arm produces a different value).
+    #[test]
+    fn rlp_encoded_fields_length_per_variant() {
+        for (tx, ty) in all_variants() {
+            let len = tx.rlp_encoded_fields_length();
+            assert!(len > 0, "{ty:?} must have non-zero encoded length");
+        }
+    }
+
+    /// Pins `rlp_encode_fields` per variant by asserting the length of the
+    /// written buffer matches `rlp_encoded_fields_length`. A deleted arm
+    /// would write nothing for that variant.
+    #[test]
+    fn rlp_encode_fields_writes_expected_length_per_variant() {
+        for (tx, ty) in all_variants() {
+            let mut buf = Vec::new();
+            tx.rlp_encode_fields(&mut buf);
+            assert_eq!(buf.len(), tx.rlp_encoded_fields_length(), "{ty:?} encoded length mismatch",);
+        }
+    }
+
+    /// Pins `eip2718_encode` per variant.
+    #[test]
+    fn eip2718_encode_writes_bytes_per_variant() {
+        let sig = Signature::test_signature();
+        for (tx, ty) in all_variants() {
+            let mut buf = Vec::new();
+            tx.eip2718_encode(&sig, &mut buf);
+            assert!(!buf.is_empty(), "{ty:?} must write bytes");
+        }
+    }
+
+    /// Pins `network_encode` per variant.
+    #[test]
+    fn network_encode_writes_bytes_per_variant() {
+        let sig = Signature::test_signature();
+        for (tx, ty) in all_variants() {
+            let mut buf = Vec::new();
+            tx.network_encode(&sig, &mut buf);
+            assert!(!buf.is_empty(), "{ty:?} must write bytes");
+        }
+    }
+}

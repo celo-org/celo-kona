@@ -599,7 +599,7 @@ mod tests {
     use super::*;
     use alloy_consensus::SignableTransaction;
     use alloy_eips::{Decodable2718, Encodable2718, eip2930::AccessList};
-    use alloy_primitives::{Address, Signature, U256, address, hex};
+    use alloy_primitives::{Address, Signature, TxKind, U256, address, hex};
     use std::vec;
 
     #[test]
@@ -721,6 +721,326 @@ mod tests {
         assert!(!CeloTxType::Eip7702.is_deposit());
         assert!(!CeloTxType::Cip64.is_deposit());
         assert!(CeloTxType::Deposit.is_deposit());
+    }
+
+    use crate::transaction::envelope::CeloTypedTransaction;
+
+    fn legacy_signed() -> Signed<TxLegacy> {
+        TxLegacy {
+            chain_id: Some(0xa4ec),
+            nonce: 1,
+            gas_price: 11,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a01")),
+            value: U256::from(2_u64),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn eip2930_signed() -> Signed<TxEip2930> {
+        TxEip2930 {
+            chain_id: 0xa4ec,
+            nonce: 2,
+            gas_price: 12,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a02")),
+            value: U256::from(3_u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn eip1559_signed() -> Signed<TxEip1559> {
+        TxEip1559 {
+            chain_id: 0xa4ec,
+            nonce: 3,
+            gas_limit: 21_000,
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a03")),
+            value: U256::from(4_u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn eip7702_signed() -> Signed<TxEip7702> {
+        TxEip7702 {
+            chain_id: 0xa4ec,
+            nonce: 4,
+            gas_limit: 21_000,
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            to: address!("0x0000000000000000000000000000000000000a04"),
+            value: U256::from(5_u64),
+            access_list: AccessList::default(),
+            authorization_list: vec![],
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn cip64_signed() -> Signed<TxCip64> {
+        TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 5,
+            gas_limit: 21_000,
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a05")),
+            value: U256::from(6_u64),
+            input: Bytes::new(),
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 1,
+            access_list: AccessList::default(),
+            fee_currency: None,
+        }
+        .into_signed(Signature::test_signature())
+    }
+
+    fn deposit_sealed_with_system_flag(is_system: bool) -> Sealed<TxDeposit> {
+        let tx = TxDeposit {
+            source_hash: B256::from([0xAA; 32]),
+            from: address!("0x0000000000000000000000000000000000000bbb"),
+            to: TxKind::Call(address!("0x0000000000000000000000000000000000000a06")),
+            mint: 0,
+            value: U256::from(7_u64),
+            gas_limit: 21_000,
+            is_system_transaction: is_system,
+            input: Bytes::new(),
+        };
+        tx.seal_slow()
+    }
+
+    fn all_envelopes() -> Vec<(CeloTxEnvelope, CeloTxType)> {
+        vec![
+            (CeloTxEnvelope::Legacy(legacy_signed()), CeloTxType::Legacy),
+            (CeloTxEnvelope::Eip2930(eip2930_signed()), CeloTxType::Eip2930),
+            (CeloTxEnvelope::Eip1559(eip1559_signed()), CeloTxType::Eip1559),
+            (CeloTxEnvelope::Eip7702(eip7702_signed()), CeloTxType::Eip7702),
+            (CeloTxEnvelope::Cip64(cip64_signed()), CeloTxType::Cip64),
+            (CeloTxEnvelope::Deposit(deposit_sealed_with_system_flag(false)), CeloTxType::Deposit),
+        ]
+    }
+
+    /// Pins `tx_type` against `delete match arm` for every variant AND
+    /// `-> Default`. Each variant maps to a distinct `CeloTxType`.
+    #[test]
+    fn envelope_tx_type_returns_matching_variant() {
+        for (env, expected) in all_envelopes() {
+            assert_eq!(env.tx_type(), expected);
+        }
+    }
+
+    /// Pins each `is_*` boolean accessor (`is_legacy/is_eip2930/is_eip1559/
+    /// is_cip64/is_deposit`) against `-> true|false`. Each variant must
+    /// return `true` for its own probe and `false` for every other.
+    #[test]
+    fn envelope_is_variant_predicates() {
+        for (env, ty) in all_envelopes() {
+            assert_eq!(env.is_legacy(), matches!(ty, CeloTxType::Legacy));
+            assert_eq!(env.is_eip2930(), matches!(ty, CeloTxType::Eip2930));
+            assert_eq!(env.is_eip1559(), matches!(ty, CeloTxType::Eip1559));
+            assert_eq!(env.is_cip64(), matches!(ty, CeloTxType::Cip64));
+            assert_eq!(env.is_deposit(), matches!(ty, CeloTxType::Deposit));
+        }
+    }
+
+    /// Pins `is_system_transaction` per variant: only the deposit branch can
+    /// return true, and only when the underlying flag is set.
+    #[test]
+    fn envelope_is_system_transaction_only_for_deposit() {
+        for (env, ty) in all_envelopes() {
+            // Default fixture has is_system_transaction=false everywhere.
+            assert!(!env.is_system_transaction(), "{ty:?}");
+        }
+        // Flip the deposit flag to true and verify it propagates.
+        let env = CeloTxEnvelope::Deposit(deposit_sealed_with_system_flag(true));
+        assert!(env.is_system_transaction());
+    }
+
+    /// Pins each `as_*` accessor (5 of them) against `-> None` for the
+    /// matching arm AND the catch-all branch.
+    #[test]
+    fn envelope_as_variant_accessors_match_only_matching_variant() {
+        for (env, ty) in all_envelopes() {
+            assert_eq!(env.as_legacy().is_some(), matches!(ty, CeloTxType::Legacy));
+            assert_eq!(env.as_eip2930().is_some(), matches!(ty, CeloTxType::Eip2930));
+            assert_eq!(env.as_eip1559().is_some(), matches!(ty, CeloTxType::Eip1559));
+            assert_eq!(env.as_cip64().is_some(), matches!(ty, CeloTxType::Cip64));
+            assert_eq!(env.as_deposit().is_some(), matches!(ty, CeloTxType::Deposit));
+        }
+    }
+
+    /// Pins `into_typed_transaction` against `delete match arm` for every
+    /// variant. The result must round-trip the variant type.
+    #[test]
+    fn envelope_into_typed_transaction_per_variant() {
+        for (env, ty) in all_envelopes() {
+            let typed = env.into_typed_transaction();
+            assert_eq!(typed.tx_type(), ty);
+        }
+    }
+
+    /// Pins `try_into_eth_envelope` per variant: 4 succeed, 2 fail.
+    #[test]
+    fn envelope_try_into_eth_envelope_routes_per_variant() {
+        for (env, ty) in all_envelopes() {
+            let result = env.try_into_eth_envelope();
+            match ty {
+                CeloTxType::Legacy
+                | CeloTxType::Eip2930
+                | CeloTxType::Eip1559
+                | CeloTxType::Eip7702 => assert!(result.is_ok(), "{ty:?} must convert"),
+                CeloTxType::Cip64 | CeloTxType::Deposit => {
+                    assert!(result.is_err(), "{ty:?} must error")
+                }
+            }
+        }
+    }
+
+    /// Pins `try_into_signed` per variant: 5 succeed, 1 fails (Deposit).
+    #[test]
+    fn envelope_try_into_signed_per_variant() {
+        for (env, ty) in all_envelopes() {
+            let result = env.try_into_signed();
+            if matches!(ty, CeloTxType::Deposit) {
+                assert!(result.is_err(), "Deposit must error");
+            } else {
+                assert!(result.is_ok(), "{ty:?} must convert");
+            }
+        }
+    }
+
+    /// Pins `tx_hash` and `hash` (the public alias) per variant: each must
+    /// return a non-zero, distinct hash.
+    #[test]
+    fn envelope_tx_hash_and_hash_per_variant() {
+        let mut seen = vec![];
+        for (env, ty) in all_envelopes() {
+            let h = *env.tx_hash();
+            assert_ne!(h, B256::ZERO, "{ty:?}");
+            assert_eq!(env.hash(), env.tx_hash(), "tx_hash and hash must agree for {ty:?}");
+            seen.push(h);
+        }
+        let mut sorted = seen.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "all variants must hash distinctly");
+    }
+
+    /// Pins `eip2718_encoded_length` per variant: each must be > 0 and equal
+    /// to the actual encoded length.
+    #[test]
+    fn envelope_eip2718_encoded_length_matches_actual() {
+        for (env, ty) in all_envelopes() {
+            let claimed = env.eip2718_encoded_length();
+            let actual = env.encoded_2718().len();
+            assert_eq!(claimed, actual, "{ty:?}: claimed {claimed} != actual {actual}");
+            assert!(claimed > 0, "{ty:?}: zero-length encoded");
+        }
+    }
+
+    /// Pins `input_mut` per variant: writing into the returned mutable
+    /// reference must visibly mutate the inner tx's input.
+    #[test]
+    fn envelope_input_mut_writes_per_variant() {
+        for (env, ty) in all_envelopes() {
+            let mut env = env;
+            *env.input_mut() = Bytes::from_static(&[0xBE, 0xEF]);
+            // Read it back via the trait's `input()`.
+            use alloy_consensus::Transaction as _;
+            assert_eq!(env.input(), &Bytes::from_static(&[0xBE, 0xEF]), "{ty:?}");
+        }
+    }
+
+    /// Pins the From<Signed<inner>> impls per variant against `-> Self with
+    /// Default`.
+    #[test]
+    fn envelope_from_signed_inner_per_variant() {
+        let env: CeloTxEnvelope = legacy_signed().into();
+        assert!(env.is_legacy());
+        let env: CeloTxEnvelope = eip2930_signed().into();
+        assert!(env.is_eip2930());
+        let env: CeloTxEnvelope = eip1559_signed().into();
+        assert!(env.is_eip1559());
+        let env: CeloTxEnvelope = eip7702_signed().into();
+        assert!(matches!(env, CeloTxEnvelope::Eip7702(_)));
+        let env: CeloTxEnvelope = cip64_signed().into();
+        assert!(env.is_cip64());
+        let env: CeloTxEnvelope = deposit_sealed_with_system_flag(false).into();
+        assert!(env.is_deposit());
+    }
+
+    /// Pins `From<TxDeposit>` (calls `seal_slow().into()`).
+    #[test]
+    fn envelope_from_unsealed_deposit() {
+        let dep = TxDeposit {
+            source_hash: B256::from([0xCC; 32]),
+            from: address!("0x0000000000000000000000000000000000000ccc"),
+            to: TxKind::Call(Address::ZERO),
+            mint: 0,
+            value: U256::ZERO,
+            gas_limit: 21_000,
+            is_system_transaction: false,
+            input: Bytes::new(),
+        };
+        let env: CeloTxEnvelope = dep.into();
+        assert!(env.is_deposit());
+    }
+
+    /// Pins `From<Signed<CeloTypedTransaction>>` against every match arm.
+    #[test]
+    fn envelope_from_signed_celo_typed_per_variant() {
+        let sig = Signature::test_signature();
+        let cases: Vec<(CeloTypedTransaction, CeloTxType)> = vec![
+            (CeloTypedTransaction::Legacy(legacy_signed().into_parts().0), CeloTxType::Legacy),
+            (CeloTypedTransaction::Eip2930(eip2930_signed().into_parts().0), CeloTxType::Eip2930),
+            (CeloTypedTransaction::Eip1559(eip1559_signed().into_parts().0), CeloTxType::Eip1559),
+            (CeloTypedTransaction::Eip7702(eip7702_signed().into_parts().0), CeloTxType::Eip7702),
+            (CeloTypedTransaction::Cip64(cip64_signed().into_parts().0), CeloTxType::Cip64),
+            (
+                CeloTypedTransaction::Deposit(
+                    deposit_sealed_with_system_flag(false).into_parts().0,
+                ),
+                CeloTxType::Deposit,
+            ),
+        ];
+        for (typed, ty) in cases {
+            let signed_typed = Signed::new_unchecked(typed, sig, B256::from([0x77; 32]));
+            let env: CeloTxEnvelope = signed_typed.into();
+            assert_eq!(env.tx_type(), ty);
+        }
+    }
+
+    /// Pins `From<(CeloTypedTransaction, Signature)>` (`new_unhashed`).
+    #[test]
+    fn envelope_from_typed_and_signature() {
+        let typed = CeloTypedTransaction::Cip64(cip64_signed().into_parts().0);
+        let env: CeloTxEnvelope = (typed, Signature::test_signature()).into();
+        assert!(env.is_cip64());
+    }
+
+    /// Pins `try_from_eth_envelope` for the supported branches and Eip4844
+    /// rejection.
+    #[test]
+    fn envelope_try_from_eth_envelope_routes_per_variant() {
+        let eth_legacy = TxEnvelope::Legacy(legacy_signed());
+        let env = CeloTxEnvelope::try_from_eth_envelope(eth_legacy).unwrap();
+        assert!(env.is_legacy());
+
+        let eth_2930 = TxEnvelope::Eip2930(eip2930_signed());
+        let env = CeloTxEnvelope::try_from_eth_envelope(eth_2930).unwrap();
+        assert!(env.is_eip2930());
+
+        let eth_1559 = TxEnvelope::Eip1559(eip1559_signed());
+        let env = CeloTxEnvelope::try_from_eth_envelope(eth_1559).unwrap();
+        assert!(env.is_eip1559());
+
+        let eth_7702 = TxEnvelope::Eip7702(eip7702_signed());
+        let env = CeloTxEnvelope::try_from_eth_envelope(eth_7702).unwrap();
+        assert!(matches!(env, CeloTxEnvelope::Eip7702(_)));
     }
 }
 

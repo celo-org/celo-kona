@@ -414,6 +414,79 @@ mod tests {
         assert_eq!(decoded, receipt);
     }
 
+    fn populated_cip64_receipt() -> CeloCip64Receipt {
+        // Distinct base_fee (not 0/1) and a single log distinguishes
+        // bloom/cumulative_gas_used/status/logs forwarder mutants.
+        CeloCip64Receipt {
+            inner: Receipt {
+                status: Eip658Value::Eip658(true),
+                cumulative_gas_used: 12_345,
+                logs: vec![Log {
+                    address: address!("0x000000000000000000000000000000000000aabb"),
+                    data: LogData::new_unchecked(
+                        vec![b256!(
+                            "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead"
+                        )],
+                        bytes!("0x77"),
+                    ),
+                }],
+            },
+            base_fee: Some(0xabcd),
+        }
+    }
+
+    /// Pins `bloom_slow -> Default`. A receipt with logs must produce a
+    /// non-default bloom filter.
+    #[test]
+    fn cip64_receipt_bloom_slow_for_logged_receipt() {
+        let r = populated_cip64_receipt();
+        assert_ne!(r.bloom_slow(), Bloom::default());
+    }
+
+    /// Pins `with_bloom -> Default` by comparing against an explicit bloom
+    /// computation.
+    #[test]
+    fn cip64_receipt_with_bloom_carries_inner_and_computed_bloom() {
+        let r = populated_cip64_receipt();
+        let expected_bloom = r.bloom_slow();
+        let with_bloom = r.clone().with_bloom();
+        assert_eq!(with_bloom.logs_bloom, expected_bloom);
+        assert_eq!(with_bloom.receipt, r);
+    }
+
+    /// Pins TxReceipt forwarders for `CeloCip64Receipt`: status_or_post_state,
+    /// status, bloom, cumulative_gas_used, logs.
+    #[test]
+    fn cip64_receipt_tx_receipt_forwards_each_accessor() {
+        let r = populated_cip64_receipt();
+        assert_eq!(r.status_or_post_state(), Eip658Value::Eip658(true));
+        assert!(<CeloCip64Receipt as TxReceipt>::status(&r));
+        assert_eq!(<CeloCip64Receipt as TxReceipt>::bloom(&r), r.bloom_slow());
+        assert_eq!(<CeloCip64Receipt as TxReceipt>::cumulative_gas_used(&r), 12_345);
+        assert_eq!(<CeloCip64Receipt as TxReceipt>::logs(&r).len(), 1);
+    }
+
+    /// Pins `status -> false` against a failed receipt.
+    #[test]
+    fn cip64_receipt_status_returns_false_for_failed() {
+        let mut r = populated_cip64_receipt();
+        r.inner.status = Eip658Value::Eip658(false);
+        assert!(!<CeloCip64Receipt as TxReceipt>::status(&r));
+    }
+
+    /// Pins `RlpEncodableReceipt::rlp_encoded_length_with_bloom -> 0|1` by
+    /// comparing the claimed length against the actual encoded length.
+    #[test]
+    fn cip64_receipt_rlp_encoded_length_matches_actual() {
+        use alloy_rlp::Encodable as _;
+        let r = populated_cip64_receipt();
+        let with_bloom = r.with_bloom();
+        let mut buf = Vec::new();
+        with_bloom.encode(&mut buf);
+        // The encoded length includes the RLP header (length_with_payload).
+        assert_eq!(with_bloom.length(), buf.len());
+    }
+
     #[test]
     fn receipt_cip64_roundtrip() {
         let data = hex!(

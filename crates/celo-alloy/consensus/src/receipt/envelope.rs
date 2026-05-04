@@ -452,6 +452,243 @@ mod tests {
         assert_eq!(receipt.base_fee(), Some(1));
     }
 
+    fn make_receipt_envelope(
+        tx_type: CeloTxType,
+        status: bool,
+        cumulative_gas_used: u64,
+        deposit_nonce: Option<u64>,
+        deposit_receipt_version: Option<u64>,
+        base_fee: Option<u128>,
+    ) -> CeloReceiptEnvelope {
+        let logs = vec![Log {
+            address: address!("0x000000000000000000000000000000000000aabb"),
+            data: LogData::new_unchecked(
+                vec![b256!("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead")],
+                bytes!("0x77"),
+            ),
+        }];
+        CeloReceiptEnvelope::from_parts(
+            status,
+            cumulative_gas_used,
+            &logs,
+            tx_type,
+            deposit_nonce,
+            deposit_receipt_version,
+            base_fee,
+        )
+    }
+
+    fn all_receipt_envelopes() -> Vec<(CeloReceiptEnvelope, CeloTxType)> {
+        vec![
+            (
+                make_receipt_envelope(CeloTxType::Legacy, true, 0xa1, None, None, None),
+                CeloTxType::Legacy,
+            ),
+            (
+                make_receipt_envelope(CeloTxType::Eip2930, true, 0xa2, None, None, None),
+                CeloTxType::Eip2930,
+            ),
+            (
+                make_receipt_envelope(CeloTxType::Eip1559, true, 0xa3, None, None, None),
+                CeloTxType::Eip1559,
+            ),
+            (
+                make_receipt_envelope(CeloTxType::Eip7702, true, 0xa4, None, None, None),
+                CeloTxType::Eip7702,
+            ),
+            (
+                make_receipt_envelope(CeloTxType::Cip64, true, 0xa5, None, None, Some(0xabcd)),
+                CeloTxType::Cip64,
+            ),
+            (
+                make_receipt_envelope(CeloTxType::Deposit, true, 0xa6, Some(7), Some(2), None),
+                CeloTxType::Deposit,
+            ),
+        ]
+    }
+
+    /// Pins `tx_type` per arm AND `Typed2718::ty -> 0` against the envelope.
+    #[test]
+    fn receipt_envelope_tx_type_per_variant() {
+        for (env, ty) in all_receipt_envelopes() {
+            assert_eq!(env.tx_type(), ty);
+            assert_eq!(env.ty(), ty as u8);
+        }
+    }
+
+    /// Pins `is_success -> true|false` and `status -> true|false` against
+    /// both successful and failed receipts.
+    #[test]
+    fn receipt_envelope_is_success_and_status() {
+        for ty in [
+            CeloTxType::Legacy,
+            CeloTxType::Eip2930,
+            CeloTxType::Eip1559,
+            CeloTxType::Eip7702,
+            CeloTxType::Cip64,
+            CeloTxType::Deposit,
+        ] {
+            let dep_nonce = matches!(ty, CeloTxType::Deposit).then_some(1);
+            let succ = make_receipt_envelope(ty, true, 1, dep_nonce, None, None);
+            assert!(succ.is_success(), "{ty:?} success");
+            assert!(succ.status(), "{ty:?} status");
+            assert!(<CeloReceiptEnvelope as TxReceipt>::status(&succ));
+
+            let fail = make_receipt_envelope(ty, false, 1, dep_nonce, None, None);
+            assert!(!fail.is_success(), "{ty:?} fail success");
+            assert!(!fail.status(), "{ty:?} fail status");
+            assert!(!<CeloReceiptEnvelope as TxReceipt>::status(&fail));
+        }
+    }
+
+    /// Pins `logs -> empty` for the inherent `logs()` AND TxReceipt forwarder
+    /// per variant.
+    #[test]
+    fn receipt_envelope_logs_per_variant() {
+        for (env, ty) in all_receipt_envelopes() {
+            assert_eq!(env.logs().len(), 1, "{ty:?} inherent");
+            assert_eq!(<CeloReceiptEnvelope as TxReceipt>::logs(&env).len(), 1, "{ty:?} TxReceipt");
+        }
+    }
+
+    /// Pins `cumulative_gas_used -> 0|1` for inherent + TxReceipt forwarder
+    /// per variant.
+    #[test]
+    fn receipt_envelope_cumulative_gas_used_per_variant() {
+        let cases: Vec<(CeloReceiptEnvelope, u64)> = vec![
+            (make_receipt_envelope(CeloTxType::Legacy, true, 0x1234, None, None, None), 0x1234),
+            (make_receipt_envelope(CeloTxType::Cip64, true, 0x5678, None, None, Some(1)), 0x5678),
+            (make_receipt_envelope(CeloTxType::Deposit, true, 0x9abc, Some(1), None, None), 0x9abc),
+        ];
+        for (env, expected) in cases {
+            assert_eq!(env.cumulative_gas_used(), expected);
+            assert_eq!(<CeloReceiptEnvelope as TxReceipt>::cumulative_gas_used(&env), expected);
+        }
+    }
+
+    /// Pins `bloom -> Default` and `bloom_cheap -> None|Some(Default)` per
+    /// variant. The fixture has logs so bloom is non-default.
+    #[test]
+    fn receipt_envelope_bloom_per_variant() {
+        for (env, ty) in all_receipt_envelopes() {
+            let b = <CeloReceiptEnvelope as TxReceipt>::bloom(&env);
+            assert_ne!(b, Bloom::default(), "{ty:?}");
+            assert_eq!(<CeloReceiptEnvelope as TxReceipt>::bloom_cheap(&env), Some(b));
+        }
+    }
+
+    /// Pins `status_or_post_state -> Default` (which is PostState) by
+    /// asserting the EIP-658 enum variant.
+    #[test]
+    fn receipt_envelope_status_or_post_state_returns_eip658() {
+        for (env, ty) in all_receipt_envelopes() {
+            let s = <CeloReceiptEnvelope as TxReceipt>::status_or_post_state(&env);
+            assert!(matches!(s, Eip658Value::Eip658(true)), "{ty:?}: {s:?}");
+        }
+    }
+
+    /// Pins `deposit_nonce -> Some(1)` against a non-1 value.
+    #[test]
+    fn receipt_envelope_deposit_nonce_returns_actual_value() {
+        let env = make_receipt_envelope(CeloTxType::Deposit, true, 1, Some(0xdead), None, None);
+        assert_eq!(env.deposit_nonce(), Some(0xdead));
+        // Non-deposit envelopes return None.
+        let env = make_receipt_envelope(CeloTxType::Cip64, true, 1, None, None, Some(1));
+        assert_eq!(env.deposit_nonce(), None);
+    }
+
+    /// Pins `base_fee -> Some(1)` against a non-1 value.
+    #[test]
+    fn receipt_envelope_base_fee_returns_actual_value() {
+        let env = make_receipt_envelope(CeloTxType::Cip64, true, 1, None, None, Some(0xbeef));
+        assert_eq!(env.base_fee(), Some(0xbeef));
+        // Non-cip64 envelopes return None.
+        let env = make_receipt_envelope(CeloTxType::Eip1559, true, 1, None, None, None);
+        assert_eq!(env.base_fee(), None);
+    }
+
+    /// Pins `as_deposit_receipt_with_bloom -> None` and the `Deposit` arm
+    /// deletion.
+    #[test]
+    fn receipt_envelope_as_deposit_with_bloom_per_variant() {
+        for (env, ty) in all_receipt_envelopes() {
+            let actual = env.as_deposit_receipt_with_bloom();
+            if matches!(ty, CeloTxType::Deposit) {
+                assert!(actual.is_some(), "Deposit must yield Some");
+            } else {
+                assert!(actual.is_none(), "{ty:?} must yield None");
+            }
+        }
+    }
+
+    /// Pins `as_cip64_receipt_with_bloom -> None` and the `Cip64` arm
+    /// deletion.
+    #[test]
+    fn receipt_envelope_as_cip64_with_bloom_per_variant() {
+        for (env, ty) in all_receipt_envelopes() {
+            let actual = env.as_cip64_receipt_with_bloom();
+            if matches!(ty, CeloTxType::Cip64) {
+                assert!(actual.is_some(), "Cip64 must yield Some");
+            } else {
+                assert!(actual.is_none(), "{ty:?} must yield None");
+            }
+        }
+    }
+
+    /// Pins `rlp_payload_length` `+` arithmetic AND `Encodable::length`'s
+    /// `+=` operator. Asserts: typed-receipt payload length = inner_length +
+    /// 1 (for the type byte); legacy = inner_length.
+    #[test]
+    fn receipt_envelope_rlp_payload_length_handles_type_byte() {
+        let legacy = make_receipt_envelope(CeloTxType::Legacy, true, 1, None, None, None);
+        assert_eq!(legacy.rlp_payload_length(), legacy.inner_length());
+
+        let typed = make_receipt_envelope(CeloTxType::Eip1559, true, 1, None, None, None);
+        assert_eq!(typed.rlp_payload_length(), typed.inner_length() + 1);
+    }
+
+    /// Pins `Encodable::encode -> ()` per envelope variant by asserting the
+    /// written length matches `Encodable::length()`.
+    #[test]
+    fn receipt_envelope_encodable_writes_claimed_length() {
+        for (env, ty) in all_receipt_envelopes() {
+            let mut buf = vec![];
+            env.encode(&mut buf);
+            assert_eq!(buf.len(), env.length(), "{ty:?}");
+        }
+    }
+
+    /// Pins `Encodable2718::encode_2718_len`: `+ -> -|*`, `delete !`, and
+    /// `-> 0|1`. The legacy variant must NOT add the type byte; typed
+    /// variants MUST add it.
+    #[test]
+    fn receipt_envelope_encode_2718_len_adds_type_byte_for_typed_only() {
+        let legacy = make_receipt_envelope(CeloTxType::Legacy, true, 1, None, None, None);
+        assert_eq!(legacy.encode_2718_len(), legacy.inner_length());
+
+        let typed = make_receipt_envelope(CeloTxType::Eip1559, true, 1, None, None, None);
+        assert_eq!(typed.encode_2718_len(), typed.inner_length() + 1);
+
+        // Also assert the actual encoded length matches.
+        let mut buf = vec![];
+        typed.encode_2718(&mut buf);
+        assert_eq!(buf.len(), typed.encode_2718_len());
+    }
+
+    /// Pins `IsTyped2718::is_type -> true|false` against known-valid and
+    /// known-invalid type ids.
+    #[test]
+    fn receipt_envelope_is_type_distinguishes_known_types() {
+        // Valid tx types per CeloTxType::ALL.
+        for ty in [0_u8, 1, 2, 4, 0x7b, 0x7e] {
+            assert!(<CeloReceiptEnvelope as IsTyped2718>::is_type(ty), "{ty} must be valid");
+        }
+        // Invalid types.
+        for ty in [3_u8, 5, 0x7a, 0x7c, 0x7f, 0xff] {
+            assert!(!<CeloReceiptEnvelope as IsTyped2718>::is_type(ty), "{ty} must be invalid");
+        }
+    }
+
     #[test]
     fn deposit_receipt_from_parts() {
         let receipt = CeloReceiptEnvelope::from_parts(
