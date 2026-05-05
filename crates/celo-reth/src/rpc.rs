@@ -22,7 +22,7 @@ use alloy_rpc_types_eth::{Log, TransactionInput, request::TransactionRequest};
 use celo_alloy_consensus::{
     CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope, CeloTxEnvelope,
 };
-use celo_alloy_rpc_types::CeloTransactionReceipt;
+use celo_alloy_rpc_types::{CeloTransaction as CeloRpcTransaction, CeloTransactionReceipt};
 use celo_revm::{CeloTransaction, contracts::core_contracts::getExchangeRateCall};
 use op_alloy_rpc_types::OpTransactionRequest;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -74,7 +74,7 @@ impl RpcTypes for CeloRpcTypes {
     type Header = alloy_rpc_types_eth::Header;
     type Receipt = CeloTransactionReceipt;
     type TransactionRequest = CeloTransactionRequest;
-    type TransactionResponse = op_alloy_rpc_types::Transaction<CeloTransactionSigned>;
+    type TransactionResponse = CeloRpcTransaction;
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +531,25 @@ fn cip64_effective_gas_price(
 }
 
 // ---------------------------------------------------------------------------
+// FromConsensusTx for CeloTransaction (RPC response)
+// ---------------------------------------------------------------------------
+
+impl reth_rpc_eth_api::transaction::FromConsensusTx<CeloTransactionSigned> for CeloRpcTransaction {
+    type TxInfo = op_alloy_consensus::transaction::OpTransactionInfo;
+    type Err = core::convert::Infallible;
+
+    fn from_consensus_tx(
+        tx: CeloTransactionSigned,
+        signer: Address,
+        tx_info: Self::TxInfo,
+    ) -> Result<Self, Self::Err> {
+        let recovered =
+            alloy_consensus::transaction::Recovered::new_unchecked(tx.into_envelope(), signer);
+        Ok(Self::from_transaction(recovered, tx_info))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CeloRpcConvert
 // ---------------------------------------------------------------------------
 
@@ -630,10 +649,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// Type alias for CeloBlock in RPC context.
-type CeloRpcBlock = alloy_rpc_types_eth::Block<
-    op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
-    alloy_rpc_types_eth::Header,
->;
+type CeloRpcBlock = alloy_rpc_types_eth::Block<CeloRpcTransaction, alloy_rpc_types_eth::Header>;
 /// Type-erased async closure.
 type AsyncFn<A, R> = Box<
     dyn Fn(A) -> Pin<Box<dyn Future<Output = jsonrpsee::core::RpcResult<R>> + Send>> + Send + Sync,
@@ -1137,11 +1153,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                     // would fail, and `cip64_fee_history_tip` would return 0,
                     // underreporting tips in reward percentiles.
                     let cip64_fc = if tx.ty() == cip64_ty {
-                        let raw_fc = match tx.inner.inner.envelope() {
-                            CeloTxEnvelope::Cip64(signed) => signed.tx().fee_currency,
-                            _ => None,
-                        };
-                        fee_history_cip64_conversion_currency(raw_fc)
+                        fee_history_cip64_conversion_currency(tx.fee_currency)
                     } else {
                         None
                     };
@@ -1234,11 +1246,8 @@ pub fn make_celo_fee_api<Api>(eth_api: Api, fee_currency_directory: Address) -> 
 where
     Api: reth_rpc_eth_api::EthApiServer<
             CeloTransactionRequest,
-            op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
-            alloy_rpc_types_eth::Block<
-                op_alloy_rpc_types::Transaction<CeloTransactionSigned>,
-                alloy_rpc_types_eth::Header,
-            >,
+            CeloRpcTransaction,
+            alloy_rpc_types_eth::Block<CeloRpcTransaction, alloy_rpc_types_eth::Header>,
             CeloTransactionReceipt,
             alloy_rpc_types_eth::Header,
             crate::primitives::CeloTransactionSigned,
@@ -2312,5 +2321,74 @@ mod tests {
             .await
             .expect("eth_maxPriorityFeePerGas with fee currency should succeed");
         assert_eq!(result, U256::from(3_000_000u64));
+    }
+
+    /// End-to-end: drive the same conversion the RPC layer does
+    /// (`FromConsensusTx` + `OpTxInfoMapper`'s output) and verify deposits surface
+    /// `nonce` and `depositReceiptVersion` from the receipt — the two fields that
+    /// ethers.js / web3.py treat as required.
+    ///
+    /// See celo-org/celo-kona#151.
+    #[test]
+    fn from_consensus_tx_populates_deposit_nonce_and_receipt_version() {
+        use alloy_consensus::transaction::TransactionInfo;
+        use alloy_primitives::B256;
+        use op_alloy_consensus::{
+            TxDeposit,
+            transaction::{OpDepositInfo, OpTransactionInfo},
+        };
+        use reth_rpc_eth_api::transaction::FromConsensusTx;
+
+        let from: Address = "0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001".parse().unwrap();
+        let to: Address = "0x4200000000000000000000000000000000000015".parse().unwrap();
+        let source_hash: B256 =
+            "0x4e73a456774958e91e6f2e36e6449dbb86682591815fa6d49e880bbb9671fa04".parse().unwrap();
+        let block_number: u64 = 0x1552e04;
+
+        let deposit = TxDeposit {
+            source_hash,
+            from,
+            to: alloy_primitives::TxKind::Call(to),
+            mint: 0,
+            value: U256::ZERO,
+            gas_limit: 0xf4240,
+            is_system_transaction: false,
+            input: Bytes::new(),
+        };
+        let envelope = CeloTxEnvelope::Deposit(alloy_consensus::Sealed::new(deposit));
+        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+
+        // The `OpTxInfoMapper` would populate these from the receipt. For the L1Block system
+        // deposit, deposit_nonce equals the L2 block number — matching op-geth's `nonce` field.
+        let tx_info = OpTransactionInfo::new(
+            TransactionInfo {
+                hash: None,
+                index: Some(0),
+                block_hash: None,
+                block_number: Some(block_number),
+                base_fee: None,
+            },
+            OpDepositInfo { deposit_nonce: Some(block_number), deposit_receipt_version: Some(1) },
+        );
+
+        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, from, tx_info).unwrap();
+        let value = serde_json::to_value(&rpc).unwrap();
+        let obj = value.as_object().unwrap();
+
+        assert_eq!(
+            obj.get("nonce").and_then(|v| v.as_str()),
+            Some("0x1552e04"),
+            "deposit nonce should be the deposit_nonce from the receipt (== L2 block number for system deposits)"
+        );
+        assert_eq!(
+            obj.get("depositReceiptVersion").and_then(|v| v.as_str()),
+            Some("0x1"),
+            "post-Canyon deposits must emit depositReceiptVersion"
+        );
+        // Deposits report gasPrice=0 and r/s/v all zeros.
+        assert_eq!(obj.get("gasPrice").and_then(|v| v.as_str()), Some("0x0"));
+        assert_eq!(obj.get("r").and_then(|v| v.as_str()), Some("0x0"));
+        assert_eq!(obj.get("s").and_then(|v| v.as_str()), Some("0x0"));
+        assert_eq!(obj.get("v").and_then(|v| v.as_str()), Some("0x0"));
     }
 }
