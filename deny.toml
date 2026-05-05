@@ -20,6 +20,12 @@ ignore = [
     # dropped DnssecDnsHandle entirely; hickory-resolver 0.25.x (used by reth) has not been
     # updated to that, so we cannot force a patched version without upgrading reth.
     "RUSTSEC-2026-0118",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0119 hickory-proto O(n²) name compression
+    # during message encoding (CPU exhaustion). Patched in hickory-proto >= 0.26.1, which
+    # cannot be pulled in without bumping reth-dns-discovery's hickory-resolver 0.25.x pin.
+    # Exposure here is narrow: encoding amplification needs an attacker who can influence the
+    # records reth-dns-discovery puts into outgoing messages, not just respond to queries.
+    "RUSTSEC-2026-0119",
 ]
 
 [licenses]
