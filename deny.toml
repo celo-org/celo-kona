@@ -12,6 +12,14 @@ ignore = [
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
     "RUSTSEC-2025-0141",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0118 hickory-proto NSEC3 closest-encloser
+    # proof DoS. Reachable only via `DnssecDnsHandle`, which requires the `dnssec-ring` or
+    # `dnssec-aws-lc-rs` feature on hickory-proto/hickory-resolver. We pull hickory-resolver
+    # in transitively through reth-dns-discovery, which enables only the `tokio` feature, so
+    # the vulnerable code path is not reachable. The fix lives in hickory-proto >= 0.26, which
+    # dropped DnssecDnsHandle entirely; hickory-resolver 0.25.x (used by reth) has not been
+    # updated to that, so we cannot force a patched version without upgrading reth.
+    "RUSTSEC-2026-0118",
 ]
 
 [licenses]
