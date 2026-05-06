@@ -34,6 +34,51 @@ pub struct CeloTransaction {
     pub fee_currency: Option<Address>,
 }
 
+impl CeloTransaction {
+    /// Build an RPC [`CeloTransaction`] from a recovered consensus tx and the metadata
+    /// produced by `OpTxInfoMapper`.
+    ///
+    /// Mirrors [`op_alloy_rpc_types::Transaction::from_transaction`]: deposits report
+    /// `gasPrice = 0`; non-deposits report `effective_tip + base_fee`, falling back to
+    /// `max_fee_per_gas` when no base fee is known. `deposit_nonce` and
+    /// `deposit_receipt_version` are pulled from the receipt via the mapper. The CIP-64
+    /// `fee_currency` is lifted from the envelope so it appears as a top-level RPC field.
+    pub fn from_transaction(
+        tx: alloy_consensus::transaction::Recovered<CeloTxEnvelope>,
+        tx_info: op_alloy_consensus::transaction::OpTransactionInfo,
+    ) -> Self {
+        let base_fee = tx_info.inner.base_fee;
+        let is_deposit = tx.inner().is_deposit();
+
+        let fee_currency = if let CeloTxEnvelope::Cip64(signed) = tx.inner() {
+            signed.tx().fee_currency
+        } else {
+            None
+        };
+
+        let effective_gas_price = if is_deposit {
+            0
+        } else {
+            base_fee
+                .map(|bf| tx.effective_tip_per_gas(bf).unwrap_or_default() + bf as u128)
+                .unwrap_or_else(|| tx.max_fee_per_gas())
+        };
+
+        Self {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: tx,
+                block_hash: tx_info.inner.block_hash,
+                block_number: tx_info.inner.block_number,
+                transaction_index: tx_info.inner.index,
+                effective_gas_price: Some(effective_gas_price),
+            },
+            deposit_nonce: tx_info.deposit_meta.deposit_nonce,
+            deposit_receipt_version: tx_info.deposit_meta.deposit_receipt_version,
+            fee_currency,
+        }
+    }
+}
+
 impl Typed2718 for CeloTransaction {
     fn ty(&self) -> u8 {
         self.inner.ty()
