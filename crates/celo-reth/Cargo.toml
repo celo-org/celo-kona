@@ -20,18 +20,25 @@ required-features = ["std"]
 [dependencies]
 # Reth
 reth-chainspec.workspace = true
+reth-cli.workspace = true
+reth-cli-commands.workspace = true
+reth-cli-runner.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
+reth-db-common.workspace = true
 reth-engine-local.workspace = true
 reth-evm = { workspace = true, features = ["op"] }
 reth-execution-types.workspace = true
+reth-fs-util.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-storage-errors.workspace = true
 reth-node-builder.workspace = true
 reth-node-api.workspace = true
+reth-node-core.workspace = true
 reth-provider.workspace = true
 reth-revm.workspace = true
+reth-tracing.workspace = true
 reth-transaction-pool.workspace = true
 reth-rpc-eth-api.workspace = true
 reth-rpc-eth-types.workspace = true

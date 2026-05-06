@@ -11,17 +11,21 @@ extern crate alloc;
 // These deps are only used by the binary target; declare them here to silence
 // the `unused_crate_dependencies` lint on the library compilation unit.
 #[cfg(feature = "std")]
-use clap as _;
+use reth_cli_runner as _;
 #[cfg(feature = "std")]
 use reth_cli_util as _;
 #[cfg(feature = "std")]
-use reth_optimism_cli as _;
+use reth_node_core as _;
 #[cfg(feature = "std")]
-use reth_provider as _;
-#[cfg(feature = "std")]
-use reth_transaction_pool as _;
-#[cfg(feature = "std")]
-use tracing as _;
+use reth_tracing as _;
+#[cfg(not(feature = "std"))]
+use reth_cli as _;
+#[cfg(not(feature = "std"))]
+use reth_cli_commands as _;
+#[cfg(not(feature = "std"))]
+use reth_db_common as _;
+#[cfg(not(feature = "std"))]
+use reth_fs_util as _;
 
 use alloc::sync::Arc;
 use alloy_consensus::{BlockHeader, Header};
@@ -53,6 +57,9 @@ pub mod payload;
 
 #[cfg(feature = "std")]
 pub mod rpc;
+
+#[cfg(feature = "std")]
+pub mod state_import;
 
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
