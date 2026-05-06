@@ -20,7 +20,7 @@ on:
 jobs:
   infer_image_metadata:
     name: Infer image tags from github ref type
-    runs-on: [self-hosted, org, 8-cpu]
+    runs-on: ubuntu-slim
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
       labels: ${{ steps.meta.outputs.labels }}
