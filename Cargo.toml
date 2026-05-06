@@ -156,6 +156,7 @@ revm-context = { version = "13.0.0", default-features = false }
 
 # Reth
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3", default-features = false }
@@ -223,6 +224,8 @@ reqwest = { version = "0.13.2", default-features = false }
 # Compression
 miniz_oxide = "0.9.0"
 brotli = { version = "8.0.2", default-features = false }
+zstd = "0.13"
+toml = { version = "0.9", default-features = false, features = ["parse"] }
 
 # Tracing
 tracing-subscriber = { version = "0.3.22", features = ["fmt"] }

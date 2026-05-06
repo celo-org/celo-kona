@@ -54,6 +54,9 @@ pub mod payload;
 #[cfg(feature = "std")]
 pub mod rpc;
 
+#[cfg(feature = "std")]
+pub mod chainspec;
+
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
 
