@@ -95,6 +95,14 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<OpChainSpec>> {
 /// Celo Sepolia and any custom dev genesis have `gingerbread_block = 0` (or
 /// `None`) — the fork is active at genesis, so the standard encoding is
 /// authoritative and we leave the SealedHeader untouched.
+///
+/// **Do not re-run the parsed [`OpChainSpec`] through
+/// [`OpChainSpecBuilder::build`](reth_optimism_chainspec::OpChainSpecBuilder)
+/// or otherwise re-invoke `make_op_genesis_header` + `SealedHeader::seal_slow`
+/// downstream — that recomputes the hash via the post-merge RLP layout and
+/// drops the override, breaking peering on celo mainnet.** Mutate
+/// `spec.inner` in place if you need to adjust hardforks; the
+/// `ChainHardforks::insert` calls above already follow this contract.
 fn reseal_pre_gingerbread_genesis(spec: &mut OpChainSpec, gingerbread_block: Option<u64>) {
     let needs_reseal = gingerbread_block.is_some_and(|gb| gb > 0);
     if !needs_reseal {
