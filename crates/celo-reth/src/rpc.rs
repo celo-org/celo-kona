@@ -30,19 +30,17 @@ use reth_evm::ConfigureEvm;
 use reth_node_api::{FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_optimism_forks::OpHardforks;
-use reth_optimism_rpc::{
-    OpEthApi, SequencerClient,
-    eth::{receipt::OpReceiptFieldsBuilder, transaction::OpTxInfoMapper},
-};
-use reth_primitives_traits::SealedBlock;
+use reth_optimism_rpc::{OpEthApi, SequencerClient, eth::receipt::OpReceiptFieldsBuilder};
+use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use reth_rpc_eth_api::{
     FullEthApiServer, RpcConvert, RpcConverter, RpcTypes, SignTxRequestError, SignableTxRequest,
     TryIntoSimTx,
     helpers::pending_block::BuildPendingEnv,
-    transaction::{ConvertReceiptInput, ReceiptConverter},
+    transaction::{ConvertReceiptInput, ReceiptConverter, TxInfoMapper},
 };
 use reth_rpc_eth_types::receipt::build_receipt;
-use reth_storage_api::BlockReader;
+use reth_storage_api::{BlockReader, ReceiptProvider};
+use reth_storage_errors::provider::ProviderError;
 use revm::context::TxEnv;
 use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 
@@ -531,11 +529,115 @@ fn cip64_effective_gas_price(
 }
 
 // ---------------------------------------------------------------------------
+// CeloTxInfoMapper / CeloTransactionInfo
+// ---------------------------------------------------------------------------
+
+/// Per-tx metadata produced by [`CeloTxInfoMapper`] and consumed by
+/// [`FromConsensusTx`](reth_rpc_eth_api::transaction::FromConsensusTx) for [`CeloRpcTransaction`].
+///
+/// Wraps [`op_alloy_consensus::transaction::OpTransactionInfo`] (which carries deposit metadata)
+/// and adds the fee-currency-denominated base fee for CIP-64 transactions, sourced from the
+/// CIP-64 receipt.
+/// The FC base fee lets us report a meaningful `gasPrice` for CIP-64 RPC responses; without
+/// it we'd be forced to mix native and FC units (see `cip64_effective_gas_price`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CeloTransactionInfo {
+    /// Standard OP transaction info (block context + deposit metadata).
+    pub inner: op_alloy_consensus::transaction::OpTransactionInfo,
+    /// FC-denominated base fee from the CIP-64 receipt. `None` for non-CIP-64 txs or when the
+    /// receipt isn't available.
+    pub cip64_fc_base_fee: Option<u128>,
+}
+
+/// Celo extension of [`OpTxInfoMapper`](reth_optimism_rpc::eth::transaction::OpTxInfoMapper).
+///
+/// In addition to the deposit metadata that op-reth already plumbs through the receipt,
+/// this fetches the receipt for **CIP-64** txs to extract the fee-currency-denominated
+/// base fee. That base fee is what the receipt path uses to compute `effectiveGasPrice`
+/// (see `rpc.rs` receipt builder, `cip64_effective_gas_price` call), and we want the tx
+/// path (`eth_getTransactionByHash`, `eth_getBlockByNumber`) to agree.
+#[derive(Clone)]
+pub struct CeloTxInfoMapper<Provider> {
+    provider: Provider,
+}
+
+impl<Provider> Debug for CeloTxInfoMapper<Provider> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloTxInfoMapper").finish()
+    }
+}
+
+impl<Provider> CeloTxInfoMapper<Provider> {
+    /// Constructs a [`CeloTxInfoMapper`] backed by `provider`'s receipt store.
+    pub const fn new(provider: Provider) -> Self {
+        Self { provider }
+    }
+}
+
+impl<T, Provider> TxInfoMapper<T> for CeloTxInfoMapper<Provider>
+where
+    T: SignedTransaction + alloy_eips::Typed2718 + op_alloy_consensus::OpTransaction,
+    Provider: ReceiptProvider<Receipt = CeloReceipt>,
+{
+    type Out = CeloTransactionInfo;
+    type Err = ProviderError;
+
+    fn try_map(
+        &self,
+        tx: &T,
+        tx_info: alloy_consensus::transaction::TransactionInfo,
+    ) -> Result<Self::Out, ProviderError> {
+        use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
+
+        let cip64_ty = celo_alloy_consensus::CeloTxType::Cip64 as u8;
+        let is_deposit = tx.is_deposit();
+        let is_cip64 = tx.ty() == cip64_ty;
+
+        // Fetch the receipt only when there's something to extract from it.
+        let (deposit_meta, cip64_fc_base_fee) = if is_deposit || is_cip64 {
+            self.provider.receipt_by_hash(*tx.tx_hash())?.map_or(
+                (OpDepositInfo::default(), None),
+                |receipt| match receipt {
+                    CeloReceipt::Deposit(d) => (
+                        OpDepositInfo {
+                            deposit_nonce: d.deposit_nonce,
+                            deposit_receipt_version: d.deposit_receipt_version,
+                        },
+                        None,
+                    ),
+                    CeloReceipt::Cip64(c) => (OpDepositInfo::default(), c.base_fee),
+                    _ => (OpDepositInfo::default(), None),
+                },
+            )
+        } else {
+            (OpDepositInfo::default(), None)
+        };
+
+        Ok(CeloTransactionInfo {
+            inner: OpTransactionInfo::new(tx_info, deposit_meta),
+            cip64_fc_base_fee,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FromConsensusTx for CeloTransaction (RPC response)
 // ---------------------------------------------------------------------------
 
+/// Build a [`CeloRpcTransaction`] from a recovered consensus tx + the metadata produced by
+/// [`CeloTxInfoMapper`].
+///
+/// Non-CIP-64 paths delegate to [`CeloRpcTransaction::from_transaction`], which mirrors
+/// `op_alloy_rpc_types::Transaction::from_transaction` (deposits report `gasPrice = 0`;
+/// other types report `effective_tip + base_fee`, falling back to `max_fee_per_gas`).
+///
+/// CIP-64 needs an override: `gasPrice` must be in fee-currency units, computed via
+/// `cip64_effective_gas_price` against the FC base fee from the receipt — the same
+/// formula the receipt path uses, so `eth_getTransactionByHash` and
+/// `eth_getTransactionReceipt` report the same number. If the receipt isn't reachable
+/// we fall back to `max_fee_per_gas` (still FC-denominated — never mixed with native wei).
 impl reth_rpc_eth_api::transaction::FromConsensusTx<CeloTransactionSigned> for CeloRpcTransaction {
-    type TxInfo = op_alloy_consensus::transaction::OpTransactionInfo;
+    type TxInfo = CeloTransactionInfo;
     type Err = core::convert::Infallible;
 
     fn from_consensus_tx(
@@ -543,9 +645,22 @@ impl reth_rpc_eth_api::transaction::FromConsensusTx<CeloTransactionSigned> for C
         signer: Address,
         tx_info: Self::TxInfo,
     ) -> Result<Self, Self::Err> {
+        use alloy_consensus::Transaction as _;
+
         let recovered =
             alloy_consensus::transaction::Recovered::new_unchecked(tx.into_envelope(), signer);
-        Ok(Self::from_transaction(recovered, tx_info))
+        let mut out = Self::from_transaction(recovered, tx_info.inner);
+
+        if matches!(out.inner.inner.inner(), CeloTxEnvelope::Cip64(_)) {
+            let fc_max_fee = out.inner.inner.max_fee_per_gas();
+            let fc_prio = out.inner.inner.max_priority_fee_per_gas().unwrap_or(0);
+            let effective = tx_info
+                .cip64_fc_base_fee
+                .map_or(fc_max_fee, |fc_bf| cip64_effective_gas_price(fc_max_fee, fc_prio, fc_bf));
+            out.inner.effective_gas_price = Some(effective);
+        }
+
+        Ok(out)
     }
 }
 
@@ -559,7 +674,7 @@ pub type CeloRpcConvert<N> = RpcConverter<
     <N as FullNodeComponents>::Evm,
     CeloReceiptConverter<<N as reth_node_builder::node::FullNodeTypes>::Provider>,
     (),
-    OpTxInfoMapper<<N as reth_node_builder::node::FullNodeTypes>::Provider>,
+    CeloTxInfoMapper<<N as reth_node_builder::node::FullNodeTypes>::Provider>,
 >;
 
 // ---------------------------------------------------------------------------
@@ -626,7 +741,7 @@ where
 
         let rpc_converter =
             RpcConverter::new(CeloReceiptConverter::new(ctx.components.provider().clone()))
-                .with_mapper(OpTxInfoMapper::new(ctx.components.provider().clone()));
+                .with_mapper(CeloTxInfoMapper::new(ctx.components.provider().clone()));
 
         let eth_api = ctx.eth_api_builder().with_rpc_converter(rpc_converter).build_inner();
 
@@ -2324,7 +2439,7 @@ mod tests {
     }
 
     /// End-to-end: drive the same conversion the RPC layer does
-    /// (`FromConsensusTx` + `OpTxInfoMapper`'s output) and verify deposits surface
+    /// (`FromConsensusTx` + `CeloTxInfoMapper`'s output) and verify deposits surface
     /// `nonce` and `depositReceiptVersion` from the receipt — the two fields that
     /// ethers.js / web3.py treat as required.
     ///
@@ -2358,18 +2473,24 @@ mod tests {
         let envelope = CeloTxEnvelope::Deposit(alloy_consensus::Sealed::new(deposit));
         let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
 
-        // The `OpTxInfoMapper` would populate these from the receipt. For the L1Block system
-        // deposit, deposit_nonce equals the L2 block number — matching op-geth's `nonce` field.
-        let tx_info = OpTransactionInfo::new(
-            TransactionInfo {
-                hash: None,
-                index: Some(0),
-                block_hash: None,
-                block_number: Some(block_number),
-                base_fee: None,
-            },
-            OpDepositInfo { deposit_nonce: Some(block_number), deposit_receipt_version: Some(1) },
-        );
+        // The mapper would populate these from the receipt. For the L1Block system deposit,
+        // `deposit_nonce` equals the L2 block number — matching op-geth's `nonce` field.
+        let tx_info = CeloTransactionInfo {
+            inner: OpTransactionInfo::new(
+                TransactionInfo {
+                    hash: None,
+                    index: Some(0),
+                    block_hash: None,
+                    block_number: Some(block_number),
+                    base_fee: None,
+                },
+                OpDepositInfo {
+                    deposit_nonce: Some(block_number),
+                    deposit_receipt_version: Some(1),
+                },
+            ),
+            cip64_fc_base_fee: None,
+        };
 
         let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, from, tx_info).unwrap();
         let value = serde_json::to_value(&rpc).unwrap();
@@ -2422,17 +2543,19 @@ mod tests {
         let envelope = CeloTxEnvelope::Cip64(tx.into_signed(Signature::test_signature()));
         let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
 
-        // Non-deposit path: deposit_meta is empty; base_fee gates effective_gas_price.
-        let tx_info = OpTransactionInfo::new(
-            TransactionInfo {
-                hash: None,
-                index: Some(6),
-                block_hash: None,
-                block_number: Some(0x22d41c3),
-                base_fee: Some(0x22a4c71a0),
-            },
-            OpDepositInfo { deposit_nonce: None, deposit_receipt_version: None },
-        );
+        let tx_info = CeloTransactionInfo {
+            inner: OpTransactionInfo::new(
+                TransactionInfo {
+                    hash: None,
+                    index: Some(6),
+                    block_hash: None,
+                    block_number: Some(0x22d41c3),
+                    base_fee: Some(0x22a4c71a0),
+                },
+                OpDepositInfo { deposit_nonce: None, deposit_receipt_version: None },
+            ),
+            cip64_fc_base_fee: None,
+        };
 
         let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
         assert_eq!(rpc.fee_currency, Some(fee_currency));
@@ -2447,5 +2570,136 @@ mod tests {
         assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("0x7b"));
         // Non-deposit: depositReceiptVersion must not be emitted.
         assert!(obj.get("depositReceiptVersion").is_none());
+    }
+
+    /// CIP-64 RPC `gasPrice` must be in **fee-currency units** and match the receipt's
+    /// `effectiveGasPrice`. Before this fix, the converter mixed FC `max_fee` with native
+    /// `base_fee`, producing a meaningless number (often `~base_fee_native` when the FC max
+    /// fee was numerically smaller, since `effective_tip_per_gas` returned `None`).
+    #[test]
+    fn from_consensus_tx_cip64_uses_fc_base_fee() {
+        use alloy_consensus::{Signed, transaction::TransactionInfo};
+        use celo_alloy_consensus::TxCip64;
+        use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
+        use reth_rpc_eth_api::transaction::FromConsensusTx;
+
+        // FC-denominated values. Choose numbers that would visibly disagree with the buggy
+        // native+FC mix, and where `min(max_fee, base_fee + prio)` is determined by the cap.
+        let fc: Address = Address::with_last_byte(0xCD);
+        let max_fee_fc: u128 = 500;
+        let prio_fc: u128 = 50;
+        let base_fee_fc: u128 = 100;
+        // Receipt path computes: min(max_fee, base_fee + prio) = min(500, 150) = 150.
+        let expected_eff_gas_price: u128 = 150;
+
+        let signer: Address = Address::with_last_byte(0x42);
+        let cip64 = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: max_fee_fc,
+            max_priority_fee_per_gas: prio_fc,
+            to: alloy_primitives::TxKind::Call(Address::with_last_byte(0xAB)),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+            fee_currency: Some(fc),
+        };
+        // Construct a `Signed<TxCip64>` directly with a dummy signature; we never round-trip
+        // through signature recovery here because `from_consensus_tx` takes `signer` as input.
+        let signed = Signed::new_unchecked(
+            cip64,
+            Signature::new(U256::ZERO, U256::ZERO, false),
+            Default::default(),
+        );
+        let envelope = CeloTxEnvelope::Cip64(signed);
+        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+
+        // Native base fee on the block header — must NOT be used for CIP-64; we assert below
+        // that the resulting gasPrice is the FC-derived value, not anything involving this.
+        let native_base_fee: u64 = 25_000_000_000;
+
+        let tx_info = CeloTransactionInfo {
+            inner: OpTransactionInfo::new(
+                TransactionInfo {
+                    hash: None,
+                    index: Some(0),
+                    block_hash: None,
+                    block_number: Some(1),
+                    base_fee: Some(native_base_fee),
+                },
+                OpDepositInfo::default(),
+            ),
+            cip64_fc_base_fee: Some(base_fee_fc),
+        };
+
+        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        let value = serde_json::to_value(&rpc).unwrap();
+        let obj = value.as_object().unwrap();
+
+        // gasPrice is hex-encoded; format the expected value the same way for comparison.
+        let expected_hex = format!("0x{:x}", expected_eff_gas_price);
+        assert_eq!(
+            obj.get("gasPrice").and_then(|v| v.as_str()),
+            Some(expected_hex.as_str()),
+            "CIP-64 gasPrice must be FC-denominated min(max_fee, base_fee + prio), not the \
+             native+FC mix or the native base fee",
+        );
+        assert_eq!(
+            obj.get("feeCurrency").and_then(|v| v.as_str()),
+            Some(format!("0x{:x}", fc).as_str()),
+        );
+    }
+
+    /// CIP-64 fallback: when the FC base fee isn't available (e.g. receipt unreachable),
+    /// fall back to `max_fee_per_gas` — still FC-denominated, never the native base fee.
+    #[test]
+    fn from_consensus_tx_cip64_fallback_to_max_fee_when_no_fc_base_fee() {
+        use alloy_consensus::{Signed, transaction::TransactionInfo};
+        use celo_alloy_consensus::TxCip64;
+        use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
+        use reth_rpc_eth_api::transaction::FromConsensusTx;
+
+        let fc: Address = Address::with_last_byte(0xCD);
+        let max_fee_fc: u128 = 777;
+        let signer: Address = Address::with_last_byte(0x42);
+        let cip64 = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 1,
+            gas_limit: 100_000,
+            max_fee_per_gas: max_fee_fc,
+            max_priority_fee_per_gas: 7,
+            to: alloy_primitives::TxKind::Call(Address::with_last_byte(0xAB)),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+            fee_currency: Some(fc),
+        };
+        let signed = Signed::new_unchecked(
+            cip64,
+            Signature::new(U256::ZERO, U256::ZERO, false),
+            Default::default(),
+        );
+        let envelope = CeloTxEnvelope::Cip64(signed);
+        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+
+        let tx_info = CeloTransactionInfo {
+            inner: OpTransactionInfo::new(
+                TransactionInfo {
+                    hash: None,
+                    index: Some(0),
+                    block_hash: None,
+                    block_number: Some(1),
+                    base_fee: Some(25_000_000_000),
+                },
+                OpDepositInfo::default(),
+            ),
+            cip64_fc_base_fee: None,
+        };
+
+        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        let value = serde_json::to_value(&rpc).unwrap();
+        let gas_price = value.get("gasPrice").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(gas_price, format!("0x{:x}", max_fee_fc));
     }
 }
