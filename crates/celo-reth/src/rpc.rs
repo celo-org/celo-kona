@@ -2391,4 +2391,61 @@ mod tests {
         assert_eq!(obj.get("s").and_then(|v| v.as_str()), Some("0x0"));
         assert_eq!(obj.get("v").and_then(|v| v.as_str()), Some("0x0"));
     }
+
+    /// CIP-64 counterpart to the deposit test: drive the same RPC conversion path
+    /// and verify `feeCurrency` lands at the top level of the JSON response.
+    /// Locks in the behavior the simplification in `celo_fee_history_module`
+    /// (which now reads `tx.fee_currency` directly) relies on.
+    #[test]
+    fn from_consensus_tx_lifts_cip64_fee_currency_to_top_level() {
+        use alloy_consensus::{SignableTransaction, transaction::TransactionInfo};
+        use celo_alloy_consensus::TxCip64;
+        use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
+        use reth_rpc_eth_api::transaction::FromConsensusTx;
+
+        let signer: Address = "0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3".parse().unwrap();
+        let to: Address = "0xa0e9096b8e5ad2701f51ca1cb11684aaad91993a".parse().unwrap();
+        let fee_currency: Address = "0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72".parse().unwrap();
+
+        let tx = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0x133,
+            gas_limit: 0x3d97c,
+            max_fee_per_gas: 0x315373261,
+            max_priority_fee_per_gas: 0x63e4b,
+            to: alloy_primitives::TxKind::Call(to),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            fee_currency: Some(fee_currency),
+            input: Bytes::new(),
+        };
+        let envelope = CeloTxEnvelope::Cip64(tx.into_signed(Signature::test_signature()));
+        let consensus_tx = crate::signed_tx::CeloConsensusTx::new(envelope);
+
+        // Non-deposit path: deposit_meta is empty; base_fee gates effective_gas_price.
+        let tx_info = OpTransactionInfo::new(
+            TransactionInfo {
+                hash: None,
+                index: Some(6),
+                block_hash: None,
+                block_number: Some(0x22d41c3),
+                base_fee: Some(0x22a4c71a0),
+            },
+            OpDepositInfo { deposit_nonce: None, deposit_receipt_version: None },
+        );
+
+        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        assert_eq!(rpc.fee_currency, Some(fee_currency));
+
+        let value = serde_json::to_value(&rpc).unwrap();
+        let obj = value.as_object().unwrap();
+        assert_eq!(
+            obj.get("feeCurrency").and_then(|v| v.as_str()),
+            Some("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72"),
+            "CIP-64 fee_currency must appear as a top-level RPC field"
+        );
+        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("0x7b"));
+        // Non-deposit: depositReceiptVersion must not be emitted.
+        assert!(obj.get("depositReceiptVersion").is_none());
+    }
 }
