@@ -2,6 +2,7 @@
 
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
+    chainspec::CeloChainSpecParser,
     node::{CeloNode, RollupArgs},
     payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
     rpc::{
@@ -10,7 +11,7 @@ use celo_reth::{
     },
 };
 use clap::Parser;
-use reth_optimism_cli::{Cli, chainspec::OpChainSpecParser};
+use reth_optimism_cli::Cli;
 
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
@@ -51,7 +52,7 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<OpChainSpecParser, CeloArgs>::parse().run(async move |builder, celo_args| {
+        Cli::<CeloChainSpecParser, CeloArgs>::parse().run(async move |builder, celo_args| {
             let rollup_args = celo_args.rollup;
 
             // Parse fee currency limits from CLI args.

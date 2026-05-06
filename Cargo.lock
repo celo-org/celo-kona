@@ -2263,6 +2263,8 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
+ "alloy-genesis",
+ "alloy-hardforks",
  "alloy-network",
  "alloy-op-evm",
  "alloy-primitives",
@@ -2284,6 +2286,7 @@ dependencies = [
  "op-alloy-rpc-types-engine",
  "op-revm",
  "reth-chainspec 1.11.3",
+ "reth-cli",
  "reth-cli-util",
  "reth-codecs",
  "reth-consensus",
@@ -2318,7 +2321,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "toml",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

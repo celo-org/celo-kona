@@ -17,6 +17,9 @@ pub use transaction::{
 mod block;
 pub use block::CeloBlock;
 
+pub mod pre_gingerbread;
+pub use pre_gingerbread::pre_gingerbread_header_hash;
+
 #[cfg(feature = "reth")]
 mod reth_compat;
 

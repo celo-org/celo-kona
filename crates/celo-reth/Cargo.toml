@@ -20,6 +20,7 @@ required-features = ["std"]
 [dependencies]
 # Reth
 reth-chainspec.workspace = true
+reth-cli.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-local.workspace = true
@@ -38,6 +39,8 @@ reth-rpc-eth-types.workspace = true
 
 # Ethereum
 alloy-eips.workspace = true
+alloy-genesis.workspace = true
+alloy-hardforks.workspace = true
 alloy-sol-types.workspace = true
 alloy-evm.workspace = true
 alloy-primitives.workspace = true
@@ -93,13 +96,15 @@ bytes.workspace = true
 clap.workspace = true
 eyre.workspace = true
 serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }
+toml.workspace = true
 tracing.workspace = true
 metrics.workspace = true
 reth-cli-util.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
