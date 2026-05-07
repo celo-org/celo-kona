@@ -161,6 +161,14 @@ def main():
         print(f"Error: {state_dump_path} does not exist", file=sys.stderr)
         sys.exit(1)
 
+    if os.path.realpath(state_dump_path) == os.path.realpath(output_path):
+        print(
+            f"Error: output path {output_path} resolves to the same file as "
+            f"state dump {state_dump_path}; refusing to truncate input",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Phase 1: Load L2 allocs
     print(f"Downloading l2-allocs.json from {L2_ALLOCS_URL}...")
     with urllib.request.urlopen(L2_ALLOCS_URL) as resp:
