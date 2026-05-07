@@ -11,7 +11,7 @@ use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageAr
 use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
-    BlockNumReader, DBProvider, DatabaseProviderFactory, StaticFileProviderFactory,
+    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory, StaticFileProviderFactory,
     StaticFileWriter,
 };
 use std::{io::BufReader, path::PathBuf};
@@ -156,12 +156,28 @@ impl ImportCeloStateCommand {
         let reader = BufReader::new(reth_fs_util::open(self.state)?);
         let hash = init_from_state_dump(reader, &provider_rw, config.stages.etl)?;
 
+        // Verify the migration header is actually present in the database under the expected
+        // hash before committing. A mismatch means setup_without_evm did not persist the header
+        // we expect, and continuing would leave the datadir in an unusable state.
+        let stored = provider_rw.block_hash(CEL2_MIGRATION_BLOCK_NUMBER)?.ok_or_else(|| {
+            eyre::eyre!(
+                "migration block #{CEL2_MIGRATION_BLOCK_NUMBER} missing from database \
+                 after import — refusing to commit"
+            )
+        })?;
+        if stored != CEL2_HEADER_HASH {
+            return Err(eyre::eyre!(
+                "migration block hash mismatch at #{CEL2_MIGRATION_BLOCK_NUMBER}: \
+                 stored {stored:?} != expected {CEL2_HEADER_HASH:?} — refusing to commit"
+            ));
+        }
+
         provider_rw.commit()?;
 
         info!(
             target: "reth::cli",
             state_root = ?hash,
-            migration_hash = ?CEL2_HEADER_HASH,
+            migration_hash = ?stored,
             "Migration block written",
         );
         Ok(())
