@@ -11,8 +11,8 @@ use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageAr
 use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
-    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory, StaticFileProviderFactory,
-    StaticFileWriter,
+    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
+    StaticFileProviderFactory, StaticFileWriter,
 };
 use std::{io::BufReader, path::PathBuf};
 use tracing::info;
