@@ -144,7 +144,7 @@ impl ImportCeloStateCommand {
             // database checkpoints. Required so the migration header is visible to the state
             // dump import below.
             static_file_provider.commit()?;
-        } else if last_block_number < CEL2_MIGRATION_BLOCK_NUMBER {
+        } else {
             return Err(eyre::eyre!(
                 "data directory must be empty when running import-celo-state \
                  (current tip block #{last_block_number})"
