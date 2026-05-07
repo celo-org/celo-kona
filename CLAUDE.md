@@ -60,87 +60,17 @@ These are the workspace's `default-members` — a bare `cargo build` builds all 
 
 ### `celo-reth` (the L2 execution node)
 
-`celo-reth` is a full Celo L2 execution node — sequencer in dev mode, full
-node in production. It is the largest and most-touched crate in the repo and
-is built as the [`celo-reth`] binary at `crates/celo-reth/src/bin/celo_reth.rs`.
-The crate is structured as a node-builder customization layered on top of
-`reth-optimism-node`: each Celo-specific divergence from OP Stack lives in
-its own module, and unchanged behaviour is delegated back to op-reth.
-
-Library/binary split: the binary requires `std`, but the library half (the
-primitives, receipt, and signed-tx types) is `#![cfg_attr(not(feature = "std"), no_std)]`
-so kona crates can depend on the same primitive types.
+Full Celo L2 execution node, built as a node-builder customization on top of `reth-optimism-node` — Celo divergences live in their own modules, everything else delegates to op-reth. The binary is at `src/bin/celo_reth.rs`; the library's primitive modules are no-std so kona can share the same types.
 
 Modules under `crates/celo-reth/src/`:
 
-- **`lib.rs`** — `CeloEvmConfig` (analogous to `OpEvmConfig`). Wires
-  `CeloEvmFactory`, `CeloRethReceiptBuilder`, and `Cip64Storage` together,
-  and implements both `ConfigureEvm` (for sequencer block building) and
-  `ConfigureEngineEvm` (for engine API payload execution / derivation).
-  Also defines `celo_next_block_base_fee`, which applies the 25 Gwei base
-  fee floor pre-Jovian and falls through to the chain spec's
-  `min_base_fee` extra-data field post-Jovian.
-
-- **`node.rs`** — Node-builder component wiring:
-  - `CeloNode` (`NodeTypes` impl) and `CeloEngineTypes` (mirrors `OpEngineTypes`
-    but with `Block = CeloBlock`).
-  - `CeloPoolBuilder`: registers CIP-64 (tx type `0x7b`) and wraps the
-    validator with `CeloExchangeRateApplier` (defined in `pool.rs`).
-  - `CeloExecutorBuilder`: builds the `CeloEvmConfig`.
-  - `CeloConsensus` / `CeloConsensusBuilder`: header validation that uses
-    `celo_next_block_base_fee` so the 25 Gwei floor is enforced when
-    checking parent → child base fee transitions.
-  - A custom dev-mode payload attributes builder that zeroes the OP-mainnet
-    deposit tx's L1 fee scalars and base fees, so dev-mode receipts report
-    `l1Fee = 0` (matching op-geth's Celo fork).
-
-- **`pool.rs`** — Fee-currency-aware tx pool:
-  - `CeloPoolTx` wraps `OpPooledTransaction` and overrides
-    `max_fee_per_gas` / `max_priority_fee_per_gas` to return native-equivalent
-    values for CIP-64 transactions, so the pool's base-fee check
-    (`ENOUGH_FEE_CAP_BLOCK`) and replacement check (`is_underpriced`) work
-    across currencies.
-  - `CeloExchangeRateApplier`: validator that looks up the exchange rate
-    from `FeeCurrencyDirectory`, checks the ERC20 balance, validates base
-    fee floor and min tip, and caches the native-equivalent fees on
-    `CeloPoolTx`.
-  - Pool ordering uses `CoinbaseTipOrdering` over native-equivalent fees
-    (deliberate simplification vs op-geth's `CompareWithRates`).
-
-- **`payload.rs`** — Block-building filtering:
-  - `FeeCurrencyLimits`: per-fee-currency fraction-of-block-gas limits
-    (default 50%, configurable per currency, native CELO is unlimited).
-  - `CeloPayloadTransactions` / `CeloFeeCurrencyFilter`: wraps the pool's
-    best-transactions iterator and skips txs whose fee currency has used
-    its allotment.
-  - **Important**: these limits apply during *sequencing* only. During
-    derivation, `ConfigureEngineEvm::tx_iterator_for_payload` (in `lib.rs`)
-    bypasses `CeloPayloadTransactions` entirely — derived blocks execute
-    every tx in the payload regardless of per-currency totals.
-
-- **`rpc.rs`** — Celo RPC type set:
-  - `CeloRpcTypes`, `CeloReceiptConverter`, `CeloEthApiBuilder` — the Celo
-    equivalents of op-reth's `Optimism`, `OpReceiptConverter`, and
-    `OpEthApiBuilder`.
-  - Custom `eth_gasPrice` that returns the 25 Gwei base fee floor.
-  - CIP-64 receipt conversion (surfaces `feeCurrency`, `baseFeeInFeeCurrency`,
-    etc. via `CeloTransactionReceipt`).
-
-- **`chainspec/`** — Celo chain spec parser. Embeds zstd-compressed
-  `mainnet.json.zst` / `sepolia.json.zst` genesis blobs (using a shared
-  dictionary lifted from `celo-org/superchain-registry`), plus
-  `mainnet.toml` / `sepolia.toml` for post-snapshot fork schedules
-  (Holocene, Isthmus, Jovian). Adds the `Gingerbread` and `Cel2` Celo
-  hardforks that the upstream OP parser drops.
-
-- **`primitives.rs`** / **`signed_tx.rs`** / **`receipt.rs`** /
-  **`receipts.rs`** — Node primitives type set: `CeloPrimitives`,
-  `CeloTransactionSigned`, `CeloConsensusTx`, the bloomless `CeloReceipt`
-  storage type, and `CeloRethReceiptBuilder` (produces `CeloReceipt` from
-  CIP-64 execution data via `Cip64Storage`).
-
-- **`test_utils.rs`** — Test-only helpers (e.g. mock chain specs) used by
-  unit tests across the crate.
+- **`lib.rs`** — `CeloEvmConfig` (≈ `OpEvmConfig`): wires `CeloEvmFactory` + `CeloRethReceiptBuilder` + `Cip64Storage`, and implements `ConfigureEvm` (sequencing) and `ConfigureEngineEvm` (derivation). Also `celo_next_block_base_fee`: 25 Gwei floor pre-Jovian, chain-spec `min_base_fee` post-Jovian.
+- **`node.rs`** — Component wiring: `CeloNode`, `CeloEngineTypes`, `CeloPoolBuilder` (registers CIP-64 type `0x7b`, wraps validator with `CeloExchangeRateApplier`), `CeloExecutorBuilder`, `CeloConsensus` (header validation enforces the 25 Gwei floor). Also a dev-mode payload attributes builder that zeroes the OP-mainnet deposit tx's L1 fee scalars so dev receipts report `l1Fee = 0`.
+- **`pool.rs`** — `CeloPoolTx` wraps `OpPooledTransaction` and overrides `max_fee_per_gas`/`max_priority_fee_per_gas` with native-equivalent values so base-fee and replacement checks work across currencies. `CeloExchangeRateApplier` is the validator (rate lookup, balance check, fee conversion). Ordering uses `CoinbaseTipOrdering` over native equivalents — simpler than op-geth's `CompareWithRates`.
+- **`payload.rs`** — `FeeCurrencyLimits` + `CeloPayloadTransactions`: per-currency fraction-of-block-gas limits (default 50%, native CELO unlimited). **Sequencing only** — derivation uses `tx_iterator_for_payload` in `lib.rs` and bypasses these limits entirely.
+- **`rpc.rs`** — `CeloRpcTypes`, `CeloReceiptConverter`, `CeloEthApiBuilder` (Celo equivalents of op-reth's `Optimism`/`OpReceiptConverter`/`OpEthApiBuilder`). Custom `eth_gasPrice` returns the 25 Gwei floor; CIP-64 receipts surface `feeCurrency`, `baseFeeInFeeCurrency`, etc.
+- **`chainspec/`** — Celo chain spec parser. Embeds zstd-compressed `mainnet.json.zst`/`sepolia.json.zst` (shared dictionary from `celo-org/superchain-registry`) plus `mainnet.toml`/`sepolia.toml` for post-snapshot forks (Holocene, Isthmus, Jovian). Adds `Gingerbread` and `Cel2` hardforks the upstream OP parser drops.
+- **`primitives.rs`** / **`signed_tx.rs`** / **`receipt.rs`** / **`receipts.rs`** — Node primitives: `CeloPrimitives`, `CeloTransactionSigned`, `CeloConsensusTx`, bloomless `CeloReceipt`, `CeloRethReceiptBuilder` (consumes `Cip64Storage`).
 
 ### Other Key Crates
 
