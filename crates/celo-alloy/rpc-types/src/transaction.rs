@@ -29,9 +29,6 @@ pub struct CeloTransaction {
 
     /// Deposit receipt version for deposit transactions post-canyon
     pub deposit_receipt_version: Option<u64>,
-
-    /// Address of the whitelisted currency to be used to pay for gas.
-    pub fee_currency: Option<Address>,
 }
 
 impl CeloTransaction {
@@ -41,20 +38,13 @@ impl CeloTransaction {
     /// Mirrors [`op_alloy_rpc_types::Transaction::from_transaction`]: deposits report
     /// `gasPrice = 0`; non-deposits report `effective_tip + base_fee`, falling back to
     /// `max_fee_per_gas` when no base fee is known. `deposit_nonce` and
-    /// `deposit_receipt_version` are pulled from the receipt via the mapper. The CIP-64
-    /// `fee_currency` is lifted from the envelope so it appears as a top-level RPC field.
+    /// `deposit_receipt_version` are pulled from the receipt via the mapper.
     pub fn from_transaction(
         tx: alloy_consensus::transaction::Recovered<CeloTxEnvelope>,
         tx_info: op_alloy_consensus::transaction::OpTransactionInfo,
     ) -> Self {
         let base_fee = tx_info.inner.base_fee;
         let is_deposit = tx.inner().is_deposit();
-
-        let fee_currency = if let CeloTxEnvelope::Cip64(signed) = tx.inner() {
-            signed.tx().fee_currency
-        } else {
-            None
-        };
 
         let effective_gas_price = if is_deposit {
             0
@@ -74,8 +64,16 @@ impl CeloTransaction {
             },
             deposit_nonce: tx_info.deposit_meta.deposit_nonce,
             deposit_receipt_version: tx_info.deposit_meta.deposit_receipt_version,
-            fee_currency,
         }
+    }
+
+    /// Address of the whitelisted ERC-20 currency used to pay for gas, or `None` for
+    /// native-CELO transactions.
+    ///
+    /// Derived from the inner [`CeloTxEnvelope::Cip64`] variant; non-CIP-64 envelopes
+    /// always return `None`.
+    pub fn fee_currency(&self) -> Option<Address> {
+        self.as_ref().as_cip64().and_then(|signed| signed.tx().fee_currency)
     }
 }
 
@@ -201,6 +199,10 @@ mod tx_serde {
 
     /// Helper struct which will be flattened into the transaction and will only contain `from`
     /// field if inner [`CeloTxEnvelope`] did not consume it.
+    ///
+    /// `feeCurrency` is intentionally **not** carried here: the inner [`CeloTxEnvelope::Cip64`]
+    /// already serializes it via the flattened envelope, so duplicating it on this helper would
+    /// emit the JSON key twice in `serde_json::to_string` output.
     #[derive(Serialize, Deserialize)]
     struct OptionalFields {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,8 +221,6 @@ mod tx_serde {
             with = "alloy_serde::quantity::opt"
         )]
         deposit_nonce: Option<u64>,
-        #[serde(default, rename = "feeCurrency", skip_serializing_if = "Option::is_none")]
-        fee_currency: Option<Address>,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -258,7 +258,6 @@ mod tx_serde {
                     },
                 deposit_receipt_version,
                 deposit_nonce,
-                fee_currency,
             } = value;
 
             // if inner transaction is a deposit, then don't serialize `from` directly
@@ -277,7 +276,7 @@ mod tx_serde {
                 block_number,
                 transaction_index,
                 deposit_receipt_version,
-                other: OptionalFields { from, effective_gas_price, deposit_nonce, fee_currency },
+                other: OptionalFields { from, effective_gas_price, deposit_nonce },
             }
         }
     }
@@ -323,7 +322,6 @@ mod tx_serde {
                 },
                 deposit_receipt_version,
                 deposit_nonce,
-                fee_currency: other.fee_currency,
             })
         }
     }
@@ -365,10 +363,29 @@ mod tests {
         let CeloTxEnvelope::Cip64(_inner) = tx.as_ref() else {
             panic!("Expected CIP-64 transaction");
         };
-        assert_eq!(tx.fee_currency, Some(address!("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72")));
+        assert_eq!(tx.fee_currency(), Some(address!("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72")));
 
         let deserialized = serde_json::to_value(&tx).unwrap();
         let expected = serde_json::from_str::<serde_json::Value>(rpc_tx).unwrap();
         similar_asserts::assert_eq!(deserialized, expected);
+    }
+
+    /// `serde_json::to_value` collapses duplicate keys into a `Map`, so the existing
+    /// roundtrip tests can't see the wire-shape regression where `feeCurrency` is
+    /// emitted twice — once from the flattened CIP-64 envelope and once from the
+    /// top-level helper. Assert against the actual `to_string` byte stream.
+    #[test]
+    fn cip64_to_string_emits_fee_currency_once() {
+        let rpc_tx = r#"{"accessList":[],"blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x22d41c3","chainId":"0xa4ec","feeCurrency":"0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gas":"0x3d97c","gasPrice":"0x22a4c71a0","hash":"0x2403eb8e9dd5230ee0c89e430591b804bb2d4e218af479e07cc8ff0b4c3611e7","input":"0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563","maxFeePerGas":"0x315373261","maxPriorityFeePerGas":"0x63e4b","nonce":"0x133","r":"0x9de05cbec31a4fcf01c652408e51c58f82aae6c66513320dd9f06b77abfe1494","s":"0x363706d206c4649165bb27b54e6286cf4cedac8b7fdd78d9cb1e00047240e293","to":"0xa0e9096b8e5ad2701f51ca1cb11684aaad91993a","transactionIndex":"0x6","type":"0x7b","v":"0x1","value":"0x0","yParity":"0x1"}"#;
+
+        let tx = serde_json::from_str::<CeloTransaction>(rpc_tx).unwrap();
+        assert_eq!(tx.fee_currency(), Some(address!("0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72")));
+
+        let s = serde_json::to_string(&tx).unwrap();
+        assert_eq!(
+            s.matches("\"feeCurrency\"").count(),
+            1,
+            "feeCurrency must appear exactly once in the JSON wire output, got: {s}"
+        );
     }
 }
