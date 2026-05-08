@@ -2285,6 +2285,7 @@ dependencies = [
  "op-alloy-rpc-types",
  "op-alloy-rpc-types-engine",
  "op-revm",
+ "proptest",
  "reth-chainspec 1.11.3",
  "reth-cli",
  "reth-cli-util",

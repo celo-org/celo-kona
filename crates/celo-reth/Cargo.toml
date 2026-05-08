@@ -106,6 +106,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+proptest = "1.11"
 
 [features]
 default = ["std"]

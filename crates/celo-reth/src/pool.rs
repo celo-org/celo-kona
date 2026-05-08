@@ -86,16 +86,22 @@ pub struct ExchangeRate {
 impl ExchangeRate {
     /// Convert a fee-currency amount to native equivalent.
     ///
+    /// Saturates to `u128::MAX` only when the true mathematical result exceeds
+    /// `u128`.
+    ///
     /// # Panics
     ///
     /// Panics if `numerator` is zero. This is a logic error — the constructor
     /// rejects zero numerator/denominator rates.
     pub fn to_native(&self, amount: u128) -> u128 {
         assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
-        amount.checked_mul(self.denominator).map(|v| v / self.numerator).unwrap_or(u128::MAX)
+        mul_div_saturating(amount, self.denominator, self.numerator)
     }
 
     /// Convert a native amount to fee-currency equivalent.
+    ///
+    /// Saturates to `u128::MAX` only when the true mathematical result exceeds
+    /// `u128`.
     ///
     /// # Panics
     ///
@@ -103,8 +109,17 @@ impl ExchangeRate {
     /// rejects zero numerator/denominator rates.
     pub fn to_fc(&self, native_amount: u128) -> u128 {
         assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
-        native_amount.checked_mul(self.numerator).map(|v| v / self.denominator).unwrap_or(u128::MAX)
+        mul_div_saturating(native_amount, self.numerator, self.denominator)
     }
+}
+
+/// Compute `(amount * mul) / div` at u256 precision, saturating to `u128::MAX`
+/// if the result exceeds `u128`. The intermediate `u128 * u128` product always
+/// fits in u256, so unlike the naive u128 form this never spuriously saturates
+/// when the final quotient would fit.
+fn mul_div_saturating(amount: u128, mul: u128, div: u128) -> u128 {
+    let r = U256::from(amount).saturating_mul(U256::from(mul)) / U256::from(div);
+    u128::try_from(r).unwrap_or(u128::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -2299,5 +2314,60 @@ mod tests {
 
         assert_eq!(to_evict.len(), 1, "only the unregistered CIP-64-B tx should be evicted");
         assert_eq!(to_evict[0], *cip64_b.hash());
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Differential test against a u256 oracle. The contract: `to_native`/`to_fc`
+    // saturate to `u128::MAX` *only* when the true mathematical result exceeds
+    // `u128`. A naive u128 implementation saturates whenever the intermediate
+    // product overflows — even when the final quotient fits — so this is the
+    // test that catches a regression to that form.
+    fn oracle_to_native(rate: ExchangeRate, amount: u128) -> u128 {
+        let r = (U256::from(amount) * U256::from(rate.denominator)) / U256::from(rate.numerator);
+        u128::try_from(r).unwrap_or(u128::MAX)
+    }
+
+    fn oracle_to_fc(rate: ExchangeRate, amount: u128) -> u128 {
+        let r = (U256::from(amount) * U256::from(rate.numerator)) / U256::from(rate.denominator);
+        u128::try_from(r).unwrap_or(u128::MAX)
+    }
+
+    fn rate_strategy() -> impl Strategy<Value = ExchangeRate> {
+        (any::<u128>(), any::<u128>())
+            .prop_filter("nonzero", |(n, d)| *n > 0 && *d > 0)
+            .prop_map(|(numerator, denominator)| ExchangeRate { numerator, denominator })
+    }
+
+    proptest! {
+        #[test]
+        fn prop_to_native_matches_oracle(
+            rate in rate_strategy(),
+            amount in any::<u128>(),
+        ) {
+            prop_assert_eq!(
+                rate.to_native(amount),
+                oracle_to_native(rate, amount),
+                "to_native: rate {}/{}, amount {}",
+                rate.numerator, rate.denominator, amount,
+            );
+        }
+
+        #[test]
+        fn prop_to_fc_matches_oracle(
+            rate in rate_strategy(),
+            amount in any::<u128>(),
+        ) {
+            prop_assert_eq!(
+                rate.to_fc(amount),
+                oracle_to_fc(rate, amount),
+                "to_fc: rate {}/{}, amount {}",
+                rate.numerator, rate.denominator, amount,
+            );
+        }
     }
 }

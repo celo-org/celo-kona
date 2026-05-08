@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cb1b019e1ee89b4fbc405f75fc8dd49346806ed9a7065096734c4f08ea2b9b9f # shrinks to rate = ExchangeRate { numerator: 44161249892469225431418908616226452892, denominator: 3 }, amount = 113427455640312821154458202477256070486
+cc 6d3c806c8011c03780b1c9a578e45611cbf379c156fc4d71ec2952860f44997a # shrinks to rate = ExchangeRate { numerator: 2, denominator: 2 }, amount = 170141183460469231731687303715884105728
