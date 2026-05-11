@@ -97,7 +97,6 @@ mod tests {
           "batch_inbox_address": "0xff00000000000000000000000000000000042069",
           "deposit_contract_address": "0x08073dc48dde578137b8af042bcbc1c2491f1eb2",
           "l1_system_config_address": "0x94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710",
-          "protocol_versions_address": "0x0000000000000000000000000000000000000000",
           "chain_op_config": {
             "eip1559Elasticity": 6,
             "eip1559Denominator": 50,
