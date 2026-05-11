@@ -401,14 +401,16 @@ where
                 .map_err(InvalidTransaction::from)?;
             // Adding only in the initial gas, and not the floor because we never adapted the
             // eip7623 to the cip64 (discussions being taken)
-            gas.initial_gas = gas.initial_gas.saturating_add(intrinsic_gas_for_erc20);
+            gas.initial_total_gas = gas
+                .initial_total_gas
+                .saturating_add(intrinsic_gas_for_erc20);
         }
 
         // Additional check to see if limit is big enough to cover initial gas.
-        if gas.initial_gas > gas_limit {
+        if gas.initial_total_gas > gas_limit {
             return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                 gas_limit,
-                initial_gas: gas.initial_gas,
+                initial_gas: gas.initial_total_gas,
             }
             .into());
         }
@@ -526,6 +528,7 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
+        _init_and_floor_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         self.load_fee_currency_context(evm)?;
 
@@ -789,6 +792,7 @@ where
         &mut self,
         evm: &mut Self::Evm,
         mut frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        result_gas: revm::context_interface::result::ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         // Handle context errors
         match core::mem::replace(evm.ctx().error(), Ok(())) {
@@ -805,8 +809,9 @@ where
         self.cip64_credit_fee_currency(evm, &mut frame_result)?;
 
         // Call post_execution::output to get ExecutionResult
-        let exec_result = revm::handler::post_execution::output(evm.ctx(), frame_result)
-            .map_haltreason(OpHaltReason::Base);
+        let exec_result =
+            revm::handler::post_execution::output(evm.ctx(), frame_result, result_gas)
+                .map_haltreason(OpHaltReason::Base);
 
         // CIP64 NOTE:
         // The ExecutionResult class does not allow logs to be passed in for revert results.
@@ -909,7 +914,7 @@ mod tests {
 
         let gas = call_last_frame_return(ctx, InstructionResult::Revert, Gas::new(90));
         assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spent(), 10);
+        assert_eq!(gas.total_gas_spent(), 10);
         assert_eq!(gas.refunded(), 0);
     }
 
@@ -925,7 +930,7 @@ mod tests {
 
         let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
         assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spent(), 10);
+        assert_eq!(gas.total_gas_spent(), 10);
         assert_eq!(gas.refunded(), 0);
     }
 
@@ -944,12 +949,12 @@ mod tests {
 
         let gas = call_last_frame_return(ctx.clone(), InstructionResult::Stop, ret_gas);
         assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spent(), 10);
+        assert_eq!(gas.total_gas_spent(), 10);
         assert_eq!(gas.refunded(), 2); // min(20, 10/5)
 
         let gas = call_last_frame_return(ctx, InstructionResult::Revert, ret_gas);
         assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spent(), 10);
+        assert_eq!(gas.total_gas_spent(), 10);
         assert_eq!(gas.refunded(), 0);
     }
 
@@ -964,7 +969,7 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::BEDROCK);
         let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
         assert_eq!(gas.remaining(), 0);
-        assert_eq!(gas.spent(), 100);
+        assert_eq!(gas.total_gas_spent(), 100);
         assert_eq!(gas.refunded(), 0);
     }
 
@@ -980,7 +985,7 @@ mod tests {
             .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::BEDROCK);
         let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
         assert_eq!(gas.remaining(), 100);
-        assert_eq!(gas.spent(), 0);
+        assert_eq!(gas.total_gas_spent(), 0);
         assert_eq!(gas.refunded(), 0);
     }
 
@@ -1019,7 +1024,7 @@ mod tests {
         let handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
             .unwrap();
 
         // Check the account balance is updated.
@@ -1064,7 +1069,7 @@ mod tests {
         let handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
             .unwrap();
 
         // Check the account balance is updated.
@@ -1109,7 +1114,7 @@ mod tests {
 
         // l1block cost is 1048 fee.
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
             .unwrap();
 
         // Check the account balance is updated.
@@ -1153,7 +1158,7 @@ mod tests {
         // Under Isthmus the operator fee cost is operator_fee_scalar * gas_limit / 1e6 + operator_fee_constant
         // 10_000_000 * 10 / 1_000_000 + 50 = 150
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
             .unwrap();
 
         // Check the account balance is updated.
@@ -1197,7 +1202,7 @@ mod tests {
         // Under Jovian the operator fee cost is operator_fee_scalar * gas_limit * 100 + operator_fee_constant
         // 2 * 10 * 100 + 50 = 2_050
         handler
-            .validate_against_state_and_deduct_caller(&mut evm)
+            .validate_against_state_and_deduct_caller(&mut evm, &mut Default::default())
             .unwrap();
 
         let account = evm.ctx().journal_mut().load_account(caller).unwrap();
@@ -1239,7 +1244,7 @@ mod tests {
 
         // l1block cost is 1048 fee.
         assert_eq!(
-            handler.validate_against_state_and_deduct_caller(&mut evm),
+            handler.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default()),
             Err(EVMError::Transaction(
                 InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(U256::from(1048)),

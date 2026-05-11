@@ -100,11 +100,8 @@ where
         );
 
         // Step 2. Create the executor, using the trie database.
-        let mut state = State::builder()
-            .with_database(&mut self.trie_db)
-            .with_bundle_update()
-            .without_state_clear()
-            .build();
+        let mut state =
+            State::builder().with_database(&mut self.trie_db).with_bundle_update().build();
         let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
 
         // Update the receipt builder with the shared CIP-64 storage from the EVM so that

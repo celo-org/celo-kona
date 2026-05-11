@@ -79,7 +79,8 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
     /// Re-implement here because header_by_number is private in OracleL2ChainProvider
     async fn header_by_number(&mut self, block_number: u64) -> Result<Header, OracleProviderError> {
         // Fetch the starting block header.
-        let mut header = self.header_by_hash(self.l2_safe_head().await?)?;
+        let mut current_hash = self.l2_safe_head().await?;
+        let mut header = self.header_by_hash(current_hash)?;
 
         // Check if the block number is in range. If not, we can fail early.
         if block_number > header.number {
@@ -93,7 +94,9 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
                 // through consulting the ring buffer within the contract. If this
                 // lookup fails for any reason, we fall back to linear walk back.
                 let block_hash =
-                    match eip_2935_history_lookup(&header, block_number, self, self).await {
+                    match eip_2935_history_lookup(&header, block_number, current_hash, self, self)
+                        .await
+                    {
                         Ok(hash) => hash,
                         Err(_) => {
                             // If the EIP-2935 lookup fails for any reason, attempt fallback to
@@ -103,9 +106,11 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
                         }
                     };
 
+                current_hash = block_hash;
                 header = self.header_by_hash(block_hash)?;
             } else {
                 // Walk back the block headers one-by-one until the desired block number is reached.
+                current_hash = header.parent_hash;
                 header = self.header_by_hash(header.parent_hash)?;
             }
         }
@@ -229,17 +234,17 @@ impl<T: CommsClient> TrieHinter for CeloOracleL2ChainProvider<T> {
         self.to_oracle_l2_chain_provider().hint_trie_node(hash)
     }
 
-    fn hint_account_proof(&self, address: Address, block_number: u64) -> Result<(), Self::Error> {
-        self.to_oracle_l2_chain_provider().hint_account_proof(address, block_number)
+    fn hint_account_proof(&self, address: Address, block_hash: B256) -> Result<(), Self::Error> {
+        self.to_oracle_l2_chain_provider().hint_account_proof(address, block_hash)
     }
 
     fn hint_storage_proof(
         &self,
         address: alloy_primitives::Address,
         slot: alloy_primitives::U256,
-        block_number: u64,
+        block_hash: B256,
     ) -> Result<(), Self::Error> {
-        self.to_oracle_l2_chain_provider().hint_storage_proof(address, slot, block_number)
+        self.to_oracle_l2_chain_provider().hint_storage_proof(address, slot, block_hash)
     }
 
     fn hint_execution_witness(

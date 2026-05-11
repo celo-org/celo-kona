@@ -25,13 +25,16 @@ use tracing as _;
 
 use alloc::sync::Arc;
 use alloy_consensus::{BlockHeader, Header};
-use alloy_evm::{EvmFactory, FromRecoveredTx, FromTxWithEncoded, precompiles::PrecompilesMap};
+use alloy_evm::{
+    EvmFactory, FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut as TransactionEnv,
+    precompiles::PrecompilesMap,
+};
 use alloy_op_evm::block::{OpTxEnv, receipt_builder::OpReceiptBuilder};
 use core::fmt::Debug;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{ConfigureEvm, EvmEnv, TransactionEnv, eth::NextEvmEnvAttributes};
+use reth_evm::{ConfigureEvm, EvmEnv, eth::NextEvmEnvAttributes};
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
@@ -76,8 +79,8 @@ use reth_optimism_primitives::DepositReceipt;
 
 #[cfg(feature = "std")]
 use {
-    op_alloy_rpc_types_engine::OpExecutionData,
     reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor},
+    reth_optimism_payload_builder::OpExecData,
     reth_primitives_traits::TxTy,
 };
 
@@ -226,6 +229,7 @@ where
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
                 gas_limit: attributes.gas_limit,
+                slot_number: None,
             },
             celo_next_block_base_fee(self.chain_spec(), parent, attributes.timestamp)
                 .unwrap_or_default(),
@@ -259,8 +263,7 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecutionData>
-    for CeloEvmConfig<ChainSpec, N, R, EvmF>
+impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecData> for CeloEvmConfig<ChainSpec, N, R, EvmF>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
@@ -282,10 +285,7 @@ where
         > + Debug,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
-    fn evm_env_for_payload(
-        &self,
-        payload: &OpExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
+    fn evm_env_for_payload(&self, payload: &OpExecData) -> Result<EvmEnvFor<Self>, Self::Error> {
         use alloy_primitives::U256;
         use revm::{
             context::CfgEnv, context_interface::block::BlobExcessGasAndPrice,
@@ -319,6 +319,7 @@ where
             gas_limit: payload.payload.as_v1().gas_limit,
             basefee: payload.payload.as_v1().base_fee_per_gas.to(),
             blob_excess_gas_and_price,
+            slot_num: 0,
         };
 
         Ok(alloy_evm::EvmEnv { cfg_env, block_env })
@@ -326,7 +327,7 @@ where
 
     fn context_for_payload<'a>(
         &self,
-        payload: &'a OpExecutionData,
+        payload: &'a OpExecData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(OpBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
@@ -337,7 +338,7 @@ where
 
     fn tx_iterator_for_payload(
         &self,
-        payload: &OpExecutionData,
+        payload: &OpExecData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         use alloy_primitives::Bytes;
         use reth_primitives_traits::WithEncoded;

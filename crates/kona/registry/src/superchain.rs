@@ -1,7 +1,7 @@
 //! Contains the full superchain data.
 
 use super::ChainList;
-use alloy_primitives::{address, map::HashMap};
+use alloy_primitives::map::HashMap;
 
 const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
 const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
@@ -49,20 +49,7 @@ impl Registry {
                     a.zero_proof_addresses();
                 }
                 let mut rollup = chain_config.as_rollup_config();
-                rollup.protocol_versions_address = superchain
-                    .config
-                    .protocol_versions_addr
-                    .expect("Missing protocol versions address");
                 rollup.superchain_config_address = superchain.config.superchain_config_addr;
-
-                // Override rollup config for Chaos, Celo Sepolia, and Celo Mainnet to match
-                // the rollup config returned by node RPC.
-                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID {
-                    // protocol_versions_address inherits from the superchain config (Sepolia has
-                    // a single value), but Chaos and Celo Sepolia have a different address.
-                    rollup.protocol_versions_address =
-                        address!("0xbca7e7eeddd0a7d5892ed7c4fa4a4cd4047bfdd7");
-                }
 
                 // chain_config.as_rollup_config() copies da_challenge_address from
                 // alt_da_config.da_challenge_address, but the node RPC rollup config does not.

@@ -29,7 +29,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     fmt::Debug,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +167,11 @@ pub struct CeloPoolTx {
     ///   doing so would reject otherwise-valid txs whose sender has plenty of ERC20 balance but
     ///   only `value` worth of CELO.
     native_cost: U256,
+    /// Lazily-computed [`Recovered<CeloTransactionSigned>`] backing
+    /// [`PoolTransaction::consensus_ref`]. Same content as
+    /// [`Self::clone_into_consensus`], but cached so the borrow returned by
+    /// `consensus_ref` references stable storage on the wrapper itself.
+    cached_consensus: OnceLock<Recovered<CeloTransactionSigned>>,
 }
 
 /// Extract the fee currency address from a pool transaction without cloning.
@@ -202,6 +207,7 @@ impl CeloPoolTx {
             native_max_priority_fee_per_gas,
             fee_currency,
             native_cost,
+            cached_consensus: OnceLock::new(),
         }
     }
 
@@ -218,6 +224,10 @@ impl CeloPoolTx {
         self.native_max_fee_per_gas = rate.to_native(self.inner.max_fee_per_gas());
         self.native_max_priority_fee_per_gas =
             self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(v));
+        // Native fees changed: any cached signed-consensus tx now points at the
+        // pre-conversion values. Drop it so `consensus_ref` rebuilds with the
+        // updated fees on next call.
+        self.cached_consensus = OnceLock::new();
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
@@ -319,12 +329,14 @@ impl InMemorySize for CeloPoolTx {
             native_max_priority_fee_per_gas,
             fee_currency,
             native_cost,
+            cached_consensus,
         } = self;
         inner.size() +
             core::mem::size_of_val(native_max_fee_per_gas) +
             core::mem::size_of_val(native_max_priority_fee_per_gas) +
             core::mem::size_of_val(fee_currency) +
-            core::mem::size_of_val(native_cost)
+            core::mem::size_of_val(native_cost) +
+            cached_consensus.get().map_or(0, |r| r.inner().size())
     }
 }
 
@@ -347,6 +359,16 @@ impl PoolTransaction for CeloPoolTx {
                 native_max_priority_fee,
             )
         })
+    }
+
+    fn consensus_ref(&self) -> Recovered<&Self::Consensus> {
+        // `consensus_ref` returns a borrowed view, but `CeloTransactionSigned`
+        // (= `CeloConsensusTx`) carries native-equivalent fees that live on the
+        // pool wrapper, not on the inner pooled tx. We lazily synthesise the
+        // signed wrapper on first call and cache it; subsequent calls borrow it.
+        // `apply_exchange_rate` invalidates the cache so a converted-fees pool tx
+        // never serves a pre-conversion borrow.
+        self.cached_consensus.get_or_init(|| self.clone_into_consensus()).as_recovered_ref()
     }
 
     fn into_consensus(self) -> Recovered<Self::Consensus> {

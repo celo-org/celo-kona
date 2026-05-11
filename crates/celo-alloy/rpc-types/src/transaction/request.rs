@@ -195,6 +195,16 @@ impl From<CeloTxEnvelope> for CeloTransactionRequest {
     }
 }
 
+impl From<super::CeloTransaction> for CeloTransactionRequest {
+    fn from(tx: super::CeloTransaction) -> Self {
+        let recovered = tx.inner.into_recovered();
+        let from = recovered.signer();
+        let mut req: Self = recovered.into_inner().into();
+        req.0.from = Some(from);
+        req
+    }
+}
+
 impl TransactionBuilder7702 for CeloTransactionRequest {
     fn authorization_list(&self) -> Option<&Vec<SignedAuthorization>> {
         self.as_ref().authorization_list()
@@ -202,5 +212,104 @@ impl TransactionBuilder7702 for CeloTransactionRequest {
 
     fn set_authorization_list(&mut self, authorization_list: Vec<SignedAuthorization>) {
         self.as_mut().set_authorization_list(authorization_list);
+    }
+}
+
+#[cfg(feature = "std")]
+impl alloy_network::TransactionBuilder for CeloTransactionRequest {
+    fn chain_id(&self) -> Option<alloy_primitives::ChainId> {
+        self.as_ref().chain_id()
+    }
+
+    fn set_chain_id(&mut self, chain_id: alloy_primitives::ChainId) {
+        self.as_mut().set_chain_id(chain_id);
+    }
+
+    fn nonce(&self) -> Option<u64> {
+        self.as_ref().nonce()
+    }
+
+    fn set_nonce(&mut self, nonce: u64) {
+        self.as_mut().set_nonce(nonce);
+    }
+
+    fn take_nonce(&mut self) -> Option<u64> {
+        self.as_mut().take_nonce()
+    }
+
+    fn input(&self) -> Option<&alloy_primitives::Bytes> {
+        self.as_ref().input()
+    }
+
+    fn set_input<T: Into<alloy_primitives::Bytes>>(&mut self, input: T) {
+        self.as_mut().set_input(input);
+    }
+
+    fn from(&self) -> Option<Address> {
+        self.as_ref().from()
+    }
+
+    fn set_from(&mut self, from: Address) {
+        self.as_mut().set_from(from);
+    }
+
+    fn kind(&self) -> Option<TxKind> {
+        self.as_ref().kind()
+    }
+
+    fn clear_kind(&mut self) {
+        self.as_mut().clear_kind();
+    }
+
+    fn set_kind(&mut self, kind: TxKind) {
+        self.as_mut().set_kind(kind);
+    }
+
+    fn value(&self) -> Option<U256> {
+        self.as_ref().value()
+    }
+
+    fn set_value(&mut self, value: U256) {
+        self.as_mut().set_value(value);
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        self.as_ref().gas_price()
+    }
+
+    fn set_gas_price(&mut self, gas_price: u128) {
+        self.as_mut().set_gas_price(gas_price);
+    }
+
+    fn max_fee_per_gas(&self) -> Option<u128> {
+        self.as_ref().max_fee_per_gas()
+    }
+
+    fn set_max_fee_per_gas(&mut self, max_fee_per_gas: u128) {
+        self.as_mut().set_max_fee_per_gas(max_fee_per_gas);
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        self.as_ref().max_priority_fee_per_gas()
+    }
+
+    fn set_max_priority_fee_per_gas(&mut self, max_priority_fee_per_gas: u128) {
+        self.as_mut().set_max_priority_fee_per_gas(max_priority_fee_per_gas);
+    }
+
+    fn gas_limit(&self) -> Option<u64> {
+        self.as_ref().gas_limit()
+    }
+
+    fn set_gas_limit(&mut self, gas_limit: u64) {
+        self.as_mut().set_gas_limit(gas_limit);
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        self.as_ref().access_list()
+    }
+
+    fn set_access_list(&mut self, access_list: AccessList) {
+        self.as_mut().set_access_list(access_list);
     }
 }

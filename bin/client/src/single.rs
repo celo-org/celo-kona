@@ -118,6 +118,7 @@ where
         da_provider,
         l1_provider.clone(),
         l2_provider.clone(),
+        None,
     )
     .await?;
     let executor = CeloExecutor::new(

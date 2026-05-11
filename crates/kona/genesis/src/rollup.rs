@@ -59,8 +59,7 @@ mod tests {
     #[cfg(feature = "serde")]
     fn test_deserialize_reference_rollup_config() {
         use kona_genesis::{
-            AltDAConfig, ChainGenesis, DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW,
-            OP_MAINNET_BASE_FEE_CONFIG, RollupConfig, SystemConfig,
+            AltDAConfig, ChainGenesis, OP_MAINNET_BASE_FEE_CONFIG, RollupConfig, SystemConfig,
         };
 
         let raw: &str = r#"
@@ -156,11 +155,9 @@ mod tests {
             batch_inbox_address: address!("ff00000000000000000000000000000000042069"),
             deposit_contract_address: address!("08073dc48dde578137b8af042bcbc1c2491f1eb2"),
             l1_system_config_address: address!("94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710"),
-            protocol_versions_address: Address::ZERO,
             superchain_config_address: None,
             blobs_enabled_l1_timestamp: None,
             da_challenge_address: None,
-            interop_message_expiry_window: DEFAULT_INTEROP_MESSAGE_EXPIRY_WINDOW,
             chain_op_config: OP_MAINNET_BASE_FEE_CONFIG,
             alt_da_config: Some(AltDAConfig {
                 da_challenge_address: Some(Address::ZERO),

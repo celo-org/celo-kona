@@ -36,9 +36,10 @@ use reth_rpc_eth_api::{
     FullEthApiServer, RpcConvert, RpcConverter, RpcTypes, SignTxRequestError, SignableTxRequest,
     TryIntoSimTx,
     helpers::pending_block::BuildPendingEnv,
-    transaction::{ConvertReceiptInput, ReceiptConverter, TxInfoMapper},
+    transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::receipt::build_receipt;
+use reth_rpc_traits::TxInfoMapper;
 use reth_storage_api::{BlockReader, ReceiptProvider};
 use reth_storage_errors::provider::ProviderError;
 use revm::context::TxEnv;
@@ -56,6 +57,12 @@ fn op_tx_to_celo(op_tx: op_alloy_consensus::OpTxEnvelope) -> CeloTxEnvelope {
         Op::Eip1559(tx) => CeloTxEnvelope::Eip1559(tx),
         Op::Eip7702(tx) => CeloTxEnvelope::Eip7702(tx),
         Op::Deposit(tx) => CeloTxEnvelope::Deposit(tx),
+        // Celo doesn't ship the OP-stack PostExec tx type. Reaching this arm would
+        // mean a PostExec transaction was sent to the Celo RPC, which has no
+        // meaningful Celo equivalent — panic loudly so it's caught in dev.
+        Op::PostExec(_) => unimplemented!(
+            "PostExec transactions are not supported on Celo (no CeloTxEnvelope variant)"
+        ),
     }
 }
 
@@ -199,12 +206,12 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
 /// - The CIP-64 handler in celo-revm runs during simulation, correctly applying per-currency
 ///   intrinsic gas costs
 /// - Binary search only varies `gas_limit`, not fee parameters
-impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv>, Block>
-    for CeloTransactionRequest
+impl<Spec, Block: BlockEnvironment>
+    alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv>, Spec, Block> for CeloTransactionRequest
 {
     type Err = EthTxEnvError;
 
-    fn try_into_tx_env<Spec>(
+    fn try_into_tx_env(
         self,
         evm_env: &EvmEnv<Spec, Block>,
     ) -> Result<CeloTransaction<TxEnv>, Self::Err> {
@@ -239,7 +246,16 @@ impl<Block: BlockEnvironment> alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv
             }
         }
 
-        let mut op_tx: op_revm::OpTransaction<TxEnv> = self.inner.try_into_tx_env(evm_env)?;
+        // Build a base TxEnv from the inner TransactionRequest, then wrap in
+        // OpTransaction. Mirrors `OpTxEnvConverter::convert_tx_env` upstream:
+        // OpTransactionRequest itself doesn't impl TryIntoTxEnv<OpTransaction<TxEnv>>.
+        let base_req: alloy_rpc_types_eth::TransactionRequest = self.inner.as_ref().clone();
+        let base: TxEnv = base_req.try_into_tx_env(evm_env)?;
+        let mut op_tx = op_revm::OpTransaction {
+            base,
+            enveloped_tx: Some(alloy_primitives::Bytes::new()),
+            deposit: Default::default(),
+        };
         // When fee_currency is set, ensure the tx_type is CIP-64 (0x7b) so the handler
         // applies fee currency validation and intrinsic gas.
         if fee_currency.is_some() {
@@ -533,7 +549,7 @@ fn cip64_effective_gas_price(
 // ---------------------------------------------------------------------------
 
 /// Per-tx metadata produced by [`CeloTxInfoMapper`] and consumed by
-/// [`FromConsensusTx`](reth_rpc_eth_api::transaction::FromConsensusTx) for [`CeloRpcTransaction`].
+/// [`FromConsensusTx`](reth_rpc_traits::FromConsensusTx) for [`CeloRpcTransaction`].
 ///
 /// Wraps [`op_alloy_consensus::transaction::OpTransactionInfo`] (which carries deposit metadata)
 /// and adds the fee-currency-denominated base fee for CIP-64 transactions, sourced from the
@@ -586,7 +602,7 @@ where
         &self,
         tx: &T,
         tx_info: alloy_consensus::transaction::TransactionInfo,
-    ) -> Result<Self::Out, ProviderError> {
+    ) -> Result<<Self as TxInfoMapper<T>>::Out, <Self as TxInfoMapper<T>>::Err> {
         use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
 
         let cip64_ty = celo_alloy_consensus::CeloTxType::Cip64 as u8;
@@ -636,7 +652,7 @@ where
 /// formula the receipt path uses, so `eth_getTransactionByHash` and
 /// `eth_getTransactionReceipt` report the same number. If the receipt isn't reachable
 /// we fall back to `max_fee_per_gas` (still FC-denominated — never mixed with native wei).
-impl reth_rpc_eth_api::transaction::FromConsensusTx<CeloTransactionSigned> for CeloRpcTransaction {
+impl reth_rpc_traits::FromConsensusTx<CeloTransactionSigned> for CeloRpcTransaction {
     type TxInfo = CeloTransactionInfo;
     type Err = core::convert::Infallible;
 
@@ -2452,7 +2468,7 @@ mod tests {
             TxDeposit,
             transaction::{OpDepositInfo, OpTransactionInfo},
         };
-        use reth_rpc_eth_api::transaction::FromConsensusTx;
+        use reth_rpc_traits::FromConsensusTx;
 
         let from: Address = "0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001".parse().unwrap();
         let to: Address = "0x4200000000000000000000000000000000000015".parse().unwrap();
@@ -2483,6 +2499,7 @@ mod tests {
                     block_hash: None,
                     block_number: Some(block_number),
                     base_fee: None,
+                    block_timestamp: None,
                 },
                 OpDepositInfo {
                     deposit_nonce: Some(block_number),
@@ -2522,7 +2539,7 @@ mod tests {
         use alloy_consensus::{SignableTransaction, transaction::TransactionInfo};
         use celo_alloy_consensus::TxCip64;
         use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
-        use reth_rpc_eth_api::transaction::FromConsensusTx;
+        use reth_rpc_traits::FromConsensusTx;
 
         let signer: Address = "0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3".parse().unwrap();
         let to: Address = "0xa0e9096b8e5ad2701f51ca1cb11684aaad91993a".parse().unwrap();
@@ -2551,6 +2568,7 @@ mod tests {
                     block_hash: None,
                     block_number: Some(0x22d41c3),
                     base_fee: Some(0x22a4c71a0),
+                    block_timestamp: None,
                 },
                 OpDepositInfo { deposit_nonce: None, deposit_receipt_version: None },
             ),
@@ -2581,7 +2599,7 @@ mod tests {
         use alloy_consensus::{Signed, transaction::TransactionInfo};
         use celo_alloy_consensus::TxCip64;
         use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
-        use reth_rpc_eth_api::transaction::FromConsensusTx;
+        use reth_rpc_traits::FromConsensusTx;
 
         // FC-denominated values. Choose numbers that would visibly disagree with the buggy
         // native+FC mix, and where `min(max_fee, base_fee + prio)` is determined by the cap.
@@ -2627,6 +2645,7 @@ mod tests {
                     block_hash: None,
                     block_number: Some(1),
                     base_fee: Some(native_base_fee),
+                    block_timestamp: None,
                 },
                 OpDepositInfo::default(),
             ),
@@ -2658,7 +2677,7 @@ mod tests {
         use alloy_consensus::{Signed, transaction::TransactionInfo};
         use celo_alloy_consensus::TxCip64;
         use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
-        use reth_rpc_eth_api::transaction::FromConsensusTx;
+        use reth_rpc_traits::FromConsensusTx;
 
         let fc: Address = Address::with_last_byte(0xCD);
         let max_fee_fc: u128 = 777;
@@ -2691,6 +2710,7 @@ mod tests {
                     block_hash: None,
                     block_number: Some(1),
                     base_fee: Some(25_000_000_000),
+                    block_timestamp: None,
                 },
                 OpDepositInfo::default(),
             ),

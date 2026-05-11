@@ -112,6 +112,8 @@ where
             excess_blob_gas: excess_blob_gas.and_then(|x| x.try_into().ok()),
             parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             extra_data: encoded_base_fee_params,
+            block_access_list_hash: None,
+            slot_number: None,
         }
         .seal_slow();
 
@@ -156,12 +158,12 @@ where
     }
 
     /// Fetches the L2 to L1 message passer account from the cache or underlying trie.
-    fn message_passer_account(&mut self, block_number: u64) -> Result<B256, TrieDBError> {
+    fn message_passer_account(&mut self, _block_number: u64) -> Result<B256, TrieDBError> {
         match self.trie_db.storage_roots().get(&Predeploys::L2_TO_L1_MESSAGE_PASSER) {
             Some(storage_root) => Ok(storage_root.blind()),
             None => Ok(self
                 .trie_db
-                .get_trie_account(&Predeploys::L2_TO_L1_MESSAGE_PASSER, block_number)?
+                .get_trie_account(&Predeploys::L2_TO_L1_MESSAGE_PASSER)?
                 .ok_or(TrieDBError::MissingAccountInfo)?
                 .storage_root),
         }

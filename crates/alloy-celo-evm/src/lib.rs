@@ -33,7 +33,7 @@ use revm::{
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
-    precompile::{PrecompileError, PrecompileOutput},
+    precompile::{PrecompileHalt, PrecompileOutput},
 };
 
 pub mod block;
@@ -90,24 +90,31 @@ fn transfer_precompile(
     mut input: alloy_evm::precompiles::PrecompileInput<'_>,
 ) -> revm::precompile::PrecompileResult {
     if input.is_static {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "transfer precompile cannot be called in static context",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed(
+                "transfer precompile cannot be called in static context",
+            )),
+            0,
+        ));
     }
 
     if input.gas < TRANSFER_GAS_COST {
-        return Err(PrecompileError::OutOfGas);
+        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
     }
 
     let chain_id = input.internals.chain_id();
     if input.caller != constants::get_addresses(chain_id).celo_token {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "invalid caller for transfer precompile",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid caller for transfer precompile")),
+            0,
+        ));
     }
 
     if input.data.len() != 96 {
-        return Err(PrecompileError::Other(Cow::Borrowed("invalid input length")));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid input length")),
+            0,
+        ));
     }
 
     let from = Address::from_slice(&input.data[12..32]);
@@ -130,13 +137,15 @@ fn transfer_precompile(
     }
 
     match result {
-        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new())),
-        Ok(Some(transfer_err)) => Err(PrecompileError::Other(Cow::Owned(format!(
-            "transfer error occurred: {transfer_err:?}"
-        )))),
-        Err(db_err) => {
-            Err(PrecompileError::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))))
-        }
+        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0)),
+        Ok(Some(transfer_err)) => Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!("transfer error occurred: {transfer_err:?}"))),
+            0,
+        )),
+        Err(db_err) => Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
+            0,
+        )),
     }
 }
 
@@ -236,6 +245,10 @@ where
 
     fn block(&self) -> &BlockEnv {
         &self.block
+    }
+
+    fn cfg_env(&self) -> &revm::context::CfgEnv<OpSpecId> {
+        &self.cfg
     }
 
     fn chain_id(&self) -> u64 {
