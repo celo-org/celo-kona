@@ -84,12 +84,6 @@ celo-revm = { version = "1.0.0", path = "crates/celo-revm", default-features = f
 celo-registry = { version = "1.0.0", path = "crates/kona/registry", default-features = false }
 celo-otel = { version = "1.0.0", path = "crates/celo-otel", default-features = false }
 celo-reth = { version = "0.1.0", path = "crates/celo-reth", default-features = false }
-# TODO: kona-node/v1.4.0 includes the `rollup_config_override` feature on kona-genesis
-# (commit 8fbd06ec) that exposes `fjord_max_sequencer_drift` as a configurable field
-# rather than the hardcoded `FJORD_MAX_SEQUENCER_DRIFT = 1800` constant. Decide
-# whether Celo wants to enable that feature and what value to use post-Fjord — the
-# pre-Fjord values (mainnet 2892 / sepolia 600) suggest Celo's tolerance differs
-# from OP's default, but this is a rollup-config decision, not a mechanical port.
 
 # Binaries
 kona-host = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.4.0", default-features = false }

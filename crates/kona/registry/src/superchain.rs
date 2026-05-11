@@ -51,6 +51,15 @@ impl Registry {
                 let mut rollup = chain_config.as_rollup_config();
                 rollup.superchain_config_address = superchain.config.superchain_config_addr;
 
+                // Carry the per-chain pre-Fjord `max_sequencer_drift` over into the post-Fjord
+                // value. Upstream `as_rollup_config()` defaults `fjord_max_sequencer_drift` to
+                // OP's `FJORD_MAX_SEQUENCER_DRIFT` (1800), but Celo mainnet runs with 2892
+                // (see https://github.com/ethereum-optimism/optimism/pull/18859 for the
+                // `rollup_config_override` feature) and Sepolia/Chaos run with 600. Preserving
+                // each chain's existing drift across the Fjord upgrade keeps node behavior
+                // consistent with the chain-list JSON.
+                rollup.fjord_max_sequencer_drift = rollup.max_sequencer_drift;
+
                 // chain_config.as_rollup_config() copies da_challenge_address from
                 // alt_da_config.da_challenge_address, but the node RPC rollup config does not.
                 if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID ||
@@ -72,10 +81,30 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
-    use crate::Registry;
+    use crate::{
+        Registry,
+        superchain::{CELO_CHAOS_CHAIN_ID, CELO_MAINNET_CHAIN_ID, CELO_SEPOLIA_CHAIN_ID},
+    };
 
     #[test]
     fn test_smoketest_init_from_chain_list() {
         Registry::from_chain_list();
+    }
+
+    #[test]
+    fn test_fjord_max_sequencer_drift_matches_per_chain_value() {
+        let registry = Registry::from_chain_list();
+
+        let mainnet = registry.rollup_configs.get(&CELO_MAINNET_CHAIN_ID).unwrap();
+        assert_eq!(mainnet.0.max_sequencer_drift, 2892);
+        assert_eq!(mainnet.0.fjord_max_sequencer_drift, 2892);
+
+        let sepolia = registry.rollup_configs.get(&CELO_SEPOLIA_CHAIN_ID).unwrap();
+        assert_eq!(sepolia.0.max_sequencer_drift, 600);
+        assert_eq!(sepolia.0.fjord_max_sequencer_drift, 600);
+
+        let chaos = registry.rollup_configs.get(&CELO_CHAOS_CHAIN_ID).unwrap();
+        assert_eq!(chaos.0.max_sequencer_drift, 600);
+        assert_eq!(chaos.0.fjord_max_sequencer_drift, 600);
     }
 }

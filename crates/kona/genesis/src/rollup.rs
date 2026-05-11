@@ -59,7 +59,8 @@ mod tests {
     #[cfg(feature = "serde")]
     fn test_deserialize_reference_rollup_config() {
         use kona_genesis::{
-            AltDAConfig, ChainGenesis, OP_MAINNET_BASE_FEE_CONFIG, RollupConfig, SystemConfig,
+            AltDAConfig, ChainGenesis, FJORD_MAX_SEQUENCER_DRIFT, OP_MAINNET_BASE_FEE_CONFIG,
+            RollupConfig, SystemConfig,
         };
 
         let raw: &str = r#"
@@ -142,6 +143,7 @@ mod tests {
             seq_window_size: 3600,
             channel_timeout: 300,
             granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
+            fjord_max_sequencer_drift: FJORD_MAX_SEQUENCER_DRIFT,
             l1_chain_id: 3151908,
             l2_chain_id: 1337.into(),
             hardforks: HardForkConfig {
