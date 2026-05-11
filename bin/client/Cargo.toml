@@ -45,7 +45,7 @@ tracing.workspace = true
 kona-preimage = { workspace = true, features = ["std"] }
 
 [features]
-default = ["client-tracing", "eigenda"]
+default = ["client-tracing"]
 client-tracing = ["kona-std-fpvm/tracing"]
 eigenda = ["dep:hokulea-eigenda", "dep:hokulea-proof"]
 
