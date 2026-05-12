@@ -9,6 +9,12 @@ alias h := hack
 
 exclude_members := "--exclude celo-registry --exclude execution-fixture"
 
+# celo-host and celo-client activate hokulea-* via the optional `eigenda`
+# feature, but hokulea-client/v1.1.7 pins kona-client/v1.2.13 and is not
+# yet compatible with kona-node/v1.5.0. Exclude them from `--all-features`
+# recipes until an updated hokulea release lands.
+hokulea_eigenda_blocked := "--exclude celo-host --exclude celo-client"
+
 # default recipe to display help information
 default:
   @just --list
@@ -19,7 +25,7 @@ setup:
 
 # Test for the native target with all features.
 test:
-  cargo nextest run --workspace --all-features {{exclude_members}}
+  cargo nextest run --workspace --all-features {{exclude_members}} {{hokulea_eigenda_blocked}}
 
 # Runs benchmarks
 benches:
@@ -42,7 +48,7 @@ fmt-native-check:
 
 # Lint the workspace
 lint-native: fmt-native-check lint-docs
-  cargo clippy --workspace --all-features --all-targets {{exclude_members}} -- -D warnings
+  cargo clippy --workspace --all-features --all-targets {{exclude_members}} {{hokulea_eigenda_blocked}} -- -D warnings
 
 # Lint the Rust documentation
 lint-docs:
@@ -54,7 +60,7 @@ build-native *args='':
 
 # Check for unused dependencies in the crate graph.
 check-udeps:
-  cargo +nightly udeps --workspace --all-features --all-targets
+  cargo +nightly udeps --workspace --all-features --all-targets {{hokulea_eigenda_blocked}}
 
 # Release a new version (dry-run by default)
 # Requires: cargo install cargo-release@0.25.20 --locked
