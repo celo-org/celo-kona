@@ -72,6 +72,12 @@ reth-payload-util.workspace = true
 reth-optimism-txpool.workspace = true
 reth-optimism-cli.workspace = true
 reth-optimism-rpc.workspace = true
+# Historical-proofs ExEx (Bounded History Sidecar) — used by the celo-reth
+# binary only, but living in the main deps list keeps the workspace tidy.
+reth-optimism-exex.workspace = true
+reth-optimism-trie.workspace = true
+reth-tasks.workspace = true
+futures-util.workspace = true
 
 # Celo
 celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
@@ -103,7 +109,7 @@ clap.workspace = true
 eyre.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 toml.workspace = true
 tracing.workspace = true
 metrics.workspace = true

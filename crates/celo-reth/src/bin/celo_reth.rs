@@ -12,11 +12,19 @@ use celo_reth::{
     state_import::ImportCeloStateCommand,
 };
 use clap::Parser;
+use futures_util::FutureExt;
 use reth_cli_runner::CliRunner;
+use reth_db_api::database_metrics::DatabaseMetrics;
 use reth_node_core::args::LogArgs;
 use reth_optimism_cli::Cli;
+use reth_optimism_exex::OpProofsExEx;
+use reth_optimism_rpc::eth::proofs::{EthApiExt, EthApiOverrideServer};
+use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_tasks::TaskExecutor;
 use reth_tracing::Layers;
-use std::ffi::OsString;
+use std::{ffi::OsString, sync::Arc, time::Duration};
+use tokio::time::sleep;
+use tracing::info;
 
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
@@ -109,13 +117,92 @@ fn main() {
             let fee_currency_limits =
                 FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
 
+            // Snapshot the historical-proofs fields before we move rollup_args
+            // into CeloNode::new. Mirrors the OP launcher pattern in
+            // ethereum-optimism/optimism @ kona-client/v1.2.13:
+            //   rust/op-reth/crates/node/src/proof_history.rs
+            let RollupArgs {
+                proofs_history,
+                proofs_history_window,
+                proofs_history_prune_interval,
+                proofs_history_verification_interval,
+                ..
+            } = rollup_args.clone();
+            let proofs_history_storage_path = rollup_args.proofs_history_storage_path.clone();
+
             let blocklist = FeeCurrencyBlocklist::default();
-            let handle = builder
-                .node(
-                    CeloNode::new(rollup_args)
-                        .with_blocklist(blocklist.clone())
-                        .with_fee_currency_limits(fee_currency_limits),
-                )
+            let mut node_builder = builder.node(
+                CeloNode::new(rollup_args)
+                    .with_blocklist(blocklist.clone())
+                    .with_fee_currency_limits(fee_currency_limits),
+            );
+
+            // Optional: historical-proofs ExEx. When --proofs-history is set,
+            // op-reth's bounded-history sidecar maintains a separate MDBX DB
+            // with pre-computed trie data for fast eth_getProof at depth.
+            // The CLI flags are inherited from reth_optimism_node::RollupArgs
+            // but the wiring is per-binary: each downstream (OpNode, CeloNode)
+            // must install the ExEx itself. We do that here.
+            if proofs_history {
+                let path = proofs_history_storage_path.expect(
+                    "--proofs-history.storage-path is required when --proofs-history is set",
+                );
+                info!(target: "reth::cli", "Using on-disk storage for proofs history");
+
+                let mdbx = Arc::new(
+                    MdbxProofsStorage::new(&path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                );
+                let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
+                let storage_exec = storage.clone();
+                let storage_rpc = storage.clone();
+
+                node_builder = node_builder
+                    .on_node_started(move |node| {
+                        spawn_proofs_db_metrics(
+                            node.task_executor,
+                            mdbx,
+                            node.config.metrics.push_gateway_interval,
+                        );
+                        Ok(())
+                    })
+                    .install_exex("proofs-history", async move |exex_context| {
+                        Ok(OpProofsExEx::builder(exex_context, storage_exec)
+                            .with_proofs_history_window(proofs_history_window)
+                            .with_proofs_history_prune_interval(proofs_history_prune_interval)
+                            .with_verification_interval(proofs_history_verification_interval)
+                            .build()
+                            .run()
+                            .boxed())
+                    })
+                    .extend_rpc_modules(move |ctx| {
+                        info!(
+                            target: "reth::cli",
+                            "Installing proofs-history RPC override (eth_getProof)"
+                        );
+                        // TODO: also install DebugApiExt so debug_executePayload
+                        // is served from the sidecar (mirrors what the OP launcher
+                        // does — see ethereum-optimism/optimism @ kona-client/v1.2.13:
+                        // rust/op-reth/crates/node/src/proof_history.rs).
+                        // First attempt at porting hit a generic-bounds mismatch on
+                        // DebugApiExt::into_rpc when instantiated with CeloNode's
+                        // component types (5 generic params on this side vs 4 in OP).
+                        // Left for a follow-up; the eth_getProof override is the
+                        // load-bearing one for the archive-RPC use case anyway.
+                        let api_ext =
+                            EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
+                        let eth_replaced =
+                            ctx.modules.replace_configured(api_ext.into_rpc())?;
+                        info!(
+                            target: "reth::cli",
+                            eth_replaced,
+                            "Proofs-history eth_getProof override installed"
+                        );
+                        Ok(())
+                    });
+            }
+
+            let handle = node_builder
                 .extend_rpc_modules(move |ctx| {
                     let chain_id = ctx.config().chain.chain().id();
                     let fee_currency_directory =
@@ -160,4 +247,27 @@ fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
             CeloCommand::ImportCeloState(cmd) => cmd.execute().await,
         }
     })
+}
+
+/// Spawns a task that periodically reports metrics for the proofs DB.
+///
+/// Ported verbatim from ethereum-optimism/optimism @ kona-client/v1.2.13:
+///   rust/op-reth/crates/node/src/proof_history.rs
+fn spawn_proofs_db_metrics(
+    executor: TaskExecutor,
+    storage: Arc<MdbxProofsStorage>,
+    metrics_report_interval: Duration,
+) {
+    executor.spawn_critical_task("op-proofs-storage-metrics", async move {
+        info!(
+            target: "reth::cli",
+            ?metrics_report_interval,
+            "Starting op-proofs-storage metrics task"
+        );
+
+        loop {
+            sleep(metrics_report_interval).await;
+            storage.report_metrics();
+        }
+    });
 }
