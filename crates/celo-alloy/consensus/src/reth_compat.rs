@@ -24,7 +24,7 @@ use alloy_consensus::{
     transaction::{SignerRecoverable, TxHashRef},
 };
 use alloy_primitives::B256;
-use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
+use op_alloy_consensus::TxDeposit;
 use reth_primitives_traits::InMemorySize;
 
 impl InMemorySize for CeloCip64Receipt {
@@ -64,23 +64,6 @@ impl InMemorySize for CeloTypedTransaction {
             Self::Cip64(tx) => TxCip64::size(tx),
             Self::Deposit(tx) => tx.size(),
         }
-    }
-}
-
-impl OpTransaction for CeloTxEnvelope {
-    fn is_deposit(&self) -> bool {
-        matches!(self, Self::Deposit(_))
-    }
-
-    fn as_deposit(&self) -> Option<&Sealed<TxDeposit>> {
-        match self {
-            Self::Deposit(tx) => Some(tx),
-            _ => None,
-        }
-    }
-
-    fn as_post_exec(&self) -> Option<&Sealed<TxPostExec>> {
-        None
     }
 }
 

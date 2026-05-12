@@ -331,14 +331,6 @@ impl CeloSingleChainHintHandler {
                 })?;
             }
             HintType::L2PayloadWitness => {
-                if !cfg.kona_cfg.enable_experimental_witness_endpoint {
-                    warn!(
-                        target: "single_hint_handler",
-                        "L2PayloadWitness hint was sent, but payload witness is disabled. Skipping hint."
-                    );
-                    return Ok(());
-                }
-
                 ensure!(hint.data.len() >= 32, "Invalid hint data length");
 
                 let parent_block_hash = B256::from_slice(&hint.data.as_ref()[..32]);

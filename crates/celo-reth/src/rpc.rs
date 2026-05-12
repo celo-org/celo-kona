@@ -49,9 +49,12 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 // Helper: map OpTxEnvelope → CeloTxEnvelope
 // ---------------------------------------------------------------------------
 
+// Boxing the Err variant keeps `Result<CeloTxEnvelope, _>` small even though `OpTxEnvelope` grew
+// past clippy's result_large_err threshold after the kona-node v1.5.0 bump added the post-exec
+// variant.
 fn op_tx_to_celo(
     op_tx: op_alloy_consensus::OpTxEnvelope,
-) -> Result<CeloTxEnvelope, op_alloy_consensus::OpTxEnvelope> {
+) -> Result<CeloTxEnvelope, Box<op_alloy_consensus::OpTxEnvelope>> {
     use op_alloy_consensus::OpTxEnvelope as Op;
     match op_tx {
         Op::Legacy(tx) => Ok(CeloTxEnvelope::Legacy(tx)),
@@ -61,7 +64,7 @@ fn op_tx_to_celo(
         Op::Deposit(tx) => Ok(CeloTxEnvelope::Deposit(tx)),
         // Celo doesn't ship the OP-stack PostExec tx type. Return the envelope
         // so the RPC caller can surface a typed error instead of crashing.
-        post @ Op::PostExec(_) => Err(post),
+        post @ Op::PostExec(_) => Err(Box::new(post)),
     }
 }
 
@@ -199,7 +202,7 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
                     Ok(CeloConsensusTx::new(celo_tx))
                 }
                 Err(rejected) => Err(ValueError::new_static(
-                    Self { inner: rejected.into(), fee_currency },
+                    Self { inner: (*rejected).into(), fee_currency },
                     "PostExec transactions are not supported on Celo",
                 )),
             })

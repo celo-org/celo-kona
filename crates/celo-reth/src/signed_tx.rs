@@ -56,7 +56,7 @@ use alloy_rlp::{BufMut, Decodable, Encodable};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, CeloTxType, TxCip64};
 use celo_revm::CeloTransaction;
 use core::hash::{Hash, Hasher};
-use op_alloy_consensus::{OpTransaction, TxDeposit};
+use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
 use reth_codecs::{
     Compact,
     alloy::transaction::{CompactEnvelope, Envelope, FromTxCompact, ToTxCompact},
@@ -129,6 +129,19 @@ impl CeloConsensusTx {
 impl From<CeloTxEnvelope> for CeloConsensusTx {
     fn from(inner: CeloTxEnvelope) -> Self {
         Self::new(inner)
+    }
+}
+
+// SDM post-exec txs are unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
+// so this conversion is never invoked in practice. Provided to satisfy the
+// `PayloadBuilderBuilder` trait bound `TxTy<Node::Types>: From<Sealed<TxPostExec>>` introduced in
+// kona-node v1.5.0 / op-reth v2.2.2.
+impl From<Sealed<TxPostExec>> for CeloConsensusTx {
+    fn from(_value: Sealed<TxPostExec>) -> Self {
+        unreachable!(
+            "SDM post-exec transactions are not supported on Celo; \
+             `RollupConfig::is_sdm_active` always returns false."
+        )
     }
 }
 

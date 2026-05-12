@@ -398,6 +398,8 @@ where
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
+            // SDM is unscheduled on Celo; mirror op-reth's default of disabled.
+            false,
             self.args.enable_tx_conditional,
             self.args.min_suggested_priority_fee,
         )

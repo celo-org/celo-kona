@@ -14,7 +14,9 @@ mod tests {
         EvmEnv, EvmFactory,
         block::{BlockExecutor, BlockExecutorFactory},
     };
-    use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
+    use alloy_op_evm::{
+        OpBlockExecutionCtx, OpBlockExecutorFactory, post_exec::PostExecEvmFactoryAdapter,
+    };
     use alloy_op_hardforks::OpChainHardforks;
     use alloy_primitives::{Address, Signature};
     use celo_alloy_consensus::CeloTxEnvelope;
@@ -25,7 +27,7 @@ mod tests {
         let executor_factory = OpBlockExecutorFactory::new(
             CeloAlloyReceiptBuilder::default(),
             OpChainHardforks::op_mainnet(),
-            CeloEvmFactory::default(),
+            PostExecEvmFactoryAdapter::new(CeloEvmFactory::default()),
         );
         let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
         let evm = executor_factory.evm_factory().create_evm(&mut db, EvmEnv::default());
