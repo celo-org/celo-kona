@@ -188,12 +188,14 @@ reth-optimism-chainspec = { git = "https://github.com/ethereum-optimism/optimism
 reth-optimism-cli = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1", default-features = false }
 reth-optimism-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1", default-features = false }
 reth-optimism-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1", default-features = false }
+reth-optimism-exex = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 reth-optimism-forks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1", default-features = false }
 reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 reth-optimism-payload-builder = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 reth-optimism-primitives = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1", default-features = false }
 reth-optimism-rpc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 reth-optimism-storage = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
+reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 
 # Hokulea
@@ -209,6 +211,7 @@ url = { version = "2.5.8", default-features = false }
 spin = "0.10.0"
 clap = { version = "4.5.58", features = ["derive"] }
 tokio = { version = "1.49.0", default-features = false }
+futures-util = { version = "0.3.31", default-features = false }
 cfg-if = "1.0.4"
 rstest = "0.26.1"
 tempfile = "3.24.0"
