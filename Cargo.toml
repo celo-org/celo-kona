@@ -84,33 +84,33 @@ celo-revm = { version = "1.0.0", path = "crates/celo-revm", default-features = f
 celo-registry = { version = "1.0.0", path = "crates/kona/registry", default-features = false }
 celo-otel = { version = "1.0.0", path = "crates/celo-otel", default-features = false }
 celo-reth = { version = "0.1.0", path = "crates/celo-reth", default-features = false }
+
 # TODO: When bumping kona past https://github.com/ethereum-optimism/optimism/commit/8fbd06ec,
 # configure the correct max_sequencer_drift via the new configurable parameter.
-
 # Binaries
-kona-host = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-client = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
+kona-host = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-client = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
 
 # Protocol
-kona-driver = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-derive = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-genesis = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-protocol = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-registry = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
+kona-driver = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-derive = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-genesis = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-protocol = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-registry = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
 
 # Providers
-kona-providers-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
+kona-providers-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
 
 # Proof
-kona-mpt = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-proof = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-executor = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-std-fpvm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-preimage = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-kona-std-fpvm-proc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
+kona-mpt = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-proof = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-executor = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-std-fpvm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-preimage = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+kona-std-fpvm-proc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
 
 # Utilities
-kona-cli = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
+kona-cli = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
 
 # Alloy
 alloy-rlp = { version = "0.3.13", default-features = false }
@@ -178,17 +178,17 @@ reth-payload-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 
 # OP Reth
-reth-optimism-chainspec = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-cli = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-forks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-reth-optimism-payload-builder = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-reth-optimism-primitives = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13", default-features = false }
-reth-optimism-rpc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-reth-optimism-storage = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
+reth-optimism-chainspec = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-cli = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-forks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
+reth-optimism-payload-builder = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
+reth-optimism-primitives = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14", default-features = false }
+reth-optimism-rpc = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
+reth-optimism-storage = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
+reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
 
 # Hokulea
 hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7", default-features = false }
@@ -266,12 +266,40 @@ alloy-eips = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exp
 # We also need to patch alloy-serde to this version since otherwise a different non patch version is also included in the project
 # which breaks trait bound satisfaction
 alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-v1.6.3" }
-# Pin op-alloy and alloy-op-* crates to the upstream ethereum-optimism/optimism
-# monorepo at `kona-client/v1.2.13`, matching the kona patches below so all
-# kona/op-reth dependencies resolve to a single source.
-op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
-alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.13" }
+# Pin op-alloy and alloy-op-* crates to the same version as the kona crates rely on, 
+# so kona/op-alloy dependencies resolve to a single source.
+op-alloy-consensus = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+op-alloy-rpc-types-engine = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+op-alloy-rpc-types = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+op-alloy-network = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+alloy-op-evm = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+
+# TODO: remove these patches when bumping kona past https://github.com/ethereum-optimism/optimism/commit/f1930fa
+[patch."https://github.com/ethereum-optimism/optimism"]
+kona-host = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-client = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-driver = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-derive = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-genesis = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-protocol = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-registry = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-providers-alloy = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-mpt = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-proof = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-executor = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-std-fpvm = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-preimage = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+kona-cli = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-chainspec = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-cli = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-consensus = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-evm = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-forks = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-node = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-payload-builder = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-primitives = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-rpc = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-storage = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
