@@ -49,20 +49,19 @@ use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 // Helper: map OpTxEnvelope → CeloTxEnvelope
 // ---------------------------------------------------------------------------
 
-fn op_tx_to_celo(op_tx: op_alloy_consensus::OpTxEnvelope) -> CeloTxEnvelope {
+fn op_tx_to_celo(
+    op_tx: op_alloy_consensus::OpTxEnvelope,
+) -> Result<CeloTxEnvelope, op_alloy_consensus::OpTxEnvelope> {
     use op_alloy_consensus::OpTxEnvelope as Op;
     match op_tx {
-        Op::Legacy(tx) => CeloTxEnvelope::Legacy(tx),
-        Op::Eip2930(tx) => CeloTxEnvelope::Eip2930(tx),
-        Op::Eip1559(tx) => CeloTxEnvelope::Eip1559(tx),
-        Op::Eip7702(tx) => CeloTxEnvelope::Eip7702(tx),
-        Op::Deposit(tx) => CeloTxEnvelope::Deposit(tx),
-        // Celo doesn't ship the OP-stack PostExec tx type. Reaching this arm would
-        // mean a PostExec transaction was sent to the Celo RPC, which has no
-        // meaningful Celo equivalent — panic loudly so it's caught in dev.
-        Op::PostExec(_) => unimplemented!(
-            "PostExec transactions are not supported on Celo (no CeloTxEnvelope variant)"
-        ),
+        Op::Legacy(tx) => Ok(CeloTxEnvelope::Legacy(tx)),
+        Op::Eip2930(tx) => Ok(CeloTxEnvelope::Eip2930(tx)),
+        Op::Eip1559(tx) => Ok(CeloTxEnvelope::Eip1559(tx)),
+        Op::Eip7702(tx) => Ok(CeloTxEnvelope::Eip7702(tx)),
+        Op::Deposit(tx) => Ok(CeloTxEnvelope::Deposit(tx)),
+        // Celo doesn't ship the OP-stack PostExec tx type. Return the envelope
+        // so the RPC caller can surface a typed error instead of crashing.
+        post @ Op::PostExec(_) => Err(post),
     }
 }
 
@@ -173,31 +172,37 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
 
         self.inner
             .try_into_sim_tx()
-            .map(|op_tx| {
-                let mut celo_tx = op_tx_to_celo(op_tx);
-                // If fee_currency is set, wrap the inner EIP-1559 tx into a CIP-64 variant
-                if let Some(fc) = fee_currency &&
-                    let CeloTxEnvelope::Eip1559(signed) = celo_tx
-                {
-                    let (eip1559, sig, _hash) = signed.into_parts();
-                    let cip64 = celo_alloy_consensus::TxCip64 {
-                        chain_id: eip1559.chain_id,
-                        nonce: eip1559.nonce,
-                        gas_limit: eip1559.gas_limit,
-                        max_fee_per_gas: eip1559.max_fee_per_gas,
-                        max_priority_fee_per_gas: eip1559.max_priority_fee_per_gas,
-                        to: eip1559.to,
-                        value: eip1559.value,
-                        access_list: eip1559.access_list,
-                        input: eip1559.input,
-                        fee_currency: Some(fc),
-                    };
-                    celo_tx =
-                        CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(cip64, sig));
-                }
-                CeloConsensusTx::new(celo_tx)
-            })
             .map_err(|e| e.map(|inner| Self { inner, fee_currency }))
+            .and_then(|op_tx| match op_tx_to_celo(op_tx) {
+                Ok(mut celo_tx) => {
+                    // If fee_currency is set, wrap the inner EIP-1559 tx into a CIP-64 variant
+                    if let Some(fc) = fee_currency &&
+                        let CeloTxEnvelope::Eip1559(signed) = celo_tx
+                    {
+                        let (eip1559, sig, _hash) = signed.into_parts();
+                        let cip64 = celo_alloy_consensus::TxCip64 {
+                            chain_id: eip1559.chain_id,
+                            nonce: eip1559.nonce,
+                            gas_limit: eip1559.gas_limit,
+                            max_fee_per_gas: eip1559.max_fee_per_gas,
+                            max_priority_fee_per_gas: eip1559.max_priority_fee_per_gas,
+                            to: eip1559.to,
+                            value: eip1559.value,
+                            access_list: eip1559.access_list,
+                            input: eip1559.input,
+                            fee_currency: Some(fc),
+                        };
+                        celo_tx = CeloTxEnvelope::Cip64(alloy_consensus::Signed::new_unhashed(
+                            cip64, sig,
+                        ));
+                    }
+                    Ok(CeloConsensusTx::new(celo_tx))
+                }
+                Err(rejected) => Err(ValueError::new_static(
+                    Self { inner: rejected.into(), fee_currency },
+                    "PostExec transactions are not supported on Celo",
+                )),
+            })
     }
 }
 
@@ -341,7 +346,9 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
                 self.inner, signer,
             )
             .await
-            .map(op_tx_to_celo)
+            .and_then(|op_tx| {
+                op_tx_to_celo(op_tx).map_err(|_| SignTxRequestError::InvalidTransactionRequest)
+            })
             .map(CeloConsensusTx::new)
         }
     }
