@@ -11,13 +11,9 @@ use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 #[cfg(feature = "eigenda")]
-use hokulea_host_bin::{cfg::SingleChainProvidersWithEigenDA, handler::fetch_eigenda_hint};
+use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
-#[cfg(feature = "eigenda")]
-use kona_host::eth::rpc_provider;
-#[cfg(feature = "eigenda")]
-use kona_host::single::SingleChainProviders;
 use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
@@ -45,29 +41,11 @@ impl HintHandler for CeloSingleChainHintHandler {
                 Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
             }
             ExtendedHintType::EigenDACert => {
-                fetch_eigenda_hint(
-                    hint,
-                    &SingleChainProvidersWithEigenDA {
-                        kona_providers: SingleChainProviders {
-                            l1: providers.l1.clone(),
-                            l2: rpc_provider(
-                                &cfg.kona_cfg
-                                    .l2_node_address
-                                    .clone()
-                                    .ok_or(anyhow!("L2 node address must be set"))?,
-                            )
-                            .await,
-                            blobs: providers.blobs.clone(),
-                        },
-                        eigenda_preimage_provider: providers
-                            .eigenda_preimage_provider
-                            .as_ref()
-                            .ok_or(anyhow!("Eigen DA blob provider must be set"))?
-                            .clone(),
-                    },
-                    kv,
-                )
-                .await
+                let eigenda_provider = providers
+                    .eigenda_preimage_provider
+                    .as_ref()
+                    .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
+                fetch_eigenda_hint(hint.data, eigenda_provider, kv).await
             }
         }
     }
