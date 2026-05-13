@@ -277,18 +277,6 @@ mod test {
             ),
             (
                 [
-                    "--server",
-                    "--l2-chain-id",
-                    "0",
-                    "--data-dir",
-                    "dummy",
-                    "--enable-experimental-witness-endpoint",
-                ]
-                .as_slice(),
-                true,
-            ),
-            (
-                [
                     "--eigenda-proxy-address",
                     "dummy",
                     "--l1-node-address",
