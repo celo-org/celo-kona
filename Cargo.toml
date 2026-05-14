@@ -306,10 +306,12 @@ reth-optimism-chainspec = { git = "https://github.com/celo-org/optimism", rev = 
 reth-optimism-cli = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-consensus = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-evm = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-exex = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-forks = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-node = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-payload-builder = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-primitives = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-rpc = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-storage = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
+reth-optimism-trie = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }
 reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", rev = "b4ba5c3" }

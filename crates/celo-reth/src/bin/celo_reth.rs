@@ -209,10 +209,8 @@ fn main() {
                             target: "reth::cli",
                             "Installing proofs-history RPC override (eth_getProof)"
                         );
-                        let api_ext =
-                            EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
-                        let eth_replaced =
-                            ctx.modules.replace_configured(api_ext.into_rpc())?;
+                        let api_ext = EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
+                        let eth_replaced = ctx.modules.replace_configured(api_ext.into_rpc())?;
                         info!(
                             target: "reth::cli",
                             eth_replaced,

@@ -74,8 +74,12 @@ reth-optimism-cli.workspace = true
 reth-optimism-rpc.workspace = true
 # Historical-proofs ExEx (Bounded History Sidecar) — used by the celo-reth
 # binary only, but living in the main deps list keeps the workspace tidy.
+# `metrics` feature is required so that `OpProofsStorage<S>` resolves to the
+# `OpProofsStorageWithMetrics<S>` wrapper (alias toggle in trie/src/lib.rs).
+# Without it, `EthApiExt::new` (which expects the wrapped form) fails to
+# typecheck — and we lose the proof-storage metrics emitted from the wrapper.
 reth-optimism-exex.workspace = true
-reth-optimism-trie.workspace = true
+reth-optimism-trie = { workspace = true, features = ["metrics"] }
 reth-tasks.workspace = true
 futures-util.workspace = true
 
