@@ -143,52 +143,72 @@ fn main() {
             // The CLI flags are inherited from reth_optimism_node::RollupArgs
             // but the wiring is per-binary: each downstream (OpNode, CeloNode)
             // must install the ExEx itself. We do that here.
-            if proofs_history {
-                let path = proofs_history_storage_path.expect(
-                    "--proofs-history.storage-path is required when --proofs-history is set",
-                );
-                info!(target: "reth::cli", "Using on-disk storage for proofs history");
+            //
+            // NOTE: on_node_started + install_exex are installed here, but the
+            // RPC override is deferred to the single consolidated extend_rpc_modules
+            // closure below. reth's builder API treats extend_rpc_modules as a
+            // single-slot set/replace (Box<dyn ExtendRpcModules>), so calling it
+            // twice silently discards the first hook — which is exactly the bug
+            // that shipped in the initial PR #175 (the proofs-history override
+            // was overwritten by the celo modules override, and eth_getProof
+            // always fell back to the slow historical-state path).
+            let proofs_storage_rpc: Option<OpProofsStorage<Arc<MdbxProofsStorage>>> =
+                if proofs_history {
+                    let path = proofs_history_storage_path.expect(
+                        "--proofs-history.storage-path is required when --proofs-history is set",
+                    );
+                    info!(target: "reth::cli", "Using on-disk storage for proofs history");
 
-                let mdbx = Arc::new(
-                    MdbxProofsStorage::new(&path)
-                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-                );
-                let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
-                let storage_exec = storage.clone();
-                let storage_rpc = storage.clone();
+                    let mdbx = Arc::new(
+                        MdbxProofsStorage::new(&path)
+                            .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                    );
+                    let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
+                    let storage_exec = storage.clone();
 
-                node_builder = node_builder
-                    .on_node_started(move |node| {
-                        spawn_proofs_db_metrics(
-                            node.task_executor,
-                            mdbx,
-                            node.config.metrics.push_gateway_interval,
-                        );
-                        Ok(())
-                    })
-                    .install_exex("proofs-history", async move |exex_context| {
-                        Ok(OpProofsExEx::builder(exex_context, storage_exec)
-                            .with_proofs_history_window(proofs_history_window)
-                            .with_proofs_history_prune_interval(proofs_history_prune_interval)
-                            .with_verification_interval(proofs_history_verification_interval)
-                            .build()
-                            .run()
-                            .boxed())
-                    })
-                    .extend_rpc_modules(move |ctx| {
+                    node_builder = node_builder
+                        .on_node_started(move |node| {
+                            spawn_proofs_db_metrics(
+                                node.task_executor,
+                                mdbx,
+                                node.config.metrics.push_gateway_interval,
+                            );
+                            Ok(())
+                        })
+                        .install_exex("proofs-history", async move |exex_context| {
+                            Ok(OpProofsExEx::builder(exex_context, storage_exec)
+                                .with_proofs_history_window(proofs_history_window)
+                                .with_proofs_history_prune_interval(proofs_history_prune_interval)
+                                .with_verification_interval(proofs_history_verification_interval)
+                                .build()
+                                .run()
+                                .boxed())
+                        });
+
+                    Some(storage)
+                } else {
+                    None
+                };
+
+            // Single consolidated extend_rpc_modules. Installs:
+            //   1. proofs-history EthApiExt (overrides eth_getProof) — only when enabled
+            //   2. Celo gas / fee-history / tx / admin modules — always
+            //
+            // TODO: also install DebugApiExt so debug_executePayload is served from
+            // the sidecar (mirrors the OP launcher in ethereum-optimism/optimism @
+            // kona-client/v1.2.13: rust/op-reth/crates/node/src/proof_history.rs).
+            // First attempt at porting hit a generic-bounds mismatch on
+            // DebugApiExt::into_rpc when instantiated with CeloNode's component
+            // types (5 generic params on this side vs 4 in OP). Left for follow-up;
+            // the eth_getProof override is the load-bearing one for archive-RPC use.
+            let handle = node_builder
+                .extend_rpc_modules(move |ctx| {
+                    // 1. proofs-history eth_getProof override (if enabled).
+                    if let Some(storage_rpc) = proofs_storage_rpc {
                         info!(
                             target: "reth::cli",
                             "Installing proofs-history RPC override (eth_getProof)"
                         );
-                        // TODO: also install DebugApiExt so debug_executePayload
-                        // is served from the sidecar (mirrors what the OP launcher
-                        // does — see ethereum-optimism/optimism @ kona-client/v1.2.13:
-                        // rust/op-reth/crates/node/src/proof_history.rs).
-                        // First attempt at porting hit a generic-bounds mismatch on
-                        // DebugApiExt::into_rpc when instantiated with CeloNode's
-                        // component types (5 generic params on this side vs 4 in OP).
-                        // Left for a follow-up; the eth_getProof override is the
-                        // load-bearing one for the archive-RPC use case anyway.
                         let api_ext =
                             EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
                         let eth_replaced =
@@ -198,12 +218,9 @@ fn main() {
                             eth_replaced,
                             "Proofs-history eth_getProof override installed"
                         );
-                        Ok(())
-                    });
-            }
+                    }
 
-            let handle = node_builder
-                .extend_rpc_modules(move |ctx| {
+                    // 2. Celo modules.
                     let chain_id = ctx.config().chain.chain().id();
                     let fee_currency_directory =
                         celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
