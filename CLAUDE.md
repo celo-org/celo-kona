@@ -4,14 +4,13 @@
 
 This repo contains two things built on a shared Celo EVM:
 
-1. **celo-reth** — a full Celo L2 execution node, extending [op-reth](https://github.com/ethereum-optimism/optimism/tree/develop/rust/op-reth) (the OP Stack reth node) with Celo-specific pool, payload, and RPC logic.
+1. **celo-reth** — the Celo OP Stack execution node, extending [op-reth](https://github.com/ethereum-optimism/optimism/tree/develop/rust/op-reth) with Celo-specific pool, payload, and RPC logic.
 2. **kona crates** — Celo extensions to [Kona](https://github.com/ethereum-optimism/optimism/tree/develop/rust/kona) (the OP Stack ZK/fault proof client), used by Celo's [op-succinct fork](https://github.com/celo-org/op-succinct/) for ZK fault proofs.
 
 The core Celo EVM additions are **Fee Abstraction** (CIP-64 tx type — pay gas in ERC20 tokens) and **Token Duality** (native CELO ↔ ERC20 via transfer precompile). These live in `celo-revm` and `alloy-celo-evm`, shared by both celo-reth and kona.
 
 ## Build & Test Commands
 
-```bash
 just build-native          # Build workspace (alias: just b)
 just test                  # Run all tests with nextest (alias: just t)
 just lint-native           # Format check + clippy + doc lint (alias: just l)
@@ -19,7 +18,6 @@ just fmt-native-fix        # Fix formatting with nightly (alias: just f)
 just hack                  # cargo hack check --no-default-features (verifies no-std builds)
 cargo test -p <crate>      # Test single crate
 cargo build -p celo-reth   # Build single crate
-```
 
 Requires: nightly Rust toolchain (for `cargo +nightly fmt`), `cargo-nextest`, `cargo-hack`.
 
@@ -33,7 +31,6 @@ The workspace `default-members` are the three binaries in `bin/` — a bare
 
 ### Crate Dependency Flow
 
-```
 bin/celo-reth (L2 execution node binary)
   └── crates/celo-reth (reth node configuration)
         ├── alloy-celo-evm (alloy-evm wrapper)
@@ -48,7 +45,6 @@ bin/host, bin/client (FPVM proof host + client)
 
 bin/execution-verifier
   └── crates/kona/executor
-```
 
 ### Binaries (`bin/`)
 
