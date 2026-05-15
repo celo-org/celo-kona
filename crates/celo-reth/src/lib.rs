@@ -3,25 +3,22 @@
 //! Bridges the Celo EVM ([`CeloEvmFactory`]) with reth's node framework,
 //! analogous to `reth-optimism-evm` for vanilla OP Stack chains.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+// Most deps in this crate are only used by std-only modules (node, pool,
+// payload, rpc, chainspec) or the binary target. Only warn on unused deps in
+// std builds to avoid spurious warnings under `cargo hack check
+// --no-default-features`.
+#![cfg_attr(all(not(test), feature = "std"), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
-// These deps are only used by the binary target; declare them here to silence
-// the `unused_crate_dependencies` lint on the library compilation unit.
+// Binary-only deps (used by src/bin/celo_reth.rs but not by the library).
+// Suppress `unused_crate_dependencies` on the std library compilation unit.
 #[cfg(feature = "std")]
-use clap as _;
-#[cfg(feature = "std")]
-use reth_cli_util as _;
-#[cfg(feature = "std")]
-use reth_optimism_cli as _;
-#[cfg(feature = "std")]
-use reth_provider as _;
-#[cfg(feature = "std")]
-use reth_transaction_pool as _;
-#[cfg(feature = "std")]
-use tracing as _;
+use {
+    clap as _, reth_cli_util as _, reth_optimism_cli as _, reth_provider as _,
+    reth_transaction_pool as _, tracing as _,
+};
 
 use alloc::sync::Arc;
 use alloy_consensus::{BlockHeader, Header};

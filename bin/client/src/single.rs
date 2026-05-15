@@ -156,6 +156,25 @@ where
         ));
     }
 
+    // Bind the committed l2BlockNumber to the actual derived safe-head number. Without this
+    // check, a non-interop EndOfSource that triggers the silent target downgrade in
+    // advance_to_target can let an adversarial witness commit (l2PostRoot, l2BlockNumber)
+    // pairs that refer to different L2 blocks. See https://github.com/succinctlabs/op-succinct/security/advisories/GHSA-5jh4-3p33-85xc.
+    if safe_head.block_info.number != boot.op_boot_info.claimed_l2_block_number {
+        error!(
+            target: "client",
+            derived = safe_head.block_info.number,
+            claimed = boot.op_boot_info.claimed_l2_block_number,
+            "Derived safe head L2 block #{} does not match claimed L2 block number #{}",
+            safe_head.block_info.number,
+            boot.op_boot_info.claimed_l2_block_number,
+        );
+        return Err(FaultProofProgramError::InvalidClaim(
+            output_root,
+            boot.op_boot_info.claimed_l2_output_root,
+        ));
+    }
+
     info!(
         target: "client",
         number = safe_head.block_info.number,
