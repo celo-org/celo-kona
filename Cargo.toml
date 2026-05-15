@@ -274,13 +274,44 @@ alloy-eips = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exp
 # We also need to patch alloy-serde to this version since otherwise a different non patch version is also included in the project
 # which breaks trait bound satisfaction
 alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-exponential-2.0.4" }
-# Pin op-alloy and alloy-op-* crates to the upstream ethereum-optimism/optimism
-# monorepo at `kona-node/v1.5.0`, matching the kona patches below so all
-# kona/op-reth dependencies resolve to a single source.
-op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
-op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
+# Pin op-alloy / alloy-op-* / op-revm to the celo-org/optimism fork off
+# kona-node/v1.5.0 + f1930fa cherry-pick, matching the kona patches below so
+# all kona/op-reth/op-alloy dependencies resolve to a single source.
+op-alloy-consensus = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+op-alloy-rpc-types-engine = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+op-alloy-rpc-types = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+op-alloy-network = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+alloy-op-evm = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+op-revm = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+
+# TODO: remove once kona-node ships a v1.5.x with f1930fa
+# (https://github.com/ethereum-optimism/optimism/commit/f1930fa, the
+# kona-executor DestroyedChanged-account fix).
+[patch."https://github.com/ethereum-optimism/optimism"]
+kona-host = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-client = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-driver = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-derive = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-genesis = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-protocol = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-registry = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-providers-alloy = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-mpt = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-proof = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-executor = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-std-fpvm = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-preimage = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+kona-cli = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-chainspec = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-cli = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-consensus = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-evm = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-forks = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-node = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-payload-builder = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-primitives = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-rpc = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-storage = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
+reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", rev = "86d01b72f1" }
