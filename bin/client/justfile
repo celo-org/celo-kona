@@ -70,7 +70,10 @@ run-client-native-offline block_number l2_claim l2_output_root l2_head l1_head l
   cd $(git rev-parse --show-toplevel)
 
   echo "Running host program with native client program..."
-  cargo r --bin celo-host -- \
+  # `--features eigenda` is required because the witness was captured for the
+  # EigenDA-aware derivation pipeline. Without it, the client tries to parse
+  # the alt-DA cert calldata as op-stack frames and fails immediately.
+  cargo r --bin celo-host --features eigenda -- \
     {{verbosity}} \
     single \
     --l1-head $L1_HEAD \
