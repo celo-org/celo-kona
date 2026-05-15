@@ -189,12 +189,19 @@ reth-optimism-storage = { git = "https://github.com/ethereum-optimism/optimism",
 reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.0" }
 
 # Hokulea
-# celo-org/hokulea karlb/version-bump — fork pinned at the kona-node/v1.5.0
-# bump (commit 57a48e61). Switch back to upstream Layr-Labs/hokulea once
-# a hokulea-client release with v1.5.0 support is cut.
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "57a48e61d5a105abb6e2ee985249715cb74ad7e9", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "57a48e61d5a105abb6e2ee985249715cb74ad7e9", default-features = false }
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "57a48e61d5a105abb6e2ee985249715cb74ad7e9", default-features = false }
+# celo-org/hokulea karlb/version-bump — fork pinned at the kona-node/v1.5.0 bump
+# plus the S3-fallback fix (commit b655f93). The fix drops the
+# `return_encoded_payload=true` query parameter so the EigenDA proxy can serve
+# decoded payloads from its S3 cache when the testnet relays have aged past
+# their retention window, then re-encodes locally with
+# `PAYLOAD_ENCODING_VERSION_0`. Without this, regenerating witnesses for older
+# Celo Sepolia blocks fails at frame parsing because the proxy errors instead
+# of returning the cached payload.
+# Switch back to upstream Layr-Labs/hokulea once a hokulea-client release with
+# v1.5.0 support is cut.
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "b655f935314347e12be64e9a34c53871eff8deca", default-features = false }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "b655f935314347e12be64e9a34c53871eff8deca", default-features = false }
+hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "b655f935314347e12be64e9a34c53871eff8deca", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
