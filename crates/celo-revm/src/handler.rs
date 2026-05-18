@@ -68,17 +68,13 @@ fn is_legacy_chain_id_exception(
     // Filter on (network, block_number) before hashing. Live mempool traffic
     // can never reach the keccak path: the attacker can't choose `block.number`,
     // so any tx outside the two pinned historical blocks short-circuits.
-    let mut candidates = LEGACY_CHAIN_ID_EXCEPTIONS
+    let Some((expected_hash, _, _)) = LEGACY_CHAIN_ID_EXCEPTIONS
         .iter()
-        .filter(|(_, net, block)| *net == network_chain_id && *block == block_number)
-        .peekable();
-    if candidates.peek().is_none() {
+        .find(|(_, net, block)| *net == network_chain_id && *block == block_number)
+    else {
         return false;
-    }
-    enveloped_tx.is_some_and(|tx| {
-        let tx_hash = keccak256(tx);
-        candidates.any(|(hash, _, _)| *hash == tx_hash)
-    })
+    };
+    enveloped_tx.is_some_and(|tx| keccak256(tx) == *expected_hash)
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
