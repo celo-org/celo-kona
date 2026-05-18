@@ -16,8 +16,8 @@ extern crate alloc;
 // Suppress `unused_crate_dependencies` on the std library compilation unit.
 #[cfg(feature = "std")]
 use {
-    clap as _, reth_cli_util as _, reth_optimism_cli as _, reth_provider as _,
-    reth_transaction_pool as _, tracing as _,
+    clap as _, reth_cli_runner as _, reth_cli_util as _, reth_optimism_cli as _,
+    reth_provider as _, reth_tracing as _, reth_transaction_pool as _, tracing as _,
 };
 
 use alloc::sync::Arc;
@@ -53,6 +53,9 @@ pub mod rpc;
 
 #[cfg(feature = "std")]
 pub mod chainspec;
+
+#[cfg(feature = "std")]
+pub mod state_import;
 
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
