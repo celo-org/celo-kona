@@ -5,14 +5,13 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, format, vec::Vec};
+use alloc::{borrow::Cow, format};
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
     precompiles::{DynPrecompile, PrecompilesMap},
 };
 use alloy_op_evm::{OpTxError, map_op_err};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
-use celo_alloy_consensus::CeloTxType;
+use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX},
@@ -22,9 +21,9 @@ use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, OpTransaction, precompiles::OpPrecompiles};
+use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles};
 use revm::{
-    Context, ExecuteEvm, InspectEvm, Inspector,
+    Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{BlockEnv, TxEnv},
     context_interface::{
         Cfg,
@@ -321,74 +320,7 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        let tx = CeloTransaction {
-            op_tx: OpTransaction {
-                base: TxEnv {
-                    caller,
-                    kind: TxKind::Call(contract),
-                    // Explicitly set nonce to 0 so revm does not do any nonce checks
-                    nonce: 0,
-                    gas_limit: 30_000_000,
-                    value: U256::ZERO,
-                    data,
-                    // Setting the gas price to zero enforces that no value is transferred as part
-                    // of the call, and that the call will not count against the
-                    // block's gas limit
-                    gas_price: 0,
-                    // The chain ID check is not relevant here and is disabled if set to None
-                    chain_id: None,
-                    // Setting the gas priority fee to None ensures the effective gas price is
-                    // derived from the `gas_price` field, which we need to be
-                    // zero
-                    gas_priority_fee: None,
-                    access_list: Default::default(),
-                    // blob fields can be None for this tx
-                    blob_hashes: Vec::new(),
-                    max_fee_per_blob_gas: 0,
-                    tx_type: CeloTxType::Deposit as u8,
-                    authorization_list: Default::default(),
-                },
-                // The L1 fee is not charged for the EIP-4788 transaction, submit zero bytes for the
-                // enveloped tx size.
-                enveloped_tx: Some(Bytes::default()),
-                deposit: Default::default(),
-            },
-            fee_currency: None,
-            cip64_tx_info: None,
-            effective_gas_price: None,
-        };
-
-        let mut gas_limit = tx.op_tx.base.gas_limit;
-        let mut basefee = 0;
-        let mut disable_nonce_check = true;
-
-        // ensure the block gas limit is >= the tx
-        core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
-        // disable the base fee check for this call by setting the base fee to zero
-        core::mem::swap(&mut self.block.basefee, &mut basefee);
-        // disable the nonce check
-        core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
-
-        let mut res = self.transact(tx);
-
-        // swap back to the previous gas limit
-        core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
-        // swap back to the previous base fee
-        core::mem::swap(&mut self.block.basefee, &mut basefee);
-        // swap back to the previous nonce check flag
-        core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
-
-        // NOTE: We assume that only the contract storage is modified. Revm currently marks the
-        // caller and block beneficiary accounts as "touched" when we do the above transact calls,
-        // and includes them in the result.
-        //
-        // We're doing this state cleanup to make sure that changeset only includes the changed
-        // contract storage.
-        if let Ok(res) = &mut res {
-            res.state.retain(|addr, _| *addr == contract);
-        }
-
-        res
+        self.inner.system_call_with_caller(caller, contract, data).map_err(map_op_err)
     }
 
     fn db_mut(&mut self) -> &mut Self::DB {
@@ -560,7 +492,9 @@ impl EvmFactory for CeloEvmFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use alloy_evm::Evm;
+    use alloy_primitives::TxKind;
     use celo_alloy_consensus::CeloTxType;
     use op_revm::OpTransaction;
 
