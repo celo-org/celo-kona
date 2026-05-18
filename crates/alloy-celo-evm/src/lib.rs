@@ -283,9 +283,10 @@ where
                 // CIP64 NOTE:
                 // Extract and store the cip64 info to a shared storage to be able to add the
                 // credit/debit logs when building the receipt in the receipts_builder.
-                // Only enqueue during block building: RPC simulation paths (eth_call,
-                // eth_estimateGas) never drain the FIFO, so a stale entry would be popped
-                // by the next real block's first CIP-64 tx and corrupt its receipt.
+                // Only store during block building: RPC simulation paths (eth_call,
+                // eth_estimateGas) never drain the slot, so a stale entry would be picked up
+                // by the next real block's first CIP-64 tx and corrupt its receipt (or trip
+                // the slot-occupied assertion in `store_cip64_info`).
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
                 if is_block_building && let Some(cip64_info) = cip64_info {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
@@ -427,24 +428,6 @@ impl CeloEvmFactory {
     ) -> CeloEvm<DB, I, PrecompilesMap> {
         input.cfg_env.limit_contract_code_size = Some(constants::CELO_MAX_CODE_SIZE);
         let spec_id = input.cfg_env.spec;
-        // Defense in depth for the receipt FIFO: when constructing a block-building EVM,
-        // the shared queue should be empty — pending entries mean a previous block leaked
-        // (or a non-block-building path enqueued without draining). Debug-only; the real
-        // protection is the `is_block_building` gate in `transact_raw`.
-        //
-        // Without `optional_no_base_fee` the base-fee check cannot be skipped, so every
-        // EVM constructed here is a block-building EVM and the assertion always applies.
-        #[cfg(feature = "optional_no_base_fee")]
-        let is_block_building = !input.cfg_env.disable_base_fee;
-        #[cfg(not(feature = "optional_no_base_fee"))]
-        let is_block_building = true;
-        if is_block_building && let Some(storage) = &self.cip64_storage {
-            let pending = storage.pending_receipt_count();
-            debug_assert!(
-                pending == 0,
-                "Cip64Storage queue not empty at block start: {pending} entries leaked"
-            );
-        }
         CeloEvm {
             inner: Context::celo()
                 .with_db(db)
@@ -611,9 +594,10 @@ mod tests {
     }
 
     /// Verify that RPC simulation paths (eth_call / eth_estimateGas) never
-    /// enqueue CIP-64 receipt data. The receipt builder only runs during real
-    /// block execution, so any entry left here would be popped by the next
-    /// real block's first CIP-64 tx and corrupt its receipt logs / base fee.
+    /// store CIP-64 receipt data. The receipt builder only runs during real
+    /// block execution, so any entry left here would be picked up by the next
+    /// real block's first CIP-64 tx and corrupt its receipt (or trip the
+    /// slot-occupied assertion in `store_cip64_info`).
     ///
     /// The handler still populates `cip64_tx_info` during simulation for
     /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
@@ -637,7 +621,7 @@ mod tests {
 
         // Native-fee CIP-64 tx (`fee_currency = 0x0`): the handler sets
         // `cip64_tx_info = Some(..)` on this path even when base fee is
-        // disabled, so the only line of defense against polluting the FIFO is
+        // disabled, so the only line of defense against polluting the slot is
         // the `is_block_building` gate in `transact_raw`.
         let mut tx = make_cip64_tx(Address::ZERO);
         tx.fee_currency = Some(Address::ZERO);
@@ -646,24 +630,8 @@ mod tests {
 
         assert!(
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
-            "RPC simulation must not enqueue CIP-64 receipt data"
+            "RPC simulation must not store CIP-64 receipt data"
         );
-    }
-
-    /// Verify that the block-start `debug_assert!` fires when the receipt FIFO has
-    /// pending entries. This is a regression guard: any future leak (sim path
-    /// enqueuing without draining, executor failing to consume entries, etc.) will
-    /// trip this on the next block-building EVM creation rather than silently
-    /// corrupting that block's receipts.
-    #[test]
-    #[should_panic(expected = "queue not empty at block start")]
-    fn test_block_start_panics_on_leaked_cip64_entry() {
-        use celo_revm::Cip64Info;
-        let storage = Cip64Storage::default();
-        storage.store_cip64_info(None, Cip64Info::default());
-        let factory = CeloEvmFactory::with_cip64_storage(storage);
-        let _evm = factory
-            .create_evm(revm::database::InMemoryDB::default(), EvmEnv::<OpSpecId>::default());
     }
 
     /// Verify that the blocklist is NOT enforced during RPC simulation
