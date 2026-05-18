@@ -181,9 +181,11 @@ fn main() {
             // always fell back to the slow historical-state path).
             let proofs_storage_rpc: Option<OpProofsStorage<Arc<MdbxProofsStorage>>> =
                 if proofs_history {
-                    let path = proofs_history_storage_path.expect(
-                        "--proofs-history.storage-path is required when --proofs-history is set",
-                    );
+                    let path = proofs_history_storage_path.ok_or_else(|| {
+                        eyre::eyre!(
+                            "--proofs-history.storage-path is required when --proofs-history is set"
+                        )
+                    })?;
                     info!(target: "reth::cli", "Using on-disk storage for proofs history");
 
                     let mdbx = Arc::new(
