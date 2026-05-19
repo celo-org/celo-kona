@@ -199,7 +199,6 @@ mod tests {
                         inner: tx_env,
                         deposit_nonce: None,
                         deposit_receipt_version: None,
-                        fee_currency: None,
                     },
                 ]),
                 ..Default::default()

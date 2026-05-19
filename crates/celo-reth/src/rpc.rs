@@ -1294,7 +1294,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                     // would fail, and `cip64_fee_history_tip` would return 0,
                     // underreporting tips in reward percentiles.
                     let cip64_fc = if tx.ty() == cip64_ty {
-                        fee_history_cip64_conversion_currency(tx.fee_currency)
+                        fee_history_cip64_conversion_currency(tx.fee_currency())
                     } else {
                         None
                     };
@@ -2586,7 +2586,7 @@ mod tests {
         };
 
         let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
-        assert_eq!(rpc.fee_currency, Some(fee_currency));
+        assert_eq!(rpc.fee_currency(), Some(fee_currency));
 
         let value = serde_json::to_value(&rpc).unwrap();
         let obj = value.as_object().unwrap();

@@ -39,32 +39,42 @@ use revm::{
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
 
-/// Transaction hashes that have wrong chain IDs but were accepted historically.
-/// These transactions were included due to a bug in EIP-2930 sender recovery that used
-/// tx.ChainId() instead of the network's chain ID. We must accept them during historical
-/// sync to avoid a hard fork. See <https://github.com/celo-org/op-geth/issues/454>.
+/// Transactions with wrong chain IDs that were accepted historically due to a bug in
+/// op-geth's EIP-2930 sender recovery (tx.ChainId() instead of the network's chain ID).
+/// They must be accepted during historical sync to avoid a hard fork.
+/// See <https://github.com/celo-org/op-geth/issues/454>.
 ///
-/// Each entry contains (tx_hash, network_chain_id) to prevent replay attacks from other networks.
-const LEGACY_CHAIN_ID_EXCEPTIONS: [(B256, u64); 2] = [
+/// Each entry: `(tx_hash, network_chain_id, block_number)`.
+const LEGACY_CHAIN_ID_EXCEPTIONS: [(B256, u64, u64); 2] = [
     // Celo Sepolia block 12531083 - tx had chain_id 11162320 instead of 11142220
     (
         b256!("4564b9903cfe18814ffc2696e1ad141d9cc3a549dc4f5726e15f7be2e0ccaa25"),
         11142220, // Celo Sepolia chain ID
+        12531083,
     ),
     // Celo Mainnet block 53619115 - tx had chain_id 44787 instead of 42220
     (
         b256!("d6bdf3261df7e7a4db6bbc486bf091eb62dfd2883e335c31219b6a37d3febca1"),
         42220, // Celo Mainnet chain ID
+        53619115,
     ),
 ];
 
-fn is_legacy_chain_id_exception(enveloped_tx: Option<&[u8]>, network_chain_id: u64) -> bool {
-    enveloped_tx.is_some_and(|tx| {
-        let tx_hash = keccak256(tx);
-        LEGACY_CHAIN_ID_EXCEPTIONS
-            .iter()
-            .any(|(hash, chain_id)| *hash == tx_hash && *chain_id == network_chain_id)
-    })
+fn is_legacy_chain_id_exception(
+    network_chain_id: u64,
+    block_number: u64,
+    enveloped_tx: Option<&[u8]>,
+) -> bool {
+    // Filter on (network, block_number) before hashing. Live mempool traffic
+    // can never reach the keccak path: the attacker can't choose `block.number`,
+    // so any tx outside the two pinned historical blocks short-circuits.
+    let Some((expected_hash, _, _)) = LEGACY_CHAIN_ID_EXCEPTIONS
+        .iter()
+        .find(|(_, net, block)| *net == network_chain_id && *block == block_number)
+    else {
+        return false;
+    };
+    enveloped_tx.is_some_and(|tx| keccak256(tx) == *expected_hash)
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
@@ -497,21 +507,11 @@ where
             }
         }
 
-        // Check for legacy chain ID exception before mainnet validation.
-        // These are historical transactions that were accepted with wrong chain IDs due to a bug.
-        // Only compute the tx hash if there's actually a chain ID mismatch to avoid unnecessary hashing.
-        let chain_id_mismatch = evm
-            .ctx()
-            .tx()
-            .chain_id()
-            .is_some_and(|tx_chain_id| tx_chain_id != evm.ctx().cfg().chain_id());
-        let network_chain_id = evm.ctx().cfg().chain_id();
-        if chain_id_mismatch
-            && is_legacy_chain_id_exception(
-                evm.ctx().tx().enveloped_tx().map(|b| b.as_ref()),
-                network_chain_id,
-            )
-        {
+        if is_legacy_chain_id_exception(
+            evm.ctx().cfg().chain_id(),
+            evm.ctx().block().number().saturating_to::<u64>(),
+            evm.ctx().tx().enveloped_tx().map(|b| b.as_ref()),
+        ) {
             // Temporarily disable chain ID check for these historical exception txs,
             // preserving the original value to restore afterward
             let original_tx_chain_id_check = evm.ctx().cfg().tx_chain_id_check;
@@ -1474,9 +1474,23 @@ mod tests {
         // Verify the encoded tx hashes to the expected exception hash
         let encoded = build_sepolia_exception_tx();
         assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[0].0);
-        assert!(is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
+        assert!(is_legacy_chain_id_exception(
+            11142220,
+            12531083,
+            Some(&encoded)
+        ));
         // Should not match on wrong network
-        assert!(!is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
+        assert!(!is_legacy_chain_id_exception(
+            42220,
+            12531083,
+            Some(&encoded)
+        ));
+        // Should not match at the wrong block height (live-traffic case)
+        assert!(!is_legacy_chain_id_exception(
+            11142220,
+            12531084,
+            Some(&encoded)
+        ));
     }
 
     #[test]
@@ -1484,9 +1498,23 @@ mod tests {
         // Verify the encoded tx hashes to the expected exception hash
         let encoded = build_mainnet_exception_tx();
         assert_eq!(keccak256(&encoded), LEGACY_CHAIN_ID_EXCEPTIONS[1].0);
-        assert!(is_legacy_chain_id_exception(Some(&encoded), 42220)); // Celo Mainnet
+        assert!(is_legacy_chain_id_exception(
+            42220,
+            53619115,
+            Some(&encoded)
+        ));
         // Should not match on wrong network
-        assert!(!is_legacy_chain_id_exception(Some(&encoded), 11142220)); // Celo Sepolia
+        assert!(!is_legacy_chain_id_exception(
+            11142220,
+            53619115,
+            Some(&encoded)
+        ));
+        // Should not match at the wrong block height (live-traffic case)
+        assert!(!is_legacy_chain_id_exception(
+            42220,
+            53619116,
+            Some(&encoded)
+        ));
     }
 
     #[test]
@@ -1501,6 +1529,9 @@ mod tests {
                 tx.op_tx.base.gas_limit = 21000;
                 tx.op_tx.base.gas_price = 25001000000;
                 tx.op_tx.enveloped_tx = Some(encoded);
+            })
+            .modify_block_chained(|block| {
+                block.number = U256::from(12531083u64); // historical exception block
             })
             .modify_cfg_chained(|cfg| {
                 cfg.spec = OpSpecId::REGOLITH;
@@ -1530,6 +1561,9 @@ mod tests {
                 tx.op_tx.base.gas_limit = 30000;
                 tx.op_tx.base.gas_price = 30000000000;
                 tx.op_tx.enveloped_tx = Some(encoded);
+            })
+            .modify_block_chained(|block| {
+                block.number = U256::from(53619115u64); // historical exception block
             })
             .modify_cfg_chained(|cfg| {
                 cfg.spec = OpSpecId::REGOLITH;

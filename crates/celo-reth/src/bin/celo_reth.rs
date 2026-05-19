@@ -9,9 +9,38 @@ use celo_reth::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
     },
+    state_import::ImportCeloStateCommand,
 };
 use clap::Parser;
+use reth_cli_runner::CliRunner;
+use reth_node_core::args::LogArgs;
 use reth_optimism_cli::Cli;
+use reth_tracing::Layers;
+use std::ffi::OsString;
+
+/// Subcommand name for the Celo state import.
+const IMPORT_CELO_STATE: &str = "import-celo-state";
+
+/// Top-level Celo-only subcommand wrapper.
+///
+/// Used only when intercepting `import-celo-state` from the binary's argv before handing the
+/// rest of the CLI off to the upstream op-reth `Cli`.
+#[derive(Debug, Parser)]
+#[command(name = "celo-reth")]
+struct CeloCli {
+    #[command(subcommand)]
+    command: CeloCommand,
+
+    #[command(flatten)]
+    logs: LogArgs,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum CeloCommand {
+    /// Initialize a Celo Mainnet datadir from an L1 state dump.
+    #[command(name = IMPORT_CELO_STATE)]
+    ImportCeloState(Box<ImportCeloStateCommand>),
+}
 
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
@@ -49,6 +78,20 @@ fn main() {
         unsafe {
             std::env::set_var("RUST_BACKTRACE", "1");
         }
+    }
+
+    // Intercept `import-celo-state` before handing argv off to the upstream op-reth `Cli`,
+    // whose `Commands` enum we cannot extend. The subcommand must be `argv[1]` — global flags
+    // before it (e.g. `celo-reth -v import-celo-state ...`) are not supported and the
+    // subcommand is hidden from `celo-reth --help`. To lift either limitation we'd have to
+    // mirror op-reth's full `Commands` enum in this crate.
+    let argv: Vec<OsString> = std::env::args_os().collect();
+    if argv.get(1).is_some_and(|a| a == IMPORT_CELO_STATE) {
+        if let Err(err) = run_celo_subcommand(argv) {
+            eprintln!("Error: {err:?}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     if let Err(err) =
@@ -101,4 +144,21 @@ fn main() {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
+}
+
+/// Dispatch the Celo-specific subcommand path.
+///
+/// Initializes tracing standalone (without the OTLP layer the upstream `CliApp` adds — OTLP is
+/// of no use for an offline migration), then runs the parsed command on a tokio runtime.
+fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
+    let cli = CeloCli::parse_from(argv);
+    let _guard = cli.logs.init_tracing_with_layers(Layers::new(), false)?;
+
+    let runner = CliRunner::try_default_runtime()?;
+    let runtime = runner.runtime();
+    runner.run_blocking_until_ctrl_c(async move {
+        match cli.command {
+            CeloCommand::ImportCeloState(cmd) => cmd.execute(runtime).await,
+        }
+    })
 }

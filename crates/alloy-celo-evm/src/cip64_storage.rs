@@ -3,7 +3,7 @@
 //! This module provides a thread-safe storage mechanism for sharing CIP-64 transaction
 //! execution results between the EVM handler and the receipt builder.
 
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::Address;
 use celo_revm::Cip64Info;
 use revm::primitives::Log;
@@ -20,39 +20,55 @@ pub struct Cip64ReceiptData {
 
 /// Shared storage for CIP-64 transaction execution results.
 ///
-/// The `receipt_queue` is a FIFO consumed by the receipt builder as each CIP-64
-/// transaction is processed. The optional `all_entries` Vec (gated behind the
-/// `test-utils` feature) accumulates every entry without consuming them, and
-/// exists purely so test harnesses can inspect post-execution CIP-64 gas
-/// accounting. It must stay off in production: `store_cip64_info` runs on every
-/// CIP-64 tx, and an unbounded Vec on a long-running node would leak memory
-/// linearly with CIP-64 tx volume.
+/// `pending` is a single slot consumed by the receipt builder after each CIP-64
+/// transaction. The block executor is strictly serial — every `transact_raw`
+/// for a CIP-64 tx is followed by `build_receipt` for that same tx before the
+/// next `transact_raw` — so one slot is sufficient. Storing more than one
+/// entry would mean `transact_raw` ran twice without an intervening
+/// `build_receipt` (e.g. an executor that skips commit on a per-tx condition,
+/// retries, or parallelises), which would silently swap receipt logs / base
+/// fee between txs and corrupt the receipts root. `store_cip64_info` panics
+/// when the slot is already occupied to turn that silent corruption into a
+/// loud, immediate failure.
+///
+/// The optional `all_entries` Vec (gated behind the `test-utils` feature)
+/// accumulates every entry without consuming them, and exists purely so test
+/// harnesses can inspect post-execution CIP-64 gas accounting. It must stay
+/// off in production: `store_cip64_info` runs on every CIP-64 tx, and an
+/// unbounded Vec on a long-running node would leak memory linearly with
+/// CIP-64 tx volume.
 #[derive(Debug, Clone, Default)]
 pub struct Cip64Storage {
-    /// Queue of receipt data in transaction execution order (consumed by receipt builder).
-    receipt_queue: Arc<Mutex<VecDeque<Cip64ReceiptData>>>,
+    /// Single-slot pending receipt data (consumed by receipt builder).
+    pending: Arc<Mutex<Option<Cip64ReceiptData>>>,
     /// Accumulated entries for post-execution inspection (test-only).
     #[cfg(any(test, feature = "test-utils"))]
     all_entries: Arc<Mutex<Vec<Cip64ReceiptData>>>,
 }
 
 impl Cip64Storage {
-    /// Stores CIP-64 execution info for a transaction, enqueueing it for receipt building.
+    /// Stores CIP-64 execution info for a transaction, to be consumed by the next
+    /// `build_receipt` call.
+    ///
+    /// Panics if the slot is already occupied: that means the executor invoked
+    /// `transact_raw` for two CIP-64 txs without `build_receipt` running between
+    /// them, which would corrupt the second tx's receipt. Failing loud here
+    /// catches the bug at its source instead of at receipts-root divergence.
     pub fn store_cip64_info(&self, fee_currency: Option<Address>, info: Cip64Info) {
         let data = Cip64ReceiptData { fee_currency, cip64_info: info };
         #[cfg(any(test, feature = "test-utils"))]
         self.all_entries.lock().push(data.clone());
-        self.receipt_queue.lock().push_back(data);
+        let prev = self.pending.lock().replace(data);
+        assert!(
+            prev.is_none(),
+            "Cip64Storage: store_cip64_info called with slot occupied — \
+             executor invariant violated (transact_raw without intervening build_receipt)"
+        );
     }
 
-    /// Pops the next CIP-64 receipt data from the queue for receipt building.
+    /// Takes the pending CIP-64 receipt data for receipt building.
     pub fn pop_cip64_receipt_data(&self) -> Option<Cip64ReceiptData> {
-        self.receipt_queue.lock().pop_front()
-    }
-
-    /// Number of receipt entries waiting to be drained. Should be zero between blocks.
-    pub fn pending_receipt_count(&self) -> usize {
-        self.receipt_queue.lock().len()
+        self.pending.lock().take()
     }
 
     /// Returns all stored CIP-64 receipt data entries (not consumed by this call).
@@ -80,17 +96,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn receipt_queue_drained_by_pop() {
-        // Fundamental invariant: the consuming queue keeps no history of its
-        // own — once the receipt builder pops an entry, the queue shrinks.
-        // If this ever regressed, celo-reth would leak memory identically to
-        // the pre-fix `all_entries` case.
+    fn slot_drained_by_pop() {
         let storage = Cip64Storage::default();
-        for _ in 0..100 {
-            storage.store_cip64_info(None, Cip64Info::default());
-        }
-        assert_eq!(storage.receipt_queue.lock().len(), 100);
-        while storage.pop_cip64_receipt_data().is_some() {}
-        assert_eq!(storage.receipt_queue.lock().len(), 0);
+        storage.store_cip64_info(None, Cip64Info::default());
+        assert!(storage.pop_cip64_receipt_data().is_some());
+        assert!(storage.pop_cip64_receipt_data().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "store_cip64_info called with slot occupied")]
+    fn double_store_without_pop_panics() {
+        let storage = Cip64Storage::default();
+        storage.store_cip64_info(None, Cip64Info::default());
+        storage.store_cip64_info(None, Cip64Info::default());
     }
 }
