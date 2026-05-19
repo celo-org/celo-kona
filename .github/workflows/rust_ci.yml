@@ -82,12 +82,18 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # Pin the nightly that cargo-udeps runs under. The floating `nightly`
+      # channel rolled to a 2026-05-18 build that segfaults cargo-udeps during
+      # dependency resolution. Bump this date once a newer nightly is verified.
+      - uses: dtolnay/rust-toolchain@master
         with:
-          channel: nightly
+          toolchain: nightly-2026-05-17
       - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@cargo-udeps
       - name: cargo udeps
         run: just check-udeps
+        env:
+          CELO_UDEPS_TOOLCHAIN: nightly-2026-05-17
   cargo-hack:
     runs-on: ubuntu-latest
     timeout-minutes: 40
