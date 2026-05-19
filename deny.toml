@@ -82,16 +82,14 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
     "https://github.com/Layr-Labs/hokulea",
-    # celo-org fork at karlb/version-bump while a v1.5.0-compatible hokulea
+    # celo-org fork at karlb/version-bump while a v1.5.x-compatible hokulea
     # release is in flight.
     "https://github.com/celo-org/hokulea",
     "https://github.com/Layr-Labs/rust-kzg-bn254.git",
     "https://github.com/celo-org/alloy",
     # kona crates are pulled from the optimism monorepo via the
-    # kona-node/v1.5.0 tag, patched in Cargo.toml to a celo-org/optimism rev
-    # that cherry-picks f1930fa on top (kona-executor DestroyedChanged fix).
+    # kona-node/v1.5.1 tag.
     "https://github.com/ethereum-optimism/optimism",
-    "https://github.com/celo-org/optimism",
     # discv5 is pulled in transitively by reth-discv5 from a sigp git rev;
     # reth pins it directly rather than a crates.io release.
     "https://github.com/sigp/discv5",
