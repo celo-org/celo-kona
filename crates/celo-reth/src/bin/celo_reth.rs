@@ -2,8 +2,9 @@
 
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
+    CeloEvmConfig,
     chainspec::CeloChainSpecParser,
-    node::{CeloNode, RollupArgs},
+    node::{CeloConsensus, CeloNode, RollupArgs},
     payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
     rpc::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
@@ -12,19 +13,23 @@ use celo_reth::{
     state_import::ImportCeloStateCommand,
 };
 use clap::Parser;
+use reth_chainspec::EthChainSpec;
+use reth_cli_commands::stage;
 use reth_cli_runner::CliRunner;
 use reth_node_core::args::LogArgs;
+use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
 use reth_tracing::Layers;
-use std::ffi::OsString;
+use std::{ffi::OsString, sync::Arc};
 
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
+const STAGE: &str = "stage";
 
 /// Top-level Celo-only subcommand wrapper.
 ///
-/// Used only when intercepting `import-celo-state` from the binary's argv before handing the
-/// rest of the CLI off to the upstream op-reth `Cli`.
+/// Used only when intercepting Celo-owned paths from the binary's argv before handing the rest of
+/// the CLI off to the upstream op-reth `Cli`.
 #[derive(Debug, Parser)]
 #[command(name = "celo-reth")]
 struct CeloCli {
@@ -40,6 +45,18 @@ enum CeloCommand {
     /// Initialize a Celo Mainnet datadir from an L1 state dump.
     #[command(name = IMPORT_CELO_STATE)]
     ImportCeloState(Box<ImportCeloStateCommand>),
+    /// Manipulate individual stages using Celo primitives.
+    #[command(name = STAGE)]
+    Stage(Box<stage::Command<CeloChainSpecParser>>),
+}
+
+impl CeloCommand {
+    fn chain_spec(&self) -> Option<&Arc<OpChainSpec>> {
+        match self {
+            Self::ImportCeloState(_) => None,
+            Self::Stage(command) => command.chain_spec(),
+        }
+    }
 }
 
 #[global_allocator]
@@ -80,13 +97,13 @@ fn main() {
         }
     }
 
-    // Intercept `import-celo-state` before handing argv off to the upstream op-reth `Cli`,
-    // whose `Commands` enum we cannot extend. The subcommand must be `argv[1]` — global flags
-    // before it (e.g. `celo-reth -v import-celo-state ...`) are not supported and the
-    // subcommand is hidden from `celo-reth --help`. To lift either limitation we'd have to
-    // mirror op-reth's full `Commands` enum in this crate.
+    // Intercept Celo-specific command paths before handing argv off to the upstream op-reth `Cli`.
+    // The subcommand must be `argv[1]` — global flags before it (e.g.
+    // `celo-reth -v import-celo-state ...`) are not supported and these intercepted paths are
+    // hidden from `celo-reth --help`. To lift either limitation we'd have to mirror op-reth's full
+    // `Commands` enum in this crate.
     let argv: Vec<OsString> = std::env::args_os().collect();
-    if argv.get(1).is_some_and(|a| a == IMPORT_CELO_STATE) {
+    if argv.get(1).is_some_and(|a| a == IMPORT_CELO_STATE || a == STAGE) {
         if let Err(err) = run_celo_subcommand(argv) {
             eprintln!("Error: {err:?}");
             std::process::exit(1);
@@ -151,13 +168,21 @@ fn main() {
 /// Initializes tracing standalone (without the OTLP layer the upstream `CliApp` adds — OTLP is
 /// of no use for an offline migration), then runs the parsed command on a tokio runtime.
 fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
-    let cli = CeloCli::parse_from(argv);
+    let mut cli = CeloCli::parse_from(argv);
+    if let Some(chain_spec) = cli.command.chain_spec() {
+        cli.logs.log_file_directory =
+            cli.logs.log_file_directory.join(chain_spec.chain().to_string());
+    }
     let _guard = cli.logs.init_tracing_with_layers(Layers::new())?;
 
     let runner = CliRunner::try_default_runtime()?;
-    runner.run_blocking_until_ctrl_c(async move {
-        match cli.command {
-            CeloCommand::ImportCeloState(cmd) => cmd.execute().await,
+    match cli.command {
+        CeloCommand::ImportCeloState(cmd) => runner.run_blocking_until_ctrl_c(cmd.execute()),
+        CeloCommand::Stage(cmd) => {
+            let components = |spec: Arc<OpChainSpec>| {
+                (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
+            };
+            runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode, _>(ctx, components))
         }
-    })
+    }
 }
