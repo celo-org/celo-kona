@@ -210,7 +210,7 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: alloy_celo_evm::block::CeloReceiptBuilderExt
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
         + OpReceiptBuilder<
             Receipt: DepositReceipt,
             Transaction: SignedTransaction
@@ -304,7 +304,7 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: alloy_celo_evm::block::CeloReceiptBuilderExt
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
         + OpReceiptBuilder<
             Receipt: DepositReceipt,
             Transaction: SignedTransaction
@@ -335,7 +335,7 @@ where
         let evm = self.evm_for_block(db, block.header())?;
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
-        let builder = R::with_cip64_storage(evm.cip64_storage().clone());
+        let builder = R::from(evm.cip64_storage().clone());
 
         Ok(OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder))
     }
@@ -354,7 +354,7 @@ where
         let evm = self.evm_with_env(db, evm_env);
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
-        let builder = R::with_cip64_storage(evm.cip64_storage().clone());
+        let builder = R::from(evm.cip64_storage().clone());
         let executor = OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
 
         Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
@@ -378,7 +378,7 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: alloy_celo_evm::block::CeloReceiptBuilderExt
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
         + OpReceiptBuilder<
             Receipt: DepositReceipt,
             Transaction: SignedTransaction

@@ -1,6 +1,6 @@
 //! Block executor for Celo.
 
-pub use executor_factory::{CeloBlockExecutorFactory, CeloReceiptBuilderExt};
+pub use executor_factory::CeloBlockExecutorFactory;
 pub use receipt_builder::CeloAlloyReceiptBuilder;
 
 pub mod executor_factory;

@@ -8,7 +8,7 @@ use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
-use crate::{block::executor_factory::CeloReceiptBuilderExt, cip64_storage::Cip64Storage};
+use crate::cip64_storage::Cip64Storage;
 
 /// Receipt builder operating on celo-alloy types.
 ///
@@ -30,9 +30,9 @@ impl CeloAlloyReceiptBuilder {
     }
 }
 
-impl CeloReceiptBuilderExt for CeloAlloyReceiptBuilder {
-    fn with_cip64_storage(storage: Cip64Storage) -> Self {
-        Self::new(storage)
+impl From<Cip64Storage> for CeloAlloyReceiptBuilder {
+    fn from(cip64_storage: Cip64Storage) -> Self {
+        Self::new(cip64_storage)
     }
 }
 

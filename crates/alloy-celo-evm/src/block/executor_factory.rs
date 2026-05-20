@@ -27,16 +27,6 @@ use op_alloy_consensus::OpTransaction as OpConsensusTransaction;
 use op_revm::OpHaltReason;
 use revm::{Inspector, context::TxEnv};
 
-/// Constructor extension for Celo receipt builders.
-///
-/// [`CeloBlockExecutorFactory::create_executor`] re-instantiates the receipt builder once per
-/// block via [`with_cip64_storage`](CeloReceiptBuilderExt::with_cip64_storage), binding it to
-/// the executing EVM's own [`Cip64Storage`].
-pub trait CeloReceiptBuilderExt: OpReceiptBuilder {
-    /// Constructs a fresh builder that reads its CIP-64 receipt data from `storage`.
-    fn with_cip64_storage(storage: Cip64Storage) -> Self;
-}
-
 /// EVM factory used by [`CeloBlockExecutorFactory`]. Wraps [`CeloEvmFactory`] with
 /// [`PostExecEvmFactoryAdapter`] so the resulting EVM satisfies the `PostExecEvm` bound
 /// required by [`OpBlockExecutor`]. Post-exec is unscheduled on Celo; the adapter's hooks
@@ -89,10 +79,12 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
 
 impl<R, Spec> BlockExecutorFactory for CeloBlockExecutorFactory<R, Spec>
 where
-    R: CeloReceiptBuilderExt<
+    R: OpReceiptBuilder<
             Transaction: Transaction + Encodable2718 + OpConsensusTransaction,
             Receipt: TxReceipt,
-        > + Send
+        >
+        + From<Cip64Storage>
+        + Send
         + Sync
         + 'static,
     Spec: OpHardforks + Clone + Send + Sync + 'static,
@@ -124,8 +116,7 @@ where
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         // The post-exec adapter is transparent to `cip64_storage` (accessor passes through
         // to the inner `CeloEvm`).
-        let storage = evm.cip64_storage().clone();
-        let builder = R::with_cip64_storage(storage);
+        let builder = R::from(evm.cip64_storage().clone());
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }

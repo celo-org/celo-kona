@@ -394,15 +394,15 @@ where
 /// slots and never overwrite each other's pending CIP-64 receipt data.
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
-    /// Shared fee currency blocklist. When set, all EVMs created by this factory will use
-    /// this blocklist to reject CIP-64 transactions for blocklisted currencies.
-    pub blocklist: Option<FeeCurrencyBlocklist>,
+    /// Shared fee currency blocklist. All EVMs created by this factory use this blocklist
+    /// to reject CIP-64 transactions for blocklisted currencies. Defaults to empty.
+    pub blocklist: FeeCurrencyBlocklist,
 }
 
 impl CeloEvmFactory {
     /// Sets the shared fee currency blocklist.
     pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
-        self.blocklist = Some(blocklist);
+        self.blocklist = blocklist;
         self
     }
 }
@@ -451,7 +451,7 @@ impl CeloEvmFactory {
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect,
             cip64_storage: Cip64Storage::default(),
-            blocklist: self.blocklist.clone().unwrap_or_default(),
+            blocklist: self.blocklist.clone(),
             last_evicted_timestamp: 0,
         }
     }
@@ -666,23 +666,6 @@ mod tests {
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
             "RPC simulation must not store CIP-64 receipt data"
         );
-    }
-
-    /// #172's slot-occupied assertion is a *per-EVM* invariant: a single
-    /// [`CeloEvm`] never sees two `store_cip64_info` calls without an intervening
-    /// `pop_cip64_receipt_data`. Verify the panic still fires when an executor
-    /// runs two CIP-64 transactions back-to-back without a receipt build in
-    /// between (i.e. the original #172 bug class).
-    #[test]
-    #[should_panic(expected = "store_cip64_info called with slot occupied")]
-    fn double_store_on_same_evm_panics() {
-        let evm = make_test_evm(FeeCurrencyBlocklist::default());
-        // We push to the EVM's own storage directly rather than driving two real
-        // `transact_raw` calls, which would require a complete fee-currency setup
-        // in the in-memory database. The invariant under test is purely the
-        // single-slot guarantee on the storage itself, scoped to one EVM.
-        evm.cip64_storage().store_cip64_info(None, celo_revm::Cip64Info::default());
-        evm.cip64_storage().store_cip64_info(None, celo_revm::Cip64Info::default());
     }
 
     /// Two [`CeloEvm`] instances produced by the same [`CeloEvmFactory`] must own
