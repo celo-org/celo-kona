@@ -19,7 +19,6 @@ use alloy_evm::{
 use alloy_op_evm::{
     OpBlockExecutionCtx, OpBlockExecutor,
     block::{OpTxResult, receipt_builder::OpReceiptBuilder},
-    post_exec::PostExecEvmFactoryAdapter,
 };
 use alloy_op_hardforks::OpHardforks;
 use celo_revm::{CeloContext, CeloTransaction};
@@ -27,22 +26,16 @@ use op_alloy_consensus::OpTransaction as OpConsensusTransaction;
 use op_revm::OpHaltReason;
 use revm::{Inspector, context::TxEnv};
 
-/// EVM factory used by [`CeloBlockExecutorFactory`]. Wraps [`CeloEvmFactory`] with
-/// [`PostExecEvmFactoryAdapter`] so the resulting EVM satisfies the `PostExecEvm` bound
-/// required by [`OpBlockExecutor`]. Post-exec is unscheduled on Celo; the adapter's hooks
-/// are no-ops (see `PostExecEvmFactoryHooks for CeloEvmFactory` in `alloy-celo-evm`).
-type CeloPostExecFactory = PostExecEvmFactoryAdapter<CeloEvmFactory>;
-
 /// Celo block executor factory.
 ///
 /// Behaves like [`alloy_op_evm::OpBlockExecutorFactory`] but rebuilds `R` per call to
 /// [`create_executor`](BlockExecutorFactory::create_executor) so the receipt builder is always
 /// bound to the EVM's own [`Cip64Storage`]. The `R` type parameter is the runtime receipt
 /// builder used by [`OpBlockExecutor`]; the factory itself never holds an instance of `R`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CeloBlockExecutorFactory<R, Spec> {
     spec: Spec,
-    evm_factory: CeloPostExecFactory,
+    evm_factory: CeloEvmFactory,
     _phantom: core::marker::PhantomData<fn() -> R>,
 }
 
@@ -58,12 +51,8 @@ impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
 
 impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
     /// Creates a new factory with the given chain spec and EVM factory.
-    pub fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
-        Self {
-            spec,
-            evm_factory: PostExecEvmFactoryAdapter::new(evm_factory),
-            _phantom: core::marker::PhantomData,
-        }
+    pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
+        Self { spec, evm_factory, _phantom: core::marker::PhantomData }
     }
 
     /// Exposes the chain specification.
@@ -71,8 +60,8 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         &self.spec
     }
 
-    /// Exposes the EVM factory (wrapped in the post-exec adapter).
-    pub const fn evm_factory(&self) -> &CeloPostExecFactory {
+    /// Exposes the EVM factory.
+    pub const fn evm_factory(&self) -> &CeloEvmFactory {
         &self.evm_factory
     }
 }
@@ -82,22 +71,21 @@ where
     R: OpReceiptBuilder<
             Transaction: Transaction + Encodable2718 + OpConsensusTransaction,
             Receipt: TxReceipt,
-        >
-        + From<Cip64Storage>
+        > + From<Cip64Storage>
         + Send
         + Sync
         + 'static,
     Spec: OpHardforks + Clone + Send + Sync + 'static,
     CeloTransaction<TxEnv>: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
 {
-    type EvmFactory = CeloPostExecFactory;
+    type EvmFactory = CeloEvmFactory;
     type ExecutionCtx<'a> = OpBlockExecutionCtx;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
     type TxExecutionResult =
         OpTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
     type Executor<'a, DB: StateDB, I: Inspector<CeloContext<DB>>> =
-        OpBlockExecutor<<CeloPostExecFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
+        OpBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.evm_factory
@@ -114,8 +102,6 @@ where
     {
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
-        // The post-exec adapter is transparent to `cip64_storage` (accessor passes through
-        // to the inner `CeloEvm`).
         let builder = R::from(evm.cip64_storage().clone());
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }

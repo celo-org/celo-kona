@@ -355,7 +355,8 @@ where
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
-        let executor = OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
+        let executor =
+            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
 
         Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,

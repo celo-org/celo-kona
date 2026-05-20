@@ -12,7 +12,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{
     OpTxError, map_op_err,
-    post_exec::{PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext},
+    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext},
 };
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
@@ -488,22 +488,17 @@ impl EvmFactory for CeloEvmFactory {
 }
 
 // SDM/post-exec is unscheduled on Celo: `RollupConfig::is_sdm_active` is hard-wired to `false`
-// upstream, and Celo has no plans to activate it. These hooks are wired up so that
-// `CeloEvmFactory` can be wrapped in `PostExecEvmFactoryAdapter` and satisfy the
-// `BlockExecutorFactory` impl in alloy-op-evm 0.32, but they should never be called in practice.
-impl PostExecEvmFactoryHooks for CeloEvmFactory {
-    fn begin_post_exec_tx<DB, I>(_evm: &mut Self::Evm<DB, I>, _ctx: PostExecTxContext)
-    where
-        DB: Database,
-        I: Inspector<Self::Context<DB>>,
-    {
-    }
+// upstream, and Celo has no plans to activate it. This impl exists only so `CeloEvm` satisfies
+// the `PostExecEvm` bound that `OpBlockExecutor: BlockExecutor` requires (mirroring the direct
+// `PostExecEvm for OpEvm` impl in alloy-op-evm). The methods should never be called in practice.
+impl<DB, I, P> PostExecEvm for CeloEvm<DB, I, P>
+where
+    DB: Database,
+    Self: Evm,
+{
+    fn begin_post_exec_tx(&mut self, _ctx: PostExecTxContext) {}
 
-    fn take_last_post_exec_tx_result<DB, I>(_evm: &mut Self::Evm<DB, I>) -> PostExecExecutedTx
-    where
-        DB: Database,
-        I: Inspector<Self::Context<DB>>,
-    {
+    fn take_last_post_exec_tx_result(&mut self) -> PostExecExecutedTx {
         PostExecExecutedTx::default()
     }
 }
