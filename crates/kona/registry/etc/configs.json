@@ -18,7 +18,6 @@
           "holocene_time": 1736445601,
           "isthmus_time": 1746806401
         },
-        "protocol_versions_addr": "0x1b6deb2197418075ab314ac4d52ca1d104a8f663",
         "op_contracts_manager_proxy_addr": null
       },
       "chains": [
@@ -121,7 +120,6 @@
           "explorer": "https://sepolia.etherscan.io"
         },
         "hardforks": {},
-        "protocol_versions_addr": "0x0e2d45f3393c3a02ebf285f998c5bf990a1541cd",
         "op_contracts_manager_proxy_addr": null
       },
       "chains": [

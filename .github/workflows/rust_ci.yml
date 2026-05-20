@@ -82,12 +82,18 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # Pin the nightly that cargo-udeps runs under. The floating `nightly`
+      # channel rolled to a 2026-05-18 build that segfaults cargo-udeps during
+      # dependency resolution. Bump this date once a newer nightly is verified.
+      - uses: dtolnay/rust-toolchain@master
         with:
-          channel: nightly
+          toolchain: nightly-2026-05-17
       - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@cargo-udeps
       - name: cargo udeps
         run: just check-udeps
+        env:
+          CELO_UDEPS_TOOLCHAIN: nightly-2026-05-17
   cargo-hack:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -108,15 +114,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install mold linker
         uses: rui314/setup-mold@v1
-      # `rust-toolchain.toml` pins the workspace to 1.92, so cargo auto-switches
+      # `rust-toolchain.toml` pins the workspace to 1.94, so cargo auto-switches
       # to that channel regardless of which toolchain is installed here. Install
-      # 1.92 explicitly *and* add the riscv32imac-unknown-none-elf target for
-      # it — otherwise adding the target against `stable` leaves 1.92 without
+      # 1.94 explicitly *and* add the riscv32imac-unknown-none-elf target for
+      # it — otherwise adding the target against `stable` leaves 1.94 without
       # a sysroot for the target and every cross build fails with
       # `error[E0463]: can't find crate for 'core'`.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.92"
+          toolchain: "1.94"
           target: riscv32imac-unknown-none-elf
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2

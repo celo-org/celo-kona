@@ -16,14 +16,12 @@ workspace = true
 [dependencies]
 # Workspace
 celo-alloy-consensus.workspace = true
-celo-alloy-rpc-types.workspace = true
+celo-alloy-rpc-types = { workspace = true, features = ["std"] }
 
 # Alloy
 alloy-consensus.workspace = true
 alloy-network.workspace = true
-alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
-alloy-signer.workspace = true
 
 [features]
 std = [

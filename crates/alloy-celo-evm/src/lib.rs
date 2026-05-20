@@ -10,7 +10,10 @@ use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
     precompiles::{DynPrecompile, PrecompilesMap},
 };
-use alloy_op_evm::{OpTxError, map_op_err};
+use alloy_op_evm::{
+    OpTxError, map_op_err,
+    post_exec::{PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext},
+};
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
@@ -32,7 +35,7 @@ use revm::{
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
-    precompile::{PrecompileError, PrecompileOutput},
+    precompile::{PrecompileHalt, PrecompileOutput},
 };
 
 pub mod block;
@@ -89,24 +92,31 @@ fn transfer_precompile(
     mut input: alloy_evm::precompiles::PrecompileInput<'_>,
 ) -> revm::precompile::PrecompileResult {
     if input.is_static {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "transfer precompile cannot be called in static context",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed(
+                "transfer precompile cannot be called in static context",
+            )),
+            0,
+        ));
     }
 
     if input.gas < TRANSFER_GAS_COST {
-        return Err(PrecompileError::OutOfGas);
+        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
     }
 
     let chain_id = input.internals.chain_id();
     if input.caller != constants::get_addresses(chain_id).celo_token {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "invalid caller for transfer precompile",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid caller for transfer precompile")),
+            0,
+        ));
     }
 
     if input.data.len() != 96 {
-        return Err(PrecompileError::Other(Cow::Borrowed("invalid input length")));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid input length")),
+            0,
+        ));
     }
 
     let from = Address::from_slice(&input.data[12..32]);
@@ -129,13 +139,15 @@ fn transfer_precompile(
     }
 
     match result {
-        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new())),
-        Ok(Some(transfer_err)) => Err(PrecompileError::Other(Cow::Owned(format!(
-            "transfer error occurred: {transfer_err:?}"
-        )))),
-        Err(db_err) => {
-            Err(PrecompileError::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))))
-        }
+        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0)),
+        Ok(Some(transfer_err)) => Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!("transfer error occurred: {transfer_err:?}"))),
+            0,
+        )),
+        Err(db_err) => Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
+            0,
+        )),
     }
 }
 
@@ -235,6 +247,10 @@ where
 
     fn block(&self) -> &BlockEnv {
         &self.block
+    }
+
+    fn cfg_env(&self) -> &revm::context::CfgEnv<OpSpecId> {
+        &self.cfg
     }
 
     fn chain_id(&self) -> u64 {
@@ -469,6 +485,27 @@ impl EvmFactory for CeloEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         self.build_evm(db, input, inspector, true)
+    }
+}
+
+// SDM/post-exec is unscheduled on Celo: `RollupConfig::is_sdm_active` is hard-wired to `false`
+// upstream, and Celo has no plans to activate it. These hooks are wired up so that
+// `CeloEvmFactory` can be wrapped in `PostExecEvmFactoryAdapter` and satisfy the
+// `BlockExecutorFactory` impl in alloy-op-evm 0.32, but they should never be called in practice.
+impl PostExecEvmFactoryHooks for CeloEvmFactory {
+    fn begin_post_exec_tx<DB, I>(_evm: &mut Self::Evm<DB, I>, _ctx: PostExecTxContext)
+    where
+        DB: Database,
+        I: Inspector<Self::Context<DB>>,
+    {
+    }
+
+    fn take_last_post_exec_tx_result<DB, I>(_evm: &mut Self::Evm<DB, I>) -> PostExecExecutedTx
+    where
+        DB: Database,
+        I: Inspector<Self::Context<DB>>,
+    {
+        PostExecExecutedTx::default()
     }
 }
 

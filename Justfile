@@ -9,6 +9,10 @@ alias h := hack
 
 exclude_members := "--exclude celo-registry --exclude execution-fixture"
 
+# Toolchain for `check-udeps`. CI pins this to a known-good nightly via the
+# CELO_UDEPS_TOOLCHAIN env var; locally it defaults to the `nightly` channel.
+udeps_toolchain := env_var_or_default("CELO_UDEPS_TOOLCHAIN", "nightly")
+
 # default recipe to display help information
 default:
   @just --list
@@ -54,7 +58,7 @@ build-native *args='':
 
 # Check for unused dependencies in the crate graph.
 check-udeps:
-  cargo +nightly udeps --workspace --all-features --all-targets
+  cargo +{{udeps_toolchain}} udeps --workspace --all-features --all-targets
 
 # Release a new version (dry-run by default)
 # Requires: cargo install cargo-release@0.25.20 --locked

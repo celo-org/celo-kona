@@ -56,12 +56,12 @@ use alloy_rlp::{BufMut, Decodable, Encodable};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, CeloTxType, TxCip64};
 use celo_revm::CeloTransaction;
 use core::hash::{Hash, Hasher};
-use op_alloy_consensus::{OpTransaction, TxDeposit};
+use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
 use reth_codecs::{
     Compact,
     alloy::transaction::{CompactEnvelope, Envelope, FromTxCompact, ToTxCompact},
 };
-use reth_primitives_traits::{InMemorySize, SignedTransaction, serde_bincode_compat::RlpBincode};
+use reth_primitives_traits::InMemorySize;
 use revm::context::TxEnv;
 
 /// Celo consensus transaction type used as `NodePrimitives::SignedTx`.
@@ -129,6 +129,19 @@ impl CeloConsensusTx {
 impl From<CeloTxEnvelope> for CeloConsensusTx {
     fn from(inner: CeloTxEnvelope) -> Self {
         Self::new(inner)
+    }
+}
+
+// SDM post-exec txs are unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
+// so this conversion is never invoked in practice. Provided to satisfy the
+// `PayloadBuilderBuilder` trait bound `TxTy<Node::Types>: From<Sealed<TxPostExec>>` introduced in
+// kona-node v1.5.0 / op-reth v2.2.2.
+impl From<Sealed<TxPostExec>> for CeloConsensusTx {
+    fn from(_value: Sealed<TxPostExec>) -> Self {
+        unreachable!(
+            "SDM post-exec transactions are not supported on Celo; \
+             `RollupConfig::is_sdm_active` always returns false."
+        )
     }
 }
 
@@ -368,6 +381,10 @@ impl OpTransaction for CeloConsensusTx {
     fn as_deposit(&self) -> Option<&Sealed<TxDeposit>> {
         self.inner.as_deposit()
     }
+
+    fn as_post_exec(&self) -> Option<&Sealed<op_alloy_consensus::TxPostExec>> {
+        None
+    }
 }
 
 impl TxHashRef for CeloConsensusTx {
@@ -388,7 +405,7 @@ impl SignerRecoverable for CeloConsensusTx {
     }
 }
 
-impl SignedTransaction for CeloConsensusTx {}
+// `SignedTransaction` is now blanket-implemented in reth-primitives-traits 0.3.
 
 impl TransactionEnvelope for CeloConsensusTx {
     type TxType = CeloTxType;
@@ -482,12 +499,14 @@ impl Compact for CeloConsensusTx {
     }
 }
 
-impl RlpBincode for CeloConsensusTx {}
+// `RlpBincode`/`SerdeBincodeCompat` removed upstream in reth v2; see
+// celo-alloy-consensus/src/reth_compat.rs for context.
 
 // ---------------------------------------------------------------------------
 // Database compression: mirrors the CeloTxEnvelope impls in celo-alloy-consensus.
 // ---------------------------------------------------------------------------
 
+use reth_codecs::DecompressError;
 use reth_db_api::table::{Compress, Decompress};
 
 impl Compress for CeloConsensusTx {
@@ -499,7 +518,7 @@ impl Compress for CeloConsensusTx {
 }
 
 impl Decompress for CeloConsensusTx {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         let (obj, _) = Compact::from_compact(value, value.len());
         Ok(obj)
     }
@@ -556,7 +575,7 @@ mod tests {
     use super::*;
 
     fn _assert_bounds() {
-        fn needs_signed_tx<T: SignedTransaction>() {}
+        fn needs_signed_tx<T: reth_primitives_traits::SignedTransaction>() {}
         needs_signed_tx::<CeloConsensusTx>();
     }
 }

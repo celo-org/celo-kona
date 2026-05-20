@@ -68,6 +68,7 @@ where
     /// - `Ok((l2_safe_head, output_root))` - A tuple containing the [L2BlockInfo] of the produced
     ///   block and the output root.
     /// - `Err(e)` - An error if the block could not be produced.
+    #[allow(clippy::result_large_err)]
     pub async fn advance_to_target(
         &mut self,
         cfg: &CeloRollupConfig,

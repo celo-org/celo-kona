@@ -8,7 +8,7 @@ use alloy_consensus::{
 #[cfg(feature = "k256")]
 use alloy_primitives::Address;
 use alloy_primitives::{B256, Bytes, Signature};
-use op_alloy_consensus::TxDeposit;
+use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
 
 /// The Ethereum [EIP-2718] Transaction Envelope, modified for Celo.
 ///
@@ -149,6 +149,27 @@ impl TryFrom<CeloTxEnvelope> for Signed<CeloTypedTransaction> {
 
     fn try_from(value: CeloTxEnvelope) -> Result<Self, Self::Error> {
         value.try_into_signed()
+    }
+}
+
+// =============================================================================
+// CeloTxEnvelope: op-alloy OpTransaction
+// =============================================================================
+
+impl OpTransaction for CeloTxEnvelope {
+    fn is_deposit(&self) -> bool {
+        matches!(self, Self::Deposit(_))
+    }
+
+    fn as_deposit(&self) -> Option<&Sealed<TxDeposit>> {
+        match self {
+            Self::Deposit(tx) => Some(tx),
+            _ => None,
+        }
+    }
+
+    fn as_post_exec(&self) -> Option<&Sealed<TxPostExec>> {
+        None
     }
 }
 

@@ -22,13 +22,20 @@ use {
 
 use alloc::sync::Arc;
 use alloy_consensus::{BlockHeader, Header};
-use alloy_evm::{EvmFactory, FromRecoveredTx, FromTxWithEncoded, precompiles::PrecompilesMap};
+use alloy_evm::{
+    EvmFactory, FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut as TransactionEnv,
+    block::BlockExecutorFactory, precompiles::PrecompilesMap,
+};
 use alloy_op_evm::block::{OpTxEnv, receipt_builder::OpReceiptBuilder};
 use core::fmt::Debug;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{ConfigureEvm, EvmEnv, TransactionEnv, eth::NextEvmEnvAttributes};
+use reth_evm::{
+    ConfigureEvm, Database, EvmEnv,
+    eth::NextEvmEnvAttributes,
+    execute::{BasicBlockBuilder, BlockBuilder, BlockExecutor},
+};
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
@@ -65,19 +72,25 @@ pub use receipt::CeloReceipt;
 pub use receipts::CeloRethReceiptBuilder;
 
 // Re-export block assembler and execution context from op-reth (same for Celo as OP Stack).
+pub use alloy_op_evm::{
+    OpBlockExecutor,
+    post_exec::{PostExecEvmFactoryHooks, PostExecExecutorExt},
+};
 pub use reth_optimism_evm::{
-    OpBlockAssembler, OpBlockExecutionCtx, OpBlockExecutorFactory, OpNextBlockEnvAttributes, l1,
+    ConfigurePostExecEvm, OpBlockAssembler, OpBlockExecutionCtx, OpBlockExecutorFactory,
+    OpNextBlockEnvAttributes, PostExecMode, l1,
 };
 
 // Re-export Celo EVM types.
 pub use alloy_celo_evm::{CeloEvm, CeloEvmFactory};
+pub use alloy_op_evm::post_exec::PostExecEvmFactoryAdapter;
 
 use reth_optimism_primitives::DepositReceipt;
 
 #[cfg(feature = "std")]
 use {
-    op_alloy_rpc_types_engine::OpExecutionData,
     reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor},
+    reth_optimism_payload_builder::OpExecData,
     reth_primitives_traits::TxTy,
 };
 
@@ -110,7 +123,7 @@ pub struct CeloEvmConfig<
     ChainSpec = OpChainSpec,
     N: NodePrimitives = CeloPrimitives,
     R = CeloRethReceiptBuilder,
-    EvmFactory = CeloEvmFactory,
+    EvmFactory = PostExecEvmFactoryAdapter<CeloEvmFactory>,
 > {
     /// Inner [`OpBlockExecutorFactory`].
     pub executor_factory: OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmFactory>,
@@ -153,7 +166,11 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
             CeloEvmFactory::with_cip64_storage(cip64_storage).with_blocklist(blocklist);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: OpBlockExecutorFactory::new(receipt_builder, chain_spec, evm_factory),
+            executor_factory: OpBlockExecutorFactory::new(
+                receipt_builder,
+                chain_spec,
+                PostExecEvmFactoryAdapter::new(evm_factory),
+            ),
             _pd: core::marker::PhantomData,
         }
     }
@@ -167,6 +184,35 @@ where
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         self.executor_factory.spec()
+    }
+
+    /// Builds a block execution context with an optional post-exec mode override.
+    pub fn context_for_block_with_post_exec_mode(
+        &self,
+        block: &SealedBlock<N::Block>,
+        post_exec_mode: Option<PostExecMode>,
+    ) -> OpBlockExecutionCtx {
+        OpBlockExecutionCtx {
+            parent_hash: block.header().parent_hash(),
+            parent_beacon_block_root: block.header().parent_beacon_block_root(),
+            extra_data: block.header().extra_data().clone(),
+            post_exec_mode: post_exec_mode.unwrap_or_default(),
+        }
+    }
+
+    /// Builds a next-block execution context with the provided post-exec mode.
+    pub fn context_for_next_block_with_post_exec_mode(
+        &self,
+        parent: &SealedHeader<N::BlockHeader>,
+        attributes: OpNextBlockEnvAttributes,
+        post_exec_mode: PostExecMode,
+    ) -> OpBlockExecutionCtx {
+        OpBlockExecutionCtx {
+            parent_hash: parent.hash(),
+            parent_beacon_block_root: attributes.parent_beacon_block_root,
+            extra_data: attributes.extra_data,
+            post_exec_mode,
+        }
     }
 }
 
@@ -190,6 +236,12 @@ where
             BlockEnv = BlockEnv,
             Precompiles = PrecompilesMap,
         > + Debug,
+    OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmF>: for<'a> BlockExecutorFactory<
+            EvmFactory = EvmF,
+            ExecutionCtx<'a> = OpBlockExecutionCtx,
+            Transaction = R::Transaction,
+            Receipt = R::Receipt,
+        >,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     type Primitives = N;
@@ -226,6 +278,7 @@ where
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
                 gas_limit: attributes.gas_limit,
+                slot_number: None,
             },
             celo_next_block_base_fee(self.chain_spec(), parent, attributes.timestamp)
                 .unwrap_or_default(),
@@ -242,6 +295,9 @@ where
             parent_hash: block.header().parent_hash(),
             parent_beacon_block_root: block.header().parent_beacon_block_root(),
             extra_data: block.header().extra_data().clone(),
+            // SDM is unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
+            // so post-exec verification never runs.
+            post_exec_mode: PostExecMode::default(),
         })
     }
 
@@ -254,13 +310,109 @@ where
             parent_hash: parent.hash(),
             parent_beacon_block_root: attributes.parent_beacon_block_root,
             extra_data: attributes.extra_data,
+            post_exec_mode: PostExecMode::default(),
+        })
+    }
+}
+
+impl<ChainSpec, N, R, F> ConfigurePostExecEvm
+    for CeloEvmConfig<ChainSpec, N, R, PostExecEvmFactoryAdapter<F>>
+where
+    ChainSpec: EthChainSpec<Header = Header> + OpHardforks + Send + Sync + Unpin + 'static,
+    N: NodePrimitives<
+            Receipt = R::Receipt,
+            SignedTx = R::Transaction,
+            BlockHeader = Header,
+            BlockBody = alloy_consensus::BlockBody<R::Transaction>,
+            Block = alloy_consensus::Block<R::Transaction>,
+        >,
+    R: OpReceiptBuilder<
+            Receipt: DepositReceipt,
+            Transaction: SignedTransaction + op_alloy_consensus::OpTransaction,
+        > + Clone
+        + Send
+        + Sync
+        + Unpin
+        + 'static,
+    F: PostExecEvmFactoryHooks<
+            Tx: FromRecoveredTx<R::Transaction>
+                    + FromTxWithEncoded<R::Transaction>
+                    + TransactionEnv
+                    + OpTxEnv,
+            Precompiles = PrecompilesMap,
+            Spec = OpSpecId,
+            BlockEnv = BlockEnv,
+        > + Debug
+        + Clone
+        + Send
+        + Sync
+        + Unpin
+        + 'static,
+    Self: Send + Sync + Unpin + Clone + 'static,
+{
+    fn post_exec_executor_for_block<'a, DB: Database>(
+        &'a self,
+        db: &'a mut revm::database::State<DB>,
+        block: &'a SealedBlock<<Self::Primitives as NodePrimitives>::Block>,
+        post_exec_mode: PostExecMode,
+    ) -> Result<
+        impl BlockExecutor<
+            Transaction = <Self::Primitives as NodePrimitives>::SignedTx,
+            Receipt = <Self::Primitives as NodePrimitives>::Receipt,
+        > + PostExecExecutorExt
+        + 'a,
+        Self::Error,
+    > {
+        let evm = self.evm_for_block(db, block.header())?;
+        let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
+
+        Ok(OpBlockExecutor::new(
+            evm,
+            ctx,
+            self.executor_factory.spec(),
+            self.executor_factory.receipt_builder(),
+        ))
+    }
+
+    fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
+        &'a self,
+        db: &'a mut revm::database::State<DB>,
+        parent: &'a SealedHeader<<Self::Primitives as NodePrimitives>::BlockHeader>,
+        attributes: Self::NextBlockEnvCtx,
+        post_exec_mode: PostExecMode,
+    ) -> Result<
+        impl BlockBuilder<Primitives = Self::Primitives, Executor: PostExecExecutorExt> + 'a,
+        Self::Error,
+    > {
+        let evm_env = self.next_evm_env(parent, &attributes)?;
+        let evm = self.evm_with_env(db, evm_env);
+        let ctx =
+            self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
+        let executor = OpBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            self.executor_factory.spec(),
+            self.executor_factory.receipt_builder(),
+        );
+
+        Ok(BasicBlockBuilder::<
+            'a,
+            OpBlockExecutorFactory<R, Arc<ChainSpec>, PostExecEvmFactoryAdapter<F>>,
+            _,
+            _,
+            N,
+        > {
+            executor,
+            transactions: alloc::vec::Vec::new(),
+            ctx,
+            parent,
+            assembler: self.block_assembler(),
         })
     }
 }
 
 #[cfg(feature = "std")]
-impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecutionData>
-    for CeloEvmConfig<ChainSpec, N, R, EvmF>
+impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecData> for CeloEvmConfig<ChainSpec, N, R, EvmF>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
@@ -280,12 +432,15 @@ where
             BlockEnv = BlockEnv,
             Precompiles = PrecompilesMap,
         > + Debug,
+    OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmF>: for<'a> BlockExecutorFactory<
+            EvmFactory = EvmF,
+            ExecutionCtx<'a> = OpBlockExecutionCtx,
+            Transaction = R::Transaction,
+            Receipt = R::Receipt,
+        >,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
-    fn evm_env_for_payload(
-        &self,
-        payload: &OpExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
+    fn evm_env_for_payload(&self, payload: &OpExecData) -> Result<EvmEnvFor<Self>, Self::Error> {
         use alloy_primitives::U256;
         use revm::{
             context::CfgEnv, context_interface::block::BlobExcessGasAndPrice,
@@ -319,6 +474,7 @@ where
             gas_limit: payload.payload.as_v1().gas_limit,
             basefee: payload.payload.as_v1().base_fee_per_gas.to(),
             blob_excess_gas_and_price,
+            slot_num: 0,
         };
 
         Ok(alloy_evm::EvmEnv { cfg_env, block_env })
@@ -326,18 +482,19 @@ where
 
     fn context_for_payload<'a>(
         &self,
-        payload: &'a OpExecutionData,
+        payload: &'a OpExecData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(OpBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: payload.sidecar.parent_beacon_block_root(),
             extra_data: payload.payload.as_v1().extra_data.clone(),
+            post_exec_mode: PostExecMode::default(),
         })
     }
 
     fn tx_iterator_for_payload(
         &self,
-        payload: &OpExecutionData,
+        payload: &OpExecData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         use alloy_primitives::Bytes;
         use reth_primitives_traits::WithEncoded;

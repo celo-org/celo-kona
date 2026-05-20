@@ -145,11 +145,10 @@ where
     match exec_result {
         ExecutionResult::Success {
             output: Output::Call(bytes),
-            gas_used,
-            gas_refunded,
+            gas,
             logs,
             ..
-        } => Ok((bytes, logs, gas_used, gas_refunded)),
+        } => Ok((bytes, logs, gas.tx_gas_used(), gas.inner_refunded())),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),

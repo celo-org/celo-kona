@@ -152,12 +152,13 @@ fn main() {
 /// of no use for an offline migration), then runs the parsed command on a tokio runtime.
 fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
     let cli = CeloCli::parse_from(argv);
-    let _guard = cli.logs.init_tracing_with_layers(Layers::new())?;
+    let _guard = cli.logs.init_tracing_with_layers(Layers::new(), false)?;
 
     let runner = CliRunner::try_default_runtime()?;
+    let runtime = runner.runtime();
     runner.run_blocking_until_ctrl_c(async move {
         match cli.command {
-            CeloCommand::ImportCeloState(cmd) => cmd.execute().await,
+            CeloCommand::ImportCeloState(cmd) => cmd.execute(runtime).await,
         }
     })
 }

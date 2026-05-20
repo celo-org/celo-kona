@@ -27,7 +27,8 @@ pub(crate) fn execute<T: Into<Bytes>>(address: Address, input: T, gas: u64) -> R
     if let Some(precompile) =
         ACCELERATED_PRECOMPILES.iter().find(|precompile| *precompile.address() == address)
     {
-        let output = precompile.precompile()(&input.into(), gas)
+        let output = precompile
+            .execute(&input.into(), gas, 0)
             .map_err(|e| anyhow!("Failed precompile execution: {e}"))?;
 
         Ok(output.bytes.into())

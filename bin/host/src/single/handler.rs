@@ -9,15 +9,11 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_alloy_rpc_types_engine::OpPayloadAttributes;
 #[cfg(feature = "eigenda")]
-use hokulea_host_bin::{cfg::SingleChainProvidersWithEigenDA, handler::fetch_eigenda_hint};
+use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
-#[cfg(feature = "eigenda")]
-use kona_host::eth::rpc_provider;
-#[cfg(feature = "eigenda")]
-use kona_host::single::SingleChainProviders;
 use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
@@ -45,29 +41,11 @@ impl HintHandler for CeloSingleChainHintHandler {
                 Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
             }
             ExtendedHintType::EigenDACert => {
-                fetch_eigenda_hint(
-                    hint,
-                    &SingleChainProvidersWithEigenDA {
-                        kona_providers: SingleChainProviders {
-                            l1: providers.l1.clone(),
-                            l2: rpc_provider(
-                                &cfg.kona_cfg
-                                    .l2_node_address
-                                    .clone()
-                                    .ok_or(anyhow!("L2 node address must be set"))?,
-                            )
-                            .await,
-                            blobs: providers.blobs.clone(),
-                        },
-                        eigenda_preimage_provider: providers
-                            .eigenda_preimage_provider
-                            .as_ref()
-                            .ok_or(anyhow!("Eigen DA blob provider must be set"))?
-                            .clone(),
-                    },
-                    kv,
-                )
-                .await
+                let eigenda_provider = providers
+                    .eigenda_preimage_provider
+                    .as_ref()
+                    .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
+                fetch_eigenda_hint(hint.data, eigenda_provider, kv).await
             }
         }
     }
@@ -278,16 +256,28 @@ impl CeloSingleChainHintHandler {
                 kv_write_lock.set(PreimageKey::new_keccak256(*hash).into(), preimage.into())?;
             }
             HintType::L2AccountProof => {
-                ensure!(hint.data.len() == 8 + 20, "Invalid hint data length");
+                // Backwards compatibility: old prestates send an 8-byte block number; new
+                // prestates send a 32-byte block hash. Mirrors kona-host v1.5.0.
+                const BLOCK_NUMBER_HINT_LEN: usize = 8 + 20;
+                const BLOCK_HASH_HINT_LEN: usize = 32 + 20;
+                let (block_id, address) = match hint.data.len() {
+                    BLOCK_NUMBER_HINT_LEN => {
+                        let block_number = u64::from_be_bytes(hint.data.as_ref()[..8].try_into()?);
+                        let address = Address::from_slice(&hint.data.as_ref()[8..28]);
+                        (block_number.into(), address)
+                    }
+                    BLOCK_HASH_HINT_LEN => {
+                        let block_hash = B256::from_slice(&hint.data.as_ref()[..32]);
+                        let address = Address::from_slice(&hint.data.as_ref()[32..52]);
+                        (block_hash.into(), address)
+                    }
+                    other => anyhow::bail!(
+                        "Invalid L2AccountProof hint length: expected {BLOCK_NUMBER_HINT_LEN} or {BLOCK_HASH_HINT_LEN}, got {other}"
+                    ),
+                };
 
-                let block_number = u64::from_be_bytes(hint.data.as_ref()[..8].try_into()?);
-                let address = Address::from_slice(&hint.data.as_ref()[8..28]);
-
-                let proof_response = providers
-                    .l2
-                    .get_proof(address, Default::default())
-                    .block_id(block_number.into())
-                    .await?;
+                let proof_response =
+                    providers.l2.get_proof(address, Default::default()).block_id(block_id).await?;
 
                 // Write the account proof nodes to the key-value store.
                 let mut kv_lock = kv.write().await;
@@ -299,17 +289,30 @@ impl CeloSingleChainHintHandler {
                 })?;
             }
             HintType::L2AccountStorageProof => {
-                ensure!(hint.data.len() == 8 + 20 + 32, "Invalid hint data length");
+                // Backwards compatibility: old prestates send an 8-byte block number; new
+                // prestates send a 32-byte block hash. Mirrors kona-host v1.5.0.
+                const BLOCK_NUMBER_HINT_LEN: usize = 8 + 20 + 32;
+                const BLOCK_HASH_HINT_LEN: usize = 32 + 20 + 32;
+                let (block_id, address, slot) = match hint.data.len() {
+                    BLOCK_NUMBER_HINT_LEN => {
+                        let block_number = u64::from_be_bytes(hint.data.as_ref()[..8].try_into()?);
+                        let address = Address::from_slice(&hint.data.as_ref()[8..28]);
+                        let slot = B256::from_slice(&hint.data.as_ref()[28..60]);
+                        (block_number.into(), address, slot)
+                    }
+                    BLOCK_HASH_HINT_LEN => {
+                        let block_hash = B256::from_slice(&hint.data.as_ref()[..32]);
+                        let address = Address::from_slice(&hint.data.as_ref()[32..52]);
+                        let slot = B256::from_slice(&hint.data.as_ref()[52..84]);
+                        (block_hash.into(), address, slot)
+                    }
+                    other => anyhow::bail!(
+                        "Invalid L2AccountStorageProof hint length: expected {BLOCK_NUMBER_HINT_LEN} or {BLOCK_HASH_HINT_LEN}, got {other}"
+                    ),
+                };
 
-                let block_number = u64::from_be_bytes(hint.data.as_ref()[..8].try_into()?);
-                let address = Address::from_slice(&hint.data.as_ref()[8..28]);
-                let slot = B256::from_slice(&hint.data.as_ref()[28..]);
-
-                let mut proof_response = providers
-                    .l2
-                    .get_proof(address, vec![slot])
-                    .block_id(block_number.into())
-                    .await?;
+                let mut proof_response =
+                    providers.l2.get_proof(address, vec![slot]).block_id(block_id).await?;
 
                 let mut kv_lock = kv.write().await;
 
@@ -331,24 +334,16 @@ impl CeloSingleChainHintHandler {
                 })?;
             }
             HintType::L2PayloadWitness => {
-                if !cfg.kona_cfg.enable_experimental_witness_endpoint {
-                    warn!(
-                        target: "single_hint_handler",
-                        "L2PayloadWitness hint was sent, but payload witness is disabled. Skipping hint."
-                    );
-                    return Ok(());
-                }
-
                 ensure!(hint.data.len() >= 32, "Invalid hint data length");
 
                 let parent_block_hash = B256::from_slice(&hint.data.as_ref()[..32]);
-                let payload_attributes: CeloPayloadAttributes =
+                let payload_attributes: OpPayloadAttributes =
                     serde_json::from_slice(&hint.data[32..])?;
 
                 let Ok(execute_payload_response) = providers
                     .l2
                     .client()
-                    .request::<(B256, CeloPayloadAttributes), ExecutionWitness>(
+                    .request::<(B256, OpPayloadAttributes), ExecutionWitness>(
                         "debug_executePayload",
                         (parent_block_hash, payload_attributes),
                     )
