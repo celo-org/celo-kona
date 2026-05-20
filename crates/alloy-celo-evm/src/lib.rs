@@ -299,10 +299,12 @@ where
                 // CIP64 NOTE:
                 // Extract and store the cip64 info to a shared storage to be able to add the
                 // credit/debit logs when building the receipt in the receipts_builder.
-                // Only store during block building: RPC simulation paths (eth_call,
-                // eth_estimateGas) never drain the slot, so a stale entry would be picked up
-                // by the next real block's first CIP-64 tx and corrupt its receipt (or trip
-                // the slot-occupied assertion in `store_cip64_info`).
+                // Only store during block building: storage is per-EVM (so cross-EVM
+                // pollution is impossible), but multi-tx RPC tracing (`debug_traceBlock`,
+                // `debug_traceTransaction`) re-executes multiple txs through one EVM
+                // without calling `build_receipt`. Skipping the store here keeps the
+                // slot-occupied panic in `store_cip64_info` a signal of a real executor
+                // bug instead of firing on legitimate RPC paths.
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
                 if is_block_building && let Some(cip64_info) = cip64_info {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
@@ -627,17 +629,19 @@ mod tests {
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
     }
 
-    /// Verify that RPC simulation paths (eth_call / eth_estimateGas) never
-    /// store CIP-64 receipt data. The receipt builder only runs during real
-    /// block execution, so any entry left here would be picked up by the next
-    /// real block's first CIP-64 tx and corrupt its receipt (or trip the
-    /// slot-occupied assertion in `store_cip64_info`).
+    /// Verify that RPC simulation paths (eth_call / eth_estimateGas / debug_trace*)
+    /// never store CIP-64 receipt data. Storage is per-EVM, so cross-EVM
+    /// corruption is impossible — but multi-tx tracing (`debug_traceBlock`,
+    /// `debug_traceTransaction`) re-executes multiple txs through one EVM
+    /// without calling `build_receipt`. Without the `is_block_building` gate
+    /// in `transact_raw`, the second CIP-64 tx would trip the slot-occupied
+    /// panic in `store_cip64_info` on perfectly legitimate RPC paths.
     ///
     /// The handler still populates `cip64_tx_info` during simulation for
     /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
     /// `transact_raw`, not the handler.
     #[test]
-    fn test_cip64_storage_not_polluted_by_rpc_simulation() {
+    fn test_cip64_info_not_stored_during_rpc_simulation() {
         use revm::state::AccountInfo;
 
         let blocklist = FeeCurrencyBlocklist::default();
