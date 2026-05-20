@@ -84,7 +84,7 @@ celo-alloy-rpc-types.workspace = true
 # Enabled here only — kona crates depend on alloy-celo-evm without it so the
 # base-fee check cannot be bypassed in the ZK proof client.
 alloy-celo-evm = { workspace = true, features = ["optional_no_base_fee"] }
-celo-revm = { workspace = true, features = ["alloy-op-evm", "reth", "optional_no_base_fee"] }
+celo-revm = { workspace = true, features = ["alloy-op-evm", "optional_no_base_fee"] }
 
 # Revm
 revm.workspace = true

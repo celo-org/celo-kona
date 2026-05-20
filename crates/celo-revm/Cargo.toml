@@ -65,9 +65,6 @@ std = [
     "alloy-op-evm?/std",
 ]
 alloy-op-evm = ["dep:alloy-op-evm"]
-# `reth` feature is a no-op marker retained for downstream Cargo.toml compatibility.
-# Previously gated reth-evm trait impls, which now use alloy-evm directly (always available).
-reth = []
 serde = [
     "dep:serde",
     "revm/serde",
