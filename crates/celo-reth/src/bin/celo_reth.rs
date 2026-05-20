@@ -101,17 +101,24 @@ fn main() {
     }
 
     // Intercept Celo-specific command paths before handing argv off to the upstream op-reth `Cli`.
-    // The subcommand must be `argv[1]` — global flags before it (e.g.
-    // `celo-reth -v import-celo-state ...`) are not supported and these intercepted paths are
-    // hidden from `celo-reth --help`. To lift either limitation we'd have to mirror op-reth's full
-    // `Commands` enum in this crate.
+    // We try parsing with `CeloCli` first; if it succeeds we own the dispatch. Position-independent
+    // global flags (`-v`, `--chain`, OTLP flags …) make plain `argv[1]` matching unsafe — e.g.
+    // `celo-reth -v stage unwind --chain celo` would otherwise fall through to op-reth and run
+    // `stage` against `OpNode` primitives, reintroducing the CIP-64 decode panic this path exists
+    // to avoid. On parse failure we fall through to op-reth, except for explicit Celo subcommand
+    // names (where we surface clap's own help/version/error output instead of a confusing
+    // "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    if argv.get(1).is_some_and(|a| a == IMPORT_CELO_STATE || a == STAGE) {
-        if let Err(err) = run_celo_subcommand(argv) {
-            eprintln!("Error: {err:?}");
-            std::process::exit(1);
+    match CeloCli::try_parse_from(&argv) {
+        Ok(cli) => {
+            if let Err(err) = run_celo_subcommand(cli) {
+                eprintln!("Error: {err:?}");
+                std::process::exit(1);
+            }
+            return;
         }
-        return;
+        Err(e) if argv.iter().skip(1).any(|a| a == IMPORT_CELO_STATE || a == STAGE) => e.exit(),
+        Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
     if let Err(err) =
@@ -171,8 +178,7 @@ fn main() {
 /// Mirrors upstream `CliApp`'s init order: build the runtime, wire OTLP layers (no-op if the
 /// `otlp`/`otlp-logs` features aren't compiled in), then initialize file/stdout tracing, then
 /// dispatch the command.
-fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
-    let mut cli = CeloCli::parse_from(argv);
+fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     if let Some(chain_spec) = cli.command.chain_spec() {
         cli.logs.log_file_directory =
             cli.logs.log_file_directory.join(chain_spec.chain().to_string());
