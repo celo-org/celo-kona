@@ -51,6 +51,10 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
 
                 // Pop the CIP-64 receipt data stored during transact_raw
                 let cip64_data = self.cip64_storage.pop_cip64_receipt_data();
+                assert!(
+                    cip64_data.is_some() || !success,
+                    "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
+                );
                 let base_fee_in_erc20 =
                     cip64_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
 

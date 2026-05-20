@@ -51,6 +51,10 @@ impl OpReceiptBuilder for CeloRethReceiptBuilder {
 
                 // Get CIP-64 receipt data from storage (stored during handler execution)
                 let receipt_data = self.cip64_storage.pop_cip64_receipt_data();
+                assert!(
+                    receipt_data.is_some() || !success,
+                    "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
+                );
 
                 if let Some(data) = &receipt_data {
                     logs = Cip64Storage::merge_logs(&data.cip64_info, logs);
