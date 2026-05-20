@@ -178,6 +178,7 @@ mod tests {
             block_number: Some(1),
             effective_gas_price: Some(1),
             transaction_index: Some(0),
+            block_timestamp: None,
         };
         let block: alloy_rpc_types_eth::Block<celo_alloy_rpc_types::CeloTransaction> =
             alloy_rpc_types_eth::Block {

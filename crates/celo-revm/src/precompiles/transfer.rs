@@ -12,7 +12,9 @@ use revm::{
     context::{Cfg, ContextTr, JournalTr},
     context_interface::journaled_state::account::JournaledAccountTr,
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
-    precompile::{PrecompileError, PrecompileOutput, PrecompileResult, u64_to_address},
+    precompile::{
+        PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult, u64_to_address,
+    },
     primitives::{Address, Bytes, U256},
 };
 use std::borrow::Cow;
@@ -46,8 +48,8 @@ where
         inputs.is_static,
         inputs.gas_limit,
     ) {
-        Ok(output) => {
-            let underflow = result.gas.record_cost(output.gas_used);
+        Ok(output) if output.is_success() => {
+            let underflow = result.gas.record_regular_cost(output.gas_used);
             // SAFETY: gas_used <= gas_limit is guaranteed by the EVM, so underflow is
             // impossible. A panic here is intentional — silently returning OOG would risk
             // consensus divergence, while a crash is recoverable.
@@ -55,14 +57,15 @@ where
             result.result = InstructionResult::Return;
             result.output = output.bytes;
         }
-        Err(PrecompileError::Fatal(e)) => return Err(e),
-        Err(e) => {
-            result.result = if e.is_oog() {
+        Ok(output) => {
+            result.result = if matches!(output.halt_reason(), Some(PrecompileHalt::OutOfGas)) {
                 InstructionResult::PrecompileOOG
             } else {
                 InstructionResult::PrecompileError
             };
         }
+        Err(PrecompileError::Fatal(e)) => return Err(e),
+        Err(PrecompileError::FatalAny(e)) => return Err(format!("{e}")),
     }
     Ok(Some(result))
 }
@@ -78,25 +81,30 @@ where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
     if is_static {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "transfer precompile cannot be called in static context",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed(
+                "transfer precompile cannot be called in static context",
+            )),
+            0,
+        ));
     }
 
     if gas_limit < TRANSFER_GAS_COST {
-        return Err(PrecompileError::OutOfGas);
+        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
     }
 
     if caller_address != constants::get_addresses(context.cfg().chain_id()).celo_token {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "invalid caller for transfer precompile",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid caller for transfer precompile")),
+            0,
+        ));
     }
 
     if input.len() != 96 {
-        return Err(PrecompileError::Other(Cow::Borrowed(
-            "invalid input length",
-        )));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Borrowed("invalid input length")),
+            0,
+        ));
     }
 
     let from = Address::from_slice(&input[12..32]);
@@ -119,16 +127,20 @@ where
     revert_account_cold_status(context, to, revert_to_cold);
 
     if let Ok(Some(transfer_err)) = result {
-        return Err(PrecompileError::Other(Cow::Owned(format!(
-            "transfer error occurred: {transfer_err:?}"
-        ))));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!(
+                "transfer error occurred: {transfer_err:?}"
+            ))),
+            0,
+        ));
     } else if let Err(db_err) = result {
-        return Err(PrecompileError::Other(Cow::Owned(format!(
-            "database error occurred: {db_err:?}"
-        ))));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
+            0,
+        ));
     }
 
-    Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new()))
+    Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0))
 }
 
 fn account_cold_status<CTX>(context: &mut CTX, address: Address) -> bool

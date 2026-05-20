@@ -27,7 +27,7 @@ reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-db-common.workspace = true
 reth-engine-local.workspace = true
-reth-evm = { workspace = true, features = ["op"] }
+reth-evm.workspace = true
 reth-execution-types.workspace = true
 reth-fs-util.workspace = true
 reth-primitives-traits.workspace = true
@@ -38,9 +38,11 @@ reth-node-api.workspace = true
 reth-node-core.workspace = true
 reth-provider.workspace = true
 reth-revm.workspace = true
+reth-tasks.workspace = true
 reth-tracing.workspace = true
 reth-transaction-pool.workspace = true
 reth-rpc-eth-api.workspace = true
+reth-rpc-traits.workspace = true
 reth-rpc-eth-types.workspace = true
 
 # Ethereum
@@ -82,7 +84,7 @@ celo-alloy-rpc-types.workspace = true
 # Enabled here only — kona crates depend on alloy-celo-evm without it so the
 # base-fee check cannot be bypassed in the ZK proof client.
 alloy-celo-evm = { workspace = true, features = ["optional_no_base_fee"] }
-celo-revm = { workspace = true, features = ["alloy-op-evm", "reth", "optional_no_base_fee"] }
+celo-revm = { workspace = true, features = ["alloy-op-evm", "optional_no_base_fee"] }
 
 # Revm
 revm.workspace = true

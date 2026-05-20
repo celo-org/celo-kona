@@ -51,7 +51,7 @@ op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
 [features]
 default = ["std"]
 std = ["alloy-eips/std", "alloy-consensus/std", "reth-primitives-traits?/std"]
-reth = ["std", "dep:reth-primitives-traits", "reth-primitives-traits/op", "dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "dep:bytes", "k256"]
+reth = ["std", "dep:reth-primitives-traits", "dep:reth-codecs", "dep:reth-db-api", "dep:modular-bitfield", "dep:bytes", "k256", "op-alloy-consensus/reth-codec"]
 k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
 kzg = ["alloy-eips/kzg", "alloy-consensus/kzg", "std"]
 arbitrary = [

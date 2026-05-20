@@ -349,6 +349,19 @@ impl PoolTransaction for CeloPoolTx {
         })
     }
 
+    fn consensus_ref(&self) -> Recovered<&Self::Consensus> {
+        // `CeloConsensusTx` carries native-equivalent fees synthesised from
+        // `CeloPoolTx` fields, so satisfying the borrow signature would require
+        // materialising the wrapper somewhere stable on `Self`. As of the current
+        // reth/op-reth dep tree no caller invokes this method (verified via grep
+        // across reth-transaction-pool and op-reth). If a future bump introduces
+        // a real caller, this will panic loudly — at which point switch to either
+        // a `OnceLock` cache or eager synthesis in `new`/`apply_exchange_rate`.
+        unimplemented!(
+            "CeloPoolTx::consensus_ref is not implemented; use clone_into_consensus or into_consensus"
+        )
+    }
+
     fn into_consensus(self) -> Recovered<Self::Consensus> {
         // Carry the pool-validator-computed native-equivalent fee values onto the
         // consensus wrapper. This is the whole point of `CeloConsensusTx`:

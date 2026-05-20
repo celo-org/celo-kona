@@ -39,7 +39,7 @@ use reth_optimism_node::{
     node::{OpAddOns, OpNetworkBuilder, OpPayloadBuilder, OpPoolBuilder},
 };
 use reth_optimism_payload_builder::{
-    OpPayloadTypes,
+    OpExecData, OpPayloadTypes,
     config::{OpDAConfig, OpGasLimitConfig},
 };
 use reth_optimism_primitives::DepositReceipt;
@@ -136,25 +136,24 @@ pub struct CeloEngineTypes<T: PayloadTypes = OpPayloadTypes<CeloPrimitives>> {
     _marker: core::marker::PhantomData<T>,
 }
 
-impl<T: PayloadTypes<ExecutionData = OpExecutionData>> PayloadTypes for CeloEngineTypes<T> {
+impl<T: PayloadTypes<ExecutionData = OpExecData>> PayloadTypes for CeloEngineTypes<T> {
     type ExecutionData = T::ExecutionData;
     type BuiltPayload = T::BuiltPayload;
     type PayloadAttributes = T::PayloadAttributes;
-    type PayloadBuilderAttributes = T::PayloadBuilderAttributes;
 
     fn block_to_payload(
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
     ) -> <T as PayloadTypes>::ExecutionData {
-        OpExecutionData::from_block_unchecked(
+        OpExecData::from(OpExecutionData::from_block_unchecked(
             block.hash(),
             &block.into_block().into_ethereum_block(),
-        )
+        ))
     }
 }
 
-impl<T: PayloadTypes<ExecutionData = OpExecutionData>> EngineTypes for CeloEngineTypes<T>
+impl<T: PayloadTypes<ExecutionData = OpExecData>> EngineTypes for CeloEngineTypes<T>
 where
     T::BuiltPayload: BuiltPayload<
             Primitives: NodePrimitives<
@@ -392,12 +391,15 @@ where
                 OpEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
                 reth_node_builder::rpc::Identity::new(),
+                reth_node_builder::rpc::Identity::new(),
             ),
             self.da_config.clone(),
             self.gas_limit_config.clone(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
+            // SDM is unscheduled on Celo; mirror op-reth's default of disabled.
+            false,
             self.args.enable_tx_conditional,
             self.args.min_suggested_priority_fee,
         )
@@ -425,7 +427,10 @@ where
 
     fn local_payload_attributes_builder(
         chain_spec: &Self::ChainSpec,
-    ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
+    ) -> impl PayloadAttributesBuilder<
+        <Self::Payload as PayloadTypes>::PayloadAttributes,
+        reth_node_api::HeaderTy<Self>,
+    > {
         CeloLocalPayloadAttributesBuilder {
             inner: LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone())),
         }
@@ -449,7 +454,7 @@ struct CeloLocalPayloadAttributesBuilder<CS> {
     inner: LocalPayloadAttributesBuilder<CS>,
 }
 
-impl<CS> PayloadAttributesBuilder<op_alloy_rpc_types_engine::OpPayloadAttributes, CS::Header>
+impl<CS> PayloadAttributesBuilder<reth_optimism_payload_builder::OpPayloadAttrs, CS::Header>
     for CeloLocalPayloadAttributesBuilder<CS>
 where
     CS: EthChainSpec + EthereumHardforks + 'static,
@@ -457,10 +462,10 @@ where
     fn build(
         &self,
         parent: &SealedHeader<CS::Header>,
-    ) -> op_alloy_rpc_types_engine::OpPayloadAttributes {
-        // Delegate to the standard OP builder, then replace the deposit tx.
-        let mut attrs: op_alloy_rpc_types_engine::OpPayloadAttributes =
-            PayloadAttributesBuilder::build(&self.inner, parent);
+    ) -> reth_optimism_payload_builder::OpPayloadAttrs {
+        // Delegate to the standard eth builder for the inner PayloadAttributes,
+        // then assemble OpPayloadAttributes around it and replace the deposit tx.
+        let payload_attributes = PayloadAttributesBuilder::build(&self.inner, parent);
 
         // L1 attributes deposit tx identical to the OP-mainnet one but with
         // baseFeeScalar, blobBaseFeeScalar, basefee, and blobBaseFee zeroed.
@@ -486,8 +491,16 @@ where
             "0000000000000000000000006887246668a3b87f54deb3b94ba47a6f63f32985"
         );
 
-        attrs.transactions = Some(vec![ZERO_L1_FEE_DEPOSIT_TX.into()]);
-        attrs
+        reth_optimism_payload_builder::OpPayloadAttrs(
+            op_alloy_rpc_types_engine::OpPayloadAttributes {
+                payload_attributes,
+                transactions: Some(vec![ZERO_L1_FEE_DEPOSIT_TX.into()]),
+                no_tx_pool: None,
+                gas_limit: None,
+                eip_1559_params: None,
+                min_base_fee: Some(0),
+            },
+        )
     }
 }
 

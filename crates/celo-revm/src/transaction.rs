@@ -123,22 +123,19 @@ impl CeloTransaction<TxEnv> {
     }
 }
 
-#[cfg(feature = "reth")]
-impl<T: reth_evm::TransactionEnv> reth_evm::TransactionEnv for CeloTransaction<T> {
+impl<T: revm::context::Transaction + alloy_evm::TransactionEnvMut> alloy_evm::TransactionEnvMut
+    for CeloTransaction<T>
+{
     fn set_gas_limit(&mut self, gas_limit: u64) {
-        reth_evm::TransactionEnv::set_gas_limit(&mut self.op_tx, gas_limit);
-    }
-
-    fn nonce(&self) -> u64 {
-        reth_evm::TransactionEnv::nonce(&self.op_tx)
+        alloy_evm::TransactionEnvMut::set_gas_limit(&mut self.op_tx.base, gas_limit);
     }
 
     fn set_nonce(&mut self, nonce: u64) {
-        reth_evm::TransactionEnv::set_nonce(&mut self.op_tx, nonce);
+        alloy_evm::TransactionEnvMut::set_nonce(&mut self.op_tx.base, nonce);
     }
 
     fn set_access_list(&mut self, access_list: alloy_eips::eip2930::AccessList) {
-        reth_evm::TransactionEnv::set_access_list(&mut self.op_tx, access_list);
+        alloy_evm::TransactionEnvMut::set_access_list(&mut self.op_tx.base, access_list);
     }
 }
 

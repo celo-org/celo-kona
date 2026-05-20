@@ -446,12 +446,8 @@ impl From<CeloReceiptEnvelope> for CeloReceipt {
     }
 }
 
+use reth_codecs::DecompressError;
 use reth_db_api::table::{Compress, Decompress};
-use reth_primitives_traits::serde_bincode_compat::RlpBincode;
-
-/// CeloReceipt already implements `alloy_rlp::Encodable` and `alloy_rlp::Decodable`.
-/// `RlpBincode` gives a blanket `SerdeBincodeCompat` impl.
-impl RlpBincode for CeloReceipt {}
 
 impl Compress for CeloReceipt {
     type Compressed = Vec<u8>;
@@ -462,7 +458,7 @@ impl Compress for CeloReceipt {
 }
 
 impl Decompress for CeloReceipt {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
         Ok(obj)
     }

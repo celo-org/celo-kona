@@ -5,16 +5,19 @@ use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder, cip64_storage::Cip64Storage};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
-    EvmFactory,
+    EvmFactory, RecoveredTx,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
-use alloy_op_evm::{OpBlockExecutionCtx, OpBlockExecutorFactory};
+use alloy_op_evm::{
+    OpBlockExecutionCtx, OpBlockExecutorFactory, PostExecMode, post_exec::PostExecEvmFactoryAdapter,
+};
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
+use op_alloy_consensus::parse_post_exec_payload_from_transactions;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
@@ -32,8 +35,11 @@ where
     #[allow(rustdoc::broken_intra_doc_links)]
     /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block
     /// building routines.
-    pub(crate) factory:
-        OpBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig, CeloEvmFactory>,
+    pub(crate) factory: OpBlockExecutorFactory<
+        CeloAlloyReceiptBuilder,
+        CeloRollupConfig,
+        PostExecEvmFactoryAdapter<CeloEvmFactory>,
+    >,
 }
 
 impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
@@ -53,7 +59,7 @@ where
         let factory = OpBlockExecutorFactory::new(
             CeloAlloyReceiptBuilder::default(),
             config.clone(),
-            evm_factory,
+            PostExecEvmFactoryAdapter::new(evm_factory),
         );
         Self { config, trie_db, factory }
     }
@@ -100,11 +106,8 @@ where
         );
 
         // Step 2. Create the executor, using the trie database.
-        let mut state = State::builder()
-            .with_database(&mut self.trie_db)
-            .with_bundle_update()
-            .without_state_clear()
-            .build();
+        let mut state =
+            State::builder().with_database(&mut self.trie_db).with_bundle_update().build();
         let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
 
         // Update the receipt builder with the shared CIP-64 storage from the EVM so that
@@ -114,26 +117,37 @@ where
         let factory = OpBlockExecutorFactory::<
             CeloAlloyReceiptBuilder,
             CeloRollupConfig,
-            CeloEvmFactory,
+            PostExecEvmFactoryAdapter<CeloEvmFactory>,
         >::new(
             updated_receipt_builder,
             self.config.clone(),
             self.factory.evm_factory().clone(),
         );
 
+        // Step 3. Decode and validate the block transactions within the payload attributes.
+        let transactions = attrs
+            .recovered_transactions_with_encoded()
+            .collect::<Result<Vec<_>, RecoveryError>>()
+            .map_err(ExecutorError::Recovery)?;
+        let sdm_active = self.config.is_sdm_active(block_env.timestamp.saturating_to());
+        let post_exec_mode = parse_post_exec_payload_from_transactions(
+            transactions.iter().map(RecoveredTx::tx),
+            block_env.number.saturating_to(),
+            sdm_active,
+        )
+        .map_err(|err| ExecutorError::InvalidPostExecPayload(err.into_string()))?
+        .map(|parsed| PostExecMode::Verify(parsed.payload))
+        .unwrap_or_default();
+
         let ctx = OpBlockExecutionCtx {
             parent_hash,
             parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
+            post_exec_mode,
         };
         let executor = factory.create_executor(evm, ctx);
 
-        // Step 3. Execute the block containing the transactions within the payload attributes.
-        let transactions = attrs
-            .recovered_transactions_with_encoded()
-            .collect::<Result<Vec<_>, RecoveryError>>()
-            .map_err(ExecutorError::Recovery)?;
         let ex_result = executor.execute_block(transactions.iter())?;
 
         info!(

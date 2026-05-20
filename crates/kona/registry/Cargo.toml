@@ -22,7 +22,7 @@ workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 
 # Kona
-kona-genesis = { workspace = true, features = ["serde"] }
+kona-genesis = { workspace = true, features = ["serde", "rollup_config_override"] }
 
 # Alloy
 alloy-primitives = { workspace = true, features = ["map"] }
@@ -37,7 +37,7 @@ lazy_static = { workspace = true, features = ["spin_no_std"] }
 
 [build-dependencies]
 serde_json = { workspace = true, features = ["raw_value"] }
-kona-genesis = { workspace = true, features = ["serde"] }
+kona-genesis = { workspace = true, features = ["serde", "rollup_config_override"] }
 
 [features]
 default = []

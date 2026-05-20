@@ -58,6 +58,8 @@ pub const CEL2_HEADER: Header = Header {
         "0x6cb2e365f9d78b9071b90e8a1f4675d378cd0867b858571dc1b172ef1d3e085c"
     )),
     requests_hash: None,
+    block_access_list_hash: None,
+    slot_number: None,
 };
 
 /// Initialize a Celo Mainnet reth database from an L1 state dump.
@@ -91,7 +93,9 @@ pub struct ImportCeloStateCommand {
 
 impl ImportCeloStateCommand {
     /// Execute the import.
-    pub async fn execute(self) -> eyre::Result<()> {
+    ///
+    /// The `runtime` is forwarded to [`EnvironmentArgs::init`] for parallel storage I/O.
+    pub async fn execute(self, runtime: reth_tasks::Runtime) -> eyre::Result<()> {
         let chain = CeloChainSpecParser::parse("celo")?;
 
         if chain.chain_id() != CELO_MAINNET_CHAIN_ID {
@@ -123,13 +127,23 @@ impl ImportCeloStateCommand {
         };
 
         let Environment { config, provider_factory, .. } =
-            env_args.init::<OpNode>(AccessRights::RW)?;
+            env_args.init::<OpNode>(AccessRights::RW, runtime)?;
 
         let static_file_provider = provider_factory.static_file_provider();
-        let provider_rw = provider_factory.database_provider_rw()?;
 
-        let last_block_number = provider_rw.last_block_number()?;
-        if last_block_number == 0 {
+        // Write the Cel2 migration header. `init_from_state_dump` below opens its own
+        // provider and commits in chunks, so the header must be committed up front.
+        {
+            let provider_rw = provider_factory.database_provider_rw()?;
+
+            let last_block_number = provider_rw.last_block_number()?;
+            if last_block_number != 0 {
+                return Err(eyre::eyre!(
+                    "data directory must be empty when running import-celo-state \
+                     (current tip block #{last_block_number})"
+                ));
+            }
+
             reth_cli_commands::init_state::without_evm::setup_without_evm(
                 &provider_rw,
                 SealedHeader::new(CEL2_HEADER, CEL2_HEADER_HASH),
@@ -144,35 +158,32 @@ impl ImportCeloStateCommand {
             // database checkpoints. Required so the migration header is visible to the state
             // dump import below.
             static_file_provider.commit()?;
-        } else {
+            provider_rw.commit()?;
+        }
+
+        // Verify the migration header is actually present in the database under the expected
+        // hash before running the (expensive) state dump. A mismatch means setup_without_evm
+        // did not persist the header we expect, and continuing would leave the datadir unusable.
+        let stored = provider_factory
+            .provider()?
+            .block_hash(CEL2_MIGRATION_BLOCK_NUMBER)?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "migration block #{CEL2_MIGRATION_BLOCK_NUMBER} missing from database \
+                     after setup_without_evm"
+                )
+            })?;
+        if stored != CEL2_HEADER_HASH {
             return Err(eyre::eyre!(
-                "data directory must be empty when running import-celo-state \
-                 (current tip block #{last_block_number})"
+                "migration block hash mismatch at #{CEL2_MIGRATION_BLOCK_NUMBER}: \
+                 stored {stored:?} != expected {CEL2_HEADER_HASH:?}"
             ));
         }
 
         info!(target: "reth::cli", path = ?self.state, "Initiating state dump");
 
         let reader = BufReader::new(reth_fs_util::open(self.state)?);
-        let hash = init_from_state_dump(reader, &provider_rw, config.stages.etl)?;
-
-        // Verify the migration header is actually present in the database under the expected
-        // hash before committing. A mismatch means setup_without_evm did not persist the header
-        // we expect, and continuing would leave the datadir in an unusable state.
-        let stored = provider_rw.block_hash(CEL2_MIGRATION_BLOCK_NUMBER)?.ok_or_else(|| {
-            eyre::eyre!(
-                "migration block #{CEL2_MIGRATION_BLOCK_NUMBER} missing from database \
-                 after import — refusing to commit"
-            )
-        })?;
-        if stored != CEL2_HEADER_HASH {
-            return Err(eyre::eyre!(
-                "migration block hash mismatch at #{CEL2_MIGRATION_BLOCK_NUMBER}: \
-                 stored {stored:?} != expected {CEL2_HEADER_HASH:?} — refusing to commit"
-            ));
-        }
-
-        provider_rw.commit()?;
+        let hash = init_from_state_dump(reader, &provider_factory, config.stages.etl)?;
 
         info!(
             target: "reth::cli",

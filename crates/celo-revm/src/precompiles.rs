@@ -135,7 +135,8 @@ mod tests {
             value: CallValue::Transfer(U256::from(value)),
             return_memory_offset: 0..0,
             gas_limit: TRANSFER_GAS_COST,
-            known_bytecode: None,
+            reservoir: 0,
+            known_bytecode: (Default::default(), Default::default()),
             scheme: CallScheme::Call,
             is_static: false,
         };

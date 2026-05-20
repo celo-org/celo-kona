@@ -19,7 +19,7 @@ workspace = true
 
 [dependencies]
 # Kona
-kona-genesis = { workspace = true, features = ["serde"] }
+kona-genesis = { workspace = true, features = ["serde", "rollup_config_override"] }
 
 # Alloy
 alloy-sol-types.workspace = true

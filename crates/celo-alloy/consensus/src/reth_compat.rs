@@ -1,12 +1,15 @@
 //! Reth compatibility implementations for Celo consensus types.
 //!
-//! Provides [`InMemorySize`], [`SignedTransaction`], [`Compact`], and
-//! `SerdeBincodeCompat` trait implementations required by reth's node framework.
+//! Provides [`InMemorySize`] and [`Compact`] trait implementations required by reth's
+//! node framework.
 //!
 //! These impls live in `celo-alloy-consensus` (not `celo-reth`) due to Rust's orphan rules:
-//! they implement foreign traits (`InMemorySize`, `SignedTransaction`, `Compact`) on types
-//! defined in this crate (`CeloTxEnvelope`, `TxCip64`, etc.). Moving them to `celo-reth`
-//! would be a compiler error.
+//! they implement foreign traits (`InMemorySize`, `Compact`) on types defined in this crate
+//! (`CeloTxEnvelope`, `TxCip64`, etc.). Moving them to `celo-reth` would be a compiler error.
+//!
+//! `SignedTransaction` and `SerdeBincodeCompat` were dropped as explicit impls in reth v2 —
+//! `SignedTransaction` is now blanket-implemented for any type meeting the trait bundle,
+//! and `SerdeBincodeCompat` was reshaped to be per-type and not needed at this level.
 
 use crate::{
     CeloCip64Receipt,
@@ -21,8 +24,8 @@ use alloy_consensus::{
     transaction::{SignerRecoverable, TxHashRef},
 };
 use alloy_primitives::B256;
-use op_alloy_consensus::{OpTransaction, TxDeposit};
-use reth_primitives_traits::{InMemorySize, SignedTransaction};
+use op_alloy_consensus::TxDeposit;
+use reth_primitives_traits::InMemorySize;
 
 impl InMemorySize for CeloCip64Receipt {
     fn size(&self) -> usize {
@@ -60,19 +63,6 @@ impl InMemorySize for CeloTypedTransaction {
             Self::Eip7702(tx) => tx.size(),
             Self::Cip64(tx) => TxCip64::size(tx),
             Self::Deposit(tx) => tx.size(),
-        }
-    }
-}
-
-impl OpTransaction for CeloTxEnvelope {
-    fn is_deposit(&self) -> bool {
-        matches!(self, Self::Deposit(_))
-    }
-
-    fn as_deposit(&self) -> Option<&Sealed<TxDeposit>> {
-        match self {
-            Self::Deposit(tx) => Some(tx),
-            _ => None,
         }
     }
 }
@@ -125,7 +115,10 @@ impl SignerRecoverable for CeloTxEnvelope {
     }
 }
 
-impl SignedTransaction for CeloTxEnvelope {}
+// `SignedTransaction` is now blanket-implemented in reth-primitives-traits 0.3 for any T meeting
+// the trait bundle (Send + Sync + Encodable + Decodable + Encodable2718 + Decodable2718 +
+// TransactionTrait + InMemorySize + SignerRecoverable + TxHashRef + IsTyped2718 + ...).
+// We don't need explicit impls anymore.
 
 // ---------------------------------------------------------------------------
 // Pool-related: CeloPooledTransaction reth trait impls
@@ -142,8 +135,6 @@ impl InMemorySize for CeloPooledTransaction {
         }
     }
 }
-
-impl SignedTransaction for CeloPooledTransaction {}
 
 // ---------------------------------------------------------------------------
 // reth Compact encoding: CeloTxType, CeloTxEnvelope
@@ -280,17 +271,10 @@ impl Compact for CeloTxEnvelope {
 }
 
 // ---------------------------------------------------------------------------
-// SerdeBincodeCompat via RlpBincode marker
-// ---------------------------------------------------------------------------
-
-use reth_primitives_traits::serde_bincode_compat::RlpBincode;
-
-impl RlpBincode for CeloTxEnvelope {}
-
-// ---------------------------------------------------------------------------
 // Database compression: CeloTxEnvelope Compress + Decompress
 // ---------------------------------------------------------------------------
 
+use reth_codecs::DecompressError;
 use reth_db_api::table::{Compress, Decompress};
 
 impl Compress for CeloTxEnvelope {
@@ -302,7 +286,7 @@ impl Compress for CeloTxEnvelope {
 }
 
 impl Decompress for CeloTxEnvelope {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         let (obj, _) = Compact::from_compact(value, value.len());
         Ok(obj)
     }

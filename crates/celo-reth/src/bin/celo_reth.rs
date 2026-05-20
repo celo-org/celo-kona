@@ -188,10 +188,13 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     let mut layers = Layers::new();
     runner.block_on(cli.traces.init_otlp_tracing(&mut layers))?;
     runner.block_on(cli.traces.init_otlp_logs(&mut layers))?;
-    let _guard = cli.logs.init_tracing_with_layers(layers)?;
+    let _guard = cli.logs.init_tracing_with_layers(layers, false)?;
 
     match cli.command {
-        CeloCommand::ImportCeloState(cmd) => runner.run_blocking_until_ctrl_c(cmd.execute()),
+        CeloCommand::ImportCeloState(cmd) => {
+            let runtime = runner.runtime();
+            runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
+        }
         CeloCommand::Stage(cmd) => {
             let components = |spec: Arc<OpChainSpec>| {
                 (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))

@@ -15,7 +15,7 @@ workspace = true
 [dependencies]
 celo-alloy-consensus.workspace = true
 
-alloy-evm = { workspace = true, features = ["op"] }
+alloy-evm.workspace = true
 alloy-op-evm = { workspace = true, default-features = false }
 
 alloy-consensus.workspace = true
