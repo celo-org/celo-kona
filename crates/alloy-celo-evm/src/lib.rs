@@ -387,22 +387,19 @@ where
 }
 
 /// Factory producing [`CeloEvm`]s.
+///
+/// Each EVM produced by this factory carries its own fresh [`Cip64Storage`]: the storage
+/// is owned by the EVM instance, not the factory, so two consumers (e.g. the main-chain
+/// executor and a re-executing ExEx) running through the same factory get independent
+/// slots and never overwrite each other's pending CIP-64 receipt data.
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
-    /// Shared CIP-64 storage. When set, all EVMs created by this factory will use this
-    /// storage instance, enabling the receipt builder to read CIP-64 data written by the EVM.
-    pub cip64_storage: Option<Cip64Storage>,
     /// Shared fee currency blocklist. When set, all EVMs created by this factory will use
     /// this blocklist to reject CIP-64 transactions for blocklisted currencies.
     pub blocklist: Option<FeeCurrencyBlocklist>,
 }
 
 impl CeloEvmFactory {
-    /// Creates a new factory with shared CIP-64 storage.
-    pub const fn with_cip64_storage(cip64_storage: Cip64Storage) -> Self {
-        Self { cip64_storage: Some(cip64_storage), blocklist: None }
-    }
-
     /// Sets the shared fee currency blocklist.
     pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
         self.blocklist = Some(blocklist);
@@ -453,7 +450,7 @@ impl CeloEvmFactory {
                 .build_celo_with_inspector(inspector)
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect,
-            cip64_storage: self.cip64_storage.clone().unwrap_or_default(),
+            cip64_storage: Cip64Storage::default(),
             blocklist: self.blocklist.clone().unwrap_or_default(),
             last_evicted_timestamp: 0,
         }
@@ -668,6 +665,51 @@ mod tests {
         assert!(
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
             "RPC simulation must not store CIP-64 receipt data"
+        );
+    }
+
+    /// #172's slot-occupied assertion is a *per-EVM* invariant: a single
+    /// [`CeloEvm`] never sees two `store_cip64_info` calls without an intervening
+    /// `pop_cip64_receipt_data`. Verify the panic still fires when an executor
+    /// runs two CIP-64 transactions back-to-back without a receipt build in
+    /// between (i.e. the original #172 bug class).
+    #[test]
+    #[should_panic(expected = "store_cip64_info called with slot occupied")]
+    fn double_store_on_same_evm_panics() {
+        let evm = make_test_evm(FeeCurrencyBlocklist::default());
+        // We push to the EVM's own storage directly rather than driving two real
+        // `transact_raw` calls, which would require a complete fee-currency setup
+        // in the in-memory database. The invariant under test is purely the
+        // single-slot guarantee on the storage itself, scoped to one EVM.
+        evm.cip64_storage().store_cip64_info(None, celo_revm::Cip64Info::default());
+        evm.cip64_storage().store_cip64_info(None, celo_revm::Cip64Info::default());
+    }
+
+    /// Two [`CeloEvm`] instances produced by the same [`CeloEvmFactory`] must own
+    /// independent [`Cip64Storage`] slots. This is the regression for #183: when
+    /// the proofs-history ExEx re-executes blocks through the same factory, its
+    /// EVM's CIP-64 writes must not bleed into the main-chain executor's storage.
+    #[test]
+    fn two_evms_from_same_factory_have_independent_slots() {
+        let factory = CeloEvmFactory::default();
+        let db_a = revm::database::InMemoryDB::default();
+        let db_b = revm::database::InMemoryDB::default();
+        let env = EvmEnv::<OpSpecId>::default();
+        let evm_a = factory.create_evm(db_a, env.clone());
+        let evm_b = factory.create_evm(db_b, env);
+
+        // Push to A only.
+        evm_a.cip64_storage().store_cip64_info(None, celo_revm::Cip64Info::default());
+
+        // B's slot is untouched.
+        assert!(
+            evm_b.cip64_storage().pop_cip64_receipt_data().is_none(),
+            "second EVM's slot must be empty — factory must not share storage between EVMs"
+        );
+        // A's slot still has the entry.
+        assert!(
+            evm_a.cip64_storage().pop_cip64_receipt_data().is_some(),
+            "first EVM's slot must still hold its own entry"
         );
     }
 

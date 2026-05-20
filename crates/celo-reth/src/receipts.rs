@@ -1,7 +1,7 @@
 //! Celo receipt builder for reth, producing bloomless [`CeloReceipt`] types.
 
 use crate::{primitives::CeloTransactionSigned, receipt::CeloReceipt};
-use alloy_celo_evm::cip64_storage::Cip64Storage;
+use alloy_celo_evm::{block::CeloReceiptBuilderExt, cip64_storage::Cip64Storage};
 use alloy_consensus::Eip658Value;
 use alloy_evm::eth::receipt_builder::ReceiptBuilderCtx;
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
@@ -12,11 +12,14 @@ use reth_evm::Evm;
 /// Receipt builder that produces bloomless [`CeloReceipt`] types for reth storage.
 ///
 /// Analogous to [`OpRethReceiptBuilder`](reth_optimism_evm::OpRethReceiptBuilder) but with
-/// CIP-64 fee currency support.
+/// CIP-64 fee currency support. The [`Cip64Storage`] handle is bound to one block executor:
+/// [`CeloBlockExecutorFactory`](alloy_celo_evm::block::CeloBlockExecutorFactory) constructs a
+/// fresh builder per block from the executing EVM's own storage, so two consumers running
+/// through the same factory never share pending CIP-64 receipt data.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloRethReceiptBuilder {
-    /// Storage for CIP-64 transaction execution results.
+    /// Storage for CIP-64 transaction execution results, scoped to one block executor.
     pub cip64_storage: Cip64Storage,
 }
 
@@ -24,6 +27,12 @@ impl CeloRethReceiptBuilder {
     /// Creates a new receipt builder with the given CIP-64 storage.
     pub const fn new(cip64_storage: Cip64Storage) -> Self {
         Self { cip64_storage }
+    }
+}
+
+impl CeloReceiptBuilderExt for CeloRethReceiptBuilder {
+    fn with_cip64_storage(storage: Cip64Storage) -> Self {
+        Self::new(storage)
     }
 }
 

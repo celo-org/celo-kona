@@ -17,8 +17,10 @@ celo-alloy-consensus.workspace = true
 
 alloy-evm.workspace = true
 alloy-op-evm = { workspace = true, default-features = false }
+alloy-op-hardforks.workspace = true
 
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
 op-alloy-consensus.workspace = true
@@ -30,8 +32,6 @@ spin.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-alloy-eips.workspace = true
-alloy-op-hardforks.workspace = true
 # Tests exercise RPC-simulation paths that need to disable the base-fee check.
 revm = { workspace = true, features = ["optional_no_base_fee"] }
 
@@ -43,6 +43,7 @@ std = [
     "alloy-evm/std",
     "op-revm/std",
     "alloy-consensus/std",
+    "alloy-eips/std",
     "op-alloy-consensus/std"
 ]
 # Enables accumulation of every `Cip64ReceiptData` in `Cip64Storage::all_entries`,

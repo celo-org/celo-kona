@@ -8,13 +8,18 @@ use celo_alloy_consensus::{CeloCip64Receipt, CeloReceiptEnvelope, CeloTxEnvelope
 use core::fmt::Debug;
 use op_alloy_consensus::OpDepositReceipt;
 
-use crate::cip64_storage::Cip64Storage;
+use crate::{block::executor_factory::CeloReceiptBuilderExt, cip64_storage::Cip64Storage};
 
 /// Receipt builder operating on celo-alloy types.
+///
+/// Holds the [`Cip64Storage`] handle bound to the executing [`CeloEvm`](crate::CeloEvm) for
+/// this block. The handle is set once per block by
+/// [`CeloBlockExecutorFactory`](crate::block::CeloBlockExecutorFactory) — the builder is never
+/// long-lived across executors, so it never accumulates state from past blocks.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloAlloyReceiptBuilder {
-    /// Storage for CIP-64 transaction execution results
+    /// Storage for CIP-64 transaction execution results, scoped to one block executor.
     pub cip64_storage: Cip64Storage,
 }
 
@@ -22,6 +27,12 @@ impl CeloAlloyReceiptBuilder {
     /// Creates a new receipt builder with the given CIP-64 storage
     pub const fn new(cip64_storage: Cip64Storage) -> Self {
         Self { cip64_storage }
+    }
+}
+
+impl CeloReceiptBuilderExt for CeloAlloyReceiptBuilder {
+    fn with_cip64_storage(storage: Cip64Storage) -> Self {
+        Self::new(storage)
     }
 }
 
