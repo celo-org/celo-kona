@@ -50,19 +50,36 @@ impl Cip64Storage {
     /// Stores CIP-64 execution info for a transaction, to be consumed by the next
     /// `build_receipt` call.
     ///
-    /// Panics if the slot is already occupied: that means the executor invoked
-    /// `transact_raw` for two CIP-64 txs without `build_receipt` running between
-    /// them, which would corrupt the second tx's receipt. Failing loud here
-    /// catches the bug at its source instead of at receipts-root divergence.
+    /// In debug builds, panics if the slot is already occupied: that means the
+    /// block executor invoked `transact_raw` for two CIP-64 txs without
+    /// `build_receipt` running between them, which would corrupt the second
+    /// tx's receipt. Failing loud in tests catches the bug at its source
+    /// instead of at receipts-root divergence.
+    ///
+    /// In release builds the previous entry is silently replaced. This is to
+    /// support **non-block-building re-execution paths** — most notably the
+    /// proofs-history ExEx (`reth_optimism_exex::OpProofsExEx::process_batch`),
+    /// which re-executes blocks through the same executor to materialize trie
+    /// effects but never invokes `build_receipt` (it discards receipts). If
+    /// the assertion were unconditional, every CIP-64 tx the ExEx re-executes
+    /// would crash op-reth in production. See celo-org/celo-kona#183 for the
+    /// incident report.
+    ///
+    /// The block-building path (main chain executor) is unaffected: its
+    /// strict `transact_raw` → `build_receipt` pairing means the slot is
+    /// always empty when this is called, so the previous entry is always
+    /// `None` and the replace is observationally a write into an empty slot.
     pub fn store_cip64_info(&self, fee_currency: Option<Address>, info: Cip64Info) {
         let data = Cip64ReceiptData { fee_currency, cip64_info: info };
         #[cfg(any(test, feature = "test-utils"))]
         self.all_entries.lock().push(data.clone());
         let prev = self.pending.lock().replace(data);
-        assert!(
+        debug_assert!(
             prev.is_none(),
             "Cip64Storage: store_cip64_info called with slot occupied — \
-             executor invariant violated (transact_raw without intervening build_receipt)"
+             block-building executor invariant violated (transact_raw without \
+             intervening build_receipt). Release builds tolerate this for the \
+             proofs-history ExEx re-execution path (see celo-org/celo-kona#183)."
         );
     }
 
