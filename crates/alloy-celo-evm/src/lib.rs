@@ -490,16 +490,21 @@ impl EvmFactory for CeloEvmFactory {
 // SDM/post-exec is unscheduled on Celo: `RollupConfig::is_sdm_active` is hard-wired to `false`
 // upstream, and Celo has no plans to activate it. This impl exists only so `CeloEvm` satisfies
 // the `PostExecEvm` bound that `OpBlockExecutor: BlockExecutor` requires (mirroring the direct
-// `PostExecEvm for OpEvm` impl in alloy-op-evm). The methods should never be called in practice.
+// `PostExecEvm for OpEvm` impl in alloy-op-evm).
+//
+// Both methods panic: if SDM is ever activated on Celo (e.g. via an upstream rebase), the
+// panic surfaces the gap immediately rather than silently returning a default value.
 impl<DB, I, P> PostExecEvm for CeloEvm<DB, I, P>
 where
     DB: Database,
     Self: Evm,
 {
-    fn begin_post_exec_tx(&mut self, _ctx: PostExecTxContext) {}
+    fn begin_post_exec_tx(&mut self, _ctx: PostExecTxContext) {
+        panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
+    }
 
     fn take_last_post_exec_tx_result(&mut self) -> PostExecExecutedTx {
-        PostExecExecutedTx::default()
+        panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 }
 
