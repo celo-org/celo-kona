@@ -20,7 +20,7 @@ use reth_evm::Evm;
 #[non_exhaustive]
 pub struct CeloRethReceiptBuilder {
     /// Storage for CIP-64 transaction execution results, scoped to one block executor.
-    pub cip64_storage: Cip64Storage,
+    pub(crate) cip64_storage: Cip64Storage,
 }
 
 impl CeloRethReceiptBuilder {
