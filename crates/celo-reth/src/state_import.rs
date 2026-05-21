@@ -129,6 +129,12 @@ impl ImportCeloStateCommand {
         let Environment { config, provider_factory, .. } =
             env_args.init::<OpNode>(AccessRights::RW, runtime)?;
 
+        if !provider_factory.cached_storage_settings().storage_v2 {
+            return Err(eyre::eyre!(
+                "import-celo-state requires storage v2 but this datadir has v1 settings"
+            ));
+        }
+
         let static_file_provider = provider_factory.static_file_provider();
 
         // Write the Cel2 migration header. `init_from_state_dump` below opens its own
@@ -154,19 +160,18 @@ impl ImportCeloStateCommand {
                 },
             )?;
 
-            // With storage v2, changeset segments must cover the same block range as
-            // headers/transactions. `setup_without_evm` advances headers, transactions,
-            // receipts, and senders through the dummy blocks but does not touch changeset
-            // segments. Advance them here so the static file provider considers all
-            // segments consistent at the migration block.
-            if provider_rw.cached_storage_settings().storage_v2 {
-                for segment in
-                    [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
-                {
-                    let mut writer = static_file_provider.latest_writer(segment)?;
-                    for block in 1..=CEL2_MIGRATION_BLOCK_NUMBER {
-                        writer.increment_block(block)?;
-                    }
+            // Changeset segments must cover the same block range as headers/transactions.
+            // `setup_without_evm` advances headers, transactions, receipts, and senders
+            // through the dummy blocks but does not touch changeset segments. Advance
+            // them here so the static file provider considers all segments consistent at
+            // the migration block.
+            for segment in [
+                StaticFileSegment::AccountChangeSets,
+                StaticFileSegment::StorageChangeSets,
+            ] {
+                let mut writer = static_file_provider.latest_writer(segment)?;
+                for block in 1..=CEL2_MIGRATION_BLOCK_NUMBER {
+                    writer.increment_block(block)?;
                 }
             }
 
