@@ -318,17 +318,78 @@ impl CeloMigrateV2Command {
     /// that invariant holds. This mirrors the `writer.ensure_at_block(...)` call the
     /// upstream SenderRecovery stage uses when it processes a trailing range of empty
     /// blocks.
+    ///
+    /// Implementation note: `ensure_at_block(tip)` internally iterates one block at a
+    /// time via `increment_block` and the writer accumulates per-block segment metadata
+    /// in memory until the next commit. A single `ensure_at_block(31_056_500)` call from
+    /// an empty segment grew the writer's in-memory state past 18 GB and deadlocked the
+    /// final commit on a Celo Mainnet datadir. We avoid this by committing every
+    /// `SEED_COMMIT_INTERVAL_BLOCKS` blocks, which bounds memory and gives the operator
+    /// a usable progress signal.
     fn seed_transaction_senders<N: ProviderNodeTypes>(
         factory: &ProviderFactory<N>,
         tip: u64,
     ) -> eyre::Result<()> {
-        info!(target: "reth::cli", "Seeding TransactionSenders static-file segment to tip");
+        /// Block interval between intermediate commits while seeding the segment.
+        ///
+        /// Picked to align with the natural 500 000-block segment-file boundary that the
+        /// static-file writer already uses, so each commit flushes exactly one segment
+        /// file's worth of in-memory metadata.
+        const SEED_COMMIT_INTERVAL_BLOCKS: u64 = 500_000;
+
+        info!(
+            target: "reth::cli",
+            tip,
+            commit_interval_blocks = SEED_COMMIT_INTERVAL_BLOCKS,
+            "Seeding TransactionSenders static-file segment to tip",
+        );
+
         let sf_provider = factory.static_file_provider();
         let mut writer = sf_provider.latest_writer(StaticFileSegment::TransactionSenders)?;
-        writer.ensure_at_block(tip)?;
-        writer.commit()?;
-        sf_provider.commit()?;
-        info!(target: "reth::cli", tip, "TransactionSenders segment boundary advanced");
+        let mut next_log = SEED_COMMIT_INTERVAL_BLOCKS;
+        let progress_start = std::time::Instant::now();
+
+        // Advance the segment in commit-bounded chunks. Each iteration walks up to
+        // `SEED_COMMIT_INTERVAL_BLOCKS` empty blocks and then commits, freeing the
+        // accumulated metadata before continuing.
+        let mut chunk_end = SEED_COMMIT_INTERVAL_BLOCKS.min(tip);
+        loop {
+            writer.ensure_at_block(chunk_end)?;
+            writer.commit()?;
+
+            if chunk_end >= next_log {
+                let elapsed = progress_start.elapsed();
+                let pct = (chunk_end as f64 / tip as f64) * 100.0;
+                let eta_secs = if chunk_end > 0 {
+                    (elapsed.as_secs_f64() * (tip - chunk_end) as f64 / chunk_end as f64) as u64
+                } else {
+                    0
+                };
+                info!(
+                    target: "reth::cli",
+                    block = chunk_end,
+                    tip,
+                    progress_pct = format!("{:.1}", pct),
+                    elapsed_secs = elapsed.as_secs(),
+                    eta_secs,
+                    "Seeding TransactionSenders progress",
+                );
+                next_log = chunk_end + SEED_COMMIT_INTERVAL_BLOCKS;
+            }
+
+            if chunk_end == tip {
+                break;
+            }
+            chunk_end = (chunk_end + SEED_COMMIT_INTERVAL_BLOCKS).min(tip);
+        }
+
+        let total_secs = progress_start.elapsed().as_secs();
+        info!(
+            target: "reth::cli",
+            tip,
+            total_secs,
+            "TransactionSenders segment boundary advanced",
+        );
         Ok(())
     }
 
