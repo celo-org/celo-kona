@@ -10,6 +10,7 @@ use celo_reth::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
     },
+    celo_migrate_v2::CeloMigrateV2Command,
     state_import::ImportCeloStateCommand,
 };
 use clap::{CommandFactory, FromArgMatches, Parser};
@@ -49,11 +50,12 @@ const PRUNE: &str = "prune";
 const RE_EXECUTE: &str = "re-execute";
 const DOWNLOAD: &str = "download";
 const SNAPSHOT_MANIFEST: &str = "snapshot-manifest";
+const CELO_MIGRATE_V2: &str = "celo-migrate-v2";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
 const CELO_SUBCOMMANDS: &[&str] =
-    &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE, DOWNLOAD, SNAPSHOT_MANIFEST];
+    &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE, DOWNLOAD, SNAPSHOT_MANIFEST, CELO_MIGRATE_V2];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
 // `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the
@@ -116,6 +118,10 @@ enum CeloCommand {
     /// Defaults `--chain-id` to Celo Mainnet (42220).
     #[command(name = SNAPSHOT_MANIFEST)]
     SnapshotManifest(Box<SnapshotManifestCommand>),
+    /// Celo-aware v1 → v2 storage migration (skips the upstream stage-reset that would
+    /// force a pipeline rebuild over the dummy pre-migration blocks).
+    #[command(name = CELO_MIGRATE_V2)]
+    CeloMigrateV2(Box<CeloMigrateV2Command>),
 }
 
 impl CeloCommand {
@@ -129,6 +135,7 @@ impl CeloCommand {
             Self::ReExecute(command) => command.chain_spec(),
             Self::Download(command) => command.chain_spec(),
             Self::SnapshotManifest(_) => None,
+            Self::CeloMigrateV2(_) => None,
         }
     }
 }
@@ -370,6 +377,10 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
         // Snapshot manifest generation is synchronous: it tars static files and reads the
         // `Finish` stage checkpoint from MDBX read-only. No runtime needed.
         CeloCommand::SnapshotManifest(cmd) => cmd.execute(),
+        CeloCommand::CeloMigrateV2(cmd) => {
+            let runtime = runner.runtime();
+            runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
+        }
     }
 }
 
