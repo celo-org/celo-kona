@@ -12,8 +12,9 @@ use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
     BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    StaticFileProviderFactory, StaticFileWriter,
+    StaticFileProviderFactory, StaticFileSegment, StaticFileWriter,
 };
+use reth_storage_api::StorageSettingsCache;
 use std::{io::BufReader, path::PathBuf};
 use tracing::info;
 
@@ -116,7 +117,6 @@ impl ImportCeloStateCommand {
         );
         info!(target: "reth::cli", "Active hardforks:\n{}", chain.display_hardforks());
 
-        // v1 storage only — `--storage.v2` is not exposed by this subcommand.
         let env_args = EnvironmentArgs::<CeloChainSpecParser> {
             datadir: self.datadir,
             config: self.config,
@@ -153,6 +153,22 @@ impl ImportCeloStateCommand {
                     header
                 },
             )?;
+
+            // With storage v2, changeset segments must cover the same block range as
+            // headers/transactions. `setup_without_evm` advances headers, transactions,
+            // receipts, and senders through the dummy blocks but does not touch changeset
+            // segments. Advance them here so the static file provider considers all
+            // segments consistent at the migration block.
+            if provider_rw.cached_storage_settings().storage_v2 {
+                for segment in
+                    [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
+                {
+                    let mut writer = static_file_provider.latest_writer(segment)?;
+                    for block in 1..=CEL2_MIGRATION_BLOCK_NUMBER {
+                        writer.increment_block(block)?;
+                    }
+                }
+            }
 
             // SAFETY: it's safe to commit static files; on crash they are unwound according to
             // database checkpoints. Required so the migration header is visible to the state

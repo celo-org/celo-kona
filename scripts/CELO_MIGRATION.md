@@ -92,7 +92,6 @@ The command will:
 
 It downloads the dump (if missing), decompresses it, runs `append_l2_allocs.py`, and invokes `celo-reth import-celo-state`. Re-running with the same workdir is safe — completed steps are skipped.
 
-## Limitations (v1)
+## Limitations
 
-- Storage layout v2 (`--storage.v2` on the upstream `init-state`) is not yet supported — `import-celo-state` always uses the v1/legacy layout.
 - Only Celo Mainnet is supported. Testnet imports require a separate path (not yet implemented).
