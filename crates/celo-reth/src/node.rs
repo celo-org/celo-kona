@@ -49,7 +49,7 @@ use reth_primitives_traits::{
 };
 use std::sync::Arc;
 
-pub use reth_optimism_node::args::RollupArgs;
+pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
 
 // ---------------------------------------------------------------------------
 // CeloNode

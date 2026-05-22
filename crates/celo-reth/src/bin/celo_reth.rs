@@ -4,7 +4,7 @@ use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
     CeloEvmConfig,
     chainspec::CeloChainSpecParser,
-    node::{CeloConsensus, CeloNode, RollupArgs},
+    node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
     rpc::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
@@ -153,6 +153,7 @@ fn main() {
                 proofs_history,
                 proofs_history_window,
                 proofs_history_verification_interval,
+                proofs_history_storage_version,
                 ..
             } = rollup_args.clone();
             let proofs_history_storage_path = rollup_args.proofs_history_storage_path.clone();
@@ -181,6 +182,17 @@ fn main() {
             // always fell back to the slow historical-state path).
             let proofs_storage_rpc: Option<OpProofsStorage<Arc<MdbxProofsStorage>>> =
                 if proofs_history {
+                    // celo-reth only implements the v1 proofs schema. Reject v2 loudly rather
+                    // than silently opening a v1 store: an operator who initialized a v2 proofs
+                    // DB would otherwise get a v1 reader against it. Upstream op-reth supports
+                    // both; port v2 here when Celo needs history-aware proof reads.
+                    if !matches!(proofs_history_storage_version, ProofsStorageVersion::V1) {
+                        return Err(eyre::eyre!(
+                            "--proofs-history.storage-version=v2 is not supported by celo-reth \
+                             (only v1 is implemented). Re-run with v1, or omit the flag."
+                        ));
+                    }
+
                     let path = proofs_history_storage_path.ok_or_else(|| {
                         eyre::eyre!(
                             "--proofs-history.storage-path is required when --proofs-history is set"
