@@ -17,6 +17,7 @@ use reth_chainspec::EthChainSpec;
 use reth_cli_commands::stage;
 use reth_cli_runner::CliRunner;
 use reth_node_core::args::{LogArgs, TraceArgs};
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
 use reth_tracing::Layers;
@@ -176,8 +177,9 @@ fn main() {
 /// Dispatch the Celo-specific subcommand path.
 ///
 /// Mirrors upstream `CliApp`'s init order: build the runtime, wire OTLP layers (no-op if the
-/// `otlp`/`otlp-logs` features aren't compiled in), then initialize file/stdout tracing, then
-/// dispatch the command.
+/// `otlp`/`otlp-logs` features aren't compiled in), initialize file/stdout tracing, install the
+/// global Prometheus recorder so `--metrics` exporters in subcommands have something to record,
+/// then dispatch the command.
 fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     if let Some(chain_spec) = cli.command.chain_spec() {
         cli.logs.log_file_directory =
@@ -189,6 +191,7 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     runner.block_on(cli.traces.init_otlp_tracing(&mut layers))?;
     runner.block_on(cli.traces.init_otlp_logs(&mut layers))?;
     let _guard = cli.logs.init_tracing_with_layers(layers, false)?;
+    install_prometheus_recorder();
 
     match cli.command {
         CeloCommand::ImportCeloState(cmd) => {
