@@ -17,14 +17,19 @@ use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::stage;
 use reth_cli_runner::CliRunner;
+use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
+use reth_node_builder::{NodeBuilder, WithLaunchContext};
 use reth_node_core::args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
 use reth_optimism_exex::OpProofsExEx;
 use reth_optimism_rpc::eth::proofs::{EthApiExt, EthApiOverrideServer};
-use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_optimism_trie::{
+    OpProofsStorage, OpProofsStore,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+};
 use reth_tasks::TaskExecutor;
 use reth_tracing::{FileWorkerGuard, Layers};
 use std::{ffi::OsString, sync::Arc, time::Duration};
@@ -151,136 +156,60 @@ fn main() {
             //   rust/op-reth/crates/node/src/proof_history.rs
             let RollupArgs {
                 proofs_history,
+                proofs_history_storage_path,
                 proofs_history_window,
                 proofs_history_verification_interval,
                 proofs_history_storage_version,
                 ..
             } = rollup_args.clone();
-            let proofs_history_storage_path = rollup_args.proofs_history_storage_path.clone();
 
             let blocklist = FeeCurrencyBlocklist::default();
-            let mut node_builder = builder.node(
-                CeloNode::new(rollup_args)
-                    .with_blocklist(blocklist.clone())
-                    .with_fee_currency_limits(fee_currency_limits),
-            );
+            let node = CeloNode::new(rollup_args)
+                .with_blocklist(blocklist.clone())
+                .with_fee_currency_limits(fee_currency_limits);
 
-            // Optional: historical-proofs ExEx. When --proofs-history is set,
-            // op-reth's bounded-history sidecar maintains a separate MDBX DB
-            // with pre-computed trie data for fast eth_getProof at depth.
-            // The CLI flags are inherited from reth_optimism_node::RollupArgs
-            // but the wiring is per-binary: each downstream (OpNode, CeloNode)
-            // must install the ExEx itself. We do that here.
-            //
-            // NOTE: on_node_started + install_exex are installed here, but the
-            // RPC override is deferred to the single consolidated extend_rpc_modules
-            // closure below. reth's builder API treats extend_rpc_modules as a
-            // single-slot set/replace (Box<dyn ExtendRpcModules>), so calling it
-            // twice silently discards the first hook — which is exactly the bug
-            // that shipped in the initial PR #175 (the proofs-history override
-            // was overwritten by the celo modules override, and eth_getProof
-            // always fell back to the slow historical-state path).
-            let proofs_storage_rpc: Option<OpProofsStorage<Arc<MdbxProofsStorage>>> =
-                if proofs_history {
-                    // celo-reth only implements the v1 proofs schema. Reject v2 loudly rather
-                    // than silently opening a v1 store: an operator who initialized a v2 proofs
-                    // DB would otherwise get a v1 reader against it. Upstream op-reth supports
-                    // both; port v2 here when Celo needs history-aware proof reads.
-                    if !matches!(proofs_history_storage_version, ProofsStorageVersion::V1) {
-                        return Err(eyre::eyre!(
-                            "--proofs-history.storage-version=v2 is not supported by celo-reth \
-                             (only v1 is implemented). Re-run with v1, or omit the flag."
-                        ));
+            // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
+            // set, dispatch on the on-disk schema version (--proofs-history.storage-version)
+            // and hand the matching MDBX store to `launch_celo_node`. When it is unset we
+            // still go through `launch_celo_node` (with `None`), so the Celo RPC modules
+            // are wired identically on every path — the `::<MdbxProofsStorage>` turbofish
+            // there only pins the otherwise-unused store type parameter.
+            if proofs_history {
+                let path = proofs_history_storage_path.ok_or_else(|| {
+                    eyre::eyre!(
+                        "--proofs-history.storage-path is required when --proofs-history is set"
+                    )
+                })?;
+                match proofs_history_storage_version {
+                    ProofsStorageVersion::V1 => {
+                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v1)");
+                        let mdbx =
+                            Arc::new(MdbxProofsStorage::new(&path).map_err(|e| {
+                                eyre::eyre!("Failed to create MdbxProofsStorage: {e}")
+                            })?);
+                        let proofs = ProofsHistoryConfig {
+                            mdbx,
+                            window: proofs_history_window,
+                            verification_interval: proofs_history_verification_interval,
+                        };
+                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
                     }
-
-                    let path = proofs_history_storage_path.ok_or_else(|| {
-                        eyre::eyre!(
-                            "--proofs-history.storage-path is required when --proofs-history is set"
-                        )
-                    })?;
-                    info!(target: "reth::cli", "Using on-disk storage for proofs history");
-
-                    let mdbx = Arc::new(
-                        MdbxProofsStorage::new(&path)
-                            .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-                    );
-                    let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
-                    let storage_exec = storage.clone();
-
-                    node_builder = node_builder
-                        .on_node_started(move |node| {
-                            spawn_proofs_db_metrics(
-                                node.task_executor,
-                                mdbx,
-                                node.config.metrics.push_gateway_interval,
-                            );
-                            Ok(())
-                        })
-                        .install_exex("proofs-history", async move |exex_context| {
-                            Ok(OpProofsExEx::builder(exex_context, storage_exec)
-                                .with_proofs_history_window(proofs_history_window)
-                                .with_verification_interval(proofs_history_verification_interval)
-                                .build()
-                                .run()
-                                .boxed())
-                        });
-
-                    Some(storage)
-                } else {
-                    None
-                };
-
-            // Single consolidated extend_rpc_modules. Installs:
-            //   1. proofs-history EthApiExt (overrides eth_getProof) — only when enabled
-            //   2. Celo gas / fee-history / tx / admin modules — always
-            //
-            // TODO: also install DebugApiExt so debug_executePayload is served from
-            // the sidecar (mirrors the OP launcher in ethereum-optimism/optimism @
-            // kona-node/v1.5.1: rust/op-reth/crates/node/src/proof_history.rs).
-            // First attempt at porting hit a generic-bounds mismatch on
-            // DebugApiExt::into_rpc when instantiated with CeloNode's component
-            // types (5 generic params on this side vs 4 in OP). Left for follow-up;
-            // the eth_getProof override is the load-bearing one for archive-RPC use.
-            let handle = node_builder
-                .extend_rpc_modules(move |ctx| {
-                    // 1. proofs-history eth_getProof override (if enabled).
-                    if let Some(storage_rpc) = proofs_storage_rpc {
-                        info!(
-                            target: "reth::cli",
-                            "Installing proofs-history RPC override (eth_getProof)"
-                        );
-                        let api_ext = EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
-                        let eth_replaced = ctx.modules.replace_configured(api_ext.into_rpc())?;
-                        info!(
-                            target: "reth::cli",
-                            eth_replaced,
-                            "Proofs-history eth_getProof override installed"
-                        );
+                    ProofsStorageVersion::V2 => {
+                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v2)");
+                        let mdbx = Arc::new(MdbxProofsStorageV2::new(&path).map_err(|e| {
+                            eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}")
+                        })?);
+                        let proofs = ProofsHistoryConfig {
+                            mdbx,
+                            window: proofs_history_window,
+                            verification_interval: proofs_history_verification_interval,
+                        };
+                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
                     }
-
-                    // 2. Celo modules.
-                    let chain_id = ctx.config().chain.chain().id();
-                    let fee_currency_directory =
-                        celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
-                    let fee_api =
-                        make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
-                    let fee_api = std::sync::Arc::new(fee_api);
-                    let gas_module = celo_gas_price_module(fee_api.clone());
-                    ctx.modules.replace_configured(gas_module)?;
-
-                    let tx_module = celo_tx_module(fee_api.clone());
-                    ctx.modules.replace_configured(tx_module)?;
-
-                    let fee_history_module = celo_fee_history_module(fee_api);
-                    ctx.modules.replace_configured(fee_history_module)?;
-
-                    let admin_module = celo_admin_module(blocklist);
-                    ctx.modules.merge_configured(admin_module)?;
-                    Ok(())
-                })
-                .launch_with_debug_capabilities()
-                .await?;
-            handle.node_exit_future.await
+                }
+            } else {
+                launch_celo_node::<MdbxProofsStorage>(builder, node, blocklist, None).await
+            }
         })
     {
         eprintln!("Error: {err:?}");
@@ -355,15 +284,137 @@ fn init_tracing(
     Ok(guard)
 }
 
+/// Configuration for the historical-proofs ExEx, generic over the on-disk store schema
+/// (`MdbxProofsStorage` for v1, `MdbxProofsStorageV2` for v2).
+struct ProofsHistoryConfig<S> {
+    /// The MDBX-backed proofs store.
+    mdbx: Arc<S>,
+    /// Number of blocks of proof history to retain.
+    window: u64,
+    /// Trie re-verification cadence in blocks (`0` disables verification).
+    verification_interval: u64,
+}
+
+/// Launch the Celo node, optionally installing the historical-proofs sidecar.
+///
+/// This is the single launch path for the binary. It always wires the Celo RPC modules
+/// (gas price / fee history / tx / admin), and — when `proofs` is `Some` — additionally
+/// installs the proofs-history ExEx, its metrics task, and the `eth_getProof` RPC
+/// override, all bound to the given MDBX store `S` (v1 or v2).
+///
+/// reth's builder treats `extend_rpc_modules` as a single-slot set/replace, so calling it
+/// twice silently discards the first hook — the bug that shipped in PR #175 (the
+/// proofs-history override was overwritten by the Celo modules override, and `eth_getProof`
+/// always fell back to the slow historical-state path). The proofs override and the Celo
+/// modules therefore share one closure. Routing the no-proofs case through here too keeps
+/// that closure — and the Celo module wiring — defined exactly once.
+///
+/// `on_node_started` and `install_exex` return `Self`, so installing the sidecar leaves the
+/// builder type unchanged and the store type `S` stays erased behind the boxed hooks — that
+/// is what lets the v1/v2 dispatch in `main` funnel into this one generic function.
+///
+/// TODO: also install `DebugApiExt` so `debug_executePayload` is served from the sidecar
+/// (mirrors the OP launcher in ethereum-optimism/optimism @ kona-node/v1.5.1:
+/// rust/op-reth/crates/node/src/proof_history.rs). First attempt at porting hit a
+/// generic-bounds mismatch on `DebugApiExt::into_rpc` when instantiated with CeloNode's
+/// component types (5 generic params on this side vs 4 in OP). Left for follow-up; the
+/// `eth_getProof` override is the load-bearing one for archive-RPC use.
+async fn launch_celo_node<S>(
+    builder: WithLaunchContext<NodeBuilder<DatabaseEnv, OpChainSpec>>,
+    node: CeloNode,
+    blocklist: FeeCurrencyBlocklist,
+    proofs: Option<ProofsHistoryConfig<S>>,
+) -> eyre::Result<()>
+where
+    S: OpProofsStore + DatabaseMetrics + Send + Sync + 'static,
+{
+    let mut node_builder = builder.node(node);
+
+    // When enabled, install the ExEx + metrics task and keep the storage handle for the
+    // RPC override below.
+    let proofs_storage_rpc: Option<OpProofsStorage<Arc<S>>> =
+        if let Some(ProofsHistoryConfig { mdbx, window, verification_interval }) = proofs {
+            let storage: OpProofsStorage<Arc<S>> = mdbx.clone().into();
+            let storage_exec = storage.clone();
+
+            node_builder = node_builder
+                .on_node_started(move |node| {
+                    spawn_proofs_db_metrics(
+                        node.task_executor,
+                        mdbx,
+                        node.config.metrics.push_gateway_interval,
+                    );
+                    Ok(())
+                })
+                .install_exex("proofs-history", async move |exex_context| {
+                    Ok(OpProofsExEx::builder(exex_context, storage_exec)
+                        .with_proofs_history_window(window)
+                        .with_verification_interval(verification_interval)
+                        .build()
+                        .run()
+                        .boxed())
+                });
+
+            Some(storage)
+        } else {
+            None
+        };
+
+    // Single consolidated extend_rpc_modules. Installs:
+    //   1. proofs-history EthApiExt (overrides eth_getProof) — only when enabled
+    //   2. Celo gas / fee-history / tx / admin modules — always
+    let handle = node_builder
+        .extend_rpc_modules(move |ctx| {
+            // 1. proofs-history eth_getProof override (if enabled).
+            if let Some(storage_rpc) = proofs_storage_rpc {
+                info!(
+                    target: "reth::cli",
+                    "Installing proofs-history RPC override (eth_getProof)"
+                );
+                let api_ext = EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
+                let eth_replaced = ctx.modules.replace_configured(api_ext.into_rpc())?;
+                info!(
+                    target: "reth::cli",
+                    eth_replaced,
+                    "Proofs-history eth_getProof override installed"
+                );
+            }
+
+            // 2. Celo modules.
+            let chain_id = ctx.config().chain.chain().id();
+            let fee_currency_directory =
+                celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
+            let fee_api = make_celo_fee_api(ctx.registry.eth_api().clone(), fee_currency_directory);
+            let fee_api = std::sync::Arc::new(fee_api);
+            let gas_module = celo_gas_price_module(fee_api.clone());
+            ctx.modules.replace_configured(gas_module)?;
+
+            let tx_module = celo_tx_module(fee_api.clone());
+            ctx.modules.replace_configured(tx_module)?;
+
+            let fee_history_module = celo_fee_history_module(fee_api);
+            ctx.modules.replace_configured(fee_history_module)?;
+
+            let admin_module = celo_admin_module(blocklist);
+            ctx.modules.merge_configured(admin_module)?;
+            Ok(())
+        })
+        .launch_with_debug_capabilities()
+        .await?;
+    handle.node_exit_future.await
+}
+
 /// Spawns a task that periodically reports metrics for the proofs DB.
 ///
-/// Ported verbatim from ethereum-optimism/optimism @ kona-node/v1.5.1:
+/// Ported from ethereum-optimism/optimism @ kona-node/v1.5.1:
 ///   rust/op-reth/crates/node/src/proof_history.rs
-fn spawn_proofs_db_metrics(
+fn spawn_proofs_db_metrics<S>(
     executor: TaskExecutor,
-    storage: Arc<MdbxProofsStorage>,
+    storage: Arc<S>,
     metrics_report_interval: Duration,
-) {
+) where
+    S: DatabaseMetrics + Send + Sync + 'static,
+{
     executor.spawn_critical_task("op-proofs-storage-metrics", async move {
         info!(
             target: "reth::cli",

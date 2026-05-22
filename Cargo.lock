@@ -2360,6 +2360,7 @@ dependencies = [
  "reth-codecs",
  "reth-consensus",
  "reth-consensus-common",
+ "reth-db",
  "reth-db-api",
  "reth-db-common",
  "reth-engine-local",

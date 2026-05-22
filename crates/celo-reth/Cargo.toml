@@ -83,6 +83,9 @@ reth-optimism-rpc.workspace = true
 # typecheck — and we lose the proof-storage metrics emitted from the wrapper.
 reth-optimism-exex.workspace = true
 reth-optimism-trie = { workspace = true, features = ["metrics"] }
+# Needed only to name the launcher builder type `NodeBuilder<DatabaseEnv, _>`
+# in the proofs-history helper (binary-only). Mirrors op-reth's proof_history.rs.
+reth-db.workspace = true
 futures-util.workspace = true
 
 # Celo
