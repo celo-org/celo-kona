@@ -22,12 +22,8 @@ use {
 
 use alloc::sync::Arc;
 use alloy_consensus::{BlockHeader, Header};
-use alloy_evm::{
-    EvmFactory, FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut as TransactionEnv,
-    block::BlockExecutorFactory, precompiles::PrecompilesMap,
-};
-use alloy_op_evm::block::{OpTxEnv, receipt_builder::OpReceiptBuilder};
-use core::fmt::Debug;
+use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
+use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
@@ -39,7 +35,6 @@ use reth_evm::{
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
-use revm::context::BlockEnv;
 
 pub mod primitives;
 pub mod receipt;
@@ -72,18 +67,14 @@ pub use receipt::CeloReceipt;
 pub use receipts::CeloRethReceiptBuilder;
 
 // Re-export block assembler and execution context from op-reth (same for Celo as OP Stack).
-pub use alloy_op_evm::{
-    OpBlockExecutor,
-    post_exec::{PostExecEvmFactoryHooks, PostExecExecutorExt},
-};
+pub use alloy_op_evm::{OpBlockExecutor, post_exec::PostExecExecutorExt};
 pub use reth_optimism_evm::{
-    ConfigurePostExecEvm, OpBlockAssembler, OpBlockExecutionCtx, OpBlockExecutorFactory,
-    OpNextBlockEnvAttributes, PostExecMode, l1,
+    ConfigurePostExecEvm, OpBlockAssembler, OpBlockExecutionCtx, OpNextBlockEnvAttributes,
+    PostExecMode, l1,
 };
 
 // Re-export Celo EVM types.
-pub use alloy_celo_evm::{CeloEvm, CeloEvmFactory};
-pub use alloy_op_evm::post_exec::PostExecEvmFactoryAdapter;
+pub use alloy_celo_evm::{CeloEvm, CeloEvmFactory, block::CeloBlockExecutorFactory};
 
 use reth_optimism_primitives::DepositReceipt;
 
@@ -123,19 +114,17 @@ pub struct CeloEvmConfig<
     ChainSpec = OpChainSpec,
     N: NodePrimitives = CeloPrimitives,
     R = CeloRethReceiptBuilder,
-    EvmFactory = PostExecEvmFactoryAdapter<CeloEvmFactory>,
 > {
-    /// Inner [`OpBlockExecutorFactory`].
-    pub executor_factory: OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmFactory>,
+    /// Inner [`CeloBlockExecutorFactory`]. Constructs a fresh receipt builder bound to the
+    /// EVM's own CIP-64 storage on every `create_executor` call.
+    pub executor_factory: CeloBlockExecutorFactory<R, Arc<ChainSpec>>,
     /// Block assembler (shared with OP Stack).
     pub block_assembler: OpBlockAssembler<ChainSpec>,
     #[doc(hidden)]
     pub _pd: core::marker::PhantomData<N>,
 }
 
-impl<ChainSpec, N: NodePrimitives, R: Clone, EvmFactory: Clone> Clone
-    for CeloEvmConfig<ChainSpec, N, R, EvmFactory>
-{
+impl<ChainSpec, N: NodePrimitives, R> Clone for CeloEvmConfig<ChainSpec, N, R> {
     fn clone(&self) -> Self {
         Self {
             executor_factory: self.executor_factory.clone(),
@@ -159,24 +148,19 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
-        // Create a shared CIP-64 storage so the EVM and receipt builder can communicate.
-        let cip64_storage = alloy_celo_evm::cip64_storage::Cip64Storage::default();
-        let receipt_builder = CeloRethReceiptBuilder::new(cip64_storage.clone());
-        let evm_factory =
-            CeloEvmFactory::with_cip64_storage(cip64_storage).with_blocklist(blocklist);
+        // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
+        // and the executor factory re-binds the receipt builder to that per-EVM storage on
+        // every `create_executor` call.
+        let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: OpBlockExecutorFactory::new(
-                receipt_builder,
-                chain_spec,
-                PostExecEvmFactoryAdapter::new(evm_factory),
-            ),
+            executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),
             _pd: core::marker::PhantomData,
         }
     }
 }
 
-impl<ChainSpec, N, R, EvmFactory> CeloEvmConfig<ChainSpec, N, R, EvmFactory>
+impl<ChainSpec, N, R> CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: OpHardforks,
     N: NodePrimitives,
@@ -216,7 +200,7 @@ where
     }
 }
 
-impl<ChainSpec, N, R, EvmF> ConfigureEvm for CeloEvmConfig<ChainSpec, N, R, EvmF>
+impl<ChainSpec, N, R> ConfigureEvm for CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
@@ -226,28 +210,23 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: OpReceiptBuilder<Receipt: DepositReceipt, Transaction: SignedTransaction>,
-    EvmF: EvmFactory<
-            Tx: FromRecoveredTx<R::Transaction>
-                    + FromTxWithEncoded<R::Transaction>
-                    + TransactionEnv
-                    + OpTxEnv,
-            Spec = OpSpecId,
-            BlockEnv = BlockEnv,
-            Precompiles = PrecompilesMap,
-        > + Debug,
-    OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmF>: for<'a> BlockExecutorFactory<
-            EvmFactory = EvmF,
-            ExecutionCtx<'a> = OpBlockExecutionCtx,
-            Transaction = R::Transaction,
-            Receipt = R::Receipt,
-        >,
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
+        + OpReceiptBuilder<
+            Receipt: DepositReceipt,
+            Transaction: SignedTransaction
+                             + alloy_consensus::Transaction
+                             + op_alloy_consensus::OpTransaction,
+        > + Send
+        + Sync
+        + 'static,
+    celo_revm::CeloTransaction<revm::context::TxEnv>:
+        FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     type Primitives = N;
     type Error = EIP1559ParamError;
     type NextBlockEnvCtx = OpNextBlockEnvAttributes;
-    type BlockExecutorFactory = OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmF>;
+    type BlockExecutorFactory = CeloBlockExecutorFactory<R, Arc<ChainSpec>>;
     type BlockAssembler = OpBlockAssembler<ChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
@@ -315,8 +294,7 @@ where
     }
 }
 
-impl<ChainSpec, N, R, F> ConfigurePostExecEvm
-    for CeloEvmConfig<ChainSpec, N, R, PostExecEvmFactoryAdapter<F>>
+impl<ChainSpec, N, R> ConfigurePostExecEvm for CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks + Send + Sync + Unpin + 'static,
     N: NodePrimitives<
@@ -326,28 +304,19 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: OpReceiptBuilder<
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
+        + OpReceiptBuilder<
             Receipt: DepositReceipt,
-            Transaction: SignedTransaction + op_alloy_consensus::OpTransaction,
+            Transaction: SignedTransaction
+                             + alloy_consensus::Transaction
+                             + op_alloy_consensus::OpTransaction,
         > + Clone
         + Send
         + Sync
         + Unpin
         + 'static,
-    F: PostExecEvmFactoryHooks<
-            Tx: FromRecoveredTx<R::Transaction>
-                    + FromTxWithEncoded<R::Transaction>
-                    + TransactionEnv
-                    + OpTxEnv,
-            Precompiles = PrecompilesMap,
-            Spec = OpSpecId,
-            BlockEnv = BlockEnv,
-        > + Debug
-        + Clone
-        + Send
-        + Sync
-        + Unpin
-        + 'static,
+    celo_revm::CeloTransaction<revm::context::TxEnv>:
+        FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     fn post_exec_executor_for_block<'a, DB: Database>(
@@ -365,13 +334,10 @@ where
     > {
         let evm = self.evm_for_block(db, block.header())?;
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
+        // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
+        let builder = R::from(evm.cip64_storage().clone());
 
-        Ok(OpBlockExecutor::new(
-            evm,
-            ctx,
-            self.executor_factory.spec(),
-            self.executor_factory.receipt_builder(),
-        ))
+        Ok(OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder))
     }
 
     fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
@@ -388,20 +354,11 @@ where
         let evm = self.evm_with_env(db, evm_env);
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
-        let executor = OpBlockExecutor::new(
-            evm,
-            ctx.clone(),
-            self.executor_factory.spec(),
-            self.executor_factory.receipt_builder(),
-        );
+        let builder = R::from(evm.cip64_storage().clone());
+        let executor =
+            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
 
-        Ok(BasicBlockBuilder::<
-            'a,
-            OpBlockExecutorFactory<R, Arc<ChainSpec>, PostExecEvmFactoryAdapter<F>>,
-            _,
-            _,
-            N,
-        > {
+        Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,
             transactions: alloc::vec::Vec::new(),
             ctx,
@@ -412,7 +369,7 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecData> for CeloEvmConfig<ChainSpec, N, R, EvmF>
+impl<ChainSpec, N, R> ConfigureEngineEvm<OpExecData> for CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
@@ -422,28 +379,24 @@ where
             BlockBody = alloy_consensus::BlockBody<R::Transaction>,
             Block = alloy_consensus::Block<R::Transaction>,
         >,
-    R: OpReceiptBuilder<Receipt: DepositReceipt, Transaction: SignedTransaction>,
-    EvmF: EvmFactory<
-            Tx: FromRecoveredTx<R::Transaction>
-                    + FromTxWithEncoded<R::Transaction>
-                    + TransactionEnv
-                    + OpTxEnv,
-            Spec = OpSpecId,
-            BlockEnv = BlockEnv,
-            Precompiles = PrecompilesMap,
-        > + Debug,
-    OpBlockExecutorFactory<R, Arc<ChainSpec>, EvmF>: for<'a> BlockExecutorFactory<
-            EvmFactory = EvmF,
-            ExecutionCtx<'a> = OpBlockExecutionCtx,
-            Transaction = R::Transaction,
-            Receipt = R::Receipt,
-        >,
+    R: From<alloy_celo_evm::cip64_storage::Cip64Storage>
+        + OpReceiptBuilder<
+            Receipt: DepositReceipt,
+            Transaction: SignedTransaction
+                             + alloy_consensus::Transaction
+                             + op_alloy_consensus::OpTransaction,
+        > + Send
+        + Sync
+        + 'static,
+    celo_revm::CeloTransaction<revm::context::TxEnv>:
+        FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     fn evm_env_for_payload(&self, payload: &OpExecData) -> Result<EvmEnvFor<Self>, Self::Error> {
         use alloy_primitives::U256;
         use revm::{
-            context::CfgEnv, context_interface::block::BlobExcessGasAndPrice,
+            context::{BlockEnv, CfgEnv},
+            context_interface::block::BlobExcessGasAndPrice,
             primitives::hardfork::SpecId,
         };
 

@@ -11,17 +11,28 @@ use op_alloy_consensus::OpDepositReceipt;
 use crate::cip64_storage::Cip64Storage;
 
 /// Receipt builder operating on celo-alloy types.
+///
+/// Holds the [`Cip64Storage`] handle bound to the executing [`CeloEvm`](crate::CeloEvm) for
+/// this block. The handle is set once per block by
+/// [`CeloBlockExecutorFactory`](crate::block::CeloBlockExecutorFactory) — the builder is never
+/// long-lived across executors, so it never accumulates state from past blocks.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloAlloyReceiptBuilder {
-    /// Storage for CIP-64 transaction execution results
-    pub cip64_storage: Cip64Storage,
+    /// Storage for CIP-64 transaction execution results, scoped to one block executor.
+    pub(crate) cip64_storage: Cip64Storage,
 }
 
 impl CeloAlloyReceiptBuilder {
     /// Creates a new receipt builder with the given CIP-64 storage
     pub const fn new(cip64_storage: Cip64Storage) -> Self {
         Self { cip64_storage }
+    }
+}
+
+impl From<Cip64Storage> for CeloAlloyReceiptBuilder {
+    fn from(cip64_storage: Cip64Storage) -> Self {
+        Self::new(cip64_storage)
     }
 }
 
@@ -40,6 +51,10 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
 
                 // Pop the CIP-64 receipt data stored during transact_raw
                 let cip64_data = self.cip64_storage.pop_cip64_receipt_data();
+                assert!(
+                    cip64_data.is_some() || !success,
+                    "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
+                );
                 let base_fee_in_erc20 =
                     cip64_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
 

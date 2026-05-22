@@ -2,15 +2,17 @@
 //! execution.
 
 use alloc::{string::ToString, vec::Vec};
-use alloy_celo_evm::{CeloEvmFactory, block::CeloAlloyReceiptBuilder, cip64_storage::Cip64Storage};
+use alloy_celo_evm::{
+    CeloEvmFactory,
+    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory},
+    cip64_storage::Cip64Storage,
+};
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
     EvmFactory, RecoveredTx,
     block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
 };
-use alloy_op_evm::{
-    OpBlockExecutionCtx, OpBlockExecutorFactory, PostExecMode, post_exec::PostExecEvmFactoryAdapter,
-};
+use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use celo_alloy_consensus::CeloReceiptEnvelope;
 use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
@@ -34,12 +36,9 @@ where
     pub(crate) trie_db: TrieDB<P, H>,
     #[allow(rustdoc::broken_intra_doc_links)]
     /// The executor factory, used to create new [`celo_revm::CeloEvm`] instances for block
-    /// building routines.
-    pub(crate) factory: OpBlockExecutorFactory<
-        CeloAlloyReceiptBuilder,
-        CeloRollupConfig,
-        PostExecEvmFactoryAdapter<CeloEvmFactory>,
-    >,
+    /// building routines. Each `create_executor` call constructs a fresh
+    /// [`CeloAlloyReceiptBuilder`] bound to that EVM's own [`Cip64Storage`].
+    pub(crate) factory: CeloBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig>,
 }
 
 impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
@@ -56,11 +55,7 @@ where
         parent_header: Sealed<Header>,
     ) -> Self {
         let trie_db = TrieDB::new(parent_header, provider, hinter);
-        let factory = OpBlockExecutorFactory::new(
-            CeloAlloyReceiptBuilder::default(),
-            config.clone(),
-            PostExecEvmFactoryAdapter::new(evm_factory),
-        );
+        let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory);
         Self { config, trie_db, factory }
     }
 
@@ -110,19 +105,11 @@ where
             State::builder().with_database(&mut self.trie_db).with_bundle_update().build();
         let evm = self.factory.evm_factory().create_evm(&mut state, evm_env);
 
-        // Update the receipt builder with the shared CIP-64 storage from the EVM so that
-        // receipt data written during execution can be read when building receipts.
+        // Grab the EVM's own CIP-64 storage before handing the EVM to the executor — the
+        // factory binds a fresh receipt builder to it inside `create_executor`, and we
+        // also need a handle to return in `CeloBlockBuildingOutcome` so callers (e.g.
+        // CIP-64 gas-accounting tests) can read post-execution entries.
         let cip64_storage = evm.cip64_storage().clone();
-        let updated_receipt_builder = CeloAlloyReceiptBuilder::new(cip64_storage.clone());
-        let factory = OpBlockExecutorFactory::<
-            CeloAlloyReceiptBuilder,
-            CeloRollupConfig,
-            PostExecEvmFactoryAdapter<CeloEvmFactory>,
-        >::new(
-            updated_receipt_builder,
-            self.config.clone(),
-            self.factory.evm_factory().clone(),
-        );
 
         // Step 3. Decode and validate the block transactions within the payload attributes.
         let transactions = attrs
@@ -146,7 +133,7 @@ where
             extra_data: Default::default(),
             post_exec_mode,
         };
-        let executor = factory.create_executor(evm, ctx);
+        let executor = self.factory.create_executor(evm, ctx);
 
         let ex_result = executor.execute_block(transactions.iter())?;
 

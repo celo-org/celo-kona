@@ -12,18 +12,27 @@ use reth_evm::Evm;
 /// Receipt builder that produces bloomless [`CeloReceipt`] types for reth storage.
 ///
 /// Analogous to [`OpRethReceiptBuilder`](reth_optimism_evm::OpRethReceiptBuilder) but with
-/// CIP-64 fee currency support.
+/// CIP-64 fee currency support. The [`Cip64Storage`] handle is bound to one block executor:
+/// [`CeloBlockExecutorFactory`](alloy_celo_evm::block::CeloBlockExecutorFactory) constructs a
+/// fresh builder per block from the executing EVM's own storage, so two consumers running
+/// through the same factory never share pending CIP-64 receipt data.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloRethReceiptBuilder {
-    /// Storage for CIP-64 transaction execution results.
-    pub cip64_storage: Cip64Storage,
+    /// Storage for CIP-64 transaction execution results, scoped to one block executor.
+    pub(crate) cip64_storage: Cip64Storage,
 }
 
 impl CeloRethReceiptBuilder {
     /// Creates a new receipt builder with the given CIP-64 storage.
     pub const fn new(cip64_storage: Cip64Storage) -> Self {
         Self { cip64_storage }
+    }
+}
+
+impl From<Cip64Storage> for CeloRethReceiptBuilder {
+    fn from(cip64_storage: Cip64Storage) -> Self {
+        Self::new(cip64_storage)
     }
 }
 
@@ -42,6 +51,10 @@ impl OpReceiptBuilder for CeloRethReceiptBuilder {
 
                 // Get CIP-64 receipt data from storage (stored during handler execution)
                 let receipt_data = self.cip64_storage.pop_cip64_receipt_data();
+                assert!(
+                    receipt_data.is_some() || !success,
+                    "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
+                );
 
                 if let Some(data) = &receipt_data {
                     logs = Cip64Storage::merge_logs(&data.cip64_info, logs);
