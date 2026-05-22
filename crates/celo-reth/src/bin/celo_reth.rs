@@ -147,7 +147,7 @@ fn main() {
 
             // Snapshot the historical-proofs fields before we move rollup_args
             // into CeloNode::new. Mirrors the OP launcher pattern in
-            // ethereum-optimism/optimism @ kona-client/v1.2.13:
+            // ethereum-optimism/optimism @ kona-node/v1.5.1:
             //   rust/op-reth/crates/node/src/proof_history.rs
             let RollupArgs {
                 proofs_history,
@@ -236,7 +236,7 @@ fn main() {
             //
             // TODO: also install DebugApiExt so debug_executePayload is served from
             // the sidecar (mirrors the OP launcher in ethereum-optimism/optimism @
-            // kona-client/v1.2.13: rust/op-reth/crates/node/src/proof_history.rs).
+            // kona-node/v1.5.1: rust/op-reth/crates/node/src/proof_history.rs).
             // First attempt at porting hit a generic-bounds mismatch on
             // DebugApiExt::into_rpc when instantiated with CeloNode's component
             // types (5 generic params on this side vs 4 in OP). Left for follow-up;
@@ -357,7 +357,7 @@ fn init_tracing(
 
 /// Spawns a task that periodically reports metrics for the proofs DB.
 ///
-/// Ported verbatim from ethereum-optimism/optimism @ kona-client/v1.2.13:
+/// Ported verbatim from ethereum-optimism/optimism @ kona-node/v1.5.1:
 ///   rust/op-reth/crates/node/src/proof_history.rs
 fn spawn_proofs_db_metrics(
     executor: TaskExecutor,
