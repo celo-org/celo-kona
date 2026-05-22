@@ -16,12 +16,13 @@ use clap::Parser;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::stage;
 use reth_cli_runner::CliRunner;
-use reth_node_core::args::{LogArgs, TraceArgs};
+use reth_node_core::args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
-use reth_tracing::Layers;
+use reth_tracing::{FileWorkerGuard, Layers};
 use std::{ffi::OsString, sync::Arc};
+use tracing::{info, warn};
 
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
@@ -176,10 +177,9 @@ fn main() {
 
 /// Dispatch the Celo-specific subcommand path.
 ///
-/// Mirrors upstream `CliApp`'s init order: build the runtime, wire OTLP layers (no-op if the
-/// `otlp`/`otlp-logs` features aren't compiled in), initialize file/stdout tracing, install the
-/// global Prometheus recorder so `--metrics` exporters in subcommands have something to record,
-/// then dispatch the command.
+/// Mirrors upstream `CliApp::run`: scope log dir to the chain name, init tracing (OTLP layers
+/// then file/stdout), install the global Prometheus recorder so `--metrics` exporters in
+/// subcommands have something to record, then dispatch the command.
 fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     if let Some(chain_spec) = cli.command.chain_spec() {
         cli.logs.log_file_directory =
@@ -187,10 +187,7 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     }
 
     let runner = CliRunner::try_default_runtime()?;
-    let mut layers = Layers::new();
-    runner.block_on(cli.traces.init_otlp_tracing(&mut layers))?;
-    runner.block_on(cli.traces.init_otlp_logs(&mut layers))?;
-    let _guard = cli.logs.init_tracing_with_layers(layers, false)?;
+    let _guard = init_tracing(&runner, &mut cli.logs, &mut cli.traces)?;
     install_prometheus_recorder();
 
     match cli.command {
@@ -205,4 +202,42 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
             runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode, _>(ctx, components))
         }
     }
+}
+
+/// Wire OTLP layers, init file/stdout tracing, then surface the OTLP init status as
+/// `info!`/`warn!` so users can tell whether their `--otlp.*` flags actually took effect.
+/// Mirrors upstream `CliApp::init_tracing` (rust/op-reth/crates/cli/src/app.rs).
+fn init_tracing(
+    runner: &CliRunner,
+    logs: &mut LogArgs,
+    traces: &mut TraceArgs,
+) -> eyre::Result<Option<FileWorkerGuard>> {
+    let mut layers = Layers::new();
+    let otlp_status = runner.block_on(traces.init_otlp_tracing(&mut layers))?;
+    let otlp_logs_status = runner.block_on(traces.init_otlp_logs(&mut layers))?;
+
+    let guard = logs.init_tracing_with_layers(layers, false)?;
+    info!(target: "reth::cli", "Initialized tracing, debug log directory: {}", logs.log_file_directory);
+
+    match otlp_status {
+        OtlpInitStatus::Started(endpoint) => {
+            info!(target: "reth::cli", "Started OTLP {:?} tracing export to {endpoint}", traces.protocol);
+        }
+        OtlpInitStatus::NoFeature => {
+            warn!(target: "reth::cli", "Provided OTLP tracing arguments do not have effect, compile with the `otlp` feature");
+        }
+        OtlpInitStatus::Disabled => {}
+    }
+
+    match otlp_logs_status {
+        OtlpLogsStatus::Started(endpoint) => {
+            info!(target: "reth::cli", "Started OTLP {:?} logs export to {endpoint}", traces.protocol);
+        }
+        OtlpLogsStatus::NoFeature => {
+            warn!(target: "reth::cli", "Provided OTLP logs arguments do not have effect, compile with the `otlp-logs` feature");
+        }
+        OtlpLogsStatus::Disabled => {}
+    }
+
+    Ok(guard)
 }
