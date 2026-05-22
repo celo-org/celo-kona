@@ -15,7 +15,7 @@ use celo_reth::{
 use clap::Parser;
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
-use reth_cli_commands::stage;
+use reth_cli_commands::{db, p2p, prune, re_execute, stage};
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
@@ -39,6 +39,20 @@ use tracing::{info, warn};
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
 const STAGE: &str = "stage";
+const DB: &str = "db";
+const P2P: &str = "p2p";
+const PRUNE: &str = "prune";
+const RE_EXECUTE: &str = "re-execute";
+
+/// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
+/// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
+const CELO_SUBCOMMANDS: &[&str] = &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE];
+
+// TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
+// `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the
+// first CIP-64 transaction it touches. See https://github.com/celo-org/celo-kona/issues/189
+// for the port plan. `proofs init` and `proofs prune` are safe on the op-reth dispatch
+// (no tx decoding).
 
 /// Top-level Celo-only subcommand wrapper.
 ///
@@ -65,6 +79,18 @@ enum CeloCommand {
     /// Manipulate individual stages using Celo primitives.
     #[command(name = STAGE)]
     Stage(Box<stage::Command<CeloChainSpecParser>>),
+    /// Database debugging utilities.
+    #[command(name = DB)]
+    Db(db::Command<CeloChainSpecParser>),
+    /// P2P debugging utilities.
+    #[command(name = P2P)]
+    P2P(Box<p2p::Command<CeloChainSpecParser>>),
+    /// Prune according to the configuration without any limits.
+    #[command(name = PRUNE)]
+    Prune(prune::PruneCommand<CeloChainSpecParser>),
+    /// Re-execute blocks in parallel to verify historical sync correctness.
+    #[command(name = RE_EXECUTE)]
+    ReExecute(re_execute::Command<CeloChainSpecParser>),
 }
 
 impl CeloCommand {
@@ -72,6 +98,10 @@ impl CeloCommand {
         match self {
             Self::ImportCeloState(_) => None,
             Self::Stage(command) => command.chain_spec(),
+            Self::Db(command) => command.chain_spec(),
+            Self::P2P(command) => command.chain_spec(),
+            Self::Prune(command) => command.chain_spec(),
+            Self::ReExecute(command) => command.chain_spec(),
         }
     }
 }
@@ -131,7 +161,7 @@ fn main() {
             }
             return;
         }
-        Err(e) if argv.iter().skip(1).any(|a| a == IMPORT_CELO_STATE || a == STAGE) => e.exit(),
+        Err(e) if argv.iter().skip(1).any(|a| CELO_SUBCOMMANDS.iter().any(|s| a == *s)) => e.exit(),
         Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
@@ -232,16 +262,28 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     let _guard = init_tracing(&runner, &mut cli.logs, &mut cli.traces)?;
     install_prometheus_recorder();
 
+    let components = |spec: Arc<OpChainSpec>| {
+        (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
+    };
+
     match cli.command {
         CeloCommand::ImportCeloState(cmd) => {
             let runtime = runner.runtime();
             runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
         }
         CeloCommand::Stage(cmd) => {
-            let components = |spec: Arc<OpChainSpec>| {
-                (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
-            };
             runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode, _>(ctx, components))
+        }
+        CeloCommand::Db(cmd) => {
+            runner.run_blocking_command_until_exit(|ctx| cmd.execute::<CeloNode>(ctx))
+        }
+        CeloCommand::P2P(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
+        CeloCommand::Prune(cmd) => {
+            runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode>(ctx))
+        }
+        CeloCommand::ReExecute(cmd) => {
+            let runtime = runner.runtime();
+            runner.run_until_ctrl_c(cmd.execute::<CeloNode>(components, runtime))
         }
     }
 }
