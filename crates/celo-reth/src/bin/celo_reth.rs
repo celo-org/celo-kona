@@ -2,8 +2,9 @@
 
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
+    CeloEvmConfig,
     chainspec::CeloChainSpecParser,
-    node::{CeloNode, RollupArgs},
+    node::{CeloConsensus, CeloNode, RollupArgs},
     payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
     rpc::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
@@ -12,19 +13,25 @@ use celo_reth::{
     state_import::ImportCeloStateCommand,
 };
 use clap::Parser;
+use reth_chainspec::EthChainSpec;
+use reth_cli_commands::stage;
 use reth_cli_runner::CliRunner;
-use reth_node_core::args::LogArgs;
+use reth_node_core::args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs};
+use reth_node_metrics::recorder::install_prometheus_recorder;
+use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
-use reth_tracing::Layers;
-use std::ffi::OsString;
+use reth_tracing::{FileWorkerGuard, Layers};
+use std::{ffi::OsString, sync::Arc};
+use tracing::{info, warn};
 
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
+const STAGE: &str = "stage";
 
 /// Top-level Celo-only subcommand wrapper.
 ///
-/// Used only when intercepting `import-celo-state` from the binary's argv before handing the
-/// rest of the CLI off to the upstream op-reth `Cli`.
+/// Used only when intercepting Celo-owned paths from the binary's argv before handing the rest of
+/// the CLI off to the upstream op-reth `Cli`.
 #[derive(Debug, Parser)]
 #[command(name = "celo-reth")]
 struct CeloCli {
@@ -33,6 +40,9 @@ struct CeloCli {
 
     #[command(flatten)]
     logs: LogArgs,
+
+    #[command(flatten)]
+    traces: TraceArgs,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -40,6 +50,18 @@ enum CeloCommand {
     /// Initialize a Celo Mainnet datadir from an L1 state dump.
     #[command(name = IMPORT_CELO_STATE)]
     ImportCeloState(Box<ImportCeloStateCommand>),
+    /// Manipulate individual stages using Celo primitives.
+    #[command(name = STAGE)]
+    Stage(Box<stage::Command<CeloChainSpecParser>>),
+}
+
+impl CeloCommand {
+    fn chain_spec(&self) -> Option<&Arc<OpChainSpec>> {
+        match self {
+            Self::ImportCeloState(_) => None,
+            Self::Stage(command) => command.chain_spec(),
+        }
+    }
 }
 
 #[global_allocator]
@@ -80,18 +102,25 @@ fn main() {
         }
     }
 
-    // Intercept `import-celo-state` before handing argv off to the upstream op-reth `Cli`,
-    // whose `Commands` enum we cannot extend. The subcommand must be `argv[1]` — global flags
-    // before it (e.g. `celo-reth -v import-celo-state ...`) are not supported and the
-    // subcommand is hidden from `celo-reth --help`. To lift either limitation we'd have to
-    // mirror op-reth's full `Commands` enum in this crate.
+    // Intercept Celo-specific command paths before handing argv off to the upstream op-reth `Cli`.
+    // We try parsing with `CeloCli` first; if it succeeds we own the dispatch. Position-independent
+    // global flags (`-v`, `--chain`, OTLP flags …) make plain `argv[1]` matching unsafe — e.g.
+    // `celo-reth -v stage unwind --chain celo` would otherwise fall through to op-reth and run
+    // `stage` against `OpNode` primitives, reintroducing the CIP-64 decode panic this path exists
+    // to avoid. On parse failure we fall through to op-reth, except for explicit Celo subcommand
+    // names (where we surface clap's own help/version/error output instead of a confusing
+    // "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    if argv.get(1).is_some_and(|a| a == IMPORT_CELO_STATE) {
-        if let Err(err) = run_celo_subcommand(argv) {
-            eprintln!("Error: {err:?}");
-            std::process::exit(1);
+    match CeloCli::try_parse_from(&argv) {
+        Ok(cli) => {
+            if let Err(err) = run_celo_subcommand(cli) {
+                eprintln!("Error: {err:?}");
+                std::process::exit(1);
+            }
+            return;
         }
-        return;
+        Err(e) if argv.iter().skip(1).any(|a| a == IMPORT_CELO_STATE || a == STAGE) => e.exit(),
+        Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
     if let Err(err) =
@@ -148,17 +177,67 @@ fn main() {
 
 /// Dispatch the Celo-specific subcommand path.
 ///
-/// Initializes tracing standalone (without the OTLP layer the upstream `CliApp` adds — OTLP is
-/// of no use for an offline migration), then runs the parsed command on a tokio runtime.
-fn run_celo_subcommand(argv: Vec<OsString>) -> eyre::Result<()> {
-    let cli = CeloCli::parse_from(argv);
-    let _guard = cli.logs.init_tracing_with_layers(Layers::new(), false)?;
+/// Mirrors upstream `CliApp::run`: scope log dir to the chain name, init tracing (OTLP layers
+/// then file/stdout), install the global Prometheus recorder so `--metrics` exporters in
+/// subcommands have something to record, then dispatch the command.
+fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
+    if let Some(chain_spec) = cli.command.chain_spec() {
+        cli.logs.log_file_directory =
+            cli.logs.log_file_directory.join(chain_spec.chain().to_string());
+    }
 
     let runner = CliRunner::try_default_runtime()?;
-    let runtime = runner.runtime();
-    runner.run_blocking_until_ctrl_c(async move {
-        match cli.command {
-            CeloCommand::ImportCeloState(cmd) => cmd.execute(runtime).await,
+    let _guard = init_tracing(&runner, &mut cli.logs, &mut cli.traces)?;
+    install_prometheus_recorder();
+
+    match cli.command {
+        CeloCommand::ImportCeloState(cmd) => {
+            let runtime = runner.runtime();
+            runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
         }
-    })
+        CeloCommand::Stage(cmd) => {
+            let components = |spec: Arc<OpChainSpec>| {
+                (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
+            };
+            runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode, _>(ctx, components))
+        }
+    }
+}
+
+/// Wire OTLP layers, init file/stdout tracing, then surface the OTLP init status as
+/// `info!`/`warn!` so users can tell whether their `--otlp.*` flags actually took effect.
+/// Mirrors upstream `CliApp::init_tracing` (rust/op-reth/crates/cli/src/app.rs).
+fn init_tracing(
+    runner: &CliRunner,
+    logs: &mut LogArgs,
+    traces: &mut TraceArgs,
+) -> eyre::Result<Option<FileWorkerGuard>> {
+    let mut layers = Layers::new();
+    let otlp_status = runner.block_on(traces.init_otlp_tracing(&mut layers))?;
+    let otlp_logs_status = runner.block_on(traces.init_otlp_logs(&mut layers))?;
+
+    let guard = logs.init_tracing_with_layers(layers, false)?;
+    info!(target: "reth::cli", "Initialized tracing, debug log directory: {}", logs.log_file_directory);
+
+    match otlp_status {
+        OtlpInitStatus::Started(endpoint) => {
+            info!(target: "reth::cli", "Started OTLP {:?} tracing export to {endpoint}", traces.protocol);
+        }
+        OtlpInitStatus::NoFeature => {
+            warn!(target: "reth::cli", "Provided OTLP tracing arguments do not have effect, compile with the `otlp` feature");
+        }
+        OtlpInitStatus::Disabled => {}
+    }
+
+    match otlp_logs_status {
+        OtlpLogsStatus::Started(endpoint) => {
+            info!(target: "reth::cli", "Started OTLP {:?} logs export to {endpoint}", traces.protocol);
+        }
+        OtlpLogsStatus::NoFeature => {
+            warn!(target: "reth::cli", "Provided OTLP logs arguments do not have effect, compile with the `otlp-logs` feature");
+        }
+        OtlpLogsStatus::Disabled => {}
+    }
+
+    Ok(guard)
 }
