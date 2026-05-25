@@ -52,16 +52,8 @@ const SNAPSHOT_MANIFEST: &str = "snapshot-manifest";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
-const CELO_SUBCOMMANDS: &[&str] = &[
-    IMPORT_CELO_STATE,
-    STAGE,
-    DB,
-    P2P,
-    PRUNE,
-    RE_EXECUTE,
-    DOWNLOAD,
-    SNAPSHOT_MANIFEST,
-];
+const CELO_SUBCOMMANDS: &[&str] =
+    &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE, DOWNLOAD, SNAPSHOT_MANIFEST];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
 // `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the
@@ -200,9 +192,8 @@ fn main() {
     // the subcommand slot (where we surface clap's own help/version/error output instead of a
     // confusing "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    let parsed = celo_cli_command()
-        .try_get_matches_from(&argv)
-        .and_then(|m| CeloCli::from_arg_matches(&m));
+    let parsed =
+        celo_cli_command().try_get_matches_from(&argv).and_then(|m| CeloCli::from_arg_matches(&m));
     match parsed {
         Ok(cli) => {
             if let Err(err) = run_celo_subcommand(cli) {
