@@ -16,9 +16,10 @@ extern crate alloc;
 // Suppress `unused_crate_dependencies` on the std library compilation unit.
 #[cfg(feature = "std")]
 use {
-    clap as _, reth_cli_runner as _, reth_cli_util as _, reth_node_metrics as _,
-    reth_optimism_cli as _, reth_provider as _, reth_tracing as _, reth_transaction_pool as _,
-    tracing as _,
+    clap as _, futures_util as _, reth_cli_runner as _, reth_cli_util as _, reth_db as _,
+    reth_node_metrics as _, reth_optimism_cli as _, reth_optimism_exex as _,
+    reth_optimism_trie as _, reth_provider as _, reth_tasks as _, reth_tracing as _,
+    reth_transaction_pool as _, tracing as _,
 };
 
 use alloc::sync::Arc;

@@ -75,6 +75,18 @@ reth-payload-util.workspace = true
 reth-optimism-txpool.workspace = true
 reth-optimism-cli.workspace = true
 reth-optimism-rpc.workspace = true
+# Historical-proofs ExEx (Bounded History Sidecar) — used by the celo-reth
+# binary only, but living in the main deps list keeps the workspace tidy.
+# `metrics` feature is required so that `OpProofsStorage<S>` resolves to the
+# `OpProofsStorageWithMetrics<S>` wrapper (alias toggle in trie/src/lib.rs).
+# Without it, `EthApiExt::new` (which expects the wrapped form) fails to
+# typecheck — and we lose the proof-storage metrics emitted from the wrapper.
+reth-optimism-exex.workspace = true
+reth-optimism-trie = { workspace = true, features = ["metrics"] }
+# Needed only to name the launcher builder type `NodeBuilder<DatabaseEnv, _>`
+# in the proofs-history helper (binary-only). Mirrors op-reth's proof_history.rs.
+reth-db.workspace = true
+futures-util.workspace = true
 
 # Celo
 celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
@@ -106,7 +118,7 @@ clap.workspace = true
 eyre.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 toml.workspace = true
 tracing.workspace = true
 metrics.workspace = true
