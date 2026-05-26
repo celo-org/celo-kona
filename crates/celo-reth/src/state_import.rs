@@ -14,9 +14,9 @@ use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageAr
 use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
-    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory, MetadataWriter,
-    ProviderFactory, StageCheckpointWriter, StaticFileProviderFactory, StaticFileWriter,
-    StorageSettings,
+    BlockHashReader, BlockNumReader, ChainSpecProvider, DBProvider, DatabaseProviderFactory,
+    MetadataWriter, ProviderFactory, StageCheckpointWriter, StaticFileProviderFactory,
+    StaticFileWriter, StorageSettings,
     providers::{RocksDBProvider, StaticFileProviderBuilder},
 };
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -134,14 +134,41 @@ impl ImportCeloStateCommand {
         };
 
         // Open the storage environment WITHOUT writing the chainspec's genesis allocation
-        // state. See [`open_env_skip_genesis_state`] for the precise rationale; in short,
-        // `init_genesis_with_settings` would write the Celo Mainnet genesis alloc — which
-        // includes one storage slot at the Registry contract — and the L1 final state dump
-        // we ingest below writes a different value for that same slot, leaving
+        // state. See [`open_env_skip_init_and_consistency_check`] for the precise rationale;
+        // in short, `init_genesis_with_settings` would write the Celo Mainnet genesis alloc
+        // — which includes one storage slot at the Registry contract — and the L1 final
+        // state dump we ingest below writes a different value for that same slot, leaving
         // `HashedStorages` with a duplicate dup-entry that crashes the state-root
         // computation in `HashBuilder::add_leaf`.
         let Environment { config, provider_factory, .. } =
-            open_env_skip_genesis_state(env_args, runtime)?;
+            open_env_skip_init_and_consistency_check(env_args, runtime)?;
+
+        // Emit only the non-state side-effects of `init_genesis` that `setup_without_evm`
+        // and `init_from_state_dump` rely on: storage settings, the canonical genesis
+        // header, stage checkpoints at block 0, and empty block ranges for the static-file
+        // segments that the import does not touch directly. We deliberately do NOT call
+        // `insert_genesis_state` / `insert_genesis_hashes` / `insert_genesis_history` /
+        // `compute_state_root` — those are the steps that would conflict with the L1 dump.
+        {
+            let provider_rw = provider_factory.database_provider_rw()?;
+            provider_rw.write_storage_settings(StorageSettings::base())?;
+            insert_genesis_header(&provider_rw, provider_factory.chain_spec().as_ref())?;
+            let genesis_block_number = provider_factory.chain_spec().genesis_header().number;
+            let checkpoint = StageCheckpoint::new(genesis_block_number);
+            for stage in StageId::ALL {
+                provider_rw.save_stage_checkpoint(stage, checkpoint)?;
+            }
+            let sf_provider = provider_rw.static_file_provider();
+            sf_provider
+                .get_writer(genesis_block_number, StaticFileSegment::Receipts)?
+                .user_header_mut()
+                .set_block_range(genesis_block_number, genesis_block_number);
+            sf_provider
+                .get_writer(genesis_block_number, StaticFileSegment::Transactions)?
+                .user_header_mut()
+                .set_block_range(genesis_block_number, genesis_block_number);
+            provider_rw.commit()?;
+        }
 
         let static_file_provider = provider_factory.static_file_provider();
 
@@ -209,42 +236,37 @@ impl ImportCeloStateCommand {
     }
 }
 
-/// Open the storage environment for `import-celo-state` without running
-/// `init_genesis_with_settings`.
+/// Open the storage environment for read-write access while skipping both
+/// `init_genesis_with_settings` and the static-file/database consistency check that
+/// `EnvironmentArgs::init` runs.
 ///
 /// # Why this exists
 ///
-/// `EnvironmentArgs::init` ends with a call to `init_genesis_with_settings`, which writes the
-/// chainspec's genesis allocation into `PlainAccountState`, `PlainStorageState`,
-/// `HashedAccounts`, `HashedStorages`, `AccountsHistory`, `StoragesHistory` and the trie tables.
-/// For Celo Mainnet the alloc contains 32 accounts plus a single storage slot on the Registry
-/// (`0x000000000000000000000000000000000000ce10`) at key
-/// `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`.
+/// `EnvironmentArgs::init` ends with two side effects that break Celo's offline
+/// migration tools — `import-celo-state` and `celo-migrate-v2`:
 ///
-/// The L1 final state dump consumed by `init_from_state_dump` below also writes that exact
-/// Registry slot, with a different value. Both writes land in `HashedStorages` for the same
-/// `(keccak(0xce10), keccak(0xb53127…))` pair, and `DbDupCursorRW::upsert` on `HashedStorages`
-/// appends a second dup-record instead of replacing. The subsequent state-root computation then
-/// panics in `alloy_trie::hash_builder::HashBuilder::add_leaf` with `key == self.key`, leaving
-/// the datadir unusable.
+/// 1. `init_genesis_with_settings` writes the chainspec genesis alloc into
+///    `PlainAccountState` / `PlainStorageState` / `HashedAccounts` / `HashedStorages` /
+///    history / trie. For Celo Mainnet the alloc includes one storage slot on the
+///    Registry at `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`,
+///    which collides with the L1 dump's value for that same slot and causes
+///    `HashBuilder::add_leaf` to panic with `key == self.key`.
 ///
-/// # What this helper does
+/// 2. `create_provider_factory`'s static-file/database consistency check is destructive:
+///    it asserts (`assert_ne!(unwind_target, PipelineTarget::Unwind(0), …)`) when the
+///    only safe heal would be a full unwind to block 0. A freshly imported Celo datadir
+///    has SenderRecovery's stage checkpoint at the migration block (31,056,500) but an
+///    empty `TransactionSenders` static-file segment, so the check picks an
+///    unwind-to-zero target and the assertion fires — even though `celo-migrate-v2`
+///    knows about that inconsistency and will fix it via `seed_transaction_senders`.
 ///
-/// It replicates the body of `EnvironmentArgs::init` for `AccessRights::RW` access verbatim up
-/// to the point where `init_genesis_with_settings` would be called, and then emits only the
-/// non-state side-effects of `init_genesis`:
-///
-/// * `StorageSettings` (so the provider knows the chosen layout — v1 here);
-/// * the canonical genesis header (so the `Headers` static-file segment has block 0, which
-///   `setup_without_evm` needs as a prerequisite for `append_header(1, B256::ZERO)`);
-/// * stage checkpoints at the genesis block number (so `setup_without_evm` can advance them);
-/// * empty block ranges for the `Receipts` / `Transactions` static-file segments (so the
-///   later writers that grow these segments don't trip on missing block bounds).
-///
-/// It deliberately does NOT call `insert_genesis_state`, `insert_genesis_hashes`,
-/// `insert_genesis_history`, or `compute_state_root`. Those are the four steps inside
-/// `init_genesis_with_settings` that touch the alloc — and produce the duplicate.
-fn open_env_skip_genesis_state(
+/// This helper inlines `EnvironmentArgs::init`'s setup (resolve paths, load `Config`,
+/// open MDBX / static files / RocksDB, build the `ProviderFactory`) and stops before
+/// either of those two side effects runs. Callers are responsible for any post-open
+/// initialization (e.g. `import-celo-state` writes the genesis header and stage
+/// checkpoints itself; `celo-migrate-v2` writes nothing because the datadir already has
+/// them).
+pub(crate) fn open_env_skip_init_and_consistency_check(
     args: EnvironmentArgs<CeloChainSpecParser>,
     runtime: reth_tasks::Runtime,
 ) -> eyre::Result<Environment<OpNode>> {
@@ -302,30 +324,6 @@ fn open_env_skip_genesis_state(
         )?
         .with_prune_modes(config.prune.segments.clone())
         .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
-
-    {
-        let provider_rw = provider_factory.database_provider_rw()?;
-        provider_rw.write_storage_settings(StorageSettings::base())?;
-
-        insert_genesis_header(&provider_rw, args.chain.as_ref())?;
-
-        let checkpoint = StageCheckpoint::new(genesis_block_number);
-        for stage in StageId::ALL {
-            provider_rw.save_stage_checkpoint(stage, checkpoint)?;
-        }
-
-        let sf_provider = provider_rw.static_file_provider();
-        sf_provider
-            .get_writer(genesis_block_number, StaticFileSegment::Receipts)?
-            .user_header_mut()
-            .set_block_range(genesis_block_number, genesis_block_number);
-        sf_provider
-            .get_writer(genesis_block_number, StaticFileSegment::Transactions)?
-            .user_header_mut()
-            .set_block_range(genesis_block_number, genesis_block_number);
-
-        provider_rw.commit()?;
-    }
 
     Ok(Environment { config, provider_factory, data_dir })
 }
