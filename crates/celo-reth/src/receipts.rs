@@ -5,7 +5,7 @@ use alloy_celo_evm::cip64_storage::Cip64Storage;
 use alloy_consensus::Eip658Value;
 use alloy_evm::eth::receipt_builder::ReceiptBuilderCtx;
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
-use celo_alloy_consensus::{CeloCip64Receipt, CeloTxType};
+use celo_alloy_consensus::CeloTxType;
 use op_alloy_consensus::OpDepositReceipt;
 use reth_evm::Evm;
 
@@ -46,31 +46,7 @@ impl OpReceiptBuilder for CeloRethReceiptBuilder {
     ) -> Result<Self::Receipt, ReceiptBuilderCtx<'a, CeloTxType, E>> {
         match ctx.tx_type {
             CeloTxType::Cip64 => {
-                let success = ctx.result.is_success();
-                let mut logs = ctx.result.into_logs();
-
-                // Get CIP-64 receipt data from storage (stored during handler execution)
-                let receipt_data = self.cip64_storage.pop_cip64_receipt_data();
-                assert!(
-                    receipt_data.is_some() || !success,
-                    "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
-                );
-
-                if let Some(data) = &receipt_data {
-                    logs = Cip64Storage::merge_logs(&data.cip64_info, logs);
-                }
-
-                let base_fee_in_erc20 =
-                    receipt_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
-
-                Ok(CeloReceipt::Cip64(CeloCip64Receipt {
-                    inner: alloy_consensus::Receipt {
-                        status: Eip658Value::Eip658(success),
-                        cumulative_gas_used: ctx.cumulative_gas_used,
-                        logs,
-                    },
-                    base_fee: base_fee_in_erc20,
-                }))
+                Ok(CeloReceipt::Cip64(self.cip64_storage.build_cip64_receipt(ctx)))
             }
             CeloTxType::Deposit => Err(ctx),
             ty => {

@@ -4,9 +4,11 @@
 //! execution results between the EVM handler and the receipt builder.
 
 use alloc::{sync::Arc, vec::Vec};
+use alloy_consensus::Eip658Value;
+use alloy_evm::{Evm, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_primitives::Address;
+use celo_alloy_consensus::{CeloCip64Receipt, CeloTxType};
 use celo_revm::Cip64Info;
-use revm::primitives::Log;
 use spin::Mutex;
 
 /// Data needed by the receipt builder for a CIP-64 transaction.
@@ -80,14 +82,48 @@ impl Cip64Storage {
         self.all_entries.lock().clone()
     }
 
-    /// Merges CIP-64 pre/post logs with the main execution logs.
-    pub fn merge_logs(cip64_info: &Cip64Info, main_logs: Vec<Log>) -> Vec<Log> {
-        let capacity = cip64_info.logs_pre.len() + main_logs.len() + cip64_info.logs_post.len();
-        let mut merged = Vec::with_capacity(capacity);
-        merged.extend_from_slice(&cip64_info.logs_pre);
-        merged.extend(main_logs);
-        merged.extend_from_slice(&cip64_info.logs_post);
-        merged
+    /// Builds the inner [`CeloCip64Receipt`] for a CIP-64 transaction, popping the pending
+    /// entry and merging its pre/post logs into the main execution logs.
+    ///
+    /// Callers wrap the result in their receipt envelope variant — bloomed for canonical
+    /// types ([`CeloReceiptEnvelope`](celo_alloy_consensus::CeloReceiptEnvelope)) or
+    /// bloomless for reth's on-disk format (`CeloReceipt`).
+    pub fn build_cip64_receipt<E: Evm>(
+        &self,
+        ctx: ReceiptBuilderCtx<'_, CeloTxType, E>,
+    ) -> CeloCip64Receipt {
+        let success = ctx.result.is_success();
+        let main_logs = ctx.result.into_logs();
+
+        // Pop the CIP-64 receipt data stored during transact_raw
+        let cip64_data = self.pop_cip64_receipt_data();
+        assert!(
+            cip64_data.is_some() || !success,
+            "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
+        );
+
+        // Merge CIP-64 pre/post logs with the main execution logs if available
+        let logs = if let Some(data) = &cip64_data {
+            let info = &data.cip64_info;
+            let capacity = info.logs_pre.len() + main_logs.len() + info.logs_post.len();
+            let mut merged = Vec::with_capacity(capacity);
+            merged.extend_from_slice(&info.logs_pre);
+            merged.extend(main_logs);
+            merged.extend_from_slice(&info.logs_post);
+            merged
+        } else {
+            main_logs
+        };
+
+        let base_fee_in_erc20 = cip64_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
+        CeloCip64Receipt {
+            inner: alloy_consensus::Receipt {
+                status: Eip658Value::Eip658(success),
+                cumulative_gas_used: ctx.cumulative_gas_used,
+                logs,
+            },
+            base_fee: base_fee_in_erc20,
+        }
     }
 }
 
