@@ -53,6 +53,39 @@ TOTAL_SUPPLY_SLOT = "0x000000000000000000000000000000000000000000000000000000000
 ZERO_ADDR_KEY = '"key":"0x5380c7b7ae81a58eb98d9c78de4a1fd7fd9535fc953ed2be602daaa41767312a"'
 ZERO_ADDR_FIX = '"address":"0x0000000000000000000000000000000000000000"'
 
+
+def _is_zero_hex(value):
+    """Return True if a hex string (with or without `0x` prefix) represents zero."""
+    if value is None:
+        return True
+    s = value.strip()
+    if s.startswith(("0x", "0X")):
+        s = s[2:]
+    if not s:
+        return True
+    try:
+        return int(s, 16) == 0
+    except ValueError:
+        return False
+
+
+def _filter_zero_storage(alloc):
+    """Drop storage entries whose value is zero.
+
+    `init_from_state_dump` writes every storage entry verbatim into `HashedStorages`,
+    whereas op-geth's `StateDB.Commit` prunes zero-value slots (an SSTORE to 0 deletes
+    the slot from the trie). Leaving zero entries in the merged dump produces a state
+    root that does not match the canonical migration root.
+    """
+    storage = alloc.get("storage")
+    if not storage:
+        return
+    nonzero = {k: v for k, v in storage.items() if not _is_zero_hex(v)}
+    if nonzero:
+        alloc["storage"] = nonzero
+    else:
+        alloc.pop("storage", None)
+
 # Accounts where L2 allocs should not blindly overwrite the L1 state.
 # False = skip alloc entirely, True = overwrite code only.
 ALLOWLIST = {
@@ -176,6 +209,18 @@ def main():
     allocs = {addr.lower(): data for addr, data in raw_allocs.items()}
     handled = set()
     print(f"Loaded {len(allocs)} L2 alloc accounts.")
+
+    pruned_zero_slots = 0
+    for alloc in allocs.values():
+        before = len(alloc.get("storage", {}) or {})
+        _filter_zero_storage(alloc)
+        after = len(alloc.get("storage", {}) or {})
+        pruned_zero_slots += before - after
+    if pruned_zero_slots:
+        print(
+            f"Pruned {pruned_zero_slots} zero-value storage slot(s) from L2 allocs "
+            f"to match op-geth's SSTORE-to-zero trie semantics."
+        )
 
     # State tracked during L1 dump pass
     total_supply = None
