@@ -2358,6 +2358,7 @@ dependencies = [
  "reth-cli-runner",
  "reth-cli-util",
  "reth-codecs",
+ "reth-config",
  "reth-consensus",
  "reth-consensus-common",
  "reth-db",
