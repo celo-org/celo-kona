@@ -260,8 +260,14 @@ fn main() {
 /// it prints that command's help) while top-level `--help` still resolves no subcommand (→ op-reth,
 /// which owns the full command surface). The real dispatch below uses the unmodified args, so the
 /// chosen CLI still renders help/version normally.
+///
+/// Additionally accepts `help <celo-subcommand>` (clap's auto-generated form). clap's `help`
+/// subcommand short-circuits parsing before `subcommand_matches` populates, so we can't detect it
+/// via the sniff above — fall back to a direct positional check at argv[1..=2]. Kept narrow
+/// (not a full walk skipping global flags) so that a global flag value happening to equal `help`
+/// can't mis-route an upstream invocation.
 fn is_celo_subcommand_invocation(argv: &[OsString]) -> bool {
-    CeloCli::command()
+    if CeloCli::command()
         .ignore_errors(true)
         .disable_help_flag(true)
         .disable_version_flag(true)
@@ -269,6 +275,14 @@ fn is_celo_subcommand_invocation(argv: &[OsString]) -> bool {
         .ok()
         .and_then(|matches| matches.subcommand_name().map(str::to_owned))
         .is_some_and(|name| CELO_SUBCOMMANDS.contains(&name.as_str()))
+    {
+        return true;
+    }
+    matches!(
+        (argv.get(1), argv.get(2)),
+        (Some(first), Some(second))
+            if first == "help" && CELO_SUBCOMMANDS.iter().any(|s| second == *s)
+    )
 }
 
 /// Dispatch the Celo-specific subcommand path.
