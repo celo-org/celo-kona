@@ -151,7 +151,7 @@ impl ImportCeloStateCommand {
         // `compute_state_root` — those are the steps that would conflict with the L1 dump.
         {
             let provider_rw = provider_factory.database_provider_rw()?;
-            provider_rw.write_storage_settings(StorageSettings::base())?;
+            provider_rw.write_storage_settings(StorageSettings::v1())?;
             insert_genesis_header(&provider_rw, provider_factory.chain_spec().as_ref())?;
             let genesis_block_number = provider_factory.chain_spec().genesis_header().number;
             let checkpoint = StageCheckpoint::new(genesis_block_number);
