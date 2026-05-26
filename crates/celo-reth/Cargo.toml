@@ -23,6 +23,7 @@ reth-chainspec.workspace = true
 reth-cli.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
+reth-config.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-db-common.workspace = true

@@ -5,17 +5,24 @@ use alloy_primitives::{B64, B256, U256, address, b256, bloom, bytes};
 use clap::Parser;
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
-use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
-use reth_db_common::init::init_from_state_dump;
+use reth_cli_commands::common::{Environment, EnvironmentArgs};
+use reth_config::{Config, config::EtlConfig};
+use reth_db::{DatabaseEnv, init_db};
+use reth_db_common::init::{init_from_state_dump, insert_genesis_header};
+use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageArgs};
 use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
-    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    StaticFileProviderFactory, StaticFileWriter,
+    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory, MetadataWriter,
+    ProviderFactory, StageCheckpointWriter, StaticFileProviderFactory, StaticFileWriter,
+    StorageSettings,
+    providers::{RocksDBProvider, StaticFileProviderBuilder},
 };
+use reth_stages_types::{StageCheckpoint, StageId};
+use reth_static_file_types::StaticFileSegment;
 use std::{io::BufReader, path::PathBuf};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::chainspec::CeloChainSpecParser;
 
@@ -94,7 +101,7 @@ pub struct ImportCeloStateCommand {
 impl ImportCeloStateCommand {
     /// Execute the import.
     ///
-    /// The `runtime` is forwarded to [`EnvironmentArgs::init`] for parallel storage I/O.
+    /// The `runtime` is forwarded to [`open_env_skip_genesis_state`] for parallel storage I/O.
     pub async fn execute(self, runtime: reth_tasks::Runtime) -> eyre::Result<()> {
         let chain = CeloChainSpecParser::parse("celo")?;
 
@@ -126,8 +133,15 @@ impl ImportCeloStateCommand {
             storage: StorageArgs::default(),
         };
 
+        // Open the storage environment WITHOUT writing the chainspec's genesis allocation
+        // state. See [`open_env_skip_genesis_state`] for the precise rationale; in short,
+        // `init_genesis_with_settings` would write the Celo Mainnet genesis alloc — which
+        // includes one storage slot at the Registry contract — and the L1 final state dump
+        // we ingest below writes a different value for that same slot, leaving
+        // `HashedStorages` with a duplicate dup-entry that crashes the state-root
+        // computation in `HashBuilder::add_leaf`.
         let Environment { config, provider_factory, .. } =
-            env_args.init::<OpNode>(AccessRights::RW, runtime)?;
+            open_env_skip_genesis_state(env_args, runtime)?;
 
         let static_file_provider = provider_factory.static_file_provider();
 
@@ -193,6 +207,127 @@ impl ImportCeloStateCommand {
         );
         Ok(())
     }
+}
+
+/// Open the storage environment for `import-celo-state` without running
+/// `init_genesis_with_settings`.
+///
+/// # Why this exists
+///
+/// `EnvironmentArgs::init` ends with a call to `init_genesis_with_settings`, which writes the
+/// chainspec's genesis allocation into `PlainAccountState`, `PlainStorageState`,
+/// `HashedAccounts`, `HashedStorages`, `AccountsHistory`, `StoragesHistory` and the trie tables.
+/// For Celo Mainnet the alloc contains 32 accounts plus a single storage slot on the Registry
+/// (`0x000000000000000000000000000000000000ce10`) at key
+/// `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`.
+///
+/// The L1 final state dump consumed by `init_from_state_dump` below also writes that exact
+/// Registry slot, with a different value. Both writes land in `HashedStorages` for the same
+/// `(keccak(0xce10), keccak(0xb53127…))` pair, and `DbDupCursorRW::upsert` on `HashedStorages`
+/// appends a second dup-record instead of replacing. The subsequent state-root computation then
+/// panics in `alloy_trie::hash_builder::HashBuilder::add_leaf` with `key == self.key`, leaving
+/// the datadir unusable.
+///
+/// # What this helper does
+///
+/// It replicates the body of `EnvironmentArgs::init` for `AccessRights::RW` access verbatim up
+/// to the point where `init_genesis_with_settings` would be called, and then emits only the
+/// non-state side-effects of `init_genesis`:
+///
+/// * `StorageSettings` (so the provider knows the chosen layout — v1 here);
+/// * the canonical genesis header (so the `Headers` static-file segment has block 0, which
+///   `setup_without_evm` needs as a prerequisite for `append_header(1, B256::ZERO)`);
+/// * stage checkpoints at the genesis block number (so `setup_without_evm` can advance them);
+/// * empty block ranges for the `Receipts` / `Transactions` static-file segments (so the
+///   later writers that grow these segments don't trip on missing block bounds).
+///
+/// It deliberately does NOT call `insert_genesis_state`, `insert_genesis_hashes`,
+/// `insert_genesis_history`, or `compute_state_root`. Those are the four steps inside
+/// `init_genesis_with_settings` that touch the alloc — and produce the duplicate.
+fn open_env_skip_genesis_state(
+    args: EnvironmentArgs<CeloChainSpecParser>,
+    runtime: reth_tasks::Runtime,
+) -> eyre::Result<Environment<OpNode>> {
+    let data_dir = args.datadir.clone().resolve_datadir(args.chain.chain());
+    let db_path = data_dir.db();
+    let sf_path = data_dir.static_files();
+    let rocksdb_path = data_dir.rocksdb();
+
+    reth_fs_util::create_dir_all(&db_path)?;
+    reth_fs_util::create_dir_all(&sf_path)?;
+    reth_fs_util::create_dir_all(&rocksdb_path)?;
+
+    let config_path = args.config.clone().unwrap_or_else(|| data_dir.config());
+
+    let mut config = Config::from_path(config_path)
+        .inspect_err(
+            |err| warn!(target: "reth::cli", %err, "Failed to load config file, using default"),
+        )
+        .unwrap_or_default();
+
+    if config.stages.etl.dir.is_none() {
+        config.stages.etl.dir = Some(EtlConfig::from_datadir(data_dir.data_dir()));
+    }
+    if config.stages.era.folder.is_none() {
+        config.stages.era = config.stages.era.with_datadir(data_dir.data_dir());
+    }
+
+    info!(target: "reth::cli", ?db_path, ?sf_path, "Opening storage");
+    let genesis_block_number = args.chain.genesis().number.unwrap_or_default();
+
+    let db = init_db(db_path, args.db.database_args())?;
+    let sfp = StaticFileProviderBuilder::read_write(sf_path)
+        .with_metrics()
+        .with_genesis_block_number(genesis_block_number)
+        .build()?;
+
+    let rocksdb_provider = {
+        let mut builder = RocksDBProvider::builder(data_dir.rocksdb())
+            .with_default_tables()
+            .with_database_log_level(args.db.log_level)
+            .with_read_only(false);
+        if let Some(cache_size) = args.db.rocksdb_block_cache_size {
+            builder = builder.with_block_cache_size(cache_size);
+        }
+        builder.build()?
+    };
+
+    let provider_factory =
+        ProviderFactory::<NodeTypesWithDBAdapter<OpNode, DatabaseEnv>>::new(
+            db,
+            args.chain.clone(),
+            sfp,
+            rocksdb_provider,
+            runtime,
+        )?
+        .with_prune_modes(config.prune.segments.clone())
+        .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
+
+    {
+        let provider_rw = provider_factory.database_provider_rw()?;
+        provider_rw.write_storage_settings(StorageSettings::base())?;
+
+        insert_genesis_header(&provider_rw, args.chain.as_ref())?;
+
+        let checkpoint = StageCheckpoint::new(genesis_block_number);
+        for stage in StageId::ALL {
+            provider_rw.save_stage_checkpoint(stage, checkpoint)?;
+        }
+
+        let sf_provider = provider_rw.static_file_provider();
+        sf_provider
+            .get_writer(genesis_block_number, StaticFileSegment::Receipts)?
+            .user_header_mut()
+            .set_block_range(genesis_block_number, genesis_block_number);
+        sf_provider
+            .get_writer(genesis_block_number, StaticFileSegment::Transactions)?
+            .user_header_mut()
+            .set_block_range(genesis_block_number, genesis_block_number);
+
+        provider_rw.commit()?;
+    }
+
+    Ok(Environment { config, provider_factory, data_dir })
 }
 
 #[cfg(test)]
