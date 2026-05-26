@@ -12,10 +12,10 @@ use celo_reth::{
     },
     state_import::ImportCeloStateCommand,
 };
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
-use reth_cli_commands::stage;
+use reth_cli_commands::{db, p2p, prune, re_execute, stage};
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
@@ -39,6 +39,20 @@ use tracing::{info, warn};
 /// Subcommand name for the Celo state import.
 const IMPORT_CELO_STATE: &str = "import-celo-state";
 const STAGE: &str = "stage";
+const DB: &str = "db";
+const P2P: &str = "p2p";
+const PRUNE: &str = "prune";
+const RE_EXECUTE: &str = "re-execute";
+
+/// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
+/// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
+const CELO_SUBCOMMANDS: &[&str] = &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE];
+
+// TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
+// `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the
+// first CIP-64 transaction it touches. See https://github.com/celo-org/celo-kona/issues/189
+// for the port plan. `proofs init` and `proofs prune` are safe on the op-reth dispatch
+// (no tx decoding).
 
 /// Top-level Celo-only subcommand wrapper.
 ///
@@ -65,6 +79,18 @@ enum CeloCommand {
     /// Manipulate individual stages using Celo primitives.
     #[command(name = STAGE)]
     Stage(Box<stage::Command<CeloChainSpecParser>>),
+    /// Database debugging utilities.
+    #[command(name = DB)]
+    Db(db::Command<CeloChainSpecParser>),
+    /// P2P debugging utilities.
+    #[command(name = P2P)]
+    P2P(Box<p2p::Command<CeloChainSpecParser>>),
+    /// Prune according to the configuration without any limits.
+    #[command(name = PRUNE)]
+    Prune(prune::PruneCommand<CeloChainSpecParser>),
+    /// Re-execute blocks in parallel to verify historical sync correctness.
+    #[command(name = RE_EXECUTE)]
+    ReExecute(re_execute::Command<CeloChainSpecParser>),
 }
 
 impl CeloCommand {
@@ -72,6 +98,10 @@ impl CeloCommand {
         match self {
             Self::ImportCeloState(_) => None,
             Self::Stage(command) => command.chain_spec(),
+            Self::Db(command) => command.chain_spec(),
+            Self::P2P(command) => command.chain_spec(),
+            Self::Prune(command) => command.chain_spec(),
+            Self::ReExecute(command) => command.chain_spec(),
         }
     }
 }
@@ -119,9 +149,9 @@ fn main() {
     // global flags (`-v`, `--chain`, OTLP flags …) make plain `argv[1]` matching unsafe — e.g.
     // `celo-reth -v stage unwind --chain celo` would otherwise fall through to op-reth and run
     // `stage` against `OpNode` primitives, reintroducing the CIP-64 decode panic this path exists
-    // to avoid. On parse failure we fall through to op-reth, except for explicit Celo subcommand
-    // names (where we surface clap's own help/version/error output instead of a confusing
-    // "unrecognized subcommand" from op-reth).
+    // to avoid. On parse failure we fall through to op-reth, except when a Celo subcommand sits in
+    // the subcommand slot (where we surface clap's own help/version/error output instead of a
+    // confusing "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
     match CeloCli::try_parse_from(&argv) {
         Ok(cli) => {
@@ -131,7 +161,7 @@ fn main() {
             }
             return;
         }
-        Err(e) if argv.iter().skip(1).any(|a| a == IMPORT_CELO_STATE || a == STAGE) => e.exit(),
+        Err(e) if is_celo_subcommand_invocation(&argv) => e.exit(),
         Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
@@ -217,6 +247,44 @@ fn main() {
     }
 }
 
+/// Whether `argv` invokes one of the Celo-owned subcommands (routes `main` to `CeloCli`).
+///
+/// We can't just scan argv for a subcommand name: that would also match the name appearing as an
+/// option *value* (e.g. `node --datadir db`), wrongly routing upstream commands to `CeloCli`.
+/// Instead we do a lenient re-parse (`ignore_errors`) that lets clap skip unknown/invalid tokens
+/// but still resolve the real subcommand position past any global flags, then check that slot.
+///
+/// Help/version are disabled on this routing-only parse so clap treats `--help`/`--version` as
+/// ordinary (now-unknown) flags that `ignore_errors` skips, rather than short-circuiting with no
+/// subcommand resolved. That keeps routing correct for `<celo-subcommand> --help` (→ `CeloCli`, so
+/// it prints that command's help) while top-level `--help` still resolves no subcommand (→ op-reth,
+/// which owns the full command surface). The real dispatch below uses the unmodified args, so the
+/// chosen CLI still renders help/version normally.
+///
+/// Additionally accepts `help <celo-subcommand>` (clap's auto-generated form). clap's `help`
+/// subcommand short-circuits parsing before `subcommand_matches` populates, so we can't detect it
+/// via the sniff above — fall back to a direct positional check at argv[1..=2]. Kept narrow
+/// (not a full walk skipping global flags) so that a global flag value happening to equal `help`
+/// can't mis-route an upstream invocation.
+fn is_celo_subcommand_invocation(argv: &[OsString]) -> bool {
+    if CeloCli::command()
+        .ignore_errors(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .try_get_matches_from(argv)
+        .ok()
+        .and_then(|matches| matches.subcommand_name().map(str::to_owned))
+        .is_some_and(|name| CELO_SUBCOMMANDS.contains(&name.as_str()))
+    {
+        return true;
+    }
+    matches!(
+        (argv.get(1), argv.get(2)),
+        (Some(first), Some(second))
+            if first == "help" && CELO_SUBCOMMANDS.iter().any(|s| second == *s)
+    )
+}
+
 /// Dispatch the Celo-specific subcommand path.
 ///
 /// Mirrors upstream `CliApp::run`: scope log dir to the chain name, init tracing (OTLP layers
@@ -232,16 +300,28 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
     let _guard = init_tracing(&runner, &mut cli.logs, &mut cli.traces)?;
     install_prometheus_recorder();
 
+    let components = |spec: Arc<OpChainSpec>| {
+        (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
+    };
+
     match cli.command {
         CeloCommand::ImportCeloState(cmd) => {
             let runtime = runner.runtime();
             runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
         }
         CeloCommand::Stage(cmd) => {
-            let components = |spec: Arc<OpChainSpec>| {
-                (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
-            };
             runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode, _>(ctx, components))
+        }
+        CeloCommand::Db(cmd) => {
+            runner.run_blocking_command_until_exit(|ctx| cmd.execute::<CeloNode>(ctx))
+        }
+        CeloCommand::P2P(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
+        CeloCommand::Prune(cmd) => {
+            runner.run_command_until_exit(|ctx| cmd.execute::<CeloNode>(ctx))
+        }
+        CeloCommand::ReExecute(cmd) => {
+            let runtime = runner.runtime();
+            runner.run_until_ctrl_c(cmd.execute::<CeloNode>(components, runtime))
         }
     }
 }
