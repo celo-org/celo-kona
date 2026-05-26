@@ -17,7 +17,7 @@
 use clap::Parser;
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
-use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, EnvironmentArgs};
+use reth_cli_commands::common::{CliNodeTypes, Environment, EnvironmentArgs};
 use reth_db::{
     DatabaseEnv,
     mdbx::{self, ffi},
@@ -39,7 +39,10 @@ use reth_storage_api::StageCheckpointReader;
 use std::path::PathBuf;
 use tracing::info;
 
-use crate::{chainspec::CeloChainSpecParser, state_import::CELO_MAINNET_CHAIN_ID};
+use crate::{
+    chainspec::CeloChainSpecParser,
+    state_import::{CELO_MAINNET_CHAIN_ID, open_env_skip_init_and_consistency_check},
+};
 
 /// Celo-aware v1 → v2 storage migration.
 ///
@@ -101,8 +104,17 @@ impl CeloMigrateV2Command {
             storage: reth_node_core::args::StorageArgs::default(),
         };
 
+        // A v1 datadir freshly produced by `import-celo-state` has SenderRecovery's stage
+        // checkpoint at the migration block but an empty `TransactionSenders` static-file
+        // segment. `EnvironmentArgs::init`'s consistency check would pick a destructive
+        // "unwind to block 0" target and trip the upstream assertion before
+        // `seed_transaction_senders` (below) gets a chance to fix the inconsistency. The
+        // shared helper opens the env without running that consistency check, and also
+        // skips `init_genesis_with_settings` (which is harmless here because block 0 is
+        // already present, but keeping the call patterns identical across both Celo-only
+        // subcommands makes the bypass logic easier to reason about).
         let Environment { provider_factory, .. } =
-            env_args.init::<OpNode>(AccessRights::RW, runtime)?;
+            open_env_skip_init_and_consistency_check(env_args, runtime)?;
 
         Self::execute_with_factory::<OpNode>(provider_factory).await
     }
