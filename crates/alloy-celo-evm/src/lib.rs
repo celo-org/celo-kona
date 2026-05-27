@@ -278,18 +278,14 @@ where
             }
         }
 
-        // Check if the fee currency is blocklisted — reject early without EVM execution.
-        if is_block_building
-            && let Some(fc) = fee_currency
-            && self.blocklist.is_blocked(fc)
-        {
-            return Err(EVMError::Transaction(OpTxError(
-                revm::context::result::InvalidTransaction::from(alloc::format!(
-                    "fee currency {fc} is temporarily blocklisted"
-                ))
-                .into(),
-            )));
-        }
+        // NOTE: blocklist *rejection* is intentionally NOT performed here. `is_block_building`
+        // (= base-fee check enabled) is true during both sequencing AND block import /
+        // derivation re-execution, so rejecting here would let a node's locally-accumulated
+        // blocklist reject a valid canonical block built by another sequencer — a cross-node
+        // disagreement on block validity. Rejection is a sequencing-only policy and is enforced
+        // upstream in `CeloFeeCurrencyFilter` (see `celo-reth`'s `payload.rs`), which derivation
+        // deliberately bypasses. Here we only *populate* the blocklist on debit/credit failures
+        // below; that population is harmless during import (valid blocks never fail debit/credit).
 
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
             .map_err(map_op_err);
@@ -546,8 +542,14 @@ mod tests {
         }
     }
 
+    /// `transact_raw` must NOT reject a blocklisted currency: `is_block_building`
+    /// (base-fee check enabled) is also true during block import / derivation
+    /// re-execution, so rejecting here would let a node's locally-accumulated
+    /// blocklist reject a valid canonical block. Sequencing-time rejection lives in
+    /// `CeloFeeCurrencyFilter` (see `celo-reth`'s `payload.rs`,
+    /// `filter_skips_blocklisted_currency`), which derivation deliberately bypasses.
     #[test]
-    fn test_blocklist_rejects_in_block_mode() {
+    fn test_blocklist_does_not_reject_in_transact_raw() {
         let fc = Address::with_last_byte(0xAA);
         let blocklist = FeeCurrencyBlocklist::default();
         blocklist.block_currency(fc, 1000);
@@ -557,10 +559,15 @@ mod tests {
         let tx = make_cip64_tx(fc);
         let result = evm.transact_raw(tx);
 
-        // The blocklisted currency should be rejected
-        assert!(result.is_err(), "Expected blocklisted currency to be rejected");
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("blocklisted"), "Error should mention blocklist, got: {err_msg}");
+        // The tx may still fail for unrelated reasons (no balance, unregistered
+        // currency, …), but it must NOT be rejected with a "blocklisted" error.
+        if let Err(e) = &result {
+            let err_msg = format!("{e}");
+            assert!(
+                !err_msg.contains("blocklisted"),
+                "transact_raw must not reject blocklisted currencies (import safety), got: {err_msg}"
+            );
+        }
     }
 
     #[test]
