@@ -165,13 +165,13 @@ impl ImportCeloStateCommand {
             // through the dummy blocks but does not touch changeset segments. Advance
             // them here so the static file provider considers all segments consistent at
             // the migration block.
-            for segment in
-                [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
-            {
-                let mut writer = static_file_provider.latest_writer(segment)?;
-                for block in 1..=CEL2_MIGRATION_BLOCK_NUMBER {
-                    writer.increment_block(block)?;
-                }
+            for segment in [
+                StaticFileSegment::AccountChangeSets,
+                StaticFileSegment::StorageChangeSets,
+            ] {
+                static_file_provider
+                    .latest_writer(segment)?
+                    .ensure_at_block(CEL2_MIGRATION_BLOCK_NUMBER)?;
             }
 
             // SAFETY: it's safe to commit static files; on crash they are unwound according to
