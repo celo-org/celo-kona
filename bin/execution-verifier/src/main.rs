@@ -146,7 +146,17 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             .or(cli.start_block),
     };
 
-    tracing::info!(start_block_number = start_block, "Using start-block");
+    match cli.end_block {
+        Some(end) => tracing::info!(
+            start_block_number = start_block,
+            end_block_number = end,
+            "Using start-block with end-block"
+        ),
+        None => tracing::info!(
+            start_block_number = start_block,
+            "Using start-block with no end block defined (following the head)"
+        ),
+    }
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
@@ -184,6 +194,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // Spawn the repeating task in the background
     let tracker_handle = tracker.clone();
     let cancel_token_clone = cancel_token.clone();
+    let state_file_clone = cli.state_file.clone();
     let verified_block_store_task = tokio::spawn(async move {
         let mut interval = interval(PERSISTANCE_INTERVAL);
 
@@ -194,7 +205,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 }
                 _ = interval.tick() => {
                     let tracker = tracker_handle.clone();
-                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
+                    if let Err(e) = persist_verified_block(tracker,state_file_clone.as_ref()).await {
                         eprintln!("Error storing verified block: {e}");
                     }
                 }
@@ -237,7 +248,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         let end = first_head_block - 1;
         let concurrency_handle = verify_new_heads_concurrency.clone();
         handles.spawn({
-            let cancel_token = cancel_token.clone();
+            let cloned_cancel_token = cancel_token.clone();
+            let cloned_tracker = tracker.clone();
             async move {
                 let result = verify_block_range(
                     start_block,
@@ -245,9 +257,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                     provider.clone(),
                     rollup_config.clone(),
                     std::cmp::max(1, cli.concurrency - 1),
-                    cancel_token.clone(),
+                    cloned_cancel_token,
                     metrics.clone(),
-                    tracker.clone(),
+                    cloned_tracker,
                 )
                 .await;
 
@@ -277,19 +289,23 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
+                let _ = persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await;
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
+                let _ = persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await;
                 return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
             _ => {}
         }
     }
 
+    // Persist progress before exiting so short-lived runs don't lose work
     verified_block_store_task.abort();
+    persist_verified_block(tracker, cli.state_file.as_ref()).await?;
     Ok(())
 }
 
