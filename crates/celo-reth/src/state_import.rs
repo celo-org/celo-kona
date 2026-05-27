@@ -1,22 +1,41 @@
 //! Celo L1 → L2 state-dump import for the `celo-reth import-celo-state` subcommand.
 
-use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, EMPTY_ROOT_HASH, Header};
-use alloy_primitives::{B64, B256, U256, address, b256, bloom, bytes};
+use alloy_consensus::{BlockHeader, EMPTY_OMMER_ROOT_HASH, EMPTY_ROOT_HASH, Header};
+use alloy_genesis::GenesisAccount;
+use alloy_primitives::{B64, B256, U256, address, b256, bloom, bytes, keccak256, map::B256Set};
 use clap::Parser;
 use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
-use reth_db_common::init::init_from_state_dump;
+use reth_codecs::Compact;
+use reth_config::config::EtlConfig;
+use reth_db_api::{
+    cursor::{DbCursorRW, DbDupCursorRW},
+    models::{
+        AccountBeforeTx, BlockNumberAddress, IntegerList, ShardedKey,
+        storage_sharded_key::StorageShardedKey,
+    },
+    tables,
+    transaction::DbTxMut,
+};
+use reth_etl::Collector;
 use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageArgs};
 use reth_optimism_node::OpNode;
-use reth_primitives_traits::{SealedHeader, header::HeaderMut};
+use reth_primitives_traits::{Account, Bytecode, SealedHeader, StorageEntry, header::HeaderMut};
 use reth_provider::{
-    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    StaticFileProviderFactory, StaticFileSegment, StaticFileWriter,
+    BlockHashReader, BlockNumReader, ChainSpecProvider, DBProvider, DatabaseProviderFactory,
+    HeaderProvider, ProviderError, StageCheckpointWriter, StaticFileProviderFactory,
+    StaticFileSegment, StaticFileWriter, TrieWriter,
 };
+use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_api::StorageSettingsCache;
-use std::{io::BufReader, path::PathBuf};
-use tracing::info;
+use reth_trie::{IntermediateStateRootState, StateRootProgress};
+use serde::{Deserialize, Serialize};
+use std::{
+    io::{BufRead, BufReader},
+    path::PathBuf,
+};
+use tracing::{debug, error, info, trace};
 
 use crate::chainspec::CeloChainSpecParser;
 
@@ -165,10 +184,9 @@ impl ImportCeloStateCommand {
             // through the dummy blocks but does not touch changeset segments. Advance
             // them here so the static file provider considers all segments consistent at
             // the migration block.
-            for segment in [
-                StaticFileSegment::AccountChangeSets,
-                StaticFileSegment::StorageChangeSets,
-            ] {
+            for segment in
+                [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
+            {
                 static_file_provider
                     .latest_writer(segment)?
                     .ensure_at_block(CEL2_MIGRATION_BLOCK_NUMBER)?;
@@ -203,7 +221,7 @@ impl ImportCeloStateCommand {
         info!(target: "reth::cli", path = ?self.state, "Initiating state dump");
 
         let reader = BufReader::new(reth_fs_util::open(self.state)?);
-        let hash = init_from_state_dump(reader, &provider_factory, config.stages.etl)?;
+        let hash = celo_init_from_state_dump(reader, &provider_factory, config.stages.etl)?;
 
         info!(
             target: "reth::cli",
@@ -213,6 +231,323 @@ impl ImportCeloStateCommand {
         );
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local copy of `reth_db_common::init::init_from_state_dump` and its private
+// helpers. Identical to upstream except `compute_state_root_chunked` is replaced
+// with the non-chunked `compute_state_root` to work around an upstream bug
+// where the chunked variant replays the boundary storage key after a commit,
+// causing a panic in `HashBuilder::add_leaf` for accounts with large storage.
+// ---------------------------------------------------------------------------
+
+/// Max storage "units" (1 per account + 1 per slot) per MDBX commit batch.
+const STORAGE_COMMIT_THRESHOLD: usize = 500_000;
+
+/// Soft limit for flushed trie updates before logging progress.
+const SOFT_LIMIT_COUNT_FLUSHED_UPDATES: usize = 1_000_000;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DumpStateRoot {
+    root: B256,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenesisAccountWithAddress {
+    #[serde(flatten)]
+    genesis_account: GenesisAccount,
+    address: alloy_primitives::Address,
+}
+
+/// Replacement for `reth_db_common::init::init_from_state_dump` that uses a
+/// single-transaction state root computation instead of the chunked variant.
+fn celo_init_from_state_dump<PF>(
+    mut reader: impl BufRead,
+    provider_factory: &PF,
+    etl_config: EtlConfig,
+) -> eyre::Result<B256>
+where
+    PF: DatabaseProviderFactory<
+        ProviderRW: DBProvider<Tx: DbTxMut>
+                        + BlockNumReader
+                        + BlockHashReader
+                        + ChainSpecProvider
+                        + StageCheckpointWriter
+                        + HeaderProvider
+                        + TrieWriter
+                        + StorageSettingsCache,
+    >,
+{
+    if etl_config.file_size == 0 {
+        return Err(eyre::eyre!("ETL file size cannot be zero"));
+    }
+
+    // Read block metadata from the provider.
+    let (block, hash, expected_state_root) = {
+        let provider_rw = provider_factory.database_provider_rw()?;
+        let block = provider_rw.last_block_number()?;
+        let hash = provider_rw
+            .block_hash(block)?
+            .ok_or_else(|| eyre::eyre!("Block hash not found for block {block}"))?;
+        let header = provider_rw
+            .header_by_number(block)?
+            .map(|h| SealedHeader::new(h, hash))
+            .ok_or_else(|| ProviderError::HeaderNotFound(block.into()))?;
+        let state_root = header.header().state_root();
+
+        debug!(target: "reth::cli", block, chain=%provider_rw.chain_spec().chain(), "Initializing state at block");
+
+        (block, hash, state_root)
+    };
+
+    // Verify dump state root matches the migration header.
+    let dump_state_root = {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        serde_json::from_str::<DumpStateRoot>(&line)?.root
+    };
+    if expected_state_root != dump_state_root {
+        error!(target: "reth::cli", ?dump_state_root, ?expected_state_root,
+            "State root from state dump does not match state root in current header.");
+        return Err(eyre::eyre!(
+            "state root mismatch: dump={dump_state_root:?} expected={expected_state_root:?}"
+        ));
+    }
+
+    // Parse accounts into an ETL collector (sorted by address).
+    let collector = {
+        let mut line = String::new();
+        let mut collector = Collector::new(etl_config.file_size, etl_config.dir);
+        loop {
+            let n = reader.read_line(&mut line)?;
+            if n == 0 {
+                break;
+            }
+            let entry: GenesisAccountWithAddress = serde_json::from_str(&line)?;
+            collector.insert(entry.address, entry.genesis_account)?;
+            line.clear();
+        }
+        collector
+    };
+
+    // Write accounts to MDBX in batches.
+    dump_state(collector, provider_factory, block)?;
+
+    info!(target: "reth::cli",
+        "All accounts written to database, starting state root computation (may take some time)");
+
+    // Clear trie tables so state root is computed from scratch.
+    {
+        let provider_rw = provider_factory.database_provider_rw()?;
+        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
+        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
+        provider_rw.commit()?;
+    }
+
+    // Compute state root in a single transaction (avoids the upstream chunked
+    // computation bug that replays boundary keys across transaction commits).
+    let computed_state_root = {
+        let provider_rw = provider_factory.database_provider_rw()?;
+
+        let root = reth_trie_db::with_adapter!(&provider_rw, |A| {
+            compute_state_root::<_, A>(&provider_rw)
+        })?;
+        provider_rw.commit()?;
+        root
+    };
+
+    if computed_state_root == expected_state_root {
+        info!(target: "reth::cli", ?computed_state_root,
+            "Computed state root matches state root in state dump");
+    } else {
+        error!(target: "reth::cli", ?computed_state_root, ?expected_state_root,
+            "Computed state root does not match state root in state dump");
+        return Err(eyre::eyre!(
+            "state root mismatch: computed={computed_state_root:?} expected={expected_state_root:?}"
+        ));
+    }
+
+    // Set stage checkpoints for stages that require state.
+    {
+        let provider_rw = provider_factory.database_provider_rw()?;
+        for stage in StageId::STATE_REQUIRED {
+            provider_rw.save_stage_checkpoint(stage, StageCheckpoint::new(block))?;
+        }
+        provider_rw.commit()?;
+    }
+
+    Ok(hash)
+}
+
+/// Single-transaction state root computation. Unlike the upstream chunked
+/// version, this keeps one MDBX transaction open for the entire computation,
+/// avoiding the boundary-key replay bug.
+fn compute_state_root<Provider, A>(provider: &Provider) -> Result<B256, eyre::Error>
+where
+    Provider: DBProvider<Tx: DbTxMut> + TrieWriter + StorageSettingsCache,
+    A: reth_trie_db::TrieTableAdapter,
+{
+    let tx = provider.tx_ref();
+    let mut intermediate_state: Option<IntermediateStateRootState> = None;
+    let mut total_flushed_updates: usize = 0;
+
+    loop {
+        let cursor_factory = reth_trie_db::DatabaseTrieCursorFactory::<_, A>::new(tx);
+        let hashed_factory = reth_trie_db::DatabaseHashedCursorFactory::new(tx);
+        let state_root = reth_trie::StateRoot::new(cursor_factory, hashed_factory)
+            .with_intermediate_state(intermediate_state);
+
+        match state_root.root_with_progress()? {
+            StateRootProgress::Progress(state, _, updates) => {
+                let updated_len = provider.write_trie_updates(updates)?;
+                total_flushed_updates += updated_len;
+
+                trace!(target: "reth::cli",
+                    last_account_key = %state.account_root_state.last_hashed_key,
+                    updated_len, total_flushed_updates,
+                    "Flushing trie updates");
+
+                intermediate_state = Some(*state);
+
+                if total_flushed_updates % SOFT_LIMIT_COUNT_FLUSHED_UPDATES == 0 {
+                    info!(target: "reth::cli", total_flushed_updates, "Flushing trie updates");
+                }
+            }
+            StateRootProgress::Complete(root, _, updates) => {
+                let updated_len = provider.write_trie_updates(updates)?;
+                total_flushed_updates += updated_len;
+
+                info!(target: "reth::cli", %root, total_flushed_updates,
+                    "State root computation complete");
+
+                return Ok(root);
+            }
+        }
+    }
+}
+
+/// Write all accounts from the ETL collector to MDBX tables directly.
+fn dump_state<PF>(
+    mut collector: Collector<alloy_primitives::Address, GenesisAccount>,
+    provider_factory: &PF,
+    block: u64,
+) -> Result<(), eyre::Error>
+where
+    PF: DatabaseProviderFactory<ProviderRW: DBProvider<Tx: DbTxMut>>,
+{
+    let accounts_len = collector.len();
+    let mut total_accounts: usize = 0;
+    let mut storage_units: usize = 0;
+
+    let history_list = IntegerList::new([block])?;
+    let mut seen_bytecodes: B256Set = B256Set::default();
+    let mut provider_rw = provider_factory.database_provider_rw()?;
+
+    for entry in collector.iter()? {
+        let (address_raw, account_raw) = entry?;
+        let (address, _) =
+            alloy_primitives::Address::from_compact(address_raw.as_slice(), address_raw.len());
+        let (account, _) = GenesisAccount::from_compact(account_raw.as_slice(), account_raw.len());
+
+        let account_storage_len = account.storage.as_ref().map_or(0, |s| s.len());
+        let account_units = 1 + account_storage_len;
+
+        if storage_units > 0 && storage_units + account_units > STORAGE_COMMIT_THRESHOLD {
+            provider_rw.commit()?;
+            provider_rw = provider_factory.database_provider_rw()?;
+            info!(target: "reth::cli", total_accounts, accounts_len, storage_units, "Committed chunk");
+            storage_units = 0;
+        }
+
+        write_account_to_db(
+            provider_rw.tx_ref(),
+            &address,
+            &account,
+            block,
+            &history_list,
+            &mut seen_bytecodes,
+        )?;
+
+        total_accounts += 1;
+        storage_units += account_units;
+
+        if total_accounts % 100_000 == 0 {
+            info!(target: "reth::cli", total_accounts, accounts_len, "Writing accounts...");
+        }
+    }
+
+    provider_rw.commit()?;
+    info!(target: "reth::cli", total_accounts, "All accounts written to database");
+    Ok(())
+}
+
+/// Write a single account and its storage to all required MDBX tables.
+fn write_account_to_db<TX: DbTxMut>(
+    tx: &TX,
+    address: &alloy_primitives::Address,
+    genesis_account: &GenesisAccount,
+    block: u64,
+    history_list: &IntegerList,
+    seen_bytecodes: &mut B256Set,
+) -> Result<(), eyre::Error> {
+    let bytecode_hash = if let Some(code) = &genesis_account.code {
+        let bytecode = Bytecode::new_raw_checked(code.clone())
+            .map_err(|e| eyre::eyre!("Invalid bytecode for {address}: {e}"))?;
+        let hash = bytecode.hash_slow();
+        if seen_bytecodes.insert(hash) {
+            tx.put::<tables::Bytecodes>(hash, bytecode)?;
+        }
+        Some(hash)
+    } else {
+        None
+    };
+
+    let account = Account {
+        nonce: genesis_account.nonce.unwrap_or_default(),
+        balance: genesis_account.balance,
+        bytecode_hash,
+    };
+
+    let hashed_address = keccak256(address);
+
+    tx.put::<tables::PlainAccountState>(*address, account)?;
+    tx.put::<tables::HashedAccounts>(hashed_address, account)?;
+
+    let mut acct_cs_cursor = tx.cursor_dup_write::<tables::AccountChangeSets>()?;
+    acct_cs_cursor.append_dup(block, AccountBeforeTx { address: *address, info: None })?;
+
+    tx.put::<tables::AccountsHistory>(ShardedKey::new(*address, u64::MAX), history_list.clone())?;
+
+    if let Some(storage) = &genesis_account.storage {
+        let mut hashed_storage_cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
+        let mut plain_storage_cursor = tx.cursor_dup_write::<tables::PlainStorageState>()?;
+        let mut storage_cs_cursor = tx.cursor_dup_write::<tables::StorageChangeSets>()?;
+
+        let mut sorted_slots: Vec<_> = storage.iter().collect();
+        sorted_slots.sort_unstable_by_key(|(k, _)| *k);
+
+        for &(&key, &value) in &sorted_slots {
+            let value_u256 = U256::from_be_bytes(value.0);
+
+            plain_storage_cursor.append_dup(*address, StorageEntry { key, value: value_u256 })?;
+
+            let hashed_key = keccak256(key);
+            hashed_storage_cursor
+                .upsert(hashed_address, &StorageEntry { key: hashed_key, value: value_u256 })?;
+
+            storage_cs_cursor.append_dup(
+                BlockNumberAddress((block, *address)),
+                StorageEntry { key, value: U256::ZERO },
+            )?;
+
+            tx.put::<tables::StoragesHistory>(
+                StorageShardedKey::new(*address, key, u64::MAX),
+                history_list.clone(),
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
