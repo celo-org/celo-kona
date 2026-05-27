@@ -114,11 +114,28 @@ where
             let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
             evm.fee_currency_context = fee_currency_context;
 
-            // Reset warmness after context loading to match op-geth behavior.
-            // In op-geth, context loading uses a separate EVM instance, so no warmness
-            // is shared with subsequent transaction processing. This affects all
-            // transactions, not just CIP-64, ensuring consistent gas accounting.
-            self.reset_warmness_to_default(evm);
+            // Context loading is internal: it reads on-chain fee-currency config and is not
+            // an EVM operation the transaction itself performs. It must therefore leave the
+            // transaction's warm/cold accounting untouched, or the transaction pays less gas
+            // than its own accesses should cost.
+            //
+            // But loading reads that config by calling into the FeeCurrencyDirectory and the
+            // currency oracles, which leaves the accounts and storage slots it touches warm.
+            // revm keys warmth off the journal `transaction_id`, and those calls run at the
+            // transaction's own id, so the accesses stay warm for the transaction. Its first
+            // SLOAD of such a slot would then cost 100 gas instead of the correct 2100.
+            //
+            // Advancing the transaction id resets that: everything loaded above now reads
+            // cold. The id only ever increases (`commit_tx` bumps it per transaction), so it
+            // is never reused and the warmth cannot leak into a later transaction either.
+            // Resetting account status alone would miss the storage slots, which are also
+            // keyed off the transaction id.
+            //
+            // Note the interplay with `core_contracts::call`: it *restores* `transaction_id`
+            // to the surrounding tx's value after each system call, deliberately keeping that
+            // warmth for its other callers (the erc20 debit/credit). For context loading we
+            // want the opposite, so we advance one past the id `call` restored to.
+            evm.ctx().journal_mut().transaction_id += 1;
         }
 
         Ok(())
@@ -152,33 +169,6 @@ where
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
             .map_err(InvalidTransaction::from)?;
         Ok(max_allowed_gas_cost)
-    }
-
-    /// Reset account warmness to the default state after fee currency context loading.
-    ///
-    /// This marks all accounts in the journal state with `AccountStatus::Cold`,
-    /// effectively isolating the context loading phase from transaction processing.
-    /// This matches op-geth's behavior where context loading uses a separate EVM instance.
-    ///
-    /// After this reset, warmness is determined by:
-    /// - Precompiles: warm (via WarmAddresses.precompile_set)
-    /// - Coinbase: warm (via WarmAddresses.coinbase, set later by load_accounts)
-    /// - Access list entries: warm (set later by load_accounts from tx access list)
-    /// - All other accounts: cold (first access costs 2600 gas)
-    ///
-    /// This is called right after context loading, before any transaction processing
-    /// (including CIP-64 debit). The sender account becomes cold here, but:
-    /// - For CIP-64 debit/credit: sender is not directly accessed, only the fee
-    ///   currency contract is called (which reads sender's balance from its storage)
-    /// - For main transaction: load_accounts() runs after debit and sets up the
-    ///   access list properly, warming the sender
-    fn reset_warmness_to_default(&self, evm: &mut CeloEvm<DB, INSP, P>) {
-        use revm::state::AccountStatus;
-
-        // Mark all loaded accounts as cold
-        for account in evm.ctx().journal_mut().state.values_mut() {
-            account.status |= AccountStatus::Cold;
-        }
     }
 
     // For CIP-64 transactions, we need to credit the fee currency, which does everything
@@ -362,8 +352,8 @@ where
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
         // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
-        // Note: Warmness was already reset in load_fee_currency_context() after context loading,
-        // so accounts warmed during context loading are now cold.
+        // Note: load_fee_currency_context() already advanced the journal transaction_id after
+        // context loading, so the accounts and storage slots it warmed now read cold here.
         let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
@@ -1910,5 +1900,72 @@ mod tests {
 
         // Credit should generate Transfer event logs (from sender refund + tip/base to recipients)
         assert!(!info.logs_post.is_empty(), "Credit should generate logs");
+    }
+
+    /// Regression test for a storage-warmth leak from fee-currency context loading.
+    ///
+    /// Loading the context system-calls the FeeCurrencyDirectory (a proxy), reading its
+    /// storage. That read is internal config loading, not part of the transaction's own
+    /// execution, so it must not pre-warm any slot for the transaction. revm tracks warmth
+    /// per `transaction_id`, and the system call runs at the surrounding transaction's id,
+    /// so those slots used to stay *warm* — under-charging the transaction's first SLOAD of
+    /// them. (A plain account-status reset missed slots, whose warmth is transaction_id
+    /// based.) `load_fee_currency_context` now bumps the journal transaction id so
+    /// everything touched during loading reads cold.
+    #[test]
+    fn test_context_loading_does_not_leak_storage_warmth() {
+        use crate::contracts::core_contracts::tests::make_celo_test_db;
+        use revm::{context_interface::ContextTr, handler::EvmTr};
+
+        let ctx = Context::celo().with_db(make_celo_test_db());
+        let mut evm = ctx.build_celo();
+
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        let id_before = evm.ctx().journal_mut().transaction_id;
+        handler
+            .load_fee_currency_context(&mut evm)
+            .expect("loading the fee-currency context should succeed");
+        let tx_id = evm.ctx().journal_mut().transaction_id;
+
+        // The bump is the mechanism that isolates context-loading warmth; without it the
+        // leak returns. This deterministically guards the fix.
+        assert!(
+            tx_id > id_before,
+            "context loading must advance the transaction id (was {id_before}, now {tx_id})"
+        );
+
+        // Guard against a vacuous test: loading must actually have read FeeCurrencyDirectory
+        // storage, otherwise the cold-warmth assertions below would pass over an empty journal.
+        let directory = get_addresses(0).fee_currency_directory;
+        let journal = evm.ctx().journal_mut();
+        let dir_acct = journal
+            .state
+            .get(&directory)
+            .expect("context loading should have loaded the FeeCurrencyDirectory account");
+        assert!(
+            !dir_acct.storage.is_empty(),
+            "context loading should have read FeeCurrencyDirectory storage; an empty journal \
+             would make the warmth assertions below vacuous"
+        );
+
+        // Every account and storage slot touched while loading — the directory, the oracle
+        // behind it, and the system caller — must now read cold to the surrounding
+        // transaction. (Precompiles live in WarmAddresses, not journal state, so they
+        // correctly never appear here and stay warm.)
+        for (addr, acct) in journal.state.iter() {
+            assert!(
+                acct.is_cold_transaction_id(tx_id),
+                "account {addr} leaked warmth from context loading"
+            );
+            for (slot_key, slot) in acct.storage.iter() {
+                assert!(
+                    slot.is_cold_transaction_id(tx_id),
+                    "slot {slot_key} of {addr} leaked warmth from context loading \
+                     (would under-charge the transaction's first SLOAD)"
+                );
+            }
+        }
     }
 }
