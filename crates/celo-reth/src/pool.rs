@@ -987,8 +987,8 @@ fn apply_exchange_rates_to_valid_tx(
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                max_fee_fc = max_fee_fc.into_inner(),
-                base_fee_floor_fc = base_fee_floor_fc.into_inner(),
+                %max_fee_fc,
+                %base_fee_floor_fc,
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
             CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
@@ -1009,8 +1009,8 @@ fn apply_exchange_rates_to_valid_tx(
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                effective_tip = effective_tip.into_inner(),
-                min_tip_fc = min_tip_fc.into_inner(),
+                %effective_tip,
+                %min_tip_fc,
                 "Rejecting CIP-64 tx: effective tip below minimum"
             );
             CeloPoolMetrics::cip64_rejection("below_min_tip");
@@ -1027,8 +1027,8 @@ fn apply_exchange_rates_to_valid_tx(
             ?fc,
             numerator = rate.numerator,
             denominator = rate.denominator,
-            max_fee_fc = max_fee_fc.into_inner(),
-            max_fee_native = tx.native_max_fee_per_gas.into_inner(),
+            %max_fee_fc,
+            max_fee_native = %tx.native_max_fee_per_gas,
             "Applied exchange rate to CIP-64 pool tx"
         );
 
@@ -1124,7 +1124,7 @@ fn apply_exchange_rates_to_valid_tx(
             |_| {
                 tracing::warn!(
                     target: "celo::pool",
-                    fee_cost = %fee_cost.into_inner(),
+                    %fee_cost,
                     "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
                 );
                 Native::new(u128::MAX)

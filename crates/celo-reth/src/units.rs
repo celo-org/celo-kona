@@ -29,7 +29,10 @@
 //! `U256`-based implementation; the unification is out of scope.
 
 use alloy_primitives::U256;
-use core::ops::{Add, Sub};
+use core::{
+    fmt::{self, Display},
+    ops::{Add, Sub},
+};
 
 // ---------------------------------------------------------------------------
 // u128-backed newtypes
@@ -107,6 +110,21 @@ impl From<u128> for Native {
 impl From<u128> for Fc {
     fn from(v: u128) -> Self {
         Self(v)
+    }
+}
+
+// Display delegates to the inner value so that tracing fields written as
+// `%native` or `%fc` log a bare number (matching what the raw `u128` would
+// have produced), not `Native(123)`.
+impl Display for Native {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl Display for Fc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 
@@ -245,6 +263,18 @@ impl From<U256> for NativeU256 {
 impl From<U256> for FcU256 {
     fn from(v: U256) -> Self {
         Self(v)
+    }
+}
+
+impl Display for NativeU256 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl Display for FcU256 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 

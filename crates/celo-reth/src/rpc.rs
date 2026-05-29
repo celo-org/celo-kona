@@ -1151,7 +1151,7 @@ pub(crate) fn cip64_native_tip(
     u128::try_from(native_tip.into_inner()).unwrap_or_else(|_| {
         tracing::warn!(
             target: "celo::rpc",
-            native_tip = %native_tip.into_inner(),
+            %native_tip,
             "CIP-64 native tip exceeds u128::MAX, clamping"
         );
         u128::MAX
