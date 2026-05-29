@@ -950,12 +950,19 @@ fn apply_exchange_rates_to_valid_tx(
     // leaving stale reserved balance in `cumulative_fc_costs`.
     let mut reserved_cumulative: Option<(Address, Address, U256)> = None;
     if let Some(fc) = tx.fee_currency() {
-        let max_fee_fc = tx.inner.max_fee_per_gas();
-        let max_priority_fee_fc = tx.inner.max_priority_fee_per_gas();
+        let max_fee_fc = Fc::new(tx.inner.max_fee_per_gas());
+        let max_priority_fee_fc: Option<Fc> = tx.inner.max_priority_fee_per_gas().map(Fc::new);
 
         // Look up exchange rate, check ERC20 balance, and simulate debit
         // in a single EVM instance.
-        let required_fc = U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc));
+        //
+        // `required_fc` threads through `FcLookup::lookup_rate_and_balance`,
+        // `CeloPoolRejection::InsufficientBalance`, and the cumulative-cost map,
+        // all of which speak raw `U256`. Constructed from FC values via
+        // saturating_mul and named with the `_fc` suffix for the type-system
+        // boundary it can't reach.
+        let required_fc =
+            U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc.into_inner()));
         let sender = tx.sender();
         CeloPoolMetrics::exchange_rate_lookup();
         let result =
@@ -975,42 +982,42 @@ fn apply_exchange_rates_to_valid_tx(
         };
 
         // Check: fee cap must be >= base fee floor converted to FC.
-        let base_fee_floor_fc = rate.to_fc(Native::new(base_fee_floor as u128)).into_inner();
+        let base_fee_floor_fc = rate.to_fc(Native::new(base_fee_floor as u128));
         if max_fee_fc < base_fee_floor_fc {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                max_fee_fc,
-                base_fee_floor_fc,
+                max_fee_fc = max_fee_fc.into_inner(),
+                base_fee_floor_fc = base_fee_floor_fc.into_inner(),
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
             CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
             return Err(CeloPoolRejection::BelowBaseFeeFloor {
                 currency: fc,
-                max_fee_fc,
-                base_fee_floor_fc,
+                max_fee_fc: max_fee_fc.into_inner(),
+                base_fee_floor_fc: base_fee_floor_fc.into_inner(),
             });
         }
 
         // Check: effective tip must meet the minimum tip converted to FC.
         // The effective tip is min(max_fee - base_fee_floor_fc, priority_fee),
         // matching op-geth's EffectiveGasTipIntCmp(minTip, baseFeeFloor).
-        let min_tip_fc = rate.to_fc(Native::new(minimum_priority_fee)).into_inner();
-        let actual_priority = max_priority_fee_fc.unwrap_or(0);
+        let min_tip_fc = rate.to_fc(Native::new(minimum_priority_fee));
+        let actual_priority = max_priority_fee_fc.unwrap_or_default();
         let effective_tip = max_fee_fc.saturating_sub(base_fee_floor_fc).min(actual_priority);
         if effective_tip < min_tip_fc {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                effective_tip,
-                min_tip_fc,
+                effective_tip = effective_tip.into_inner(),
+                min_tip_fc = min_tip_fc.into_inner(),
                 "Rejecting CIP-64 tx: effective tip below minimum"
             );
             CeloPoolMetrics::cip64_rejection("below_min_tip");
             return Err(CeloPoolRejection::BelowMinTip {
                 currency: fc,
-                min_tip_fc,
-                actual: effective_tip,
+                min_tip_fc: min_tip_fc.into_inner(),
+                actual: effective_tip.into_inner(),
             });
         }
 
@@ -1020,7 +1027,7 @@ fn apply_exchange_rates_to_valid_tx(
             ?fc,
             numerator = rate.numerator,
             denominator = rate.denominator,
-            max_fee_fc,
+            max_fee_fc = max_fee_fc.into_inner(),
             max_fee_native = tx.native_max_fee_per_gas.into_inner(),
             "Applied exchange rate to CIP-64 pool tx"
         );
@@ -1107,22 +1114,31 @@ fn apply_exchange_rates_to_valid_tx(
     if let Some(cap) = tx_fee_cap &&
         cap > 0
     {
-        let fee_cost = U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas()));
-        let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
-            tracing::warn!(
-                target: "celo::pool",
-                %fee_cost,
-                "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
-            );
-            u128::MAX
-        });
-        if max_tx_fee_wei > cap {
+        // tx.max_fee_per_gas() is already native-equivalent after apply_exchange_rate
+        // (its CeloPoolTx field is `Native`); we widen to U256 only to multiply gas_limit
+        // without overflow.
+        let fee_cost = NativeU256::new(
+            U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas())),
+        );
+        let max_tx_fee_wei = u128::try_from(fee_cost.into_inner()).map_or_else(
+            |_| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    fee_cost = %fee_cost.into_inner(),
+                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+                );
+                Native::new(u128::MAX)
+            },
+            Native::new,
+        );
+        let cap_native = Native::new(cap);
+        if max_tx_fee_wei > cap_native {
             if tx.fee_currency().is_some() {
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             }
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
             return Err(CeloPoolRejection::ExceedsFeeCap {
-                max_tx_fee_wei,
+                max_tx_fee_wei: max_tx_fee_wei.into_inner(),
                 tx_fee_cap_wei: cap,
                 fee_currency: tx.fee_currency(),
             });
@@ -1652,6 +1668,51 @@ mod tests {
         };
         // 1_000_000_000 * 2/1 = 2_000_000_000
         assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+    }
+
+    /// Regression for f2b24192: `apply_exchange_rates_to_valid_tx` must not
+    /// fold FC-denominated gas into the native-CELO cost check. With a CIP-64
+    /// tx whose `value` is zero, the native cost after conversion must remain
+    /// zero — the gas cost is denominated in fee currency and is checked
+    /// separately against the sender's ERC20 balance. Folding it in here
+    /// rejects valid CIP-64 txs whose senders have plenty of ERC20 for gas
+    /// but little native CELO.
+    #[test]
+    fn test_apply_rates_does_not_fold_fc_gas_into_native_cost() {
+        let fc = Address::with_last_byte(0xCD);
+        // Non-trivial rate + non-trivial gas_limit: the buggy form would
+        // produce a non-zero native cost here. Correct form: cost stays at
+        // `value` (zero, from make_test_tx).
+        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        let mut valid = wrap_valid(tx);
+
+        let mock = MockFcLookup {
+            // 1 FC = 2 native; gas in FC is far from zero
+            rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+        };
+
+        apply_exchange_rates_to_valid_tx(
+            &mock,
+            &mut valid,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        )
+        .expect("ok");
+
+        let tx = match &valid {
+            ValidTransaction::Valid(t) => t,
+            _ => panic!(),
+        };
+        assert_eq!(
+            *tx.cost(),
+            U256::ZERO,
+            "native_cost for CIP-64 must equal value (0 here) — gas is paid in FC"
+        );
     }
 
     #[test]
