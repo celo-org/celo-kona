@@ -26,7 +26,7 @@ use celo_alloy_rpc_types::{CeloTransaction as CeloRpcTransaction, CeloTransactio
 use celo_revm::{
     CeloTransaction,
     contracts::core_contracts::getExchangeRateCall,
-    units::{FcU256, NativeU256},
+    units::{Fc, FcU256, Native, NativeU256},
 };
 use op_alloy_rpc_types::OpTransactionRequest;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -1129,31 +1129,31 @@ pub fn celo_tx_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeA
 /// as a degenerate rate — the tx is effectively skipped from `eth_feeHistory`
 /// reward percentiles rather than panicking the handler.
 pub(crate) fn cip64_native_tip(
-    max_fee_fc: u128,
-    priority_fee_fc: u128,
-    base_fee_native: u64,
+    max_fee: Fc,
+    priority_fee: Fc,
+    base_fee: Native,
     rate: RateU256,
-) -> u128 {
+) -> Native {
     if rate.numerator.is_zero() || rate.denominator.is_zero() {
-        return 0;
+        return Native::new(0);
     }
-    let Some(base_fee_fc) = scale_to_fc(NativeU256::new(U256::from(base_fee_native)), rate) else {
-        return 0;
+    let Some(base_fee_fc) = scale_to_fc(NativeU256::from(base_fee), rate) else {
+        return Native::new(0);
     };
-    let max_fee_fc = FcU256::new(U256::from(max_fee_fc));
-    let priority_fee_fc = FcU256::new(U256::from(priority_fee_fc));
+    let max_fee_fc = FcU256::from(max_fee);
+    let priority_fee_fc = FcU256::from(priority_fee);
     let tip_fc = max_fee_fc.saturating_sub(base_fee_fc).min(priority_fee_fc);
     let Some(native_tip) = scale_to_native(tip_fc, rate) else {
-        return 0;
+        return Native::new(0);
     };
-    u128::try_from(native_tip.into_inner()).unwrap_or_else(|_| {
+    if u128::try_from(native_tip.into_inner()).is_err() {
         tracing::warn!(
             target: "celo::rpc",
             %native_tip,
             "CIP-64 native tip exceeds u128::MAX, clamping"
         );
-        u128::MAX
-    })
+    }
+    native_tip.saturating_to_u128()
 }
 
 /// Returns the fee-currency address that `eth_feeHistory` should use to convert
@@ -1183,16 +1183,16 @@ pub(crate) fn fee_history_cip64_conversion_currency(
 /// `base_fee` and produce garbage. Instead, skip the tx by reporting a tip of
 /// `0`; callers can emit a warning for observability.
 pub(crate) fn cip64_fee_history_tip(
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    base_fee_native: u64,
+    max_fee: Fc,
+    priority_fee: Fc,
+    base_fee: Native,
     rate: Option<RateU256>,
-) -> u128 {
+) -> Native {
     match rate {
         Some(rate) if !rate.numerator.is_zero() => {
-            cip64_native_tip(max_fee_per_gas, max_priority_fee_per_gas, base_fee_native, rate)
+            cip64_native_tip(max_fee, priority_fee, base_fee, rate)
         }
-        _ => 0,
+        _ => Native::new(0),
     }
 }
 
@@ -1352,11 +1352,12 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                                 );
                             }
                             cip64_fee_history_tip(
-                                tx.max_fee_per_gas(),
-                                tx.max_priority_fee_per_gas().unwrap_or(0),
-                                bf,
+                                Fc::new(tx.max_fee_per_gas()),
+                                Fc::new(tx.max_priority_fee_per_gas().unwrap_or(0)),
+                                Native::new(bf as u128),
                                 rate,
                             )
+                            .into_inner()
                         }
                         None => {
                             // Native tx, CIP-64 tx with native fee currency, or a
@@ -1701,13 +1702,9 @@ mod tests {
         // base_fee_fc = 100 * 2 / 1 = 200
         // tip_fc = min(500 - 200, 10) = 10
         // native_tip = 10 * 1 / 2 = 5
-        let tip = cip64_fee_history_tip(
-            500,
-            10,
-            100,
-            Some(RateU256 { numerator: U256::from(2), denominator: U256::from(1) }),
-        );
-        assert_eq!(tip, 5);
+        let tip =
+            cip64_fee_history_tip(Fc::new(500), Fc::new(10), Native::new(100), Some(rate(2, 1)));
+        assert_eq!(tip, Native::new(5));
     }
 
     #[test]
@@ -1715,20 +1712,21 @@ mod tests {
         // Rate lookup failed — must NOT mix FC-denominated fees with a native
         // base_fee via effective_tip_per_gas (which used to produce a bogus
         // positive tip and corrupt reward percentiles). Report 0 instead.
-        let tip = cip64_fee_history_tip(1_000_000_000, 100, 100, None);
-        assert_eq!(tip, 0);
+        let tip =
+            cip64_fee_history_tip(Fc::new(1_000_000_000), Fc::new(100), Native::new(100), None);
+        assert_eq!(tip, Native::new(0));
     }
 
     #[test]
     fn cip64_fee_history_tip_returns_zero_for_zero_numerator() {
         // Degenerate rate (num=0) — same safe fallback as `None`.
         let tip = cip64_fee_history_tip(
-            1_000_000_000,
-            100,
-            100,
+            Fc::new(1_000_000_000),
+            Fc::new(100),
+            Native::new(100),
             Some(RateU256 { numerator: U256::ZERO, denominator: U256::from(1) }),
         );
-        assert_eq!(tip, 0);
+        assert_eq!(tip, Native::new(0));
     }
 
     #[test]
@@ -2279,20 +2277,20 @@ mod tests {
         // base_fee_fc = 100 * 1 / 2 = 50
         // tip_fc = min(300 - 50, 50) = min(250, 50) = 50
         // tip_native = 50 * 2 / 1 = 100
-        let result = cip64_native_tip(300, 50, 100, rate(1, 2));
-        assert_eq!(result, 100);
+        let result = cip64_native_tip(Fc::new(300), Fc::new(50), Native::new(100), rate(1, 2));
+        assert_eq!(result, Native::new(100));
     }
 
     #[test]
     fn cip64_tip_zero_rate_num_returns_zero() {
         // rate_num=0 is a degenerate case — function returns 0 without panicking
         let result = cip64_native_tip(
-            1_000_000_000,
-            100,
-            1000,
+            Fc::new(1_000_000_000),
+            Fc::new(100),
+            Native::new(1000),
             RateU256 { numerator: U256::ZERO, denominator: U256::from(1u64) },
         );
-        assert_eq!(result, 0);
+        assert_eq!(result, Native::new(0));
     }
 
     // -----------------------------------------------------------------------
@@ -2303,8 +2301,8 @@ mod tests {
     fn cip64_tip_base_fee_exceeds_max_fee_clamps_to_zero() {
         // base_fee_fc > max_fee_fc → saturating_sub returns 0 → tip = 0
         // rate 1:1, base_fee_native=1000, max_fee_fc=500 → base_fee_fc=1000 > 500
-        let result = cip64_native_tip(500, 100, 1000, rate(1, 1));
-        assert_eq!(result, 0);
+        let result = cip64_native_tip(Fc::new(500), Fc::new(100), Native::new(1000), rate(1, 1));
+        assert_eq!(result, Native::new(0));
     }
 
     #[test]
@@ -2314,23 +2312,23 @@ mod tests {
         // We handle this by using rate_num=0 check (which returns 0 early).
         // Test verifies rate_num=0 path doesn't panic.
         let result = cip64_native_tip(
-            1_000_000,
-            500,
-            100,
+            Fc::new(1_000_000),
+            Fc::new(500),
+            Native::new(100),
             RateU256 { numerator: U256::ZERO, denominator: U256::ZERO },
         );
-        assert_eq!(result, 0);
+        assert_eq!(result, Native::new(0));
     }
 
     #[test]
     fn cip64_tip_returns_zero_when_forward_scaling_overflows() {
         let result = cip64_native_tip(
-            1_000_000,
-            500,
-            2,
+            Fc::new(1_000_000),
+            Fc::new(500),
+            Native::new(2),
             RateU256 { numerator: U256::MAX, denominator: U256::from(1u64) },
         );
-        assert_eq!(result, 0);
+        assert_eq!(result, Native::new(0));
     }
 
     #[test]
@@ -2338,12 +2336,12 @@ mod tests {
         // base_fee_native=0 keeps the forward step trivial so we exercise only
         // the reverse `tip_fc * rate_denom` overflow.
         let result = cip64_native_tip(
-            u128::MAX,
-            u128::MAX,
-            0,
+            Fc::new(u128::MAX),
+            Fc::new(u128::MAX),
+            Native::new(0),
             RateU256 { numerator: U256::from(1u64), denominator: U256::MAX },
         );
-        assert_eq!(result, 0);
+        assert_eq!(result, Native::new(0));
     }
 
     // -----------------------------------------------------------------------
@@ -2360,8 +2358,8 @@ mod tests {
         // base_fee_fc = 100 * 2 / 1 = 200
         // tip_fc = min(1000 - 200, 20) = 20
         // tip_native = 20 * 1 / 2 = 10
-        let tip = cip64_native_tip(1000, 20, 100, rate(2, 1));
-        assert_eq!(tip, 10);
+        let tip = cip64_native_tip(Fc::new(1000), Fc::new(20), Native::new(100), rate(2, 1));
+        assert_eq!(tip, Native::new(10));
     }
 
     #[test]
@@ -2373,8 +2371,8 @@ mod tests {
         // base_fee_fc = 1000
         // tip_fc = min(1050 - 1000, 200) = 50
         // tip_native = 50
-        let tip = cip64_native_tip(1050, 200, 1000, rate(1, 1));
-        assert_eq!(tip, 50);
+        let tip = cip64_native_tip(Fc::new(1050), Fc::new(200), Native::new(1000), rate(1, 1));
+        assert_eq!(tip, Native::new(50));
     }
 
     #[test]
@@ -2385,8 +2383,8 @@ mod tests {
         // base_fee_fc = 10 * 1 / 100 = 0 (integer truncation)
         // tip_fc = min(10 - 0, 5) = 5
         // tip_native = 5 * 100 / 1 = 500
-        let tip = cip64_native_tip(10, 5, 10, rate(1, 100));
-        assert_eq!(tip, 500);
+        let tip = cip64_native_tip(Fc::new(10), Fc::new(5), Native::new(10), rate(1, 100));
+        assert_eq!(tip, Native::new(500));
     }
 
     // -----------------------------------------------------------------------
