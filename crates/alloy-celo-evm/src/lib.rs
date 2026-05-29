@@ -175,9 +175,6 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `CeloEvmConfig::builder_for_next_block` — the one entry point reth routes sequencing
     /// through (the payload builder), and which import/derivation deliberately bypass.
     blocklist_enabled: bool,
-    /// Block timestamp of the last eviction call, used to avoid redundant eviction
-    /// on every `transact_raw` call within the same block.
-    last_evicted_timestamp: u64,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -223,7 +220,6 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
             blocklist_enabled: false,
-            last_evicted_timestamp: 0,
         }
     }
 
@@ -299,25 +295,17 @@ where
         // derivation re-execution and RPC. Import and derivation therefore neither read nor write
         // it. (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
         // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
-        let apply_blocklist = self.blocklist_enabled && base_fee_check_enabled;
-
-        // Evict stale blocklist entries using the current block timestamp,
-        // but only once per block to avoid redundant work on every transaction.
-        if apply_blocklist {
-            let block_timestamp: u64 = self.ctx().block.timestamp.to();
-            if block_timestamp != self.last_evicted_timestamp {
-                self.blocklist.evict(block_timestamp);
-                self.last_evicted_timestamp = block_timestamp;
-            }
-        }
-
+        //
         // NOTE: blocklist *rejection* is intentionally NOT performed here even on the sequencing
         // path; it is enforced upstream in `CeloFeeCurrencyFilter` (see `celo-reth`'s
         // `payload.rs`). Performing it here would also catch import/derivation EVMs were
         // `blocklist_enabled` ever set on them, letting a node's locally-accumulated
         // blocklist reject a valid canonical block built by another sequencer. Below we
         // only *populate* the blocklist, and only when `apply_blocklist` holds — so import
-        // and derivation neither read nor write it.
+        // and derivation neither read nor write it. Stale-entry eviction also lives upstream
+        // in `CeloPayloadTransactions::best_transactions`, since that is the one place
+        // `is_blocked` is read.
+        let apply_blocklist = self.blocklist_enabled && base_fee_check_enabled;
 
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
             .map_err(map_op_err);
@@ -465,7 +453,6 @@ fn make_test_evm(
         // RPC-simulation test additionally disables the base-fee check, which the
         // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
         blocklist_enabled: true,
-        last_evicted_timestamp: 0,
     }
 }
 
@@ -495,7 +482,6 @@ impl CeloEvmFactory {
             // factory and must not touch the blocklist. Sequencing flips it on via
             // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
             blocklist_enabled: false,
-            last_evicted_timestamp: 0,
         }
     }
 }
@@ -687,47 +673,6 @@ mod tests {
         let result = evm.transact_raw(tx);
         assert!(result.is_err(), "Expected tx to fail");
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
-    }
-
-    /// Block import and derivation re-execute already-canonical blocks and must leave the local
-    /// sequencing blocklist untouched. EVMs created via the factory have `blocklist_enabled`
-    /// off, so `transact_raw` must not evict — a stale entry survives even when the block
-    /// timestamp is well past the eviction window.
-    #[test]
-    fn test_import_mode_does_not_evict_blocklist() {
-        let fc = Address::with_last_byte(0xAA);
-        let blocklist = FeeCurrencyBlocklist::default();
-        blocklist.block_currency(fc, 1000);
-
-        let mut evm = make_test_evm(blocklist.clone());
-        evm.blocklist_enabled = false; // import / derivation EVM
-        // Advance the block far past the eviction window and stay in block-building mode.
-        evm.ctx_mut().block.timestamp = U256::from(1000 + 100_000);
-        evm.ctx_mut().block.basefee = 1_000_000_000;
-
-        let _ = evm.transact_raw(make_cip64_tx(fc));
-
-        assert!(
-            blocklist.is_blocked(fc),
-            "import-mode EVM must not evict (or otherwise mutate) the blocklist"
-        );
-    }
-
-    /// The sequencing path enables the blocklist, so `transact_raw` evicts stale entries using
-    /// the current block timestamp. Counterpart to `test_import_mode_does_not_evict_blocklist`.
-    #[test]
-    fn test_sequencing_mode_evicts_stale_blocklist() {
-        let fc = Address::with_last_byte(0xAA);
-        let blocklist = FeeCurrencyBlocklist::default();
-        blocklist.block_currency(fc, 1000);
-
-        let mut evm = make_test_evm(blocklist.clone()); // blocklist_enabled = true
-        evm.ctx_mut().block.timestamp = U256::from(1000 + 100_000);
-        evm.ctx_mut().block.basefee = 1_000_000_000;
-
-        let _ = evm.transact_raw(make_cip64_tx(fc));
-
-        assert!(!blocklist.is_blocked(fc), "sequencing EVM should evict stale blocklist entries");
     }
 
     /// Verify that RPC simulation paths (eth_call / eth_estimateGas / debug_trace*)
