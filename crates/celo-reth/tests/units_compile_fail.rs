@@ -1,8 +1,10 @@
 //! Compile-fail guard for the mixed-denomination defenses of
 //! [`celo_revm::units`]. Without these fixtures, a future contributor could
 //! silently re-open the bug class behind commit `f2b24192` by adding (for
-//! example) `impl Add<Fc> for Native` and the type system would no longer
-//! reject mixing FC-denominated and native-CELO amounts.
+//! example) `impl Add<Fc> for Native` or even a same-denomination
+//! `impl Add for Native` — the latter is deliberately absent so callers
+//! pick a `saturating_*`/`checked_*` method and the overflow policy stays
+//! visible at each use.
 //!
 //! Regenerate expected stderr after a deliberate API change with:
 //! `TRYBUILD=overwrite cargo test -p celo-reth --test units_compile_fail`.

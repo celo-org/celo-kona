@@ -250,10 +250,7 @@ impl Transaction for CeloConsensusTx {
                 (self.cached_native_max_fee, self.cached_native_max_priority_fee)
         {
             let base_fee = Native::new(base_fee as u128);
-            if native_max_fee < base_fee {
-                return None;
-            }
-            let fee = native_max_fee - base_fee;
+            let fee = native_max_fee.checked_sub(base_fee)?;
             return Some(fee.min(native_max_prio).into_inner());
         }
         self.inner.effective_tip_per_gas(base_fee)

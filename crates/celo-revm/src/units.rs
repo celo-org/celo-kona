@@ -24,10 +24,7 @@
 //! adversarial on-chain rates.
 
 use alloy_primitives::U256;
-use core::{
-    fmt::{self, Display},
-    ops::{Add, Sub},
-};
+use core::fmt::{self, Display};
 
 // ---------------------------------------------------------------------------
 // u128-backed newtypes
@@ -117,34 +114,11 @@ impl Display for Fc {
 
 // Intentionally NO `impl From<Native> for u128` (or for `Fc`). Crossing the
 // type boundary must go through `into_inner()` so it stays visible to a reader.
-// Mixed-denomination arithmetic is similarly absent below.
-impl Add for Native {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
-    }
-}
-
-impl Sub for Native {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0 - rhs.0)
-    }
-}
-
-impl Add for Fc {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
-    }
-}
-
-impl Sub for Fc {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0 - rhs.0)
-    }
-}
+//
+// Intentionally NO `impl Add`/`impl Sub`. Inheriting `u128`'s panic-on-overflow
+// arithmetic at a controlled-boundary type is the wrong default — every actual
+// call site uses `saturating_*` or `checked_*` anyway. Forcing the explicit
+// form makes the overflow policy visible at each use.
 
 // ---------------------------------------------------------------------------
 // U256-backed newtypes
@@ -187,6 +161,10 @@ impl NativeU256 {
         Native(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self(self.0.saturating_add(other.0))
+    }
+
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
@@ -210,22 +188,12 @@ impl FcU256 {
         Fc(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self(self.0.saturating_add(other.0))
+    }
+
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
-    }
-}
-
-impl Add for NativeU256 {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
-    }
-}
-
-impl Add for FcU256 {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
     }
 }
 
@@ -254,9 +222,10 @@ impl From<Fc> for FcU256 {
 }
 
 // Intentionally NO `From<Native> for FcU256`, no `From<Fc> for NativeU256`,
-// no mixed Add/Sub, and no implicit `From<NativeU256> for U256`. All
+// no operator overloads, and no implicit `From<NativeU256> for U256`. All
 // cross-denomination conversions must go through `ExchangeRate` or the
-// `FeeCurrencyContext` conversion APIs.
+// `FeeCurrencyContext` conversion APIs; arithmetic goes through the
+// `saturating_*`/`checked_*` methods so the overflow policy stays explicit.
 
 #[cfg(test)]
 mod tests {
@@ -304,10 +273,16 @@ mod tests {
 
     #[test]
     fn same_denomination_arithmetic() {
-        assert_eq!(Native::new(2) + Native::new(3), Native::new(5));
-        assert_eq!(Native::new(5) - Native::new(2), Native::new(3));
-        assert_eq!(Fc::new(2) + Fc::new(3), Fc::new(5));
-        assert_eq!(Fc::new(5) - Fc::new(2), Fc::new(3));
+        assert_eq!(
+            Native::new(2).saturating_add(Native::new(3)),
+            Native::new(5)
+        );
+        assert_eq!(
+            Native::new(5).checked_sub(Native::new(2)),
+            Some(Native::new(3))
+        );
+        assert_eq!(Fc::new(2).saturating_add(Fc::new(3)), Fc::new(5));
+        assert_eq!(Fc::new(5).checked_sub(Fc::new(2)), Some(Fc::new(3)));
     }
 
     #[test]

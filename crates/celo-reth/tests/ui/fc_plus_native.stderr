@@ -1,7 +1,13 @@
-error[E0308]: mismatched types
- --> tests/ui/fc_plus_native.rs:4:26
+error[E0369]: cannot add `Native` to `Fc`
+ --> tests/ui/fc_plus_native.rs:4:24
   |
 4 |     let _ = Fc::new(1) + Native::new(2);
-  |             ----------   ^^^^^^^^^^^^^^ expected `Fc`, found `Native`
+  |             ---------- ^ -------------- Native
   |             |
-  |             expected because this is `Fc`
+  |             Fc
+  |
+note: `Fc` does not implement `Add<Native>`
+ --> $WORKSPACE/crates/celo-revm/src/units.rs
+  |
+  | pub struct Fc(u128);
+  | ^^^^^^^^^^^^^ `Fc` is defined in another crate

@@ -966,8 +966,10 @@ impl CeloFeeApi {
                 .ok_or_else(|| rate_overflow_error("maxFeePerGas default"))?;
             let tip_fc =
                 FcU256::new(U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0)));
-            request.as_mut().max_fee_per_gas =
-                Some(fee_default_to_u128((base_fee_fc + tip_fc).into_inner(), "maxFeePerGas")?);
+            request.as_mut().max_fee_per_gas = Some(fee_default_to_u128(
+                base_fee_fc.saturating_add(tip_fc).into_inner(),
+                "maxFeePerGas",
+            )?);
         }
 
         Ok(())
