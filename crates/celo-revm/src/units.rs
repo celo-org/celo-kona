@@ -13,8 +13,10 @@
 //! whose senders had ERC20 but little CELO. The newtypes here make that bug
 //! class a compile error: native and FC values have distinct types, the only
 //! way to cross the boundary is through one of the three conversion APIs
-//! above, and there is no implicit `From<Native> for u128` — boundaries
-//! must be visible via [`Native::into_inner`].
+//! above, and the conversions in and out of the raw integer types are
+//! explicit ([`Native::new`] / [`Native::into_inner`] and the analogous
+//! `Fc` / `NativeU256` / `FcU256` constructors) — no `From<u128>` /
+//! `From<U256>` impl picks a denomination by inferred type.
 //!
 //! Two width-flavors per denomination exist because the pool layer is
 //! `u128`-native (hot-path trait methods return `u128`) and the RPC / EVM
@@ -96,18 +98,6 @@ impl Fc {
             Some(v) => Some(Self(v)),
             None => None,
         }
-    }
-}
-
-impl From<u128> for Native {
-    fn from(v: u128) -> Self {
-        Self(v)
-    }
-}
-
-impl From<u128> for Fc {
-    fn from(v: u128) -> Self {
-        Self(v)
     }
 }
 
@@ -236,18 +226,6 @@ impl Add for FcU256 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
         Self(self.0 + rhs.0)
-    }
-}
-
-impl From<U256> for NativeU256 {
-    fn from(v: U256) -> Self {
-        Self(v)
-    }
-}
-
-impl From<U256> for FcU256 {
-    fn from(v: U256) -> Self {
-        Self(v)
     }
 }
 
