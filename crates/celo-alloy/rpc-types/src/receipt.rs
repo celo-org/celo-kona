@@ -153,6 +153,177 @@ impl From<CeloTransactionReceipt> for CeloReceiptEnvelope<alloy_primitives::Log>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::{Eip658Value, Receipt};
+    use alloy_primitives::{Bloom, address, b256};
+
+    // Golden-byte JSON tests for receipt variants. Same rationale as the tx-side
+    // tests: `serde_json::to_value` round-trips dedupe duplicate keys and miss
+    // omitted-required-field regressions. The deposit-receipt golden directly locks
+    // the wire shape that 0d5324d7's tx-side counterpart depends on
+    // (`depositNonce` + `depositReceiptVersion`).
+    //
+    // Eip2930 and Eip7702 receipts are structurally identical to Eip1559 (same
+    // inner `Receipt<Log>` shape), so we don't add separate goldens for them — the
+    // Eip1559 fixture is the load-bearing case.
+
+    fn sample_block_hash() -> alloy_primitives::B256 {
+        b256!("0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67")
+    }
+    fn sample_tx_hash() -> alloy_primitives::B256 {
+        b256!("0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9")
+    }
+    fn sample_from() -> alloy_primitives::Address {
+        address!("0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3")
+    }
+    fn sample_to() -> alloy_primitives::Address {
+        address!("0x00000000000000000000000000000000deadbeef")
+    }
+
+    fn empty_receipt() -> Receipt<alloy_rpc_types_eth::Log> {
+        Receipt { status: Eip658Value::Eip658(true), cumulative_gas_used: 0xfa0d, logs: vec![] }
+    }
+
+    fn wrap_inner(inner: CeloReceiptEnvelope<alloy_rpc_types_eth::Log>) -> CeloTransactionReceipt {
+        CeloTransactionReceipt {
+            inner: alloy_rpc_types_eth::TransactionReceipt {
+                inner,
+                transaction_hash: sample_tx_hash(),
+                transaction_index: Some(0),
+                block_hash: Some(sample_block_hash()),
+                block_number: Some(0x6cfef89),
+                gas_used: 0xfa0d,
+                effective_gas_price: 0,
+                blob_gas_used: None,
+                blob_gas_price: None,
+                from: sample_from(),
+                to: Some(sample_to()),
+                contract_address: None,
+            },
+            l1_block_info: L1BlockInfo::default(),
+            base_fee: None,
+        }
+    }
+
+    fn fx_receipt_legacy() -> CeloTransactionReceipt {
+        wrap_inner(CeloReceiptEnvelope::Legacy(ReceiptWithBloom {
+            receipt: empty_receipt(),
+            logs_bloom: Bloom::default(),
+        }))
+    }
+
+    fn fx_receipt_eip1559() -> CeloTransactionReceipt {
+        wrap_inner(CeloReceiptEnvelope::Eip1559(ReceiptWithBloom {
+            receipt: empty_receipt(),
+            logs_bloom: Bloom::default(),
+        }))
+    }
+
+    fn fx_receipt_cip64() -> CeloTransactionReceipt {
+        let mut r = wrap_inner(CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+            receipt: CeloCip64Receipt { inner: empty_receipt(), base_fee: Some(0x22a4c71a0) },
+            logs_bloom: Bloom::default(),
+        }));
+        // Surface the FC-denominated base fee at the top of the RPC receipt — this is
+        // the field that distinguishes a CIP-64 receipt for clients.
+        r.base_fee = Some(0x22a4c71a0);
+        r
+    }
+
+    const DEPOSIT_RECEIPT_POST_CANYON_INPUT: &str = r#"{
+        "blockHash": "0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67",
+        "blockNumber": "0x6cfef89",
+        "contractAddress": null,
+        "cumulativeGasUsed": "0xfa0d",
+        "depositNonce": "0x8a2d11",
+        "effectiveGasPrice": "0x0",
+        "from": "0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001",
+        "gasUsed": "0xfa0d",
+        "logs": [],
+        "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "status": "0x1",
+        "to": "0x4200000000000000000000000000000000000015",
+        "transactionHash": "0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9",
+        "transactionIndex": "0x0",
+        "type": "0x7e",
+        "l1GasPrice": "0x3ef12787",
+        "l1GasUsed": "0x1177",
+        "l1Fee": "0x5bf1ab43d",
+        "l1BaseFeeScalar": "0x1",
+        "l1BlobBaseFee": "0x600ab8f05e64",
+        "l1BlobBaseFeeScalar": "0x1"
+    }"#;
+
+    fn fx_receipt_deposit_post_canyon() -> CeloTransactionReceipt {
+        serde_json::from_str(DEPOSIT_RECEIPT_POST_CANYON_INPUT).unwrap()
+    }
+
+    fn fx_receipt_deposit_pre_canyon() -> CeloTransactionReceipt {
+        wrap_inner(CeloReceiptEnvelope::Deposit(OpDepositReceiptWithBloom {
+            receipt: OpDepositReceipt {
+                inner: empty_receipt(),
+                deposit_nonce: Some(0x8a2d11),
+                deposit_receipt_version: None,
+            },
+            logs_bloom: Bloom::default(),
+        }))
+    }
+
+    #[test]
+    fn golden_legacy_receipt() {
+        let expected = r#"{"type":"0x0","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null}"#;
+        assert_eq!(serde_json::to_string(&fx_receipt_legacy()).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_eip1559_receipt() {
+        let expected = r#"{"type":"0x2","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null}"#;
+        assert_eq!(serde_json::to_string(&fx_receipt_eip1559()).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_cip64_receipt() {
+        let expected = r#"{"type":"0x7b","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"baseFee":"0x22a4c71a0","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null,"baseFee":"0x22a4c71a0"}"#;
+        assert_eq!(serde_json::to_string(&fx_receipt_cip64()).unwrap(), expected);
+    }
+
+    // Regression lock for 0d5324d7's receipt-side counterpart: deposit RPC receipts
+    // must carry `depositNonce` and `depositReceiptVersion`.
+    #[test]
+    fn golden_deposit_receipt_post_canyon() {
+        let expected = r#"{"type":"0x7e","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"depositNonce":"0x8a2d11","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001","to":"0x4200000000000000000000000000000000000015","contractAddress":null,"l1GasPrice":"0x3ef12787","l1GasUsed":"0x1177","l1Fee":"0x5bf1ab43d","l1BaseFeeScalar":"0x1","l1BlobBaseFee":"0x600ab8f05e64","l1BlobBaseFeeScalar":"0x1"}"#;
+        assert_eq!(serde_json::to_string(&fx_receipt_deposit_post_canyon()).unwrap(), expected);
+    }
+
+    // Pre-canyon: `depositReceiptVersion` is None and must be omitted entirely.
+    #[test]
+    fn golden_deposit_receipt_pre_canyon() {
+        let expected = r#"{"type":"0x7e","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"depositNonce":"0x8a2d11","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null}"#;
+        assert_eq!(serde_json::to_string(&fx_receipt_deposit_pre_canyon()).unwrap(), expected);
+    }
+
+    // Maintainer utility: regenerate golden receipt literals when struct field order
+    // changes. Run with `cargo test -p celo-alloy-rpc-types _regenerate_receipt_goldens
+    // -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "generator: re-emit golden receipt literals when struct order changes"]
+    fn _regenerate_receipt_goldens() {
+        for (name, json) in [
+            ("legacy", serde_json::to_string(&fx_receipt_legacy()).unwrap()),
+            ("eip1559", serde_json::to_string(&fx_receipt_eip1559()).unwrap()),
+            ("cip64", serde_json::to_string(&fx_receipt_cip64()).unwrap()),
+            (
+                "deposit_post_canyon",
+                serde_json::to_string(&fx_receipt_deposit_post_canyon()).unwrap(),
+            ),
+            (
+                "deposit_pre_canyon",
+                serde_json::to_string(&fx_receipt_deposit_pre_canyon()).unwrap(),
+            ),
+        ] {
+            eprintln!("GOLDEN[{name}]: {json}");
+        }
+        panic!("regenerator only — copy GOLDEN[...] lines into each golden_*_receipt test literal");
+    }
 
     // <https://github.com/alloy-rs/op-alloy/issues/18>
     #[test]
