@@ -8,6 +8,7 @@ use crate::{
     primitives::{CeloPrimitives, CeloTransactionSigned},
     receipt::CeloReceipt,
     signed_tx::CeloConsensusTx,
+    units::{FcU256, NativeU256},
 };
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_eips::Encodable2718;
@@ -938,10 +939,10 @@ impl CeloFeeApi {
 
         // Fill priority fee if missing: native tip → fee-currency tip.
         if request.as_ref().max_priority_fee_per_gas.is_none() {
-            let native_tip = (self.priority_fee)().await?;
-            let tip_fc = scale_by_rate(native_tip, num, denom)
+            let native_tip = NativeU256::new((self.priority_fee)().await?);
+            let tip_fc = scale_to_fc(native_tip, num, denom)
                 .ok_or_else(|| rate_overflow_error("maxPriorityFeePerGas default"))?;
-            let mut tip = fee_default_to_u128(tip_fc, "maxPriorityFeePerGas")?;
+            let mut tip = fee_default_to_u128(tip_fc.into_inner(), "maxPriorityFeePerGas")?;
             // Clamp to a caller-provided max fee so the suggested tip never
             // makes the request invalid (priority > max fee).
             if let Some(max_fee) = request.as_ref().max_fee_per_gas {
@@ -958,11 +959,12 @@ impl CeloFeeApi {
             let block =
                 (self.block_by_number)(alloy_rpc_types_eth::BlockNumberOrTag::Latest).await?;
             let native_base_fee = block.and_then(|b| b.header.base_fee_per_gas).unwrap_or_default();
-            let base_fee_fc = scale_by_rate(U256::from(native_base_fee), num, denom)
+            let base_fee_fc = scale_to_fc(NativeU256::new(U256::from(native_base_fee)), num, denom)
                 .ok_or_else(|| rate_overflow_error("maxFeePerGas default"))?;
-            let tip_fc = U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0));
+            let tip_fc =
+                FcU256::new(U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0)));
             request.as_mut().max_fee_per_gas =
-                Some(fee_default_to_u128(base_fee_fc + tip_fc, "maxFeePerGas")?);
+                Some(fee_default_to_u128((base_fee_fc + tip_fc).into_inner(), "maxFeePerGas")?);
         }
 
         Ok(())
@@ -990,8 +992,30 @@ fn fee_default_to_u128(
 /// can surface either an RPC error or a degenerate-rate fallback as
 /// appropriate — `num` is bounded only by `U256::MAX`, so unchecked `*` can
 /// panic on adversarial on-chain rates.
+///
+/// Untyped backbone for [`scale_to_fc`] / [`scale_to_native`] — direct callers
+/// should prefer the typed wrappers so the denomination of each argument is
+/// checked at compile time.
 fn scale_by_rate(base: U256, num: U256, denom: U256) -> Option<U256> {
     base.checked_mul(num).map(|v| v / denom)
+}
+
+/// Convert a native-CELO amount to its fee-currency equivalent at the given
+/// rate. Returns `None` on overflow.
+///
+/// The rate is passed as `(num, denom)` matching the on-chain
+/// `getExchangeRate` ABI; `to_fc` multiplies by `num` and divides by `denom`.
+fn scale_to_fc(native: NativeU256, num: U256, denom: U256) -> Option<FcU256> {
+    scale_by_rate(native.into_inner(), num, denom).map(FcU256::new)
+}
+
+/// Convert a fee-currency amount to its native-CELO equivalent at the given
+/// rate. Returns `None` on overflow.
+///
+/// Note: the rate orientation is inverted relative to [`scale_to_fc`] —
+/// `to_native` multiplies by `denom` and divides by `num`.
+fn scale_to_native(fc: FcU256, num: U256, denom: U256) -> Option<NativeU256> {
+    scale_by_rate(fc.into_inner(), denom, num).map(NativeU256::new)
 }
 
 fn rate_overflow_error(method: &'static str) -> jsonrpsee_types::ErrorObjectOwned {
@@ -1027,7 +1051,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    scale_by_rate(base_price, num, denom)
+                    scale_to_fc(NativeU256::new(base_price), num, denom)
+                        .map(FcU256::into_inner)
                         .ok_or_else(|| rate_overflow_error("eth_gasPrice"))
                 }
                 None => Ok(base_price),
@@ -1042,7 +1067,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
                     let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    scale_by_rate(base_tip, num, denom)
+                    scale_to_fc(NativeU256::new(base_tip), num, denom)
+                        .map(FcU256::into_inner)
                         .ok_or_else(|| rate_overflow_error("eth_maxPriorityFeePerGas"))
                 }
                 None => Ok(base_tip),
@@ -1111,18 +1137,21 @@ pub(crate) fn cip64_native_tip(
     if rate_num.is_zero() || rate_denom.is_zero() {
         return 0;
     }
-    let Some(base_fee_fc) = scale_by_rate(U256::from(base_fee_native), rate_num, rate_denom) else {
+    let Some(base_fee_fc) =
+        scale_to_fc(NativeU256::new(U256::from(base_fee_native)), rate_num, rate_denom)
+    else {
         return 0;
     };
-    let tip_fc =
-        U256::from(max_fee_fc).saturating_sub(base_fee_fc).min(U256::from(priority_fee_fc));
-    let Some(native_tip) = scale_by_rate(tip_fc, rate_denom, rate_num) else {
+    let max_fee_fc = FcU256::new(U256::from(max_fee_fc));
+    let priority_fee_fc = FcU256::new(U256::from(priority_fee_fc));
+    let tip_fc = max_fee_fc.saturating_sub(base_fee_fc).min(priority_fee_fc);
+    let Some(native_tip) = scale_to_native(tip_fc, rate_num, rate_denom) else {
         return 0;
     };
-    native_tip.try_into().unwrap_or_else(|_| {
+    u128::try_from(native_tip.into_inner()).unwrap_or_else(|_| {
         tracing::warn!(
             target: "celo::rpc",
-            %native_tip,
+            native_tip = %native_tip.into_inner(),
             "CIP-64 native tip exceeds u128::MAX, clamping"
         );
         u128::MAX
@@ -1518,6 +1547,33 @@ pub fn celo_admin_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `scale_to_fc` followed by `scale_to_native` round-trips lossily through
+    /// integer division but stays within `denom/num + 1` of the original. This
+    /// confirms the typed wrappers compose correctly — the bug we are guarding
+    /// against is direction confusion (passing `(num, denom)` swapped between
+    /// the two), which would produce wildly off-by-orders-of-magnitude values.
+    #[test]
+    fn scale_to_fc_then_native_roundtrips_within_precision() {
+        let num = U256::from(3u64);
+        let denom = U256::from(1000u64);
+        let original = NativeU256::new(U256::from(1_000_000u64));
+        let fc = scale_to_fc(original, num, denom).expect("no overflow");
+        let back = scale_to_native(fc, num, denom).expect("no overflow");
+        // back is at most `denom/num + 1` below original due to integer division.
+        assert!(back.into_inner() <= original.into_inner());
+        let max_loss = denom / num + U256::from(1u64);
+        assert!(original.into_inner() - back.into_inner() < max_loss);
+    }
+
+    #[test]
+    fn scale_to_fc_returns_none_on_overflow() {
+        // base * num overflows U256.
+        let base = NativeU256::new(U256::MAX);
+        let num = U256::from(2u64);
+        let denom = U256::from(1u64);
+        assert!(scale_to_fc(base, num, denom).is_none());
+    }
 
     #[test]
     fn serde_roundtrip_with_fee_currency() {

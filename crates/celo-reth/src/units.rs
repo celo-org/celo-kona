@@ -184,6 +184,11 @@ impl NativeU256 {
     pub fn saturating_to_u128(self) -> Native {
         Native(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
+
+    /// Saturating subtraction. Both operands are native-CELO; result is native-CELO.
+    pub const fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
+    }
 }
 
 impl FcU256 {
@@ -205,6 +210,29 @@ impl FcU256 {
     /// Narrow to an [`Fc`], saturating at `u128::MAX` on overflow.
     pub fn saturating_to_u128(self) -> Fc {
         Fc(u128::try_from(self.0).unwrap_or(u128::MAX))
+    }
+
+    /// Saturating subtraction. Both operands are FC; result is FC.
+    pub const fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
+    }
+}
+
+// Same-denomination addition for U256-backed types. Used by the RPC layer to
+// combine an FC-denominated base fee and an FC-denominated tip into a max-fee
+// default (and similarly for native-denominated sums). Mixed-denomination
+// addition is deliberately absent.
+impl Add for NativeU256 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(self.0 + rhs.0)
+    }
+}
+
+impl Add for FcU256 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(self.0 + rhs.0)
     }
 }
 
