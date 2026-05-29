@@ -1,16 +1,11 @@
-//! Compile-fail regression guard for the [`celo_reth::units`] safety property.
+//! Compile-fail guard for the mixed-denomination defenses of
+//! [`celo_revm::units`]. Without these fixtures, a future contributor could
+//! silently re-open the bug class behind commit `f2b24192` by adding (for
+//! example) `impl Add<Fc> for Native` and the type system would no longer
+//! reject mixing FC-denominated and native-CELO amounts.
 //!
-//! These fixtures pin the mixed-denomination defenses that the rest of the
-//! refactor (PRs 2–5) relies on. Without them, a future contributor could
-//! silently re-open the f2b24192 bug class by adding (for example)
-//! `impl Add<Fc> for Native`, and the type system would no longer reject
-//! mixing FC-denominated and native-CELO amounts.
-//!
-//! Regenerate expected stderr files (after a deliberate API change) with:
-//!
-//! ```text
-//! TRYBUILD=overwrite cargo test -p celo-reth --test units_compile_fail
-//! ```
+//! Regenerate expected stderr after a deliberate API change with:
+//! `TRYBUILD=overwrite cargo test -p celo-reth --test units_compile_fail`.
 
 #[test]
 fn units_compile_fail() {

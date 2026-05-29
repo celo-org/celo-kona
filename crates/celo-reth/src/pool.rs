@@ -179,15 +179,10 @@ pub struct CeloPoolTx {
     /// Native-equivalent max_fee_per_gas.
     ///
     /// For non-CIP-64 txs: same as `inner.max_fee_per_gas()`.
-    /// For CIP-64 txs: initially holds the FC-denominated value re-tagged as native
-    /// (it has not yet been converted); [`Self::apply_exchange_rate`] later writes
-    /// the actual native-equivalent.
+    /// For CIP-64 txs: FC-denominated until [`Self::apply_exchange_rate`] runs.
     native_max_fee_per_gas: Native,
-    /// Native-equivalent max_priority_fee_per_gas.
-    ///
-    /// For non-CIP-64 txs: same as `inner.max_priority_fee_per_gas()`.
-    /// For CIP-64 txs: same staging semantics as
-    /// [`Self::native_max_fee_per_gas`].
+    /// Native-equivalent max_priority_fee_per_gas. Same FC-denominated-until-conversion
+    /// semantics for CIP-64 as [`Self::native_max_fee_per_gas`].
     native_max_priority_fee_per_gas: Option<Native>,
     /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
     fee_currency: Option<Address>,
@@ -951,13 +946,10 @@ fn apply_exchange_rates_to_valid_tx(
         let max_priority_fee_fc: Option<Fc> = tx.inner.max_priority_fee_per_gas().map(Fc::new);
 
         // Look up exchange rate, check ERC20 balance, and simulate debit
-        // in a single EVM instance.
-        //
-        // `required_fc` threads through `FcLookup::lookup_rate_and_balance`,
-        // `CeloPoolRejection::InsufficientBalance`, and the cumulative-cost map,
-        // all of which speak raw `U256`. Constructed from FC values via
-        // saturating_mul and named with the `_fc` suffix for the type-system
-        // boundary it can't reach.
+        // in a single EVM instance. `required_fc` stays as raw U256 because
+        // FcLookup::lookup_rate_and_balance, CeloPoolRejection::InsufficientBalance,
+        // and the cumulative-cost map all speak U256 — the `_fc` suffix is the only
+        // denomination marker the type system can't reach.
         let required_fc =
             U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc.into_inner()));
         let sender = tx.sender();
@@ -1111,25 +1103,19 @@ fn apply_exchange_rates_to_valid_tx(
     if let Some(cap) = tx_fee_cap &&
         cap > 0
     {
-        // tx.max_fee_per_gas() is already native-equivalent after apply_exchange_rate
-        // (its CeloPoolTx field is `Native`); we widen to U256 only to multiply gas_limit
-        // without overflow.
+        // Widen to U256 only to multiply gas_limit without overflow.
         let fee_cost = NativeU256::new(
             U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas())),
         );
-        let max_tx_fee_wei = u128::try_from(fee_cost.into_inner()).map_or_else(
-            |_| {
-                tracing::warn!(
-                    target: "celo::pool",
-                    %fee_cost,
-                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
-                );
-                Native::new(u128::MAX)
-            },
-            Native::new,
-        );
-        let cap_native = Native::new(cap);
-        if max_tx_fee_wei > cap_native {
+        let max_tx_fee_wei = fee_cost.saturating_to_u128();
+        if fee_cost.into_inner() > U256::from(u128::MAX) {
+            tracing::warn!(
+                target: "celo::pool",
+                %fee_cost,
+                "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+            );
+        }
+        if max_tx_fee_wei > Native::new(cap) {
             if tx.fee_currency().is_some() {
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             }

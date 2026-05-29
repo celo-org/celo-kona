@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `Native: From<Fc>` is not satisfied
- --> tests/ui/native_from_fc.rs:6:32
+ --> tests/ui/native_from_fc.rs:4:32
   |
-6 |     let _: Native = Fc::new(1).into();
+4 |     let _: Native = Fc::new(1).into();
   |                                ^^^^ the trait `From<Fc>` is not implemented for `Native`
   |
 help: the trait `From<Fc>` is not implemented for `Native`

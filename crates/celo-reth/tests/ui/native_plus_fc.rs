@@ -1,4 +1,3 @@
-// Mixing native-CELO and fee-currency amounts under `+` must not compile.
 use celo_revm::units::{Fc, Native};
 
 fn main() {

@@ -3,32 +3,23 @@
 //! CIP-64 ("fee abstraction") lets users pay gas in an ERC20 fee currency
 //! ("FC") rather than native CELO. Three layers convert between
 //! FC-denominated and native-CELO-denominated amounts using the on-chain
-//! exchange rate:
-//!
-//! - [`FeeCurrencyContext`](crate::fee_currency_context::FeeCurrencyContext)
-//!   in the EVM handler (consensus-level, during tx execution).
-//! - `ExchangeRate` in the celo-reth pool validator (mempool admission).
-//! - `scale_to_fc` / `scale_to_native` in the celo-reth RPC layer
-//!   (`eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`).
+//! exchange rate: [`FeeCurrencyContext`](crate::fee_currency_context::FeeCurrencyContext)
+//! in the EVM handler, `ExchangeRate` in the celo-reth pool validator, and
+//! `scale_to_fc` / `scale_to_native` in the celo-reth RPC layer.
 //!
 //! Mixing the two denominations is a recurring bug class — most prominently
-//! commit `f2b24192` ("don't include FC-denominated gas in CIP-64
-//! native_cost after rate conversion"), where an FC-denominated gas cost was
-//! added to a native-CELO balance check and falsely demoted valid CIP-64
-//! transactions whose senders had ERC20 but little CELO.
-//!
-//! The newtypes in this module make that bug class a compile error: native
-//! and FC values have distinct types, the only way to cross the boundary is
-//! through one of the three conversion APIs above, and there is no implicit
-//! `From<Native> for u128` — boundaries must be visible via
-//! [`Native::into_inner`].
+//! commit `f2b24192`, where an FC-denominated gas cost was added to a
+//! native-CELO balance check and falsely rejected valid CIP-64 transactions
+//! whose senders had ERC20 but little CELO. The newtypes here make that bug
+//! class a compile error: native and FC values have distinct types, the only
+//! way to cross the boundary is through one of the three conversion APIs
+//! above, and there is no implicit `From<Native> for u128` — boundaries
+//! must be visible via [`Native::into_inner`].
 //!
 //! Two width-flavors per denomination exist because the pool layer is
 //! `u128`-native (hot-path trait methods return `u128`) and the RPC / EVM
-//! handler layers are `U256`-native (rate scaling needs `checked_mul` on
-//! `U256` to avoid overflow on adversarial on-chain rates). Forcing one
-//! width across all layers would either lose per-call performance or lose
-//! overflow safety.
+//! handler layers need `U256` `checked_mul` to be overflow-safe against
+//! adversarial on-chain rates.
 
 use alloy_primitives::U256;
 use core::{
@@ -45,6 +36,7 @@ use core::{
 /// Used in the pool layer where the hot-path `alloy_consensus::Transaction`
 /// trait returns `u128`. For wider amounts (e.g. RPC-layer rate scaling),
 /// use [`NativeU256`].
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Native(u128);
 
@@ -53,34 +45,27 @@ pub struct Native(u128);
 /// "Fee currency" is the per-transaction ERC20 token nominated by a CIP-64
 /// `fee_currency` field; the amount is in the token's smallest unit. For
 /// wider amounts (e.g. RPC-layer rate scaling), use [`FcU256`].
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fc(u128);
 
 impl Native {
-    /// Construct from a raw `u128` already known to be native-CELO denominated.
     pub const fn new(v: u128) -> Self {
         Self(v)
     }
 
-    /// Unwrap to the raw `u128` value.
-    ///
-    /// Use at trait boundaries (e.g. `Transaction::max_fee_per_gas`) where
-    /// the outer signature is in terms of `u128`.
     pub const fn into_inner(self) -> u128 {
         self.0
     }
 
-    /// Saturating addition. Both operands are native-CELO; result is native-CELO.
     pub const fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
     }
 
-    /// Saturating subtraction. Both operands are native-CELO; result is native-CELO.
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 
-    /// Checked subtraction. Returns `None` on underflow.
     pub const fn checked_sub(self, other: Self) -> Option<Self> {
         match self.0.checked_sub(other.0) {
             Some(v) => Some(Self(v)),
@@ -90,27 +75,22 @@ impl Native {
 }
 
 impl Fc {
-    /// Construct from a raw `u128` already known to be FC-denominated.
     pub const fn new(v: u128) -> Self {
         Self(v)
     }
 
-    /// Unwrap to the raw `u128` value.
     pub const fn into_inner(self) -> u128 {
         self.0
     }
 
-    /// Saturating addition. Both operands are FC; result is FC.
     pub const fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
     }
 
-    /// Saturating subtraction. Both operands are FC; result is FC.
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 
-    /// Checked subtraction. Returns `None` on underflow.
     pub const fn checked_sub(self, other: Self) -> Option<Self> {
         match self.0.checked_sub(other.0) {
             Some(v) => Some(Self(v)),
@@ -131,9 +111,8 @@ impl From<u128> for Fc {
     }
 }
 
-// Display delegates to the inner value so that tracing fields written as
-// `%native` or `%fc` log a bare number (matching what the raw `u128` would
-// have produced), not `Native(123)`.
+// Display delegates to the inner value so tracing fields written as `%native`
+// or `%fc` log a bare number, matching the pre-newtype output.
 impl Display for Native {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.0, f)
@@ -146,12 +125,9 @@ impl Display for Fc {
     }
 }
 
-// Note: there is intentionally NO `impl From<Native> for u128` (or for `Fc`).
-// Crossing the type boundary must go through `into_inner()` so it stays
-// visible to a reader of the code.
-
-// Same-denomination arithmetic. Mixed-denomination arithmetic is
-// deliberately absent — that's the whole point of the type system here.
+// Intentionally NO `impl From<Native> for u128` (or for `Fc`). Crossing the
+// type boundary must go through `into_inner()` so it stays visible to a reader.
+// Mixed-denomination arithmetic is similarly absent below.
 impl Add for Native {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
@@ -189,20 +165,20 @@ impl Sub for Fc {
 /// Used in the RPC layer where rate-scaling needs `checked_mul` on `U256`
 /// to avoid overflow on adversarial on-chain rates. For hot-path pool
 /// trait values, use [`Native`].
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeU256(U256);
 
 /// A fee-currency-denominated amount, `U256`-backed.
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FcU256(U256);
 
 impl NativeU256 {
-    /// Construct from a raw `U256` already known to be native-CELO denominated.
     pub const fn new(v: U256) -> Self {
         Self(v)
     }
 
-    /// Unwrap to the raw `U256` value.
     pub const fn into_inner(self) -> U256 {
         self.0
     }
@@ -221,24 +197,20 @@ impl NativeU256 {
         Native(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
-    /// Saturating subtraction. Both operands are native-CELO; result is native-CELO.
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 }
 
 impl FcU256 {
-    /// Construct from a raw `U256` already known to be FC-denominated.
     pub const fn new(v: U256) -> Self {
         Self(v)
     }
 
-    /// Unwrap to the raw `U256` value.
     pub const fn into_inner(self) -> U256 {
         self.0
     }
 
-    /// Borrow the raw `U256` value.
     pub const fn as_u256(&self) -> &U256 {
         &self.0
     }
@@ -248,16 +220,11 @@ impl FcU256 {
         Fc(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
-    /// Saturating subtraction. Both operands are FC; result is FC.
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 }
 
-// Same-denomination addition for U256-backed types. Used by the RPC layer to
-// combine an FC-denominated base fee and an FC-denominated tip into a max-fee
-// default (and similarly for native-denominated sums). Mixed-denomination
-// addition is deliberately absent.
 impl Add for NativeU256 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
@@ -296,7 +263,6 @@ impl Display for FcU256 {
     }
 }
 
-// Widening (lossless): u128-backed → U256-backed within the same denomination.
 impl From<Native> for NativeU256 {
     fn from(v: Native) -> Self {
         Self(U256::from(v.0))
@@ -309,10 +275,10 @@ impl From<Fc> for FcU256 {
     }
 }
 
-// Note: there is intentionally NO `From<Native> for FcU256`, no
-// `From<Fc> for NativeU256`, no mixed Add/Sub, and no implicit
-// `From<NativeU256> for U256`. All cross-denomination conversions must
-// go through [`crate::pool::ExchangeRate`].
+// Intentionally NO `From<Native> for FcU256`, no `From<Fc> for NativeU256`,
+// no mixed Add/Sub, and no implicit `From<NativeU256> for U256`. All
+// cross-denomination conversions must go through `ExchangeRate` or the
+// `FeeCurrencyContext` conversion APIs.
 
 #[cfg(test)]
 mod tests {

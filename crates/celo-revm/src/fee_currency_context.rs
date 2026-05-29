@@ -95,11 +95,10 @@ impl FeeCurrencyContext {
     /// Convert a native-CELO amount to its fee-currency equivalent at the
     /// rate registered for `currency`.
     ///
-    /// When `currency` is `None` or `Address::ZERO` the amount is treated as
-    /// native CELO (the wire-level sentinel for "no fee currency"); the
-    /// `FcU256` returned wraps the same numeric value to keep the return
-    /// shape uniform. Callers in that branch should know to read it back as
-    /// native via `saturating_to_u128()` / `.into_inner()`.
+    /// When `currency` is `None` or `Address::ZERO` the input is treated as
+    /// native CELO and wrapped unchanged in `FcU256` to keep the return shape
+    /// uniform — callers on that branch must know they're reading a native
+    /// value back out, since the type tag is no longer load-bearing there.
     pub fn celo_to_currency(
         &self,
         currency: Option<Address>,
@@ -118,8 +117,8 @@ impl FeeCurrencyContext {
         }
     }
 
-    /// Convert a fee-currency amount to its native-CELO equivalent. The
-    /// no-currency / zero-address branch mirrors [`Self::celo_to_currency`].
+    /// Convert a fee-currency amount to its native-CELO equivalent. Same
+    /// no-currency / zero-address passthrough as [`Self::celo_to_currency`].
     pub fn currency_to_celo(
         &self,
         currency: Option<Address>,
