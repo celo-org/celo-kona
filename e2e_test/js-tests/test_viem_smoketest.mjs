@@ -23,6 +23,7 @@ const REQUIRED_TX_FIELDS_BY_TYPE = {
 	legacy: ["chainId", "gasPrice"],
 	eip2930: ["chainId", "gasPrice", "accessList"],
 	eip1559: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList"],
+	eip7702: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList", "authorizationList"],
 	cip64: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList", "feeCurrency"],
 };
 const REQUIRED_RECEIPT_FIELDS_COMMON = [
@@ -115,5 +116,28 @@ async function sendTypedCreateTransaction(type, feeCurrency) {
 			const contract = await sendTypedSmartContractTransaction(type, feeCurrency);
 			await check(contract, {type, feeCurrency}, {l1Fee});
 		});
+	});
+});
+
+// EIP-7702 has a different send shape (no plain transfer template — it needs
+// an authorizationList and cannot be a contract-create), so it gets its own
+// describe block rather than joining the iteration above. Skipping its
+// require-fields schema would miss the `authorizationList` regression class.
+describe("viem smoke test, tx type eip7702", () => {
+	let l1Fee = 0n;
+	it("send tx with authorization", async () => {
+		// Delegate to a fixed non-contract address; viem signs the authorization
+		// over the account itself, no on-chain code is required to exist there.
+		const authorization = await walletClient.signAuthorization({
+			contractAddress: "0x00000000000000000000000000000000DeaDBeef",
+			executor: "self",
+		});
+		const send = await walletClient.sendTransaction({
+			to: "0x00000000000000000000000000000000DeaDBeef",
+			value: 1,
+			type: "eip7702",
+			authorizationList: [authorization],
+		});
+		await check(send, {type: "eip7702"}, {l1Fee});
 	});
 });
