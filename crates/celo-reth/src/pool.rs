@@ -1107,14 +1107,17 @@ fn apply_exchange_rates_to_valid_tx(
         let fee_cost = NativeU256::new(
             U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas())),
         );
-        let max_tx_fee_wei = fee_cost.saturating_to_u128();
-        if fee_cost.into_inner() > U256::from(u128::MAX) {
-            tracing::warn!(
-                target: "celo::pool",
-                %fee_cost,
-                "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
-            );
-        }
+        let max_tx_fee_wei = u128::try_from(fee_cost.into_inner()).map_or_else(
+            |_| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %fee_cost,
+                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+                );
+                Native::new(u128::MAX)
+            },
+            Native::new,
+        );
         if max_tx_fee_wei > Native::new(cap) {
             if tx.fee_currency().is_some() {
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
