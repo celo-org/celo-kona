@@ -857,15 +857,15 @@ const RPC_SERVER_ERROR: i32 = -32000;
 impl CeloFeeApi {
     /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
     ///
-    /// Returns `(numerator, denominator)`. When `block_id` is `None` the rate
-    /// is read from the latest state; pass a specific `BlockId` (used by
-    /// `eth_feeHistory`) to get the rate that was in force at that block —
-    /// rates for `eth_gasPrice` / `eth_maxPriorityFeePerGas` are always latest.
+    /// When `block_id` is `None` the rate is read from the latest state; pass
+    /// a specific `BlockId` (used by `eth_feeHistory`) to get the rate that
+    /// was in force at that block — rates for `eth_gasPrice` /
+    /// `eth_maxPriorityFeePerGas` are always latest.
     async fn exchange_rate(
         &self,
         fee_currency: Address,
         block_id: Option<alloy_eips::BlockId>,
-    ) -> Result<(U256, U256), jsonrpsee_types::ErrorObjectOwned> {
+    ) -> Result<RateU256, jsonrpsee_types::ErrorObjectOwned> {
         use alloy_sol_types::SolCall;
 
         let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
@@ -912,7 +912,7 @@ impl CeloFeeApi {
             ));
         }
 
-        Ok((numerator, denominator))
+        Ok(RateU256 { numerator, denominator })
     }
 
     /// Fill fee defaults for CIP-64 transactions.
@@ -938,12 +938,12 @@ impl CeloFeeApi {
             return Ok(());
         }
 
-        let (num, denom) = self.exchange_rate(fc, None).await?;
+        let rate = self.exchange_rate(fc, None).await?;
 
         // Fill priority fee if missing: native tip → fee-currency tip.
         if request.as_ref().max_priority_fee_per_gas.is_none() {
             let native_tip = NativeU256::new((self.priority_fee)().await?);
-            let tip_fc = scale_to_fc(native_tip, num, denom)
+            let tip_fc = scale_to_fc(native_tip, rate)
                 .ok_or_else(|| rate_overflow_error("maxPriorityFeePerGas default"))?;
             let mut tip = fee_default_to_u128(tip_fc.into_inner(), "maxPriorityFeePerGas")?;
             // Clamp to a caller-provided max fee so the suggested tip never
@@ -962,7 +962,7 @@ impl CeloFeeApi {
             let block =
                 (self.block_by_number)(alloy_rpc_types_eth::BlockNumberOrTag::Latest).await?;
             let native_base_fee = block.and_then(|b| b.header.base_fee_per_gas).unwrap_or_default();
-            let base_fee_fc = scale_to_fc(NativeU256::new(U256::from(native_base_fee)), num, denom)
+            let base_fee_fc = scale_to_fc(NativeU256::new(U256::from(native_base_fee)), rate)
                 .ok_or_else(|| rate_overflow_error("maxFeePerGas default"))?;
             let tip_fc =
                 FcU256::new(U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0)));
@@ -993,34 +993,30 @@ fn fee_default_to_u128(
     })
 }
 
-/// Scale `base` by an exchange rate. Returns `None` on overflow so callers
-/// can surface either an RPC error or a degenerate-rate fallback as
-/// appropriate — `num` is bounded only by `U256::MAX`, so unchecked `*` can
-/// panic on adversarial on-chain rates.
+/// `U256`-precision exchange rate between native CELO and a fee currency.
 ///
-/// Untyped backbone for [`scale_to_fc`] / [`scale_to_native`] — direct callers
-/// should prefer the typed wrappers so the denomination of each argument is
-/// checked at compile time.
-fn scale_by_rate(base: U256, num: U256, denom: U256) -> Option<U256> {
-    base.checked_mul(num).map(|v| v / denom)
+/// Wrapping `(numerator, denominator)` in a struct makes [`scale_to_fc`] and
+/// [`scale_to_native`] take the same parameter shape, so a caller can't
+/// transpose the two components and silently invert the rate — the
+/// orientation is encoded in the field names, not in argument order. Matches
+/// the on-chain `getExchangeRate` ABI: `to_fc` multiplies by `numerator` and
+/// divides by `denominator`; `to_native` does the opposite.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct RateU256 {
+    pub(crate) numerator: U256,
+    pub(crate) denominator: U256,
 }
 
-/// Convert a native-CELO amount to its fee-currency equivalent at the given
-/// rate. Returns `None` on overflow.
-///
-/// The rate is passed as `(num, denom)` matching the on-chain
-/// `getExchangeRate` ABI; `to_fc` multiplies by `num` and divides by `denom`.
-fn scale_to_fc(native: NativeU256, num: U256, denom: U256) -> Option<FcU256> {
-    scale_by_rate(native.into_inner(), num, denom).map(FcU256::new)
+/// Convert a native-CELO amount to its fee-currency equivalent. Returns
+/// `None` if the intermediate `native * numerator` overflows `U256`.
+fn scale_to_fc(native: NativeU256, rate: RateU256) -> Option<FcU256> {
+    native.into_inner().checked_mul(rate.numerator).map(|v| FcU256::new(v / rate.denominator))
 }
 
-/// Convert a fee-currency amount to its native-CELO equivalent at the given
-/// rate. Returns `None` on overflow.
-///
-/// Note: the rate orientation is inverted relative to [`scale_to_fc`] —
-/// `to_native` multiplies by `denom` and divides by `num`.
-fn scale_to_native(fc: FcU256, num: U256, denom: U256) -> Option<NativeU256> {
-    scale_by_rate(fc.into_inner(), denom, num).map(NativeU256::new)
+/// Convert a fee-currency amount to its native-CELO equivalent. Returns
+/// `None` if the intermediate `fc * denominator` overflows `U256`.
+fn scale_to_native(fc: FcU256, rate: RateU256) -> Option<NativeU256> {
+    fc.into_inner().checked_mul(rate.denominator).map(|v| NativeU256::new(v / rate.numerator))
 }
 
 fn rate_overflow_error(method: &'static str) -> jsonrpsee_types::ErrorObjectOwned {
@@ -1055,8 +1051,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             // in the FeeCurrencyDirectory) and error out to the caller.
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
-                    let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    scale_to_fc(NativeU256::new(base_price), num, denom)
+                    let rate = ctx.exchange_rate(fc, None).await?;
+                    scale_to_fc(NativeU256::new(base_price), rate)
                         .map(FcU256::into_inner)
                         .ok_or_else(|| rate_overflow_error("eth_gasPrice"))
                 }
@@ -1071,8 +1067,8 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             let base_tip = (ctx.priority_fee)().await?;
             match fee_currency.filter(|fc| *fc != Address::ZERO) {
                 Some(fc) => {
-                    let (num, denom) = ctx.exchange_rate(fc, None).await?;
-                    scale_to_fc(NativeU256::new(base_tip), num, denom)
+                    let rate = ctx.exchange_rate(fc, None).await?;
+                    scale_to_fc(NativeU256::new(base_tip), rate)
                         .map(FcU256::into_inner)
                         .ok_or_else(|| rate_overflow_error("eth_maxPriorityFeePerGas"))
                 }
@@ -1136,21 +1132,18 @@ pub(crate) fn cip64_native_tip(
     max_fee_fc: u128,
     priority_fee_fc: u128,
     base_fee_native: u64,
-    rate_num: U256,
-    rate_denom: U256,
+    rate: RateU256,
 ) -> u128 {
-    if rate_num.is_zero() || rate_denom.is_zero() {
+    if rate.numerator.is_zero() || rate.denominator.is_zero() {
         return 0;
     }
-    let Some(base_fee_fc) =
-        scale_to_fc(NativeU256::new(U256::from(base_fee_native)), rate_num, rate_denom)
-    else {
+    let Some(base_fee_fc) = scale_to_fc(NativeU256::new(U256::from(base_fee_native)), rate) else {
         return 0;
     };
     let max_fee_fc = FcU256::new(U256::from(max_fee_fc));
     let priority_fee_fc = FcU256::new(U256::from(priority_fee_fc));
     let tip_fc = max_fee_fc.saturating_sub(base_fee_fc).min(priority_fee_fc);
-    let Some(native_tip) = scale_to_native(tip_fc, rate_num, rate_denom) else {
+    let Some(native_tip) = scale_to_native(tip_fc, rate) else {
         return 0;
     };
     u128::try_from(native_tip.into_inner()).unwrap_or_else(|_| {
@@ -1193,11 +1186,11 @@ pub(crate) fn cip64_fee_history_tip(
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
     base_fee_native: u64,
-    rate: Option<(U256, U256)>,
+    rate: Option<RateU256>,
 ) -> u128 {
     match rate {
-        Some((num, denom)) if !num.is_zero() => {
-            cip64_native_tip(max_fee_per_gas, max_priority_fee_per_gas, base_fee_native, num, denom)
+        Some(rate) if !rate.numerator.is_zero() => {
+            cip64_native_tip(max_fee_per_gas, max_priority_fee_per_gas, base_fee_native, rate)
         }
         _ => 0,
     }
@@ -1277,7 +1270,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
             // dedupes lookups for multiple CIP-64 txs within the same block.
             let mut rate_cache: std::collections::HashMap<
                 (u64, Address),
-                Option<(U256, U256)>,
+                Option<RateU256>,
             > = std::collections::HashMap::new();
             for (i, block_rewards) in rewards.iter_mut().enumerate() {
                 let block_num = oldest_block + i as u64;
@@ -1553,21 +1546,28 @@ pub fn celo_admin_module(
 mod tests {
     use super::*;
 
+    /// Compact `RateU256` constructor for tests where the rate is small enough
+    /// to fit in `u64`.
+    fn rate(numerator: u64, denominator: u64) -> RateU256 {
+        RateU256 { numerator: U256::from(numerator), denominator: U256::from(denominator) }
+    }
+
     /// `scale_to_fc` followed by `scale_to_native` round-trips lossily through
     /// integer division but stays within `denom/num + 1` of the original. This
-    /// confirms the typed wrappers compose correctly — the bug we are guarding
-    /// against is direction confusion (passing `(num, denom)` swapped between
-    /// the two), which would produce wildly off-by-orders-of-magnitude values.
+    /// confirms the typed wrappers compose correctly — the bug they are
+    /// guarding against is direction confusion (passing the rate components
+    /// swapped between the two), which would produce wildly off-by-orders-of-
+    /// magnitude values; threading `RateU256` through both ends prevents the
+    /// transposition entirely.
     #[test]
     fn scale_to_fc_then_native_roundtrips_within_precision() {
-        let num = U256::from(3u64);
-        let denom = U256::from(1000u64);
+        let r = rate(3, 1000);
         let original = NativeU256::new(U256::from(1_000_000u64));
-        let fc = scale_to_fc(original, num, denom).expect("no overflow");
-        let back = scale_to_native(fc, num, denom).expect("no overflow");
+        let fc = scale_to_fc(original, r).expect("no overflow");
+        let back = scale_to_native(fc, r).expect("no overflow");
         // back is at most `denom/num + 1` below original due to integer division.
         assert!(back.into_inner() <= original.into_inner());
-        let max_loss = denom / num + U256::from(1u64);
+        let max_loss = r.denominator / r.numerator + U256::from(1u64);
         assert!(original.into_inner() - back.into_inner() < max_loss);
     }
 
@@ -1575,9 +1575,7 @@ mod tests {
     fn scale_to_fc_returns_none_on_overflow() {
         // base * num overflows U256.
         let base = NativeU256::new(U256::MAX);
-        let num = U256::from(2u64);
-        let denom = U256::from(1u64);
-        assert!(scale_to_fc(base, num, denom).is_none());
+        assert!(scale_to_fc(base, rate(2, 1)).is_none());
     }
 
     #[test]
@@ -1703,7 +1701,12 @@ mod tests {
         // base_fee_fc = 100 * 2 / 1 = 200
         // tip_fc = min(500 - 200, 10) = 10
         // native_tip = 10 * 1 / 2 = 5
-        let tip = cip64_fee_history_tip(500, 10, 100, Some((U256::from(2), U256::from(1))));
+        let tip = cip64_fee_history_tip(
+            500,
+            10,
+            100,
+            Some(RateU256 { numerator: U256::from(2), denominator: U256::from(1) }),
+        );
         assert_eq!(tip, 5);
     }
 
@@ -1719,7 +1722,12 @@ mod tests {
     #[test]
     fn cip64_fee_history_tip_returns_zero_for_zero_numerator() {
         // Degenerate rate (num=0) — same safe fallback as `None`.
-        let tip = cip64_fee_history_tip(1_000_000_000, 100, 100, Some((U256::ZERO, U256::from(1))));
+        let tip = cip64_fee_history_tip(
+            1_000_000_000,
+            100,
+            100,
+            Some(RateU256 { numerator: U256::ZERO, denominator: U256::from(1) }),
+        );
         assert_eq!(tip, 0);
     }
 
@@ -2271,14 +2279,19 @@ mod tests {
         // base_fee_fc = 100 * 1 / 2 = 50
         // tip_fc = min(300 - 50, 50) = min(250, 50) = 50
         // tip_native = 50 * 2 / 1 = 100
-        let result = cip64_native_tip(300, 50, 100, U256::from(1u64), U256::from(2u64));
+        let result = cip64_native_tip(300, 50, 100, rate(1, 2));
         assert_eq!(result, 100);
     }
 
     #[test]
     fn cip64_tip_zero_rate_num_returns_zero() {
         // rate_num=0 is a degenerate case — function returns 0 without panicking
-        let result = cip64_native_tip(1_000_000_000, 100, 1000, U256::ZERO, U256::from(1u64));
+        let result = cip64_native_tip(
+            1_000_000_000,
+            100,
+            1000,
+            RateU256 { numerator: U256::ZERO, denominator: U256::from(1u64) },
+        );
         assert_eq!(result, 0);
     }
 
@@ -2290,7 +2303,7 @@ mod tests {
     fn cip64_tip_base_fee_exceeds_max_fee_clamps_to_zero() {
         // base_fee_fc > max_fee_fc → saturating_sub returns 0 → tip = 0
         // rate 1:1, base_fee_native=1000, max_fee_fc=500 → base_fee_fc=1000 > 500
-        let result = cip64_native_tip(500, 100, 1000, U256::from(1u64), U256::from(1u64));
+        let result = cip64_native_tip(500, 100, 1000, rate(1, 1));
         assert_eq!(result, 0);
     }
 
@@ -2300,13 +2313,23 @@ mod tests {
         // In practice denom=0 means FC is worthless; U256 division by zero panics in debug.
         // We handle this by using rate_num=0 check (which returns 0 early).
         // Test verifies rate_num=0 path doesn't panic.
-        let result = cip64_native_tip(1_000_000, 500, 100, U256::ZERO, U256::ZERO);
+        let result = cip64_native_tip(
+            1_000_000,
+            500,
+            100,
+            RateU256 { numerator: U256::ZERO, denominator: U256::ZERO },
+        );
         assert_eq!(result, 0);
     }
 
     #[test]
     fn cip64_tip_returns_zero_when_forward_scaling_overflows() {
-        let result = cip64_native_tip(1_000_000, 500, 2, U256::MAX, U256::from(1u64));
+        let result = cip64_native_tip(
+            1_000_000,
+            500,
+            2,
+            RateU256 { numerator: U256::MAX, denominator: U256::from(1u64) },
+        );
         assert_eq!(result, 0);
     }
 
@@ -2314,7 +2337,12 @@ mod tests {
     fn cip64_tip_returns_zero_when_reverse_scaling_overflows() {
         // base_fee_native=0 keeps the forward step trivial so we exercise only
         // the reverse `tip_fc * rate_denom` overflow.
-        let result = cip64_native_tip(u128::MAX, u128::MAX, 0, U256::from(1u64), U256::MAX);
+        let result = cip64_native_tip(
+            u128::MAX,
+            u128::MAX,
+            0,
+            RateU256 { numerator: U256::from(1u64), denominator: U256::MAX },
+        );
         assert_eq!(result, 0);
     }
 
@@ -2332,7 +2360,7 @@ mod tests {
         // base_fee_fc = 100 * 2 / 1 = 200
         // tip_fc = min(1000 - 200, 20) = 20
         // tip_native = 20 * 1 / 2 = 10
-        let tip = cip64_native_tip(1000, 20, 100, U256::from(2u64), U256::from(1u64));
+        let tip = cip64_native_tip(1000, 20, 100, rate(2, 1));
         assert_eq!(tip, 10);
     }
 
@@ -2345,7 +2373,7 @@ mod tests {
         // base_fee_fc = 1000
         // tip_fc = min(1050 - 1000, 200) = 50
         // tip_native = 50
-        let tip = cip64_native_tip(1050, 200, 1000, U256::from(1u64), U256::from(1u64));
+        let tip = cip64_native_tip(1050, 200, 1000, rate(1, 1));
         assert_eq!(tip, 50);
     }
 
@@ -2357,7 +2385,7 @@ mod tests {
         // base_fee_fc = 10 * 1 / 100 = 0 (integer truncation)
         // tip_fc = min(10 - 0, 5) = 5
         // tip_native = 5 * 100 / 1 = 500
-        let tip = cip64_native_tip(10, 5, 10, U256::from(1u64), U256::from(100u64));
+        let tip = cip64_native_tip(10, 5, 10, rate(1, 100));
         assert_eq!(tip, 500);
     }
 
