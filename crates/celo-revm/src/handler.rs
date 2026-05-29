@@ -150,10 +150,14 @@ where
         // Convert costs to fee currency
         let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
-            .celo_to_currency(fee_currency, U256::from(basefee))
+            .celo_to_currency(
+                fee_currency,
+                crate::units::NativeU256::new(U256::from(basefee)),
+            )
             .map_err(InvalidTransaction::from)?;
-        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
+        // Convert base_fee_in_erc20 to u128 for gas price calculations
         let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+            .into_inner()
             .try_into()
             .map_err(|_| InvalidTransaction::from("base fee in ERC20 overflows u128"))?;
         Ok(base_fee_in_erc20_u128)

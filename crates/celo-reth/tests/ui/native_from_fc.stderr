@@ -6,7 +6,7 @@ error[E0277]: the trait bound `Native: From<Fc>` is not satisfied
   |
 help: the trait `From<Fc>` is not implemented for `Native`
       but trait `From<u128>` is implemented for it
- --> src/units.rs
+ --> $WORKSPACE/crates/celo-revm/src/units.rs
   |
   | impl From<u128> for Native {
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^

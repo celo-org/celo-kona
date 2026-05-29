@@ -5,11 +5,7 @@
 //! pending/queued classification and replacement logic work correctly for transactions
 //! that pay fees in non-native currencies.
 
-use crate::{
-    primitives::CeloTransactionSigned,
-    signed_tx::CeloConsensusTx,
-    units::{Fc, FcU256, Native, NativeU256},
-};
+use crate::{primitives::CeloTransactionSigned, signed_tx::CeloConsensusTx};
 use alloy_consensus::Transaction;
 use alloy_eips::{
     Typed2718, eip2930::AccessList, eip4844::BlobTransactionValidationError,
@@ -17,6 +13,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::CeloPooledTransaction;
+use celo_revm::units::{Fc, FcU256, Native, NativeU256};
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,

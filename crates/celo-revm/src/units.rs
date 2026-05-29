@@ -1,32 +1,34 @@
 //! Newtypes for the two fee denominations used by CIP-64 transactions.
 //!
 //! CIP-64 ("fee abstraction") lets users pay gas in an ERC20 fee currency
-//! ("FC") rather than native CELO. The pool and RPC layers must constantly
-//! convert between FC-denominated and native-CELO-denominated amounts using
-//! the on-chain exchange rate. Mixing the two denominations is a recurring
-//! bug class — most prominently commit `f2b24192` ("don't include
-//! FC-denominated gas in CIP-64 native_cost after rate conversion"), where
-//! an FC-denominated gas cost was added to a native-CELO balance check and
-//! falsely demoted valid CIP-64 transactions whose senders had ERC20 but
-//! little CELO.
+//! ("FC") rather than native CELO. Three layers convert between
+//! FC-denominated and native-CELO-denominated amounts using the on-chain
+//! exchange rate:
+//!
+//! - [`FeeCurrencyContext`](crate::fee_currency_context::FeeCurrencyContext)
+//!   in the EVM handler (consensus-level, during tx execution).
+//! - `ExchangeRate` in the celo-reth pool validator (mempool admission).
+//! - `scale_to_fc` / `scale_to_native` in the celo-reth RPC layer
+//!   (`eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`).
+//!
+//! Mixing the two denominations is a recurring bug class — most prominently
+//! commit `f2b24192` ("don't include FC-denominated gas in CIP-64
+//! native_cost after rate conversion"), where an FC-denominated gas cost was
+//! added to a native-CELO balance check and falsely demoted valid CIP-64
+//! transactions whose senders had ERC20 but little CELO.
 //!
 //! The newtypes in this module make that bug class a compile error: native
 //! and FC values have distinct types, the only way to cross the boundary is
-//! through [`crate::pool::ExchangeRate`], and there is no implicit
+//! through one of the three conversion APIs above, and there is no implicit
 //! `From<Native> for u128` — boundaries must be visible via
 //! [`Native::into_inner`].
 //!
-//! Two width-flavors per denomination exist because the pool layer
-//! ([`crate::pool`]) is `u128`-native (hot-path trait methods return `u128`)
-//! and the RPC layer ([`crate::rpc`]) is `U256`-native (rate scaling needs
-//! `checked_mul` on `U256` to avoid overflow on adversarial on-chain rates).
-//! Forcing one width across both layers would either lose per-call
-//! performance or lose overflow safety.
-//!
-//! **Forward-compatibility:** these types may relocate to `celo-revm` if
-//! [`celo_revm::fee_currency_context::FeeCurrencyContext`] is later unified
-//! with [`crate::pool::ExchangeRate`]. Today the EVM handler has a parallel
-//! `U256`-based implementation; the unification is out of scope.
+//! Two width-flavors per denomination exist because the pool layer is
+//! `u128`-native (hot-path trait methods return `u128`) and the RPC / EVM
+//! handler layers are `U256`-native (rate scaling needs `checked_mul` on
+//! `U256` to avoid overflow on adversarial on-chain rates). Forcing one
+//! width across all layers would either lose per-call performance or lose
+//! overflow safety.
 
 use alloy_primitives::U256;
 use core::{
@@ -350,9 +352,18 @@ mod tests {
 
     #[test]
     fn saturating_arithmetic() {
-        assert_eq!(Native::new(u128::MAX).saturating_add(Native::new(1)), Native::new(u128::MAX));
-        assert_eq!(Native::new(0).saturating_sub(Native::new(1)), Native::new(0));
-        assert_eq!(Fc::new(u128::MAX).saturating_add(Fc::new(1)), Fc::new(u128::MAX));
+        assert_eq!(
+            Native::new(u128::MAX).saturating_add(Native::new(1)),
+            Native::new(u128::MAX)
+        );
+        assert_eq!(
+            Native::new(0).saturating_sub(Native::new(1)),
+            Native::new(0)
+        );
+        assert_eq!(
+            Fc::new(u128::MAX).saturating_add(Fc::new(1)),
+            Fc::new(u128::MAX)
+        );
         assert_eq!(Fc::new(0).saturating_sub(Fc::new(1)), Fc::new(0));
     }
 }

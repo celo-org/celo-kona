@@ -38,7 +38,6 @@
 //! constructed outside the pool path), the impl falls back to the inner
 //! envelope's default behavior.
 
-use crate::units::Native;
 use alloc::vec::Vec;
 use alloy_consensus::{
     Sealed, Signed, Transaction, TransactionEnvelope, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
@@ -55,7 +54,7 @@ use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, CeloTxType, TxCip64};
-use celo_revm::CeloTransaction;
+use celo_revm::{CeloTransaction, units::Native};
 use core::hash::{Hash, Hasher};
 use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
 use reth_codecs::{

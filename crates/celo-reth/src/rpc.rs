@@ -8,7 +8,6 @@ use crate::{
     primitives::{CeloPrimitives, CeloTransactionSigned},
     receipt::CeloReceipt,
     signed_tx::CeloConsensusTx,
-    units::{FcU256, NativeU256},
 };
 use alloy_consensus::{ReceiptWithBloom, Transaction, error::ValueError};
 use alloy_eips::Encodable2718;
@@ -24,7 +23,11 @@ use celo_alloy_consensus::{
     CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope, CeloTxEnvelope,
 };
 use celo_alloy_rpc_types::{CeloTransaction as CeloRpcTransaction, CeloTransactionReceipt};
-use celo_revm::{CeloTransaction, contracts::core_contracts::getExchangeRateCall};
+use celo_revm::{
+    CeloTransaction,
+    contracts::core_contracts::getExchangeRateCall,
+    units::{FcU256, NativeU256},
+};
 use op_alloy_rpc_types::OpTransactionRequest;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_evm::ConfigureEvm;

@@ -42,7 +42,6 @@ pub mod primitives;
 pub mod receipt;
 pub mod receipts;
 pub mod signed_tx;
-pub mod units;
 
 #[cfg(feature = "std")]
 pub mod node;
