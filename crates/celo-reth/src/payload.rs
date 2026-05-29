@@ -138,6 +138,18 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
     where
         Pool: TransactionPool<Transaction = CeloPoolTx>,
     {
+        // Evict stale blocklist entries before filtering. The EVM-side eviction in
+        // `CeloEvm::transact_raw` only runs once a tx reaches the executor, so a payload whose
+        // first executable txs all use the stale-blocklisted currency would have them rejected
+        // by `CeloFeeCurrencyFilter` below indefinitely — even past the 7200s TTL. Wall clock
+        // is a safe time source here: block timestamps track wall time within seconds and the
+        // blocklist is a best-effort sequencing heuristic, not consensus state.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.blocklist.evict(now);
+
         let block_gas_limit = pool.block_info().block_gas_limit;
         CeloFeeCurrencyFilter {
             inner: BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr)),
