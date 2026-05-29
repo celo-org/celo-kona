@@ -27,8 +27,8 @@ const REQUIRED_TX_FIELDS_BY_TYPE = {
 	cip64: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList", "feeCurrency"],
 	// Deposit (type 0x7e) is sequencer-built; clients only read it. Required-fields
 	// schema locks the regression of 0d5324d7 (missing nonce + depositReceiptVersion)
-	// on the read path. `to` is also required: deposits target a contract address.
-	deposit: ["sourceHash", "mint", "isSystemTransaction"],
+	// on the read path. `nonce` is covered by REQUIRED_TX_FIELDS_COMMON.
+	deposit: ["sourceHash", "mint", "depositReceiptVersion"],
 };
 const REQUIRED_RECEIPT_FIELDS_COMMON = [
 	"transactionHash", "transactionIndex", "blockHash", "blockNumber",
@@ -128,14 +128,26 @@ async function sendTypedCreateTransaction(type, feeCurrency) {
 // deposit as the first transaction of block 1 (see crates/celo-reth/src/node.rs
 // dev-mode payload attributes builder). Fetching it and running the same
 // required-fields schema covers the read-side regression class of 0d5324d7.
+//
+// Use raw eth_getBlockByNumber rather than publicClient.getBlock: viem's celo
+// block formatter calls the *standard* formatTransaction for entries inside
+// blocks, which doesn't know about type 0x7e and drops deposit-specific fields.
+// The whole point of the field-presence assertion is what the node actually
+// emits on the wire, so we want the unformatted JSON here anyway.
 describe("viem smoke test, deposit tx (block 1 L1-attributes)", () => {
 	it("read-side required fields present", async () => {
-		const block = await publicClient.getBlock({ blockNumber: 1n, includeTransactions: true });
-		const deposit = block.transactions.find((t) => t.type === "deposit");
+		const block = await publicClient.request({
+			method: "eth_getBlockByNumber",
+			params: ["0x1", true],
+		});
+		const deposit = block.transactions.find((t) => t.type === "0x7e");
 		assert.isDefined(deposit, "block 1 has no deposit tx (dev-mode L1-attributes missing)");
 		assertFieldsPresent(deposit, REQUIRED_TX_FIELDS_COMMON, "tx[deposit]");
 		assertFieldsPresent(deposit, REQUIRED_TX_FIELDS_BY_TYPE.deposit, "tx[deposit]");
-		const receipt = await publicClient.getTransactionReceipt({ hash: deposit.hash });
+		const receipt = await publicClient.request({
+			method: "eth_getTransactionReceipt",
+			params: [deposit.hash],
+		});
 		assertFieldsPresent(receipt, REQUIRED_RECEIPT_FIELDS_COMMON, "receipt[deposit]");
 	});
 });
