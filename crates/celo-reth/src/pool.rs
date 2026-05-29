@@ -5,7 +5,11 @@
 //! pending/queued classification and replacement logic work correctly for transactions
 //! that pay fees in non-native currencies.
 
-use crate::{primitives::CeloTransactionSigned, signed_tx::CeloConsensusTx};
+use crate::{
+    primitives::CeloTransactionSigned,
+    signed_tx::CeloConsensusTx,
+    units::{Fc, FcU256, Native, NativeU256},
+};
 use alloy_consensus::Transaction;
 use alloy_eips::{
     Typed2718, eip2930::AccessList, eip4844::BlobTransactionValidationError,
@@ -84,7 +88,7 @@ pub struct ExchangeRate {
 }
 
 impl ExchangeRate {
-    /// Convert a fee-currency amount to native equivalent.
+    /// Convert a fee-currency amount to its native-CELO equivalent.
     ///
     /// Saturates to `u128::MAX` only when the true mathematical result exceeds
     /// `u128`.
@@ -93,12 +97,12 @@ impl ExchangeRate {
     ///
     /// Panics if `numerator` is zero. This is a logic error — the constructor
     /// rejects zero numerator/denominator rates.
-    pub fn to_native(&self, amount: u128) -> u128 {
+    pub fn to_native(&self, amount: Fc) -> Native {
         assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
-        mul_div_saturating(amount, self.denominator, self.numerator)
+        Native::new(mul_div_saturating(amount.into_inner(), self.denominator, self.numerator))
     }
 
-    /// Convert a native amount to fee-currency equivalent.
+    /// Convert a native-CELO amount to its fee-currency equivalent.
     ///
     /// Saturates to `u128::MAX` only when the true mathematical result exceeds
     /// `u128`.
@@ -107,9 +111,39 @@ impl ExchangeRate {
     ///
     /// Panics if `denominator` is zero. This is a logic error — the constructor
     /// rejects zero numerator/denominator rates.
-    pub fn to_fc(&self, native_amount: u128) -> u128 {
+    pub fn to_fc(&self, native_amount: Native) -> Fc {
         assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
-        mul_div_saturating(native_amount, self.numerator, self.denominator)
+        Fc::new(mul_div_saturating(native_amount.into_inner(), self.numerator, self.denominator))
+    }
+
+    /// `U256`-backed variant of [`Self::to_native`].
+    ///
+    /// Used by the RPC layer where rate-scaling needs `checked_mul` on `U256`
+    /// to avoid panicking on adversarial on-chain rates. Returns `None` if the
+    /// intermediate `amount * denominator` overflows `U256`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `numerator` is zero.
+    pub fn to_native_u256(&self, amount: FcU256) -> Option<NativeU256> {
+        assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
+        amount
+            .into_inner()
+            .checked_mul(U256::from(self.denominator))
+            .map(|v| NativeU256::new(v / U256::from(self.numerator)))
+    }
+
+    /// `U256`-backed variant of [`Self::to_fc`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `denominator` is zero.
+    pub fn to_fc_u256(&self, native_amount: NativeU256) -> Option<FcU256> {
+        assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
+        native_amount
+            .into_inner()
+            .checked_mul(U256::from(self.numerator))
+            .map(|v| FcU256::new(v / U256::from(self.denominator)))
     }
 }
 
@@ -215,9 +249,10 @@ impl CeloPoolTx {
         if self.fee_currency.is_none() {
             return;
         }
-        self.native_max_fee_per_gas = rate.to_native(self.inner.max_fee_per_gas());
+        self.native_max_fee_per_gas =
+            rate.to_native(Fc::new(self.inner.max_fee_per_gas())).into_inner();
         self.native_max_priority_fee_per_gas =
-            self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(v));
+            self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(Fc::new(v)).into_inner());
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
@@ -935,7 +970,7 @@ fn apply_exchange_rates_to_valid_tx(
         };
 
         // Check: fee cap must be >= base fee floor converted to FC.
-        let base_fee_floor_fc = rate.to_fc(base_fee_floor as u128);
+        let base_fee_floor_fc = rate.to_fc(Native::new(base_fee_floor as u128)).into_inner();
         if max_fee_fc < base_fee_floor_fc {
             tracing::warn!(
                 target: "celo::pool",
@@ -955,7 +990,7 @@ fn apply_exchange_rates_to_valid_tx(
         // Check: effective tip must meet the minimum tip converted to FC.
         // The effective tip is min(max_fee - base_fee_floor_fc, priority_fee),
         // matching op-geth's EffectiveGasTipIntCmp(minTip, baseFeeFloor).
-        let min_tip_fc = rate.to_fc(minimum_priority_fee);
+        let min_tip_fc = rate.to_fc(Native::new(minimum_priority_fee)).into_inner();
         let actual_priority = max_priority_fee_fc.unwrap_or(0);
         let effective_tip = max_fee_fc.saturating_sub(base_fee_floor_fc).min(actual_priority);
         if effective_tip < min_tip_fc {
@@ -1351,12 +1386,12 @@ mod tests {
     fn test_exchange_rate_to_native() {
         // 1 fc = 500 native (denominator/numerator = 1000/2 = 500)
         let rate = ExchangeRate { numerator: 2, denominator: 1000 };
-        assert_eq!(rate.to_native(100), 50_000);
-        assert_eq!(rate.to_native(0), 0);
+        assert_eq!(rate.to_native(Fc::new(100)), Native::new(50_000));
+        assert_eq!(rate.to_native(Fc::new(0)), Native::new(0));
 
         // 1 fc = 0.5 native (numerator > denominator)
         let rate = ExchangeRate { numerator: 2000, denominator: 1000 };
-        assert_eq!(rate.to_native(100), 50);
+        assert_eq!(rate.to_native(Fc::new(100)), Native::new(50));
     }
 
     #[test]
@@ -1459,7 +1494,7 @@ mod tests {
     #[should_panic(expected = "numerator must not be zero")]
     fn test_exchange_rate_zero_numerator_panics() {
         let rate = ExchangeRate { numerator: 0, denominator: 1000 };
-        let _ = rate.to_native(500);
+        let _ = rate.to_native(Fc::new(500));
     }
 
     #[test]
@@ -1468,31 +1503,63 @@ mod tests {
         // So 1 native = 1/500 fc => native * numerator / denominator
         let rate = ExchangeRate { numerator: 2, denominator: 1000 };
         // to_fc(500) = 500 * 2 / 1000 = 1
-        assert_eq!(rate.to_fc(500), 1);
-        assert_eq!(rate.to_fc(0), 0);
+        assert_eq!(rate.to_fc(Native::new(500)), Fc::new(1));
+        assert_eq!(rate.to_fc(Native::new(0)), Fc::new(0));
 
         // 1 fc = 0.5 native => 1 native = 2 fc
         let rate = ExchangeRate { numerator: 2000, denominator: 1000 };
         // to_fc(100) = 100 * 2000 / 1000 = 200
-        assert_eq!(rate.to_fc(100), 200);
+        assert_eq!(rate.to_fc(Native::new(100)), Fc::new(200));
     }
 
     #[test]
     fn test_exchange_rate_to_fc_roundtrip() {
         let rate = ExchangeRate { numerator: 3, denominator: 1000 };
-        let native = 1_000_000u128;
+        let native = Native::new(1_000_000u128);
         let fc = rate.to_fc(native);
         let back = rate.to_native(fc);
         // Round-trip may lose precision due to integer division, but should be close
         assert!(back <= native);
-        assert!(native - back < rate.denominator / rate.numerator + 1);
+        assert!((native.into_inner() - back.into_inner()) < rate.denominator / rate.numerator + 1);
     }
 
     #[test]
     #[should_panic(expected = "denominator must not be zero")]
     fn test_exchange_rate_to_fc_zero_denominator_panics() {
         let rate = ExchangeRate { numerator: 1000, denominator: 0 };
-        let _ = rate.to_fc(500);
+        let _ = rate.to_fc(Native::new(500));
+    }
+
+    #[test]
+    fn test_to_native_u256_normal_case() {
+        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
+        let got = rate.to_native_u256(FcU256::new(U256::from(100u64))).expect("no overflow");
+        assert_eq!(got.into_inner(), U256::from(50_000u64));
+    }
+
+    #[test]
+    fn test_to_fc_u256_normal_case() {
+        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
+        let got = rate.to_fc_u256(NativeU256::new(U256::from(500u64))).expect("no overflow");
+        assert_eq!(got.into_inner(), U256::from(1u64));
+    }
+
+    #[test]
+    fn test_to_native_u256_returns_none_on_overflow() {
+        // numerator = denominator = 1, amount = U256::MAX, so amount * denominator overflows U256.
+        let rate = ExchangeRate { numerator: 1, denominator: u128::MAX };
+        let huge = FcU256::new(U256::MAX);
+        assert!(
+            rate.to_native_u256(huge).is_none(),
+            "checked_mul must catch overflow on adversarial rate"
+        );
+    }
+
+    #[test]
+    fn test_to_fc_u256_returns_none_on_overflow() {
+        let rate = ExchangeRate { numerator: u128::MAX, denominator: 1 };
+        let huge = NativeU256::new(U256::MAX);
+        assert!(rate.to_fc_u256(huge).is_none());
     }
 
     #[test]
@@ -2363,7 +2430,7 @@ mod proptests {
             amount in any::<u128>(),
         ) {
             prop_assert_eq!(
-                rate.to_native(amount),
+                rate.to_native(Fc::new(amount)).into_inner(),
                 oracle_to_native(rate, amount),
                 "to_native: rate {}/{}, amount {}",
                 rate.numerator, rate.denominator, amount,
@@ -2376,7 +2443,7 @@ mod proptests {
             amount in any::<u128>(),
         ) {
             prop_assert_eq!(
-                rate.to_fc(amount),
+                rate.to_fc(Native::new(amount)).into_inner(),
                 oracle_to_fc(rate, amount),
                 "to_fc: rate {}/{}, amount {}",
                 rate.numerator, rate.denominator, amount,
