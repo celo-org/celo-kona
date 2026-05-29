@@ -9,9 +9,40 @@ import { publicClient, walletClient } from "./viem_setup.mjs"
 // Load compiled contract
 const testContractJSON = JSON.parse(fs.readFileSync(process.env.COMPILED_TEST_CONTRACT, 'utf8'));
 
+// Required-field schemas for each tx type, derived from what a real client
+// (viem/web3.py/ethers) treats as mandatory when parsing eth_getTransactionByHash
+// / eth_getTransactionReceipt responses. Regressions of d6c83feb (duplicate
+// feeCurrency) and 0d5324d7 (missing nonce/depositReceiptVersion) bypassed the
+// existing assertions because viem returned undefined on the missing fields and
+// nothing checked. These tables make those failures explicit.
+const REQUIRED_TX_FIELDS_COMMON = [
+	"hash", "nonce", "from", "gas", "input", "value",
+	"r", "s", "blockHash", "blockNumber", "transactionIndex", "type",
+];
+const REQUIRED_TX_FIELDS_BY_TYPE = {
+	legacy: ["chainId", "gasPrice"],
+	eip2930: ["chainId", "gasPrice", "accessList"],
+	eip1559: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList"],
+	cip64: ["chainId", "maxFeePerGas", "maxPriorityFeePerGas", "accessList", "feeCurrency"],
+};
+const REQUIRED_RECEIPT_FIELDS_COMMON = [
+	"transactionHash", "transactionIndex", "blockHash", "blockNumber",
+	"from", "cumulativeGasUsed", "gasUsed", "logs", "logsBloom",
+	"status", "effectiveGasPrice", "type",
+];
+
+function assertFieldsPresent(obj, fields, label) {
+	for (const field of fields) {
+		assert.isDefined(obj[field], `${label} missing required field '${field}'`);
+		assert.isNotNull(obj[field], `${label} required field '${field}' is null`);
+	}
+}
+
 // check checks that the receipt has status success and that the transaction
 // type matches the expected type, since viem sometimes mangles the type when
-// building txs.
+// building txs. It also enforces that every field a real client requires for
+// the given tx type is present and non-null in both the tx and receipt
+// responses — see REQUIRED_TX_FIELDS_BY_TYPE for the per-type schema.
 async function check(txHash, tx_checks, receipt_checks) {
 	const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
 	assert.equal(receipt.status, "success", "receipt status 'failure'");
@@ -21,6 +52,12 @@ async function check(txHash, tx_checks, receipt_checks) {
 	}
 	for (const [key, expected] of Object.entries(receipt_checks ?? {})) {
 		assert.equal(receipt[key], expected, `receipt ${key} does not match`);
+	}
+	const type = tx_checks?.type;
+	if (type && REQUIRED_TX_FIELDS_BY_TYPE[type]) {
+		assertFieldsPresent(transaction, REQUIRED_TX_FIELDS_COMMON, `tx[${type}]`);
+		assertFieldsPresent(transaction, REQUIRED_TX_FIELDS_BY_TYPE[type], `tx[${type}]`);
+		assertFieldsPresent(receipt, REQUIRED_RECEIPT_FIELDS_COMMON, `receipt[${type}]`);
 	}
 }
 
