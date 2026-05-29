@@ -79,6 +79,14 @@ impl Native {
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
+
+    /// Checked subtraction. Returns `None` on underflow.
+    pub const fn checked_sub(self, other: Self) -> Option<Self> {
+        match self.0.checked_sub(other.0) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
+    }
 }
 
 impl Fc {
@@ -100,6 +108,14 @@ impl Fc {
     /// Saturating subtraction. Both operands are FC; result is FC.
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
+    }
+
+    /// Checked subtraction. Returns `None` on underflow.
+    pub const fn checked_sub(self, other: Self) -> Option<Self> {
+        match self.0.checked_sub(other.0) {
+            Some(v) => Some(Self(v)),
+            None => None,
+        }
     }
 }
 
