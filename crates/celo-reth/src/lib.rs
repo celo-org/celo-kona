@@ -44,6 +44,9 @@ pub mod receipts;
 pub mod signed_tx;
 
 #[cfg(feature = "std")]
+pub mod units;
+
+#[cfg(feature = "std")]
 pub mod node;
 
 #[cfg(feature = "std")]

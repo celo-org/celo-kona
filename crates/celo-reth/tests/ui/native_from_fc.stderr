@@ -1,0 +1,14 @@
+error[E0277]: the trait bound `Native: From<Fc>` is not satisfied
+ --> tests/ui/native_from_fc.rs:6:32
+  |
+6 |     let _: Native = Fc::new(1).into();
+  |                                ^^^^ the trait `From<Fc>` is not implemented for `Native`
+  |
+help: the trait `From<Fc>` is not implemented for `Native`
+      but trait `From<u128>` is implemented for it
+ --> src/units.rs
+  |
+  | impl From<u128> for Native {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `u128`, found `Fc`
+  = note: required for `Fc` to implement `Into<Native>`
