@@ -182,15 +182,16 @@ pub struct CeloPoolTx {
     /// Native-equivalent max_fee_per_gas.
     ///
     /// For non-CIP-64 txs: same as `inner.max_fee_per_gas()`.
-    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
-    /// [`Self::apply_exchange_rate`].
-    native_max_fee_per_gas: u128,
+    /// For CIP-64 txs: initially holds the FC-denominated value re-tagged as native
+    /// (it has not yet been converted); [`Self::apply_exchange_rate`] later writes
+    /// the actual native-equivalent.
+    native_max_fee_per_gas: Native,
     /// Native-equivalent max_priority_fee_per_gas.
     ///
     /// For non-CIP-64 txs: same as `inner.max_priority_fee_per_gas()`.
-    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
-    /// [`Self::apply_exchange_rate`].
-    native_max_priority_fee_per_gas: Option<u128>,
+    /// For CIP-64 txs: same staging semantics as
+    /// [`Self::native_max_fee_per_gas`].
+    native_max_priority_fee_per_gas: Option<Native>,
     /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
     fee_currency: Option<Address>,
     /// Cost checked against the sender's native CELO balance.
@@ -200,7 +201,7 @@ pub struct CeloPoolTx {
     ///   against the sender's ERC20 balance, so it must not be added to the native-CELO cost —
     ///   doing so would reject otherwise-valid txs whose sender has plenty of ERC20 balance but
     ///   only `value` worth of CELO.
-    native_cost: U256,
+    native_cost: NativeU256,
 }
 
 /// Extract the fee currency address from a pool transaction without cloning.
@@ -220,8 +221,8 @@ fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
 impl CeloPoolTx {
     /// Create a new [`CeloPoolTx`] with raw (unconverted) fee values.
     pub fn new(inner: InnerPoolTx) -> Self {
-        let native_max_fee_per_gas = inner.max_fee_per_gas();
-        let native_max_priority_fee_per_gas = inner.max_priority_fee_per_gas();
+        let native_max_fee_per_gas = Native::new(inner.max_fee_per_gas());
+        let native_max_priority_fee_per_gas = inner.max_priority_fee_per_gas().map(Native::new);
         let fee_currency = extract_fee_currency(&inner);
         // For CIP-64 txs the raw `inner.cost()` is `gas_limit * max_fee + value`
         // in *fee-currency* units — treating that as native CELO would reject
@@ -229,7 +230,8 @@ impl CeloPoolTx {
         // in CELO. Use just `value`: gas is paid in the fee currency and is
         // checked separately against the sender's ERC20 balance, so it must
         // not be added to the native-CELO requirement.
-        let native_cost = if fee_currency.is_some() { inner.value() } else { *inner.cost() };
+        let native_cost =
+            NativeU256::new(if fee_currency.is_some() { inner.value() } else { *inner.cost() });
         Self {
             inner,
             native_max_fee_per_gas,
@@ -249,10 +251,9 @@ impl CeloPoolTx {
         if self.fee_currency.is_none() {
             return;
         }
-        self.native_max_fee_per_gas =
-            rate.to_native(Fc::new(self.inner.max_fee_per_gas())).into_inner();
+        self.native_max_fee_per_gas = rate.to_native(Fc::new(self.inner.max_fee_per_gas()));
         self.native_max_priority_fee_per_gas =
-            self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(Fc::new(v)).into_inner());
+            self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(Fc::new(v)));
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
@@ -281,10 +282,10 @@ impl Transaction for CeloPoolTx {
         self.inner.gas_price()
     }
     fn max_fee_per_gas(&self) -> u128 {
-        self.native_max_fee_per_gas
+        self.native_max_fee_per_gas.into_inner()
     }
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
-        self.native_max_priority_fee_per_gas
+        self.native_max_priority_fee_per_gas.map(Native::into_inner)
     }
     fn max_fee_per_blob_gas(&self) -> Option<u128> {
         self.inner.max_fee_per_blob_gas()
@@ -293,17 +294,21 @@ impl Transaction for CeloPoolTx {
         // The `None` branch is unreachable for CIP-64 txs (always EIP-1559 style with
         // priority fee set). For non-CIP-64 txs, `native_max_priority_fee_per_gas` is
         // copied from inner unchanged, so the fallback is only hit for legacy txs.
-        self.native_max_priority_fee_per_gas.unwrap_or_else(|| self.inner.priority_fee_or_price())
+        self.native_max_priority_fee_per_gas
+            .map(Native::into_inner)
+            .unwrap_or_else(|| self.inner.priority_fee_or_price())
     }
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        base_fee.map_or(self.native_max_fee_per_gas, |base_fee| {
-            let tip = self.native_max_fee_per_gas.saturating_sub(base_fee as u128);
-            if let Some(max_prio) = self.native_max_priority_fee_per_gas &&
+        let native_max_fee = self.native_max_fee_per_gas.into_inner();
+        let native_max_prio = self.native_max_priority_fee_per_gas.map(Native::into_inner);
+        base_fee.map_or(native_max_fee, |base_fee| {
+            let tip = native_max_fee.saturating_sub(base_fee as u128);
+            if let Some(max_prio) = native_max_prio &&
                 tip > max_prio
             {
                 return max_prio + base_fee as u128;
             }
-            self.native_max_fee_per_gas
+            native_max_fee
         })
     }
     fn is_dynamic_fee(&self) -> bool {
@@ -374,7 +379,7 @@ impl PoolTransaction for CeloPoolTx {
 
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
         let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or_default();
         self.inner.clone_into_consensus().map(|tx| {
             CeloConsensusTx::with_native_fees(
                 tx.into_envelope(),
@@ -406,7 +411,7 @@ impl PoolTransaction for CeloPoolTx {
         // be compared to the native base fee. Attaching the cached native fees
         // here lets that trait method return the correct tip for CIP-64.
         let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or_default();
         self.inner.into_consensus().map(|tx| {
             CeloConsensusTx::with_native_fees(
                 tx.into_envelope(),
@@ -420,7 +425,7 @@ impl PoolTransaction for CeloPoolTx {
         self,
     ) -> reth_primitives_traits::WithEncoded<Recovered<Self::Consensus>> {
         let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or_default();
         let with_encoded = self.inner.into_consensus_with2718();
         // Preserve the cached 2718 encoding while re-wrapping the inner
         // CeloConsensusTx with native-equivalent fees. The cached fees are
@@ -453,7 +458,7 @@ impl PoolTransaction for CeloPoolTx {
     }
 
     fn cost(&self) -> &U256 {
-        &self.native_cost
+        self.native_cost.as_u256()
     }
 
     fn encoded_length(&self) -> usize {
@@ -1016,7 +1021,7 @@ fn apply_exchange_rates_to_valid_tx(
             numerator = rate.numerator,
             denominator = rate.denominator,
             max_fee_fc,
-            max_fee_native = tx.native_max_fee_per_gas,
+            max_fee_native = tx.native_max_fee_per_gas.into_inner(),
             "Applied exchange rate to CIP-64 pool tx"
         );
 

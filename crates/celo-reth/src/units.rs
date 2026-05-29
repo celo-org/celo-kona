@@ -171,6 +171,15 @@ impl NativeU256 {
         self.0
     }
 
+    /// Borrow the raw `U256` value.
+    ///
+    /// Used at borrow-returning trait boundaries such as
+    /// `reth_transaction_pool::PoolTransaction::cost`, which is declared as
+    /// `fn cost(&self) -> &U256`.
+    pub const fn as_u256(&self) -> &U256 {
+        &self.0
+    }
+
     /// Narrow to a [`Native`], saturating at `u128::MAX` on overflow.
     pub fn saturating_to_u128(self) -> Native {
         Native(u128::try_from(self.0).unwrap_or(u128::MAX))
@@ -186,6 +195,11 @@ impl FcU256 {
     /// Unwrap to the raw `U256` value.
     pub const fn into_inner(self) -> U256 {
         self.0
+    }
+
+    /// Borrow the raw `U256` value.
+    pub const fn as_u256(&self) -> &U256 {
+        &self.0
     }
 
     /// Narrow to an [`Fc`], saturating at `u128::MAX` on overflow.

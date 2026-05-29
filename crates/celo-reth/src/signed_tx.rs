@@ -38,6 +38,7 @@
 //! constructed outside the pool path), the impl falls back to the inner
 //! envelope's default behavior.
 
+use crate::units::Native;
 use alloc::vec::Vec;
 use alloy_consensus::{
     Sealed, Signed, Transaction, TransactionEnvelope, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
@@ -76,11 +77,11 @@ pub struct CeloConsensusTx {
     ///
     /// `None` for non-CIP-64 transactions and for CIP-64 transactions constructed outside
     /// the pool (wire/storage/test construction). Must not influence encoding or hashing.
-    cached_native_max_fee: Option<u128>,
+    cached_native_max_fee: Option<Native>,
     /// Native-equivalent `max_priority_fee_per_gas`, populated by the pool validator.
     ///
     /// Same semantics as [`cached_native_max_fee`](Self::cached_native_max_fee).
-    cached_native_max_priority_fee: Option<u128>,
+    cached_native_max_priority_fee: Option<Native>,
 }
 
 impl CeloConsensusTx {
@@ -100,8 +101,8 @@ impl CeloConsensusTx {
     /// the correct native-denominated tip for CIP-64 transactions.
     pub const fn with_native_fees(
         inner: CeloTxEnvelope,
-        native_max_fee: u128,
-        native_max_priority_fee: u128,
+        native_max_fee: Native,
+        native_max_priority_fee: Native,
     ) -> Self {
         Self {
             inner,
@@ -249,12 +250,12 @@ impl Transaction for CeloConsensusTx {
             let (Some(native_max_fee), Some(native_max_prio)) =
                 (self.cached_native_max_fee, self.cached_native_max_priority_fee)
         {
-            let base_fee = base_fee as u128;
+            let base_fee = Native::new(base_fee as u128);
             if native_max_fee < base_fee {
                 return None;
             }
             let fee = native_max_fee - base_fee;
-            return Some(fee.min(native_max_prio));
+            return Some(fee.min(native_max_prio).into_inner());
         }
         self.inner.effective_tip_per_gas(base_fee)
     }
