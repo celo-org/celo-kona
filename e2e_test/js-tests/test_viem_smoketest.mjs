@@ -1,8 +1,11 @@
 import { assert } from "chai";
 import "mocha";
 import {
+	createWalletClient,
+	http,
 	parseAbi,
 } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import fs from "fs";
 import { publicClient, walletClient } from "./viem_setup.mjs"
 
@@ -156,14 +159,25 @@ describe("viem smoke test, deposit tx (block 1 L1-attributes)", () => {
 // an authorizationList and cannot be a contract-create), so it gets its own
 // describe block rather than joining the iteration above. Skipping its
 // require-fields schema would miss the `authorizationList` regression class.
+//
+// IMPORTANT: the authorization is signed by a throwaway account, not the
+// funded test wallet. Signing with `executor: "self"` would delegate the
+// test wallet's own EOA to the target address — that delegation persists
+// on-chain across tests, and the celo-reth pool then rejects any later
+// gapped-nonce txs from the funded account as "gapped-nonce tx from
+// delegated accounts" (e.g. test_viem_tx.mjs:testNonceBump). Delegating a
+// fresh random EOA leaves the funded account a plain EOA.
 describe("viem smoke test, tx type eip7702", () => {
 	let l1Fee = 0n;
 	it("send tx with authorization", async () => {
-		// Delegate to a fixed non-contract address; viem signs the authorization
-		// over the account itself, no on-chain code is required to exist there.
-		const authorization = await walletClient.signAuthorization({
+		const authority = privateKeyToAccount(generatePrivateKey());
+		const authorityWallet = createWalletClient({
+			account: authority,
+			chain: publicClient.chain,
+			transport: http(process.env.ETH_RPC_URL),
+		});
+		const authorization = await authorityWallet.signAuthorization({
 			contractAddress: "0x00000000000000000000000000000000DeaDBeef",
-			executor: "self",
 		});
 		const send = await walletClient.sendTransaction({
 			to: "0x00000000000000000000000000000000DeaDBeef",
