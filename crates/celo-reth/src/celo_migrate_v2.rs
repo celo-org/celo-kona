@@ -23,7 +23,12 @@ use reth_db::{
     mdbx::{self, ffi},
     models::StorageBeforeTx,
 };
-use reth_db_api::{cursor::DbCursorRO, database::Database, tables, transaction::DbTx};
+use reth_db_api::{
+    cursor::DbCursorRO,
+    database::Database,
+    tables,
+    transaction::{DbTx, DbTxMut},
+};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs};
 use reth_optimism_node::OpNode;
@@ -201,21 +206,30 @@ impl CeloMigrateV2Command {
         }
         info!(target: "reth::cli", "Storage settings updated to v2");
 
-        // === Phase 4 (skipped for Celo): Clear recomputable tables + reset stage checkpoints ===
+        // === Phase 4: Clear MDBX tables superseded by the v2 layout ===
         //
-        // Upstream clears AccountChangeSets/StorageChangeSets (now in static files),
-        // TransactionSenders/TransactionHashNumbers/AccountsHistory/StoragesHistory/
-        // PlainAccountState/PlainStorageState/AccountsTrie/StoragesTrie, and resets
-        // six stage checkpoints to 0 so the pipeline rebuilds them. For a Celo-imported
-        // datadir those tables are already in the correct post-migration state and
-        // the stages are at the migration block; rebuilding from block 0 fails because
-        // blocks 1..migration_block-1 are header-only dummies (no tx bodies for
-        // SenderRecovery to process). Leaving them as-is is correct.
-        info!(
-            target: "reth::cli",
-            "Skipping recomputable-table clear and stage-checkpoint reset (Celo dummy-block range \
-             cannot be re-walked by the pipeline)",
-        );
+        // After the flip these MDBX tables are never read in v2 (changesets come from static
+        // files; TransactionSenders from its static-file segment; TransactionHashNumbers /
+        // AccountsHistory / StoragesHistory from RocksDB), so leaving them only bloats the
+        // compacted DB. Clear them to reclaim space.
+        //
+        // We deliberately do NOT clear PlainAccountState / PlainStorageState / HashedAccounts /
+        // HashedStorages / AccountsTrie / StoragesTrie (still read from MDBX in v2) and do NOT
+        // reset stage checkpoints. Upstream clears those too and rebuilds via the pipeline; for a
+        // Celo import that rebuild is impossible (blocks 1..migration are header-only dummies with
+        // no bodies) and they are already correct at the migration block.
+        info!(target: "reth::cli", "Clearing MDBX tables superseded by the v2 layout");
+        {
+            let provider_rw = provider_factory.database_provider_rw()?;
+            let tx = provider_rw.tx_ref();
+            tx.clear::<tables::AccountChangeSets>()?;
+            tx.clear::<tables::StorageChangeSets>()?;
+            tx.clear::<tables::TransactionSenders>()?;
+            tx.clear::<tables::TransactionHashNumbers>()?;
+            tx.clear::<tables::AccountsHistory>()?;
+            tx.clear::<tables::StoragesHistory>()?;
+            provider_rw.commit()?;
+        }
 
         // === Phase 5: Compact MDBX ===
         // Owned path is required: `provider_factory` is dropped below before `db_path` is used
