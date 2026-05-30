@@ -41,7 +41,10 @@ use tracing::info;
 
 use crate::{
     chainspec::CeloChainSpecParser,
-    state_import::{CELO_MAINNET_CHAIN_ID, open_env_skip_init_and_consistency_check},
+    state_import::{
+        CEL2_MIGRATION_BLOCK_NUMBER, CELO_MAINNET_CHAIN_ID,
+        open_env_skip_init_and_consistency_check,
+    },
 };
 
 /// Celo-aware v1 → v2 storage migration.
@@ -137,12 +140,23 @@ impl CeloMigrateV2Command {
             return Ok(());
         }
 
-        let tip = provider
-            .get_stage_checkpoint(StageId::Execution)?
-            .map(|c| c.block_number)
-            .unwrap_or(0);
+        let tip =
+            provider.get_stage_checkpoint(StageId::Execution)?.map(|c| c.block_number).unwrap_or(0);
 
         info!(target: "reth::cli", tip, "Chain tip block number");
+
+        // Safety guard: `seed_transaction_senders` writes a zero-entry senders segment up to
+        // `tip`, which is only correct when blocks `0..=tip` contain no transactions. That holds
+        // only for the fresh post-import shape; on a synced datadir real txs exist and seeding
+        // zero senders would silently corrupt the segment. Refuse anything but the import block.
+        if tip != CEL2_MIGRATION_BLOCK_NUMBER {
+            eyre::bail!(
+                "celo-migrate-v2 only supports a freshly imported, pre-sync Celo Mainnet datadir: \
+                 the Execution stage checkpoint must equal the migration block \
+                 #{CEL2_MIGRATION_BLOCK_NUMBER}, but found #{tip}. Run this immediately after \
+                 `import-celo-state`, before starting the node."
+            );
+        }
 
         let sf_provider = provider_factory.static_file_provider();
         for segment in [StaticFileSegment::AccountChangeSets, StaticFileSegment::StorageChangeSets]
@@ -204,6 +218,9 @@ impl CeloMigrateV2Command {
         );
 
         // === Phase 5: Compact MDBX ===
+        // Owned path is required: `provider_factory` is dropped below before `db_path` is used
+        // in the swap. `redundant_clone` (nursery) false-positives across the `drop`.
+        #[allow(clippy::redundant_clone)]
         let db_path = provider_factory.db_ref().path().to_path_buf();
         Self::compact_mdbx(provider_factory.db_ref())?;
 
@@ -454,11 +471,7 @@ impl CeloMigrateV2Command {
         let block_range = first_block..=tip;
 
         let segment = reth_static_file::segments::Receipts;
-        reth_static_file::segments::Segment::copy_to_static_files(
-            &segment,
-            provider,
-            block_range,
-        )?;
+        reth_static_file::segments::Segment::copy_to_static_files(&segment, provider, block_range)?;
 
         sf_provider.commit()?;
 
@@ -480,9 +493,7 @@ impl CeloMigrateV2Command {
 
         let compact_dest = compact_path.join("mdbx.dat");
         let dest_cstr = std::ffi::CString::new(
-            compact_dest
-                .to_str()
-                .ok_or_else(|| eyre::eyre!("compact path must be valid UTF-8"))?,
+            compact_dest.to_str().ok_or_else(|| eyre::eyre!("compact path must be valid UTF-8"))?,
         )?;
 
         let flags = ffi::MDBX_CP_COMPACT | ffi::MDBX_CP_FORCE_DYNAMIC_SIZE;

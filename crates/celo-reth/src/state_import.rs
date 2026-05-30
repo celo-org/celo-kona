@@ -101,7 +101,8 @@ pub struct ImportCeloStateCommand {
 impl ImportCeloStateCommand {
     /// Execute the import.
     ///
-    /// The `runtime` is forwarded to [`open_env_skip_genesis_state`] for parallel storage I/O.
+    /// The `runtime` is forwarded to `open_env_skip_init_and_consistency_check` for parallel
+    /// storage I/O.
     pub async fn execute(self, runtime: reth_tasks::Runtime) -> eyre::Result<()> {
         let chain = CeloChainSpecParser::parse("celo")?;
 
@@ -245,20 +246,20 @@ impl ImportCeloStateCommand {
 /// `EnvironmentArgs::init` ends with two side effects that break Celo's offline
 /// migration tools — `import-celo-state` and `celo-migrate-v2`:
 ///
-/// 1. `init_genesis_with_settings` writes the chainspec genesis alloc into
-///    `PlainAccountState` / `PlainStorageState` / `HashedAccounts` / `HashedStorages` /
-///    history / trie. For Celo Mainnet the alloc includes one storage slot on the
-///    Registry at `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`,
-///    which collides with the L1 dump's value for that same slot and causes
-///    `HashBuilder::add_leaf` to panic with `key == self.key`.
+/// 1. `init_genesis_with_settings` writes the chainspec genesis alloc into `PlainAccountState` /
+///    `PlainStorageState` / `HashedAccounts` / `HashedStorages` / history / trie. For Celo Mainnet
+///    the alloc includes one storage slot on the Registry at
+///    `0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`, which collides with the
+///    L1 dump's value for that same slot and causes `HashBuilder::add_leaf` to panic with `key ==
+///    self.key`.
 ///
-/// 2. `create_provider_factory`'s static-file/database consistency check is destructive:
-///    it asserts (`assert_ne!(unwind_target, PipelineTarget::Unwind(0), …)`) when the
-///    only safe heal would be a full unwind to block 0. A freshly imported Celo datadir
-///    has SenderRecovery's stage checkpoint at the migration block (31,056,500) but an
-///    empty `TransactionSenders` static-file segment, so the check picks an
-///    unwind-to-zero target and the assertion fires — even though `celo-migrate-v2`
-///    knows about that inconsistency and will fix it via `seed_transaction_senders`.
+/// 2. `create_provider_factory`'s static-file/database consistency check is destructive: it asserts
+///    (`assert_ne!(unwind_target, PipelineTarget::Unwind(0), …)`) when the only safe heal would be
+///    a full unwind to block 0. A freshly imported Celo datadir has SenderRecovery's stage
+///    checkpoint at the migration block (31,056,500) but an empty `TransactionSenders` static-file
+///    segment, so the check picks an unwind-to-zero target and the assertion fires — even though
+///    `celo-migrate-v2` knows about that inconsistency and will fix it via
+///    `seed_transaction_senders`.
 ///
 /// This helper inlines `EnvironmentArgs::init`'s setup (resolve paths, load `Config`,
 /// open MDBX / static files / RocksDB, build the `ProviderFactory`) and stops before
@@ -314,16 +315,15 @@ pub(crate) fn open_env_skip_init_and_consistency_check(
         builder.build()?
     };
 
-    let provider_factory =
-        ProviderFactory::<NodeTypesWithDBAdapter<OpNode, DatabaseEnv>>::new(
-            db,
-            args.chain.clone(),
-            sfp,
-            rocksdb_provider,
-            runtime,
-        )?
-        .with_prune_modes(config.prune.segments.clone())
-        .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
+    let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<OpNode, DatabaseEnv>>::new(
+        db,
+        args.chain,
+        sfp,
+        rocksdb_provider,
+        runtime,
+    )?
+    .with_prune_modes(config.prune.segments.clone())
+    .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
 
     Ok(Environment { config, provider_factory, data_dir })
 }

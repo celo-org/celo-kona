@@ -9,9 +9,6 @@ on:
       - celo/v[0-9]*
     branches:
       - main
-      # Temporary: build images for this branch so we can test the celo-migrate-v2
-      # changes on fsn-1 without going through PR review. Drop before merging.
-      - jcortejoso/celo-migrate-v2
   workflow_dispatch:
 
 concurrency:
