@@ -497,7 +497,7 @@ where
                 transactions: Some(vec![ZERO_L1_FEE_DEPOSIT_TX.into()]),
                 no_tx_pool: None,
                 gas_limit: None,
-                eip_1559_params: None,
+                eip_1559_params: Some(alloy_primitives::B64::ZERO),
                 min_base_fee: Some(0),
             },
         )
