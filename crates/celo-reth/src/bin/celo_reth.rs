@@ -3,6 +3,7 @@
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
 use celo_reth::{
     CeloEvmConfig,
+    celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
@@ -10,7 +11,6 @@ use celo_reth::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
     },
-    celo_migrate_v2::CeloMigrateV2Command,
     state_import::ImportCeloStateCommand,
 };
 use clap::{CommandFactory, Parser};
