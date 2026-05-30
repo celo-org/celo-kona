@@ -144,6 +144,17 @@ impl ImportCeloStateCommand {
         let Environment { config, provider_factory, .. } =
             open_env_skip_init_and_consistency_check(env_args, runtime)?;
 
+        // Refuse a populated datadir before writing ANY metadata, so an accidental run on an
+        // existing node can't clobber its storage settings / stage checkpoints. `last_block_number`
+        // is 0 on a fresh (genesis-only/empty) datadir and the tip on a synced one.
+        let last_block_number = provider_factory.provider()?.last_block_number()?;
+        if last_block_number != 0 {
+            return Err(eyre::eyre!(
+                "data directory must be empty when running import-celo-state \
+                 (current tip block #{last_block_number})"
+            ));
+        }
+
         // Emit only the non-state side-effects of `init_genesis` that `setup_without_evm`
         // and `init_from_state_dump` rely on: storage settings, the canonical genesis
         // header, stage checkpoints at block 0, and empty block ranges for the static-file
@@ -177,14 +188,6 @@ impl ImportCeloStateCommand {
         // provider and commits in chunks, so the header must be committed up front.
         {
             let provider_rw = provider_factory.database_provider_rw()?;
-
-            let last_block_number = provider_rw.last_block_number()?;
-            if last_block_number != 0 {
-                return Err(eyre::eyre!(
-                    "data directory must be empty when running import-celo-state \
-                     (current tip block #{last_block_number})"
-                ));
-            }
 
             reth_cli_commands::init_state::without_evm::setup_without_evm(
                 &provider_rw,
