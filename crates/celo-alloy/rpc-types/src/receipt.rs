@@ -11,16 +11,19 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 #[doc(alias = "CeloTxReceipt")]
 pub struct CeloTransactionReceipt {
-    /// Regular eth transaction receipt including deposit receipts
+    /// Regular eth transaction receipt including deposit receipts.
+    ///
+    /// For CIP-64 receipts the FC-denominated base fee is carried inside the inner
+    /// `CeloReceiptEnvelope::Cip64`'s [`CeloCip64Receipt::base_fee`] and serialized
+    /// as `"baseFee"` via that envelope's flattened JSON output. Do not duplicate it
+    /// at this level — two flattened `"baseFee"` keys are an undefined-behavior wire
+    /// shape (RFC 8259 §4) and different clients resolve them inconsistently.
     #[serde(flatten)]
     pub inner:
         alloy_rpc_types_eth::TransactionReceipt<CeloReceiptEnvelope<alloy_rpc_types_eth::Log>>,
     /// L1 block info of the transaction.
     #[serde(flatten)]
     pub l1_block_info: L1BlockInfo,
-    /// BaseFee stored in fee currency for fee currency txs.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "alloy_serde::quantity::opt")]
-    pub base_fee: Option<u128>,
 }
 
 impl alloy_network_primitives::ReceiptResponse for CeloTransactionReceipt {
@@ -200,7 +203,6 @@ mod tests {
                 contract_address: None,
             },
             l1_block_info: L1BlockInfo::default(),
-            base_fee: None,
         }
     }
 
@@ -219,14 +221,10 @@ mod tests {
     }
 
     fn fx_receipt_cip64() -> CeloTransactionReceipt {
-        let mut r = wrap_inner(CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+        wrap_inner(CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
             receipt: CeloCip64Receipt { inner: empty_receipt(), base_fee: Some(0x22a4c71a0) },
             logs_bloom: Bloom::default(),
-        }));
-        // Surface the FC-denominated base fee at the top of the RPC receipt — this is
-        // the field that distinguishes a CIP-64 receipt for clients.
-        r.base_fee = Some(0x22a4c71a0);
-        r
+        }))
     }
 
     const DEPOSIT_RECEIPT_POST_CANYON_INPUT: &str = r#"{
@@ -282,8 +280,21 @@ mod tests {
 
     #[test]
     fn golden_cip64_receipt() {
-        let expected = r#"{"type":"0x7b","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"baseFee":"0x22a4c71a0","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null,"baseFee":"0x22a4c71a0"}"#;
+        let expected = r#"{"type":"0x7b","status":"0x1","cumulativeGasUsed":"0xfa0d","logs":[],"baseFee":"0x22a4c71a0","logsBloom":"0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","transactionHash":"0xb7c74afdeb7c89fb9de2c312f49b38cb7a850ba36e064734c5223a477e83fdc9","transactionIndex":"0x0","blockHash":"0x9e6a0fb7e22159d943d760608cc36a0fb596d1ab3c997146f5b7c55c8c718c67","blockNumber":"0x6cfef89","gasUsed":"0xfa0d","effectiveGasPrice":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","to":"0x00000000000000000000000000000000deadbeef","contractAddress":null}"#;
         assert_eq!(serde_json::to_string(&fx_receipt_cip64()).unwrap(), expected);
+    }
+
+    // Invariant lock: the wire output must carry `"baseFee"` exactly once. The previous
+    // shape emitted it twice (inner CIP-64 envelope + outer wrapper field), which is
+    // undefined per RFC 8259 §4 and parsed inconsistently across clients.
+    #[test]
+    fn cip64_receipt_to_string_emits_base_fee_once() {
+        let s = serde_json::to_string(&fx_receipt_cip64()).unwrap();
+        assert_eq!(
+            s.matches("\"baseFee\"").count(),
+            1,
+            "baseFee must appear exactly once in the JSON wire output, got: {s}"
+        );
     }
 
     // Regression lock for 0d5324d7's receipt-side counterpart: deposit RPC receipts
