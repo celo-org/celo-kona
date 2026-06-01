@@ -30,7 +30,7 @@ use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
-    ConfigureEvm, Database, EvmEnv,
+    BlockExecutorForEvm, ConfigureEvm, Database, EvmEnv,
     eth::NextEvmEnvAttributes,
     execute::{BasicBlockBuilder, BlockBuilder, BlockExecutor},
 };
@@ -294,6 +294,27 @@ where
             post_exec_mode: PostExecMode::default(),
         })
     }
+
+    /// Builds a block builder for the next block, i.e. the **sequencing** path: reth routes the
+    /// payload builder through this method, while block import and derivation re-execution build
+    /// their EVMs directly via `evm_with_env` + `create_executor` and never reach it. This is the
+    /// one place that enables the fee currency blocklist (`CeloEvm::with_blocklist_enabled`), so
+    /// blocklist reads/writes are confined to sequencing — import and derivation leave the shared
+    /// blocklist untouched. Otherwise identical to the default `ConfigureEvm` implementation.
+    fn builder_for_next_block<'a, DB: Database + 'a>(
+        &'a self,
+        db: &'a mut revm::database::State<DB>,
+        parent: &'a SealedHeader<<N as NodePrimitives>::BlockHeader>,
+        attributes: Self::NextBlockEnvCtx,
+    ) -> Result<
+        impl BlockBuilder<Primitives = Self::Primitives, Executor = BlockExecutorForEvm<'a, Self, DB>>,
+        Self::Error,
+    > {
+        let evm_env = self.next_evm_env(parent, &attributes)?;
+        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
+        let ctx = self.context_for_next_block(parent, attributes)?;
+        Ok(self.create_block_builder(evm, parent, ctx))
+    }
 }
 
 impl<ChainSpec, N, R> ConfigurePostExecEvm for CeloEvmConfig<ChainSpec, N, R>
@@ -353,7 +374,10 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        let evm = self.evm_with_env(db, evm_env);
+        // Next-block (sequencing-side) builder, so enable the blocklist like
+        // `builder_for_next_block`. Dormant on Celo: SDM/post-exec is unscheduled, so this
+        // path is never actually driven.
+        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());

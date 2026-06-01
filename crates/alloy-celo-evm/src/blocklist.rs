@@ -1,13 +1,16 @@
 //! Fee currency blocklist for CIP-64 transactions.
 //!
 //! Provides a thread-safe blocklist mechanism for fee currencies that cause execution
-//! errors. When a fee currency is blocklisted, CIP-64 transactions using that currency
-//! are rejected early during block building, avoiding repeated execution failures.
+//! errors. When a CIP-64 fee-currency debit/credit fails during execution, the currency
+//! is added here; the sequencing-time payload filter then skips transactions using that
+//! currency, avoiding repeated execution failures.
 //!
-//! This lives in `alloy-celo-evm` (not `celo-reth`) because it is checked inside
-//! `CeloEvm::transact_raw()` — the shared execution path used by both reth and any other
-//! consumer of `CeloEvmFactory`. Kona/ZK paths do not need it and use the default empty
-//! blocklist on `CeloEvmFactory::default()`.
+//! This is a *local sequencing heuristic*. It is populated inside `CeloEvm::transact_raw()`,
+//! but only for EVMs built on the sequencing path (`blocklist_enabled`); block import and
+//! derivation re-execution leave it untouched, so a node's locally-accumulated blocklist can
+//! never affect whether it accepts a canonical block. Rejection itself is also sequencing-only,
+//! enforced by `CeloFeeCurrencyFilter` in `celo-reth`'s `payload.rs`. Kona/ZK paths do not need
+//! it and use the default empty blocklist on `CeloEvmFactory::default()`.
 //!
 //! Blocklisting can be controlled per-currency via admin RPCs:
 //! - `admin_disableBlocklistFeeCurrencies`: Prevents a currency from being blocklisted.
@@ -35,9 +38,10 @@ struct BlocklistState {
 
 /// Shared, thread-safe fee currency blocklist.
 ///
-/// When a CIP-64 transaction using a particular fee currency fails during EVM
-/// execution, the currency is added to the blocklist. Subsequent transactions
-/// using that currency are rejected early without EVM execution.
+/// When a CIP-64 transaction using a particular fee currency fails its fee-currency
+/// debit/credit during EVM execution on the sequencing path, the currency is added to the
+/// blocklist. The sequencing-time payload filter (`CeloFeeCurrencyFilter`) then skips
+/// subsequent transactions using that currency before they reach the executor.
 #[derive(Debug, Clone, Default)]
 pub struct FeeCurrencyBlocklist {
     inner: Arc<Mutex<BlocklistState>>,
