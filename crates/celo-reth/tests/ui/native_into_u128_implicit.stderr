@@ -1,0 +1,7 @@
+error[E0308]: mismatched types
+ --> tests/ui/native_into_u128_implicit.rs:6:19
+  |
+6 |     let _: u128 = Native::new(1);
+  |            ----   ^^^^^^^^^^^^^^ expected `u128`, found `Native`
+  |            |
+  |            expected due to this

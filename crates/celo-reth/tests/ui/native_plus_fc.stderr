@@ -1,0 +1,13 @@
+error[E0369]: cannot add `Fc` to `Native`
+ --> tests/ui/native_plus_fc.rs:4:28
+  |
+4 |     let _ = Native::new(1) + Fc::new(2);
+  |             -------------- ^ ---------- Fc
+  |             |
+  |             Native
+  |
+note: `Native` does not implement `Add<Fc>`
+ --> $WORKSPACE/crates/celo-revm/src/units.rs
+  |
+  | pub struct Native(u128);
+  | ^^^^^^^^^^^^^^^^^ `Native` is defined in another crate

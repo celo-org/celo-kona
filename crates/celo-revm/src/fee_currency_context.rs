@@ -1,4 +1,8 @@
-use crate::{CeloContext, CeloEvm, contracts::core_contracts::get_currency_info};
+use crate::{
+    CeloContext, CeloEvm,
+    contracts::core_contracts::get_currency_info,
+    units::{FcU256, NativeU256},
+};
 use alloy_primitives::map::HashMap;
 use revm::{
     Database, Inspector,
@@ -88,34 +92,47 @@ impl FeeCurrencyContext {
         }
     }
 
+    /// Convert a native-CELO amount to its fee-currency equivalent at the
+    /// rate registered for `currency`.
+    ///
+    /// When `currency` is `None` or `Address::ZERO` the input is treated as
+    /// native CELO and wrapped unchanged in `FcU256` to keep the return shape
+    /// uniform — callers on that branch must know they're reading a native
+    /// value back out, since the type tag is no longer load-bearing there.
     pub fn celo_to_currency(
         &self,
         currency: Option<Address>,
-        amount: U256,
-    ) -> Result<U256, String> {
+        amount: NativeU256,
+    ) -> Result<FcU256, String> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
-            return Ok(amount);
+            return Ok(FcU256::new(amount.into_inner()));
         }
 
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(amount.saturating_mul(info.exchange_rate.0) / info.exchange_rate.1),
+            Some(info) => Ok(FcU256::new(
+                amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
+            )),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }
 
+    /// Convert a fee-currency amount to its native-CELO equivalent. Same
+    /// no-currency / zero-address passthrough as [`Self::celo_to_currency`].
     pub fn currency_to_celo(
         &self,
         currency: Option<Address>,
-        amount: U256,
-    ) -> Result<U256, String> {
+        amount: FcU256,
+    ) -> Result<NativeU256, String> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
-            return Ok(amount);
+            return Ok(NativeU256::new(amount.into_inner()));
         }
 
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(amount.saturating_mul(info.exchange_rate.1) / info.exchange_rate.0),
+            Some(info) => Ok(NativeU256::new(
+                amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
+            )),
             None => Err(format!("fee currency not registered: {currency_addr}")),
         }
     }

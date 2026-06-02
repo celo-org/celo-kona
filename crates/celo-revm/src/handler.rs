@@ -7,6 +7,7 @@ use crate::{
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
+    units::{Fc, FcU256, NativeU256},
 };
 use alloy_primitives::{Address, B256, b256, keccak256};
 use celo_alloy_consensus::CeloTxType;
@@ -146,17 +147,19 @@ where
         evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
         basefee: u64,
-    ) -> Result<u128, ERROR> {
-        // Convert costs to fee currency
+    ) -> Result<Fc, ERROR> {
         let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
-            .celo_to_currency(fee_currency, U256::from(basefee))
+            .celo_to_currency(fee_currency, NativeU256::new(U256::from(basefee)))
             .map_err(InvalidTransaction::from)?;
-        // Convert base_fee_in_erc20 (U256) to u128 for gas price calculations
-        let base_fee_in_erc20_u128: u128 = base_fee_in_erc20
+        // Narrow FcU256 → Fc. Downstream u128 gas-price multiplications saturate,
+        // so a silent truncation here would mask only catastrophic on-chain rates —
+        // we want a hard error instead.
+        let v: u128 = base_fee_in_erc20
+            .into_inner()
             .try_into()
             .map_err(|_| InvalidTransaction::from("base fee in ERC20 overflows u128"))?;
-        Ok(base_fee_in_erc20_u128)
+        Ok(Fc::new(v))
     }
 
     fn cip64_max_allowed_gas_cost(
@@ -206,24 +209,33 @@ where
         }
         let caller = ctx.tx().caller();
 
-        // Convert costs to fee currency
-        let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
-        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
+        let base_fee_in_erc20: Fc = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
+        let effective_gas_price = Fc::new(
+            evm.ctx()
+                .tx()
+                .effective_gas_price(base_fee_in_erc20.into_inner()),
+        );
         let tip_gas_price = effective_gas_price
             .checked_sub(base_fee_in_erc20)
             .expect("effective_gas_price >= base_fee_in_erc20 enforced by validate_env");
 
-        let tx_fee_tip_in_erc20 = U256::from(
-            tip_gas_price.saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
-        );
-
-        // Return balance of not spent gas.
-        let refund_in_erc20 = U256::from(effective_gas_price.saturating_mul(
-            (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
+        let tx_fee_tip_in_erc20 = FcU256::new(U256::from(
+            tip_gas_price
+                .into_inner()
+                .saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
         ));
 
-        let base_tx_charge =
-            base_fee_in_erc20.saturating_mul(exec_result.gas().spent_sub_refunded() as u128);
+        // Return balance of not spent gas.
+        let refund_in_erc20 =
+            FcU256::new(U256::from(effective_gas_price.into_inner().saturating_mul(
+                (exec_result.gas().remaining() + exec_result.gas().refunded() as u64) as u128,
+            )));
+
+        let base_tx_charge = FcU256::new(U256::from(
+            base_fee_in_erc20
+                .into_inner()
+                .saturating_mul(exec_result.gas().spent_sub_refunded() as u128),
+        ));
 
         // Subtract raw debit gas (before refunds) to match op-geth, which computes
         // gasUsed = maxIntrinsicGasCost - leftoverGas (no refund adjustment).
@@ -240,9 +252,9 @@ where
             caller,
             fee_recipient,
             fee_handler,
-            refund_in_erc20,
-            tx_fee_tip_in_erc20,
-            U256::from(base_tx_charge),
+            refund_in_erc20.into_inner(),
+            tx_fee_tip_in_erc20.into_inner(),
+            base_tx_charge.into_inner(),
             max_allowed_gas_cost,
         )
         .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
@@ -334,16 +346,22 @@ where
             return Err(InvalidTransaction::from("unregistered fee-currency address").into());
         }
 
-        let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
-        let effective_gas_price = evm.ctx().tx().effective_gas_price(base_fee_in_erc20);
+        let base_fee_in_erc20: Fc = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
+        let effective_gas_price = Fc::new(
+            evm.ctx()
+                .tx()
+                .effective_gas_price(base_fee_in_erc20.into_inner()),
+        );
 
         // Get ERC20 balance using the erc20 module
         let fee_currency_addr = fee_currency.unwrap();
 
-        let gas_cost = (gas_limit as u128)
-            .checked_mul(effective_gas_price)
-            .map(|gas_cost| U256::from(gas_cost))
-            .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?;
+        let gas_cost = FcU256::new(
+            (gas_limit as u128)
+                .checked_mul(effective_gas_price.into_inner())
+                .map(U256::from)
+                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?,
+        );
 
         // Note: Unlike op-reth, we do not add L1 cost or operator fee to the ERC20 debit.
         // On Celo chains, l1BaseFeeScalar, l1BlobBaseFeeScalar, and operatorFeeScalar are
@@ -358,12 +376,13 @@ where
             evm,
             fee_currency_addr,
             caller_addr,
-            gas_cost,
+            gas_cost.into_inner(),
             max_allowed_gas_cost,
         )
         .map_err(|e| InvalidTransaction::from(format!("{FEE_DEBIT_ERROR_PREFIX}: {e}")))?;
 
-        // Store CIP64 transaction information by modifying the transaction
+        // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
+        // types; we narrow back to `u128` at this boundary rather than widening them.
         let mut tx = evm.ctx().tx().clone();
         tx.cip64_tx_info = Some(Cip64Info {
             debit_gas_used,
@@ -372,11 +391,9 @@ where
             credit_gas_refunded: 0,
             logs_pre: logs,
             logs_post: Vec::new(),
-            base_fee_in_erc20: Some(base_fee_in_erc20),
+            base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
         });
-        // Store the effective gas price for the GASPRICE opcode.
-        // This is calculated using the base fee converted to the fee currency.
-        tx.effective_gas_price = Some(effective_gas_price);
+        tx.effective_gas_price = Some(effective_gas_price.into_inner());
         evm.ctx().set_tx(tx);
 
         Ok(())
@@ -478,11 +495,18 @@ where
                     return Err(InvalidTransaction::InvalidChainId.into());
                 }
 
-                // Skip base fee check when disabled (e.g. during eth_estimateGas)
+                // Skip base fee check when disabled (e.g. during eth_estimateGas).
+                // `validate_priority_fee_tx` takes raw `u128`s; max_fee and
+                // max_priority_fee come from the CIP-64 envelope (FC-denominated)
+                // and base_fee_for_check is the FC-converted base fee — all three
+                // share FC denomination, so calling `.into_inner()` here is safe.
                 let base_fee_for_check = if evm.ctx().cfg().is_base_fee_check_disabled() {
                     None
                 } else {
-                    Some(self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?)
+                    Some(
+                        self.cip64_get_base_fee_in_erc20(evm, fee_currency, base_fee)?
+                            .into_inner(),
+                    )
                 };
                 validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
                 // CIP-64-specific validation (chain-ID + priority fee) is complete.

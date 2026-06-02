@@ -16,6 +16,7 @@ pub mod fee_currency_context;
 pub mod handler;
 pub mod precompiles;
 pub mod transaction;
+pub mod units;
 
 pub use api::{
     builder::CeloBuilder,

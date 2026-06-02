@@ -13,6 +13,7 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::CeloPooledTransaction;
+use celo_revm::units::{Fc, FcU256, Native, NativeU256};
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
@@ -23,7 +24,6 @@ use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, PoolTransaction, TransactionValidationOutcome,
     TransactionValidator,
     error::{InvalidPoolTransactionError, PoolTransactionError},
-    validate::ValidTransaction,
 };
 use std::{
     borrow::Cow,
@@ -84,7 +84,7 @@ pub struct ExchangeRate {
 }
 
 impl ExchangeRate {
-    /// Convert a fee-currency amount to native equivalent.
+    /// Convert a fee-currency amount to its native-CELO equivalent.
     ///
     /// Saturates to `u128::MAX` only when the true mathematical result exceeds
     /// `u128`.
@@ -93,12 +93,12 @@ impl ExchangeRate {
     ///
     /// Panics if `numerator` is zero. This is a logic error — the constructor
     /// rejects zero numerator/denominator rates.
-    pub fn to_native(&self, amount: u128) -> u128 {
+    pub fn to_native(&self, amount: Fc) -> Native {
         assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
-        mul_div_saturating(amount, self.denominator, self.numerator)
+        Native::new(mul_div_saturating(amount.into_inner(), self.denominator, self.numerator))
     }
 
-    /// Convert a native amount to fee-currency equivalent.
+    /// Convert a native-CELO amount to its fee-currency equivalent.
     ///
     /// Saturates to `u128::MAX` only when the true mathematical result exceeds
     /// `u128`.
@@ -107,9 +107,39 @@ impl ExchangeRate {
     ///
     /// Panics if `denominator` is zero. This is a logic error — the constructor
     /// rejects zero numerator/denominator rates.
-    pub fn to_fc(&self, native_amount: u128) -> u128 {
+    pub fn to_fc(&self, native_amount: Native) -> Fc {
         assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
-        mul_div_saturating(native_amount, self.numerator, self.denominator)
+        Fc::new(mul_div_saturating(native_amount.into_inner(), self.numerator, self.denominator))
+    }
+
+    /// `U256`-backed variant of [`Self::to_native`].
+    ///
+    /// Used by the RPC layer where rate-scaling needs `checked_mul` on `U256`
+    /// to avoid panicking on adversarial on-chain rates. Returns `None` if the
+    /// intermediate `amount * denominator` overflows `U256`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `numerator` is zero.
+    pub fn to_native_u256(&self, amount: FcU256) -> Option<NativeU256> {
+        assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
+        amount
+            .into_inner()
+            .checked_mul(U256::from(self.denominator))
+            .map(|v| NativeU256::new(v / U256::from(self.numerator)))
+    }
+
+    /// `U256`-backed variant of [`Self::to_fc`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `denominator` is zero.
+    pub fn to_fc_u256(&self, native_amount: NativeU256) -> Option<FcU256> {
+        assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
+        native_amount
+            .into_inner()
+            .checked_mul(U256::from(self.numerator))
+            .map(|v| FcU256::new(v / U256::from(self.denominator)))
     }
 }
 
@@ -125,6 +155,22 @@ fn mul_div_saturating(amount: u128, mul: u128, div: u128) -> u128 {
 // ---------------------------------------------------------------------------
 // CeloPoolTx
 // ---------------------------------------------------------------------------
+
+/// Native-denominated fee values that the pool exposes through
+/// [`alloy_consensus::Transaction`].
+///
+/// Bundling the two fee fields behind a single `Option` makes the
+/// "denomination = type" invariant load-bearing: the `Native` newtype is only
+/// reachable inside `Some(NativeFees { .. })`, which by construction is set
+/// only when the values are truly native-CELO-denominated. The transitional
+/// state — a CIP-64 tx whose `inner.max_fee_per_gas()` is FC-denominated and
+/// has not yet been converted — is represented by `None`, so the type can
+/// never lie about what it holds.
+#[derive(Copy, Clone, Debug)]
+struct NativeFees {
+    max_fee_per_gas: Native,
+    max_priority_fee_per_gas: Option<Native>,
+}
 
 /// Fee-currency-aware pool transaction.
 ///
@@ -145,18 +191,20 @@ fn mul_div_saturating(amount: u128, mul: u128, div: u128) -> u128 {
 #[derive(Debug, Clone)]
 pub struct CeloPoolTx {
     inner: InnerPoolTx,
-    /// Native-equivalent max_fee_per_gas.
+    /// Native-equivalent fees.
     ///
-    /// For non-CIP-64 txs: same as `inner.max_fee_per_gas()`.
-    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
-    /// [`Self::apply_exchange_rate`].
-    native_max_fee_per_gas: u128,
-    /// Native-equivalent max_priority_fee_per_gas.
+    /// - Non-CIP-64 txs: populated at construction — `inner.max_fee_per_gas()` is already native
+    ///   CELO.
+    /// - CIP-64 txs: `None` until [`Self::apply_exchange_rate`] runs, then `Some` with FC values
+    ///   converted to native equivalents.
     ///
-    /// For non-CIP-64 txs: same as `inner.max_priority_fee_per_gas()`.
-    /// For CIP-64 txs: initially FC-denominated; updated to native equivalent by
-    /// [`Self::apply_exchange_rate`].
-    native_max_priority_fee_per_gas: Option<u128>,
+    /// Trait accessors `expect` this is `Some`. The pool validator
+    /// (`apply_exchange_rates_to_pool_tx`) runs the conversion before the
+    /// inner validator's stateless checks read the fee accessors, so the
+    /// only way to hit the panic is a misuse: constructing a CIP-64
+    /// `CeloPoolTx` outside the validator and reading its fees without
+    /// first calling [`Self::apply_exchange_rate`].
+    native_fees: Option<NativeFees>,
     /// Cached fee currency address (avoids deep-cloning the tx envelope on each access).
     fee_currency: Option<Address>,
     /// Cost checked against the sender's native CELO balance.
@@ -166,8 +214,12 @@ pub struct CeloPoolTx {
     ///   against the sender's ERC20 balance, so it must not be added to the native-CELO cost —
     ///   doing so would reject otherwise-valid txs whose sender has plenty of ERC20 balance but
     ///   only `value` worth of CELO.
-    native_cost: U256,
+    native_cost: NativeU256,
 }
+
+/// Message used by accessors that `expect` `native_fees` is populated.
+const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated before reading fees: \
+    non-CIP-64 txs set it in `new`; CIP-64 txs set it via `apply_exchange_rate`";
 
 /// Extract the fee currency address from a pool transaction without cloning.
 ///
@@ -184,40 +236,51 @@ fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
 }
 
 impl CeloPoolTx {
-    /// Create a new [`CeloPoolTx`] with raw (unconverted) fee values.
+    /// Create a new [`CeloPoolTx`].
+    ///
+    /// For non-CIP-64 txs the native-fee cache is populated immediately since
+    /// `inner`'s fee fields are already native CELO. For CIP-64 txs the cache
+    /// is left empty — the caller (the pool validator) must follow up with
+    /// [`Self::apply_exchange_rate`] before any code reads the fee accessors.
     pub fn new(inner: InnerPoolTx) -> Self {
-        let native_max_fee_per_gas = inner.max_fee_per_gas();
-        let native_max_priority_fee_per_gas = inner.max_priority_fee_per_gas();
         let fee_currency = extract_fee_currency(&inner);
+        let native_fees = if fee_currency.is_some() {
+            None
+        } else {
+            Some(NativeFees {
+                max_fee_per_gas: Native::new(inner.max_fee_per_gas()),
+                max_priority_fee_per_gas: inner.max_priority_fee_per_gas().map(Native::new),
+            })
+        };
         // For CIP-64 txs the raw `inner.cost()` is `gas_limit * max_fee + value`
         // in *fee-currency* units — treating that as native CELO would reject
         // valid txs whose sender funded gas with ERC20 but holds only `value`
         // in CELO. Use just `value`: gas is paid in the fee currency and is
         // checked separately against the sender's ERC20 balance, so it must
         // not be added to the native-CELO requirement.
-        let native_cost = if fee_currency.is_some() { inner.value() } else { *inner.cost() };
-        Self {
-            inner,
-            native_max_fee_per_gas,
-            native_max_priority_fee_per_gas,
-            fee_currency,
-            native_cost,
-        }
+        let native_cost =
+            NativeU256::new(if fee_currency.is_some() { inner.value() } else { *inner.cost() });
+        Self { inner, native_fees, fee_currency, native_cost }
     }
 
     /// Apply an exchange rate to convert fee-currency values to native equivalents.
     ///
     /// No-op for native (non-CIP-64) transactions — their fee fields are already
-    /// denominated in native CELO. `native_cost` is intentionally left unchanged:
-    /// CIP-64 gas is paid in the fee currency, so the native-CELO requirement is
-    /// just `value` and was seeded correctly by [`Self::new`].
+    /// denominated in native CELO and were cached at construction. `native_cost`
+    /// is intentionally left unchanged: CIP-64 gas is paid in the fee currency,
+    /// so the native-CELO requirement is just `value` and was seeded correctly
+    /// by [`Self::new`].
     pub fn apply_exchange_rate(&mut self, rate: ExchangeRate) {
         if self.fee_currency.is_none() {
             return;
         }
-        self.native_max_fee_per_gas = rate.to_native(self.inner.max_fee_per_gas());
-        self.native_max_priority_fee_per_gas =
-            self.inner.max_priority_fee_per_gas().map(|v| rate.to_native(v));
+        self.native_fees = Some(NativeFees {
+            max_fee_per_gas: rate.to_native(Fc::new(self.inner.max_fee_per_gas())),
+            max_priority_fee_per_gas: self
+                .inner
+                .max_priority_fee_per_gas()
+                .map(|v| rate.to_native(Fc::new(v))),
+        });
     }
 
     /// Returns the fee currency address if this is a CIP-64 transaction.
@@ -246,29 +309,39 @@ impl Transaction for CeloPoolTx {
         self.inner.gas_price()
     }
     fn max_fee_per_gas(&self) -> u128 {
-        self.native_max_fee_per_gas
+        self.native_fees.expect(NATIVE_FEES_NOT_SET).max_fee_per_gas.into_inner()
     }
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
-        self.native_max_priority_fee_per_gas
+        self.native_fees
+            .expect(NATIVE_FEES_NOT_SET)
+            .max_priority_fee_per_gas
+            .map(Native::into_inner)
     }
     fn max_fee_per_blob_gas(&self) -> Option<u128> {
         self.inner.max_fee_per_blob_gas()
     }
     fn priority_fee_or_price(&self) -> u128 {
         // The `None` branch is unreachable for CIP-64 txs (always EIP-1559 style with
-        // priority fee set). For non-CIP-64 txs, `native_max_priority_fee_per_gas` is
-        // copied from inner unchanged, so the fallback is only hit for legacy txs.
-        self.native_max_priority_fee_per_gas.unwrap_or_else(|| self.inner.priority_fee_or_price())
+        // priority fee set). For non-CIP-64 txs, the cached priority is copied from
+        // inner unchanged, so the fallback is only hit for legacy txs.
+        self.native_fees
+            .expect(NATIVE_FEES_NOT_SET)
+            .max_priority_fee_per_gas
+            .map(Native::into_inner)
+            .unwrap_or_else(|| self.inner.priority_fee_or_price())
     }
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        base_fee.map_or(self.native_max_fee_per_gas, |base_fee| {
-            let tip = self.native_max_fee_per_gas.saturating_sub(base_fee as u128);
-            if let Some(max_prio) = self.native_max_priority_fee_per_gas &&
+        let fees = self.native_fees.expect(NATIVE_FEES_NOT_SET);
+        let native_max_fee = fees.max_fee_per_gas.into_inner();
+        let native_max_prio = fees.max_priority_fee_per_gas.map(Native::into_inner);
+        base_fee.map_or(native_max_fee, |base_fee| {
+            let tip = native_max_fee.saturating_sub(base_fee as u128);
+            if let Some(max_prio) = native_max_prio &&
                 tip > max_prio
             {
                 return max_prio + base_fee as u128;
             }
-            self.native_max_fee_per_gas
+            native_max_fee
         })
     }
     fn is_dynamic_fee(&self) -> bool {
@@ -313,16 +386,9 @@ impl Typed2718 for CeloPoolTx {
 
 impl InMemorySize for CeloPoolTx {
     fn size(&self) -> usize {
-        let Self {
-            inner,
-            native_max_fee_per_gas,
-            native_max_priority_fee_per_gas,
-            fee_currency,
-            native_cost,
-        } = self;
+        let Self { inner, native_fees, fee_currency, native_cost } = self;
         inner.size() +
-            core::mem::size_of_val(native_max_fee_per_gas) +
-            core::mem::size_of_val(native_max_priority_fee_per_gas) +
+            core::mem::size_of_val(native_fees) +
             core::mem::size_of_val(fee_currency) +
             core::mem::size_of_val(native_cost)
     }
@@ -338,8 +404,9 @@ impl PoolTransaction for CeloPoolTx {
     type Pooled = CeloPooledTransaction;
 
     fn clone_into_consensus(&self) -> Recovered<Self::Consensus> {
-        let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let fees = self.native_fees.expect(NATIVE_FEES_NOT_SET);
+        let native_max_fee = fees.max_fee_per_gas;
+        let native_max_priority_fee = fees.max_priority_fee_per_gas.unwrap_or_default();
         self.inner.clone_into_consensus().map(|tx| {
             CeloConsensusTx::with_native_fees(
                 tx.into_envelope(),
@@ -370,8 +437,9 @@ impl PoolTransaction for CeloPoolTx {
         // envelope's own `max_fee_per_gas` is fee-currency-denominated and can't
         // be compared to the native base fee. Attaching the cached native fees
         // here lets that trait method return the correct tip for CIP-64.
-        let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let fees = self.native_fees.expect(NATIVE_FEES_NOT_SET);
+        let native_max_fee = fees.max_fee_per_gas;
+        let native_max_priority_fee = fees.max_priority_fee_per_gas.unwrap_or_default();
         self.inner.into_consensus().map(|tx| {
             CeloConsensusTx::with_native_fees(
                 tx.into_envelope(),
@@ -384,8 +452,9 @@ impl PoolTransaction for CeloPoolTx {
     fn into_consensus_with2718(
         self,
     ) -> reth_primitives_traits::WithEncoded<Recovered<Self::Consensus>> {
-        let native_max_fee = self.native_max_fee_per_gas;
-        let native_max_priority_fee = self.native_max_priority_fee_per_gas.unwrap_or(0);
+        let fees = self.native_fees.expect(NATIVE_FEES_NOT_SET);
+        let native_max_fee = fees.max_fee_per_gas;
+        let native_max_priority_fee = fees.max_priority_fee_per_gas.unwrap_or_default();
         let with_encoded = self.inner.into_consensus_with2718();
         // Preserve the cached 2718 encoding while re-wrapping the inner
         // CeloConsensusTx with native-equivalent fees. The cached fees are
@@ -418,7 +487,7 @@ impl PoolTransaction for CeloPoolTx {
     }
 
     fn cost(&self) -> &U256 {
-        &self.native_cost
+        self.native_cost.as_u256()
     }
 
     fn encoded_length(&self) -> usize {
@@ -889,33 +958,43 @@ fn rollback_cumulative_fc_cost(
     }
 }
 
-/// Apply exchange rates to a [`ValidTransaction`] if it is a CIP-64 tx.
-/// Also checks ERC20 balance (including cumulative tracking across multiple txs
-/// from the same sender/currency), minimum tip, and simulates debitGasFees.
-fn apply_exchange_rates_to_valid_tx(
+/// Apply the fee-currency exchange rate to a [`CeloPoolTx`] (no-op for native
+/// txs) and run the CIP-64-specific admission checks: base-fee floor, minimum
+/// tip, ERC20 balance with cumulative tracking, `debitGasFees` simulation, and
+/// the configured tx fee cap.
+///
+/// Must run **before** the wrapped inner validator's stateless checks because
+/// those checks read `max_fee_per_gas()`/`max_priority_fee_per_gas()`, which
+/// `expect` `native_fees` to be populated.
+///
+/// On success returns `Some((sender, fee_currency, required_fc))` if a
+/// cumulative reservation was staged (the caller must roll it back via
+/// [`rollback_cumulative_fc_cost`] if the inner validator subsequently
+/// rejects the tx), or `None` if no reservation was made.
+fn apply_exchange_rates_to_pool_tx(
     lookup: &dyn FcLookup,
-    valid_tx: &mut ValidTransaction<CeloPoolTx>,
+    tx: &mut CeloPoolTx,
     fee_currency_directory: Address,
     base_fee_floor: u64,
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
     cumulative_fc_costs: &CumulativeFcCosts,
-) -> Result<(), CeloPoolRejection> {
-    let tx = match valid_tx {
-        ValidTransaction::Valid(tx) => tx,
-        ValidTransaction::ValidWithSidecar { transaction, .. } => transaction,
-    };
+) -> Result<Option<(Address, Address, U256)>, CeloPoolRejection> {
     // Tracks whether a cumulative FC reservation was made. If set, the reservation
     // must be rolled back on any subsequent rejection (debit_ok, fee cap) to avoid
     // leaving stale reserved balance in `cumulative_fc_costs`.
     let mut reserved_cumulative: Option<(Address, Address, U256)> = None;
     if let Some(fc) = tx.fee_currency() {
-        let max_fee_fc = tx.inner.max_fee_per_gas();
-        let max_priority_fee_fc = tx.inner.max_priority_fee_per_gas();
+        let max_fee_fc = Fc::new(tx.inner.max_fee_per_gas());
+        let max_priority_fee_fc: Option<Fc> = tx.inner.max_priority_fee_per_gas().map(Fc::new);
 
         // Look up exchange rate, check ERC20 balance, and simulate debit
-        // in a single EVM instance.
-        let required_fc = U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc));
+        // in a single EVM instance. `required_fc` stays as raw U256 because
+        // FcLookup::lookup_rate_and_balance, CeloPoolRejection::InsufficientBalance,
+        // and the cumulative-cost map all speak U256 — the `_fc` suffix is the only
+        // denomination marker the type system can't reach.
+        let required_fc =
+            U256::from(tx.inner.gas_limit()).saturating_mul(U256::from(max_fee_fc.into_inner()));
         let sender = tx.sender();
         CeloPoolMetrics::exchange_rate_lookup();
         let result =
@@ -935,42 +1014,42 @@ fn apply_exchange_rates_to_valid_tx(
         };
 
         // Check: fee cap must be >= base fee floor converted to FC.
-        let base_fee_floor_fc = rate.to_fc(base_fee_floor as u128);
+        let base_fee_floor_fc = rate.to_fc(Native::new(base_fee_floor as u128));
         if max_fee_fc < base_fee_floor_fc {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                max_fee_fc,
-                base_fee_floor_fc,
+                %max_fee_fc,
+                %base_fee_floor_fc,
                 "Rejecting CIP-64 tx: fee cap below base fee floor"
             );
             CeloPoolMetrics::cip64_rejection("below_base_fee_floor");
             return Err(CeloPoolRejection::BelowBaseFeeFloor {
                 currency: fc,
-                max_fee_fc,
-                base_fee_floor_fc,
+                max_fee_fc: max_fee_fc.into_inner(),
+                base_fee_floor_fc: base_fee_floor_fc.into_inner(),
             });
         }
 
         // Check: effective tip must meet the minimum tip converted to FC.
         // The effective tip is min(max_fee - base_fee_floor_fc, priority_fee),
         // matching op-geth's EffectiveGasTipIntCmp(minTip, baseFeeFloor).
-        let min_tip_fc = rate.to_fc(minimum_priority_fee);
-        let actual_priority = max_priority_fee_fc.unwrap_or(0);
+        let min_tip_fc = rate.to_fc(Native::new(minimum_priority_fee));
+        let actual_priority = max_priority_fee_fc.unwrap_or_default();
         let effective_tip = max_fee_fc.saturating_sub(base_fee_floor_fc).min(actual_priority);
         if effective_tip < min_tip_fc {
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
-                effective_tip,
-                min_tip_fc,
+                %effective_tip,
+                %min_tip_fc,
                 "Rejecting CIP-64 tx: effective tip below minimum"
             );
             CeloPoolMetrics::cip64_rejection("below_min_tip");
             return Err(CeloPoolRejection::BelowMinTip {
                 currency: fc,
-                min_tip_fc,
-                actual: effective_tip,
+                min_tip_fc: min_tip_fc.into_inner(),
+                actual: effective_tip.into_inner(),
             });
         }
 
@@ -980,8 +1059,8 @@ fn apply_exchange_rates_to_valid_tx(
             ?fc,
             numerator = rate.numerator,
             denominator = rate.denominator,
-            max_fee_fc,
-            max_fee_native = tx.native_max_fee_per_gas,
+            %max_fee_fc,
+            max_fee_native = %tx.native_fees.expect(NATIVE_FEES_NOT_SET).max_fee_per_gas,
             "Applied exchange rate to CIP-64 pool tx"
         );
 
@@ -1067,22 +1146,28 @@ fn apply_exchange_rates_to_valid_tx(
     if let Some(cap) = tx_fee_cap &&
         cap > 0
     {
-        let fee_cost = U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas()));
-        let max_tx_fee_wei: u128 = fee_cost.try_into().unwrap_or_else(|_| {
-            tracing::warn!(
-                target: "celo::pool",
-                %fee_cost,
-                "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
-            );
-            u128::MAX
-        });
-        if max_tx_fee_wei > cap {
+        // Widen to U256 only to multiply gas_limit without overflow.
+        let fee_cost = NativeU256::new(
+            U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas())),
+        );
+        let max_tx_fee_wei = u128::try_from(fee_cost.into_inner()).map_or_else(
+            |_| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %fee_cost,
+                    "Fee cost exceeds u128::MAX, clamping — tx likely has extreme fee values"
+                );
+                Native::new(u128::MAX)
+            },
+            Native::new,
+        );
+        if max_tx_fee_wei > Native::new(cap) {
             if tx.fee_currency().is_some() {
                 CeloPoolMetrics::cip64_rejection("exceeds_fee_cap");
             }
             rollback_cumulative_fc_cost(&reserved_cumulative, cumulative_fc_costs);
             return Err(CeloPoolRejection::ExceedsFeeCap {
-                max_tx_fee_wei,
+                max_tx_fee_wei: max_tx_fee_wei.into_inner(),
                 tx_fee_cap_wei: cap,
                 fee_currency: tx.fee_currency(),
             });
@@ -1094,8 +1179,9 @@ fn apply_exchange_rates_to_valid_tx(
     }
 
     // All checks passed — the cumulative reservation (if any) was already
-    // committed atomically with the balance check above.
-    Ok(())
+    // committed atomically with the balance check above. Hand it back to
+    // the caller so it can be rolled back if the inner validator rejects.
+    Ok(reserved_cumulative)
 }
 
 impl<V, P> TransactionValidator for CeloExchangeRateApplier<V, P>
@@ -1109,48 +1195,48 @@ where
     fn validate_transaction(
         &self,
         origin: reth_transaction_pool::TransactionOrigin,
-        transaction: Self::Transaction,
+        mut transaction: Self::Transaction,
     ) -> impl core::future::Future<Output = TransactionValidationOutcome<Self::Transaction>> + Send
     {
-        let fut = self.inner.validate_transaction(origin, transaction);
+        // Apply the exchange rate and run the CIP-64-specific checks BEFORE
+        // delegating to the inner validator. Its stateless tip-vs-fee-cap
+        // check calls `max_fee_per_gas()`/`max_priority_fee_per_gas()`, both
+        // of which `expect` `native_fees` to be populated — for CIP-64 txs
+        // that population only happens here.
+        let base_fee_floor = self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
+        let prepared = apply_exchange_rates_to_pool_tx(
+            &self.provider,
+            &mut transaction,
+            self.fee_currency_directory,
+            base_fee_floor,
+            self.minimum_priority_fee,
+            self.tx_fee_cap,
+            &self.cumulative_fc_costs,
+        );
+        let cumulative_fc_costs = self.cumulative_fc_costs.clone();
+        // Split into Ok/Err up-front so both branches of the async block
+        // share a single concrete future type.
+        let staged = match prepared {
+            Ok(reserved) => Ok((self.inner.validate_transaction(origin, transaction), reserved)),
+            Err(rejection) => Err((transaction, rejection)),
+        };
         async move {
-            let result = fut.await;
-            match result {
-                TransactionValidationOutcome::Valid {
-                    mut transaction,
-                    balance,
-                    state_nonce,
-                    bytecode_hash,
-                    propagate,
-                    authorities,
-                } => {
-                    let base_fee_floor =
-                        self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
-                    if let Err(rejection) = apply_exchange_rates_to_valid_tx(
-                        &self.provider,
-                        &mut transaction,
-                        self.fee_currency_directory,
-                        base_fee_floor,
-                        self.minimum_priority_fee,
-                        self.tx_fee_cap,
-                        &self.cumulative_fc_costs,
-                    ) {
-                        TransactionValidationOutcome::Invalid(
-                            transaction.into_transaction(),
-                            InvalidPoolTransactionError::other(rejection),
-                        )
-                    } else {
-                        TransactionValidationOutcome::Valid {
-                            transaction,
-                            balance,
-                            state_nonce,
-                            bytecode_hash,
-                            propagate,
-                            authorities,
-                        }
+            match staged {
+                Err((tx, rejection)) => TransactionValidationOutcome::Invalid(
+                    tx,
+                    InvalidPoolTransactionError::other(rejection),
+                ),
+                Ok((inner_fut, reserved)) => {
+                    let result = inner_fut.await;
+                    // If the inner validator rejects after we staged a
+                    // cumulative-FC reservation, roll it back so the next
+                    // submission from this sender/currency isn't penalised
+                    // until the next head-block clear.
+                    if !matches!(result, TransactionValidationOutcome::Valid { .. }) {
+                        rollback_cumulative_fc_cost(&reserved, &cumulative_fc_costs);
                     }
+                    result
                 }
-                other => other,
             }
         }
     }
@@ -1351,12 +1437,12 @@ mod tests {
     fn test_exchange_rate_to_native() {
         // 1 fc = 500 native (denominator/numerator = 1000/2 = 500)
         let rate = ExchangeRate { numerator: 2, denominator: 1000 };
-        assert_eq!(rate.to_native(100), 50_000);
-        assert_eq!(rate.to_native(0), 0);
+        assert_eq!(rate.to_native(Fc::new(100)), Native::new(50_000));
+        assert_eq!(rate.to_native(Fc::new(0)), Native::new(0));
 
         // 1 fc = 0.5 native (numerator > denominator)
         let rate = ExchangeRate { numerator: 2000, denominator: 1000 };
-        assert_eq!(rate.to_native(100), 50);
+        assert_eq!(rate.to_native(Fc::new(100)), Native::new(50));
     }
 
     #[test]
@@ -1459,7 +1545,7 @@ mod tests {
     #[should_panic(expected = "numerator must not be zero")]
     fn test_exchange_rate_zero_numerator_panics() {
         let rate = ExchangeRate { numerator: 0, denominator: 1000 };
-        let _ = rate.to_native(500);
+        let _ = rate.to_native(Fc::new(500));
     }
 
     #[test]
@@ -1468,31 +1554,63 @@ mod tests {
         // So 1 native = 1/500 fc => native * numerator / denominator
         let rate = ExchangeRate { numerator: 2, denominator: 1000 };
         // to_fc(500) = 500 * 2 / 1000 = 1
-        assert_eq!(rate.to_fc(500), 1);
-        assert_eq!(rate.to_fc(0), 0);
+        assert_eq!(rate.to_fc(Native::new(500)), Fc::new(1));
+        assert_eq!(rate.to_fc(Native::new(0)), Fc::new(0));
 
         // 1 fc = 0.5 native => 1 native = 2 fc
         let rate = ExchangeRate { numerator: 2000, denominator: 1000 };
         // to_fc(100) = 100 * 2000 / 1000 = 200
-        assert_eq!(rate.to_fc(100), 200);
+        assert_eq!(rate.to_fc(Native::new(100)), Fc::new(200));
     }
 
     #[test]
     fn test_exchange_rate_to_fc_roundtrip() {
         let rate = ExchangeRate { numerator: 3, denominator: 1000 };
-        let native = 1_000_000u128;
+        let native = Native::new(1_000_000u128);
         let fc = rate.to_fc(native);
         let back = rate.to_native(fc);
         // Round-trip may lose precision due to integer division, but should be close
         assert!(back <= native);
-        assert!(native - back < rate.denominator / rate.numerator + 1);
+        assert!((native.into_inner() - back.into_inner()) < rate.denominator / rate.numerator + 1);
     }
 
     #[test]
     #[should_panic(expected = "denominator must not be zero")]
     fn test_exchange_rate_to_fc_zero_denominator_panics() {
         let rate = ExchangeRate { numerator: 1000, denominator: 0 };
-        let _ = rate.to_fc(500);
+        let _ = rate.to_fc(Native::new(500));
+    }
+
+    #[test]
+    fn test_to_native_u256_normal_case() {
+        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
+        let got = rate.to_native_u256(FcU256::new(U256::from(100u64))).expect("no overflow");
+        assert_eq!(got.into_inner(), U256::from(50_000u64));
+    }
+
+    #[test]
+    fn test_to_fc_u256_normal_case() {
+        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
+        let got = rate.to_fc_u256(NativeU256::new(U256::from(500u64))).expect("no overflow");
+        assert_eq!(got.into_inner(), U256::from(1u64));
+    }
+
+    #[test]
+    fn test_to_native_u256_returns_none_on_overflow() {
+        // numerator = denominator = 1, amount = U256::MAX, so amount * denominator overflows U256.
+        let rate = ExchangeRate { numerator: 1, denominator: u128::MAX };
+        let huge = FcU256::new(U256::MAX);
+        assert!(
+            rate.to_native_u256(huge).is_none(),
+            "checked_mul must catch overflow on adversarial rate"
+        );
+    }
+
+    #[test]
+    fn test_to_fc_u256_returns_none_on_overflow() {
+        let rate = ExchangeRate { numerator: u128::MAX, denominator: 1 };
+        let huge = NativeU256::new(U256::MAX);
+        assert!(rate.to_fc_u256(huge).is_none());
     }
 
     #[test]
@@ -1522,7 +1640,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // MockFcLookup + apply_exchange_rates_to_valid_tx integration tests
+    // MockFcLookup + apply_exchange_rates_to_pool_tx integration tests
     // -----------------------------------------------------------------------
 
     struct MockFcLookup {
@@ -1543,10 +1661,6 @@ mod tests {
         }
     }
 
-    fn wrap_valid(tx: CeloPoolTx) -> ValidTransaction<CeloPoolTx> {
-        ValidTransaction::Valid(tx)
-    }
-
     fn empty_cumulative_costs() -> CumulativeFcCosts {
         Arc::new(Mutex::new(HashMap::new()))
     }
@@ -1554,8 +1668,7 @@ mod tests {
     #[test]
     fn test_apply_rates_successful_conversion() {
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
@@ -1563,9 +1676,9 @@ mod tests {
             debit_ok: Some(true),
         };
 
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1574,24 +1687,59 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let tx = match &valid {
-            ValidTransaction::Valid(t) => t,
-            _ => panic!(),
-        };
         // 1_000_000_000 * 2/1 = 2_000_000_000
         assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+    }
+
+    /// Regression for f2b24192: `apply_exchange_rates_to_pool_tx` must not
+    /// fold FC-denominated gas into the native-CELO cost check. With a CIP-64
+    /// tx whose `value` is zero, the native cost after conversion must remain
+    /// zero — the gas cost is denominated in fee currency and is checked
+    /// separately against the sender's ERC20 balance. Folding it in here
+    /// rejects valid CIP-64 txs whose senders have plenty of ERC20 for gas
+    /// but little native CELO.
+    #[test]
+    fn test_apply_rates_does_not_fold_fc_gas_into_native_cost() {
+        let fc = Address::with_last_byte(0xCD);
+        // Non-trivial rate + non-trivial gas_limit: the buggy form would
+        // produce a non-zero native cost here. Correct form: cost stays at
+        // `value` (zero, from make_test_tx).
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        let mock = MockFcLookup {
+            // 1 FC = 2 native; gas in FC is far from zero
+            rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+        };
+
+        apply_exchange_rates_to_pool_tx(
+            &mock,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+        )
+        .expect("ok");
+
+        assert_eq!(
+            *tx.cost(),
+            U256::ZERO,
+            "native_cost for CIP-64 must equal value (0 here) — gas is paid in FC"
+        );
     }
 
     #[test]
     fn test_apply_rates_unregistered_currency() {
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1604,17 +1752,16 @@ mod tests {
     #[test]
     fn test_apply_rates_insufficient_balance() {
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::ZERO),
             debit_ok: None,
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1628,8 +1775,7 @@ mod tests {
     fn test_apply_rates_below_base_fee_floor() {
         let fc = Address::with_last_byte(0xAA);
         // max_fee_per_gas = 100 in FC terms
-        let tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
 
         // rate: 1:1, base_fee_floor = 25 Gwei
         // base_fee_floor_fc = to_fc(25_000_000_000) = 25_000_000_000
@@ -1639,9 +1785,9 @@ mod tests {
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             25_000_000_000,
             0,
@@ -1655,8 +1801,7 @@ mod tests {
     fn test_apply_rates_below_min_tip() {
         let fc = Address::with_last_byte(0xAA);
         // priority_fee = 5 in FC terms
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 5, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 5, Address::with_last_byte(1));
 
         // rate: 1:1, min_priority_fee = 100
         // min_tip_fc = to_fc(100) = 100
@@ -1666,9 +1811,9 @@ mod tests {
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             100,
@@ -1681,17 +1826,16 @@ mod tests {
     #[test]
     fn test_apply_rates_debit_simulation_failed() {
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(false),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1710,8 +1854,7 @@ mod tests {
         let fc = Address::with_last_byte(0xAA);
         // CIP-64 tx: gas=21000, max_fee=1000 FC, value=0
         // FC cost = 21_000_000 FC units → looks large in raw terms
-        let tx = make_test_tx(Some(fc), 21_000, 1000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1000, 100, Address::with_last_byte(1));
 
         // rate: 1 FC = 0.001 native (numerator=1000, denominator=1)
         // native_max_fee = 1000 * 1/1000 = 1
@@ -1722,9 +1865,9 @@ mod tests {
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1738,8 +1881,7 @@ mod tests {
     fn test_fee_cap_cip64_exceeds_cap_after_conversion() {
         let fc = Address::with_last_byte(0xAA);
         // CIP-64 tx: gas=21000, max_fee=1_000_000_000 FC
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         // rate: 1:1 → native_cost = 21_000 * 1_000_000_000 = 21_000_000_000_000
         // Cap = 1_000_000_000_000 (1000 Gwei) → exceeds → rejected
@@ -1748,9 +1890,9 @@ mod tests {
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1764,13 +1906,12 @@ mod tests {
     fn test_fee_cap_native_tx_exceeds_cap() {
         // Native tx: gas=21_000, max_fee=1_000_000_000, value=0
         // cost - value = 21_000 * 1_000_000_000 = 21_000_000_000_000
-        let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
         let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1784,13 +1925,12 @@ mod tests {
     fn test_fee_cap_disabled_with_zero_or_none() {
         // Native tx with large cost, but cap disabled (0 or None) → both pass
         for cap in [Some(0), None] {
-            let tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
-            let mut valid = wrap_valid(tx);
+            let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
             let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
-            let result = apply_exchange_rates_to_valid_tx(
+            let result = apply_exchange_rates_to_pool_tx(
                 &mock,
-                &mut valid,
+                &mut tx,
                 Address::ZERO,
                 0,
                 0,
@@ -1814,17 +1954,16 @@ mod tests {
         // effective_tip = min(1_000_000_100 - 1_000_000_000, 200) = min(100, 200) = 100
         // min_tip_fc = to_fc(150) = 150
         // 100 < 150 → reject
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_100, 200, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_100, 200, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             1_000_000_000,
             150,
@@ -1846,17 +1985,16 @@ mod tests {
         // effective_tip = min(2_000_000_000 - 1_000_000_000, 200) = min(1_000_000_000, 200) = 200
         // min_tip = 100
         // 200 >= 100 → accept
-        let tx = make_test_tx(Some(fc), 21_000, 2_000_000_000, 200, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 2_000_000_000, 200, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             1_000_000_000,
             100,
@@ -1910,17 +2048,16 @@ mod tests {
         // gas=30_000_000, max_fee=10 FC, rate 1:1 → native cost = 300_000_000
         // cap = 100_000_000 → exceeds
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1939,17 +2076,16 @@ mod tests {
         // gas=30_000_000, max_fee=10 FC, rate num=1000 denom=1 → native_max_fee = 10/1000 = 0
         // (integer truncation) → native cost = 0 → within any cap.
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 30_000_000, 10, 1, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1968,8 +2104,7 @@ mod tests {
         // Post-Jovian: base_fee_floor = 0 → any max_fee >= 0 passes the floor check.
         // Uses max_fee=100 which would be rejected by the 25 Gwei pre-Jovian floor.
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 100, 10, Address::with_last_byte(1));
 
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
@@ -1977,9 +2112,9 @@ mod tests {
             debit_ok: Some(true),
         };
         // base_fee_floor = 0 → floor check: 100 < 0 is false → passes
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -1994,8 +2129,7 @@ mod tests {
         // max_fee == floor exactly → boundary is exclusive (old_fee < floor_fc rejects),
         // so equal is accepted.
         let fc = Address::with_last_byte(0xAA);
-        let tx = make_test_tx(Some(fc), 21_000, 1000, 10, Address::with_last_byte(1));
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1000, 10, Address::with_last_byte(1));
 
         // rate 1:1 → base_fee_floor_fc = 1000 = max_fee → 1000 < 1000 is false → accepted
         let mock = MockFcLookup {
@@ -2003,9 +2137,9 @@ mod tests {
             balance: Some(U256::MAX),
             debit_ok: Some(true),
         };
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             1000,
             0,
@@ -2037,11 +2171,10 @@ mod tests {
         let cumulative = empty_cumulative_costs();
 
         // First tx: 10_000 <= 15_000 → pass
-        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid1 = wrap_valid(tx1);
-        let r1 = apply_exchange_rates_to_valid_tx(
+        let mut tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r1 = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid1,
+            &mut tx1,
             Address::ZERO,
             0,
             0,
@@ -2051,11 +2184,10 @@ mod tests {
         assert!(r1.is_ok(), "First tx should pass; got {r1:?}");
 
         // Second tx: cumulative 10_000 + 10_000 = 20_000 > 15_000 → reject
-        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid2 = wrap_valid(tx2);
-        let r2 = apply_exchange_rates_to_valid_tx(
+        let mut tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r2 = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid2,
+            &mut tx2,
             Address::ZERO,
             0,
             0,
@@ -2094,11 +2226,10 @@ mod tests {
             (sender_b, fc_a, "sender_b/fc_a"),
             (sender_a, fc_b, "sender_a/fc_b"),
         ] {
-            let tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-            let mut valid = wrap_valid(tx);
-            let r = apply_exchange_rates_to_valid_tx(
+            let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
+            let r = apply_exchange_rates_to_pool_tx(
                 &mock,
-                &mut valid,
+                &mut tx,
                 Address::ZERO,
                 0,
                 0,
@@ -2125,11 +2256,10 @@ mod tests {
         let cumulative = empty_cumulative_costs();
 
         // First tx passes (10_000 <= 15_000)
-        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid1 = wrap_valid(tx1);
-        let r1 = apply_exchange_rates_to_valid_tx(
+        let mut tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r1 = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid1,
+            &mut tx1,
             Address::ZERO,
             0,
             0,
@@ -2139,11 +2269,10 @@ mod tests {
         assert!(r1.is_ok());
 
         // Second tx would fail (cumulative 20_000 > 15_000)
-        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid2 = wrap_valid(tx2);
-        let r2 = apply_exchange_rates_to_valid_tx(
+        let mut tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r2 = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid2,
+            &mut tx2,
             Address::ZERO,
             0,
             0,
@@ -2156,11 +2285,10 @@ mod tests {
         cumulative.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
         // Now the same tx passes again
-        let tx3 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid3 = wrap_valid(tx3);
-        let r3 = apply_exchange_rates_to_valid_tx(
+        let mut tx3 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r3 = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid3,
+            &mut tx3,
             Address::ZERO,
             0,
             0,
@@ -2189,11 +2317,10 @@ mod tests {
             debit_ok: Some(false),
         };
         let cumulative = empty_cumulative_costs();
-        let tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid1 = wrap_valid(tx1);
-        let r1 = apply_exchange_rates_to_valid_tx(
+        let mut tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r1 = apply_exchange_rates_to_pool_tx(
             &mock_fail,
-            &mut valid1,
+            &mut tx1,
             Address::ZERO,
             0,
             0,
@@ -2215,11 +2342,10 @@ mod tests {
             balance: Some(balance),
             debit_ok: Some(true),
         };
-        let tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let mut valid2 = wrap_valid(tx2);
-        let r2 = apply_exchange_rates_to_valid_tx(
+        let mut tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
+        let r2 = apply_exchange_rates_to_pool_tx(
             &mock_ok,
-            &mut valid2,
+            &mut tx2,
             Address::ZERO,
             0,
             0,
@@ -2236,8 +2362,7 @@ mod tests {
         // not mutated when that rejection fires.
         let fc = Address::with_last_byte(0xAA);
         let sender = Address::with_last_byte(1);
-        let tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, sender);
-        let mut valid = wrap_valid(tx);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, sender);
         let mock = MockFcLookup {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
@@ -2245,9 +2370,9 @@ mod tests {
         };
         let cumulative = empty_cumulative_costs();
         // native_cost = 21_000 * 1_000_000_000 = 2.1e13; cap = 1e12 → rejected
-        let result = apply_exchange_rates_to_valid_tx(
+        let result = apply_exchange_rates_to_pool_tx(
             &mock,
-            &mut valid,
+            &mut tx,
             Address::ZERO,
             0,
             0,
@@ -2363,7 +2488,7 @@ mod proptests {
             amount in any::<u128>(),
         ) {
             prop_assert_eq!(
-                rate.to_native(amount),
+                rate.to_native(Fc::new(amount)).into_inner(),
                 oracle_to_native(rate, amount),
                 "to_native: rate {}/{}, amount {}",
                 rate.numerator, rate.denominator, amount,
@@ -2376,7 +2501,7 @@ mod proptests {
             amount in any::<u128>(),
         ) {
             prop_assert_eq!(
-                rate.to_fc(amount),
+                rate.to_fc(Native::new(amount)).into_inner(),
                 oracle_to_fc(rate, amount),
                 "to_fc: rate {}/{}, amount {}",
                 rate.numerator, rate.denominator, amount,
