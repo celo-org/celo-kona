@@ -341,7 +341,258 @@ mod tx_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_consensus::{
+        SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered,
+    };
+    use alloy_eips::eip2930::AccessList;
+    use alloy_primitives::{Signature, address, b256, bytes};
+    use celo_alloy_consensus::TxCip64;
+    use op_alloy_consensus::TxDeposit;
+
+    // Golden-byte JSON tests assert the exact `serde_json::to_string` output of every
+    // `CeloTxEnvelope` variant. Unlike `to_value`-based round-trips, they catch
+    // duplicate-key regressions (cf. d6c83feb, where flattened CIP-64 + a top-level
+    // helper field both emitted `"feeCurrency"`) and missing-required-field regressions
+    // (cf. 0d5324d7, where deposit RPC responses lacked `nonce` and
+    // `depositReceiptVersion`).
+    //
+    // Field-order caveat: the golden strings reflect struct-declaration order of
+    // `CeloTransactionSerdeHelper` (line 189) and the flattened `CeloTxEnvelope` variant.
+    // Reordering those fields will fail these tests and require regenerating the
+    // expected literals. Use the `_regenerate_goldens` test below to re-emit them.
+
+    fn sample_block_hash() -> B256 {
+        b256!("0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391")
+    }
+    fn sample_signer() -> Address {
+        address!("0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3")
+    }
+    fn sample_to() -> Address {
+        address!("0x00000000000000000000000000000000deadbeef")
+    }
+    fn wrap_envelope(env: CeloTxEnvelope, signer: Address, gas_price: u128) -> CeloTransaction {
+        CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(env, signer),
+                block_hash: Some(sample_block_hash()),
+                block_number: Some(1),
+                transaction_index: Some(0),
+                effective_gas_price: Some(gas_price),
+                block_timestamp: None,
+            },
+            deposit_nonce: None,
+            deposit_receipt_version: None,
+        }
+    }
+
+    fn fx_legacy() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxLegacy {
+            chain_id: Some(42220),
+            nonce: 1,
+            gas_price: 100_000_000_000,
+            gas_limit: 21_000,
+            to: sample_to().into(),
+            value: U256::from(1u64),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+        wrap_envelope(env, sample_signer(), 100_000_000_000)
+    }
+
+    fn fx_eip2930() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxEip2930 {
+            chain_id: 42220,
+            nonce: 2,
+            gas_price: 100_000_000_000,
+            gas_limit: 21_000,
+            to: sample_to().into(),
+            value: U256::from(1u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+        wrap_envelope(env, sample_signer(), 100_000_000_000)
+    }
+
+    fn fx_eip1559() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxEip1559 {
+            chain_id: 42220,
+            nonce: 3,
+            max_fee_per_gas: 100_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            gas_limit: 21_000,
+            to: sample_to().into(),
+            value: U256::from(1u64),
+            access_list: AccessList::default(),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+        wrap_envelope(env, sample_signer(), 100_000_000_000)
+    }
+
+    fn fx_eip7702() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxEip7702 {
+            chain_id: 42220,
+            nonce: 4,
+            max_fee_per_gas: 100_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            gas_limit: 21_000,
+            to: sample_to(),
+            value: U256::from(1u64),
+            access_list: AccessList::default(),
+            authorization_list: vec![],
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+        wrap_envelope(env, sample_signer(), 100_000_000_000)
+    }
+
+    const CIP64_WITH_FC_INPUT: &str = r#"{"accessList":[],"blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x22d41c3","chainId":"0xa4ec","feeCurrency":"0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gas":"0x3d97c","gasPrice":"0x22a4c71a0","hash":"0x2403eb8e9dd5230ee0c89e430591b804bb2d4e218af479e07cc8ff0b4c3611e7","input":"0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563","maxFeePerGas":"0x315373261","maxPriorityFeePerGas":"0x63e4b","nonce":"0x133","r":"0x9de05cbec31a4fcf01c652408e51c58f82aae6c66513320dd9f06b77abfe1494","s":"0x363706d206c4649165bb27b54e6286cf4cedac8b7fdd78d9cb1e00047240e293","to":"0xa0e9096b8e5ad2701f51ca1cb11684aaad91993a","transactionIndex":"0x6","type":"0x7b","v":"0x1","value":"0x0","yParity":"0x1"}"#;
+
+    fn fx_cip64_with_fc() -> CeloTransaction {
+        serde_json::from_str(CIP64_WITH_FC_INPUT).unwrap()
+    }
+
+    fn fx_cip64_no_fc() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxCip64 {
+            chain_id: 42220,
+            nonce: 5,
+            max_fee_per_gas: 100_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            gas_limit: 21_000,
+            to: sample_to().into(),
+            value: U256::from(1u64),
+            access_list: AccessList::default(),
+            fee_currency: None,
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+        wrap_envelope(env, sample_signer(), 100_000_000_000)
+    }
+
+    const DEPOSIT_POST_CANYON_INPUT: &str = r#"{"blockHash":"0x9d86bb313ebeedf4f9f82bf8a19b426be656a365648a7c089b618771311db9f9","blockNumber":"0x798ad0b","hash":"0xbc9329afac05556497441e2b3ee4c5d4da7ca0b2a4c212c212d0739e94a24df9","transactionIndex":"0x0","type":"0x7e","nonce":"0x152ea95","input":"0x440a5e200000146b000f79c50000000000000003000000006725333f000000000141e287000000000000000000000000000000000000000000000000000000012439ee7e0000000000000000000000000000000000000000000000000000000063f363e973e96e7145ff001c81b9562cba7b6104eeb12a2bc4ab9f07c27d45cd81a986620000000000000000000000006887246668a3b87f54deb3b94ba47a6f63f32985","mint":"0x0","sourceHash":"0x04e9a69416471ead93b02f0c279ab11ca0b635db5c1726a56faf22623bafde52","r":"0x0","s":"0x0","v":"0x0","yParity":"0x0","gas":"0xf4240","from":"0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001","to":"0x4200000000000000000000000000000000000015","depositReceiptVersion":"0x1","value":"0x0","gasPrice":"0x0"}"#;
+
+    fn fx_deposit_post_canyon() -> CeloTransaction {
+        serde_json::from_str(DEPOSIT_POST_CANYON_INPUT).unwrap()
+    }
+
+    fn fx_deposit_pre_canyon() -> CeloTransaction {
+        let env: CeloTxEnvelope = TxDeposit {
+            source_hash: b256!(
+                "0x04e9a69416471ead93b02f0c279ab11ca0b635db5c1726a56faf22623bafde52"
+            ),
+            from: address!("0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001"),
+            to: address!("0x4200000000000000000000000000000000000015").into(),
+            mint: 0,
+            value: U256::ZERO,
+            gas_limit: 1_000_000,
+            is_system_transaction: false,
+            input: bytes!("0x440a5e20"),
+        }
+        .into();
+        CeloTransaction {
+            inner: alloy_rpc_types_eth::Transaction {
+                inner: Recovered::new_unchecked(
+                    env,
+                    address!("0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001"),
+                ),
+                block_hash: Some(sample_block_hash()),
+                block_number: Some(1),
+                transaction_index: Some(0),
+                effective_gas_price: Some(0),
+                block_timestamp: None,
+            },
+            deposit_nonce: Some(99),
+            deposit_receipt_version: None,
+        }
+    }
+
+    #[test]
+    fn golden_legacy_tx() {
+        let expected = r#"{"type":"0x0","chainId":"0xa4ec","nonce":"0x1","gasPrice":"0x174876e800","gas":"0x5208","to":"0x00000000000000000000000000000000deadbeef","value":"0x1","input":"0x","r":"0x840cfc572845f5786e702984c2a582528cad4b49b2a10b9db1be7fca90058565","s":"0x25e7109ceb98168d95b09b18bbf6b685130e0562f233877d492b94eee0c5b6d1","v":"0x149fb","hash":"0x8731cdf69bf60003051f802c9492a19712a9cdf69a8288e1a7719a085d8fe192","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3"}"#;
+        assert_eq!(serde_json::to_string(&fx_legacy()).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_eip2930_tx() {
+        let expected = r#"{"type":"0x1","chainId":"0xa4ec","nonce":"0x2","gasPrice":"0x174876e800","gas":"0x5208","to":"0x00000000000000000000000000000000deadbeef","value":"0x1","accessList":[],"input":"0x","r":"0x840cfc572845f5786e702984c2a582528cad4b49b2a10b9db1be7fca90058565","s":"0x25e7109ceb98168d95b09b18bbf6b685130e0562f233877d492b94eee0c5b6d1","yParity":"0x0","v":"0x0","hash":"0x037a7231e6d8311f603d27a2f5f557a79841111537cce8d7e6887e5b69b9cfce","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3"}"#;
+        assert_eq!(serde_json::to_string(&fx_eip2930()).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_eip1559_tx() {
+        let expected = r#"{"type":"0x2","chainId":"0xa4ec","nonce":"0x3","gas":"0x5208","maxFeePerGas":"0x174876e800","maxPriorityFeePerGas":"0x3b9aca00","to":"0x00000000000000000000000000000000deadbeef","value":"0x1","accessList":[],"input":"0x","r":"0x840cfc572845f5786e702984c2a582528cad4b49b2a10b9db1be7fca90058565","s":"0x25e7109ceb98168d95b09b18bbf6b685130e0562f233877d492b94eee0c5b6d1","yParity":"0x0","v":"0x0","hash":"0xa2b40a876c192a188abc12accea27591ca31a0545eea1a5ba8369d04ba0b73b7","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gasPrice":"0x174876e800"}"#;
+        assert_eq!(serde_json::to_string(&fx_eip1559()).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_eip7702_tx() {
+        let expected = r#"{"type":"0x4","chainId":"0xa4ec","nonce":"0x4","gas":"0x5208","maxFeePerGas":"0x174876e800","maxPriorityFeePerGas":"0x3b9aca00","to":"0x00000000000000000000000000000000deadbeef","value":"0x1","accessList":[],"authorizationList":[],"input":"0x","r":"0x840cfc572845f5786e702984c2a582528cad4b49b2a10b9db1be7fca90058565","s":"0x25e7109ceb98168d95b09b18bbf6b685130e0562f233877d492b94eee0c5b6d1","yParity":"0x0","v":"0x0","hash":"0x7e67dcd0583c475a2f064275334cea277a2c63e7cff44353937a5912478f076f","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gasPrice":"0x174876e800"}"#;
+        assert_eq!(serde_json::to_string(&fx_eip7702()).unwrap(), expected);
+    }
+
+    // Regression test for d6c83feb: prior to that fix, this assertion failed because
+    // `"feeCurrency"` was emitted twice — once from the flattened CIP-64 envelope and
+    // once from a top-level helper field. The `to_value` round-trip in
+    // `can_deserialize_cip64` couldn't see this because `serde_json::Value` dedupes
+    // duplicate JSON keys silently.
+    #[test]
+    fn golden_cip64_tx_with_fee_currency() {
+        let expected = r#"{"type":"0x7b","chainId":"0xa4ec","nonce":"0x133","gas":"0x3d97c","maxFeePerGas":"0x315373261","maxPriorityFeePerGas":"0x63e4b","to":"0xa0e9096b8e5ad2701f51ca1cb11684aaad91993a","value":"0x0","accessList":[],"feeCurrency":"0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72","input":"0xcac35c7a290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563","r":"0x9de05cbec31a4fcf01c652408e51c58f82aae6c66513320dd9f06b77abfe1494","s":"0x363706d206c4649165bb27b54e6286cf4cedac8b7fdd78d9cb1e00047240e293","yParity":"0x1","v":"0x1","hash":"0x2403eb8e9dd5230ee0c89e430591b804bb2d4e218af479e07cc8ff0b4c3611e7","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x22d41c3","transactionIndex":"0x6","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gasPrice":"0x22a4c71a0"}"#;
+        assert_eq!(serde_json::to_string(&fx_cip64_with_fc()).unwrap(), expected);
+    }
+
+    // CIP-64 with `fee_currency = None` emits `"feeCurrency":null` rather than omitting
+    // the field — locks the wire-shape decision so a future `skip_serializing_if` change
+    // is a deliberate, golden-bumping update rather than an accidental client break.
+    #[test]
+    fn golden_cip64_tx_without_fee_currency() {
+        let expected = r#"{"type":"0x7b","chainId":"0xa4ec","nonce":"0x5","gas":"0x5208","maxFeePerGas":"0x174876e800","maxPriorityFeePerGas":"0x3b9aca00","to":"0x00000000000000000000000000000000deadbeef","value":"0x1","accessList":[],"feeCurrency":null,"input":"0x","r":"0x840cfc572845f5786e702984c2a582528cad4b49b2a10b9db1be7fca90058565","s":"0x25e7109ceb98168d95b09b18bbf6b685130e0562f233877d492b94eee0c5b6d1","yParity":"0x0","v":"0x0","hash":"0xc6475d44bdf6229f48be13bd96e567745558555e7e136dad1dfbbd39d50a3142","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","from":"0x7fda9576b9256c5bbe7cc487a0e49da7f038e2f3","gasPrice":"0x174876e800"}"#;
+        assert_eq!(serde_json::to_string(&fx_cip64_no_fc()).unwrap(), expected);
+    }
+
+    // Regression test for 0d5324d7: prior to that fix the deposit-tx serializer omitted
+    // `"nonce"` and `"depositReceiptVersion"` entirely, breaking viem / web3.py / ethers.
+    #[test]
+    fn golden_deposit_tx_post_canyon() {
+        let expected = r#"{"type":"0x7e","sourceHash":"0x04e9a69416471ead93b02f0c279ab11ca0b635db5c1726a56faf22623bafde52","from":"0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001","to":"0x4200000000000000000000000000000000000015","mint":"0x0","value":"0x0","gas":"0xf4240","input":"0x440a5e200000146b000f79c50000000000000003000000006725333f000000000141e287000000000000000000000000000000000000000000000000000000012439ee7e0000000000000000000000000000000000000000000000000000000063f363e973e96e7145ff001c81b9562cba7b6104eeb12a2bc4ab9f07c27d45cd81a986620000000000000000000000006887246668a3b87f54deb3b94ba47a6f63f32985","hash":"0xbc9329afac05556497441e2b3ee4c5d4da7ca0b2a4c212c212d0739e94a24df9","r":"0x0","s":"0x0","yParity":"0x0","v":"0x0","blockHash":"0x9d86bb313ebeedf4f9f82bf8a19b426be656a365648a7c089b618771311db9f9","blockNumber":"0x798ad0b","transactionIndex":"0x0","depositReceiptVersion":"0x1","gasPrice":"0x0","nonce":"0x152ea95"}"#;
+        assert_eq!(serde_json::to_string(&fx_deposit_post_canyon()).unwrap(), expected);
+    }
+
+    // Pre-canyon deposit: `depositReceiptVersion` is omitted entirely (not null).
+    #[test]
+    fn golden_deposit_tx_pre_canyon() {
+        let expected = r#"{"type":"0x7e","sourceHash":"0x04e9a69416471ead93b02f0c279ab11ca0b635db5c1726a56faf22623bafde52","from":"0xdeaddeaddeaddeaddeaddeaddeaddeaddead0001","to":"0x4200000000000000000000000000000000000015","mint":"0x0","value":"0x0","gas":"0xf4240","input":"0x440a5e20","hash":"0x73bae408587f1f228fad672762f1a219e63f13c415469e14e866a844912b6ec3","r":"0x0","s":"0x0","yParity":"0x0","v":"0x0","blockHash":"0x2a1c29764370aa197a2344507e4573e8bd1fbe757c10bd92e34eb9ad4934f391","blockNumber":"0x1","transactionIndex":"0x0","gasPrice":"0x0","nonce":"0x63"}"#;
+        assert_eq!(serde_json::to_string(&fx_deposit_pre_canyon()).unwrap(), expected);
+    }
+
+    // Maintainer utility: prints fresh golden-byte strings for every fixture. Run with
+    // `cargo test -p celo-alloy-rpc-types _regenerate_goldens -- --ignored --nocapture`
+    // when `CeloTransactionSerdeHelper` field order, the flattened `CeloTxEnvelope`
+    // shape, or any of the underlying tx-type structs change. Always fails so it
+    // doesn't run in normal suites.
+    #[test]
+    #[ignore = "generator: re-emit golden literals when struct order changes"]
+    fn _regenerate_goldens() {
+        for (name, json) in [
+            ("legacy", serde_json::to_string(&fx_legacy()).unwrap()),
+            ("eip2930", serde_json::to_string(&fx_eip2930()).unwrap()),
+            ("eip1559", serde_json::to_string(&fx_eip1559()).unwrap()),
+            ("eip7702", serde_json::to_string(&fx_eip7702()).unwrap()),
+            ("cip64_with_fc", serde_json::to_string(&fx_cip64_with_fc()).unwrap()),
+            ("cip64_no_fc", serde_json::to_string(&fx_cip64_no_fc()).unwrap()),
+            ("deposit_post_canyon", serde_json::to_string(&fx_deposit_post_canyon()).unwrap()),
+            ("deposit_pre_canyon", serde_json::to_string(&fx_deposit_pre_canyon()).unwrap()),
+        ] {
+            eprintln!("GOLDEN[{name}]: {json}");
+        }
+        panic!("regenerator only — copy GOLDEN[...] lines into each golden_* test literal");
+    }
 
     #[test]
     fn can_deserialize_deposit() {

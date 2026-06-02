@@ -502,20 +502,18 @@ impl<Provider> CeloReceiptConverter<Provider> {
         });
 
         // For CIP-64 receipts, fix effective_gas_price using the FC-denominated base fee
-        // instead of the native CELO base fee that `build_receipt` used.
-        let base_fee = if let CeloReceiptEnvelope::Cip64(ref cip64) = core_receipt.inner {
-            let fc_base_fee = cip64.receipt.base_fee;
-            if let Some(fc_bf) = fc_base_fee {
-                core_receipt.effective_gas_price = cip64_effective_gas_price(
-                    tx_signed.max_fee_per_gas(),
-                    tx_signed.max_priority_fee_per_gas().unwrap_or(0),
-                    fc_bf,
-                );
-            }
-            fc_base_fee
-        } else {
-            None
-        };
+        // instead of the native CELO base fee that `build_receipt` used. The FC base fee
+        // itself is already carried inside the inner `CeloCip64Receipt` and serialized as
+        // `"baseFee"` via the flattened envelope — no separate outer field needed.
+        if let CeloReceiptEnvelope::Cip64(ref cip64) = core_receipt.inner &&
+            let Some(fc_bf) = cip64.receipt.base_fee
+        {
+            core_receipt.effective_gas_price = cip64_effective_gas_price(
+                tx_signed.max_fee_per_gas(),
+                tx_signed.max_priority_fee_per_gas().unwrap_or(0),
+                fc_bf,
+            );
+        }
 
         // In Jovian, blob_gas_used is repurposed to store the DA footprint value,
         // matching the upstream OpReceiptBuilder logic.
@@ -530,11 +528,7 @@ impl<Provider> CeloReceiptConverter<Provider> {
             .l1_block_info(chain_spec, tx_signed, l1_block_info)?
             .build();
 
-        Ok(CeloTransactionReceipt {
-            inner: core_receipt,
-            l1_block_info: op_fields.l1_block_info,
-            base_fee,
-        })
+        Ok(CeloTransactionReceipt { inner: core_receipt, l1_block_info: op_fields.l1_block_info })
     }
 }
 
@@ -1662,10 +1656,10 @@ mod tests {
                 blob_gas_used: None,
             },
             l1_block_info: Default::default(),
-            base_fee: Some(fc_base_fee),
         };
 
-        let json = serde_json::to_value(&receipt).unwrap();
+        let json_str = serde_json::to_string(&receipt).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // type must be 0x7b (CIP-64), not 0x2 (EIP-1559)
         assert_eq!(json["type"], "0x7b", "CIP-64 receipt type must be 0x7b");
@@ -1675,6 +1669,13 @@ mod tests {
             json["baseFee"],
             format!("0x{fc_base_fee:x}"),
             "baseFee must be the FC-denominated base fee"
+        );
+
+        // baseFee must appear exactly once on the wire (no duplicate-key regression).
+        assert_eq!(
+            json_str.matches("\"baseFee\"").count(),
+            1,
+            "baseFee must appear exactly once in the wire output, got: {json_str}"
         );
 
         // effectiveGasPrice must reflect the FC-denominated price
@@ -1781,8 +1782,10 @@ mod tests {
         }"#;
 
         let receipt: CeloTransactionReceipt = serde_json::from_str(json).unwrap();
-        assert_eq!(receipt.base_fee, Some(500_000_000));
-        assert!(matches!(receipt.inner.inner, CeloReceiptEnvelope::Cip64(_)));
+        let CeloReceiptEnvelope::Cip64(ref cip64) = receipt.inner.inner else {
+            panic!("expected CIP-64 receipt envelope");
+        };
+        assert_eq!(cip64.receipt.base_fee, Some(500_000_000));
     }
 
     #[test]
@@ -1988,16 +1991,21 @@ mod tests {
                 blob_gas_used: None,
             },
             l1_block_info: Default::default(),
-            base_fee: Some(fc_base_fee),
         };
 
-        let json = serde_json::to_value(&receipt).unwrap();
+        let json_str = serde_json::to_string(&receipt).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Verify type is CIP-64 (0x7b)
         assert_eq!(json["type"], "0x7b");
 
-        // Verify baseFee is present
+        // Verify baseFee is present and unique on the wire (no duplicate-key regression).
         assert!(json["baseFee"].is_string(), "baseFee should be present for CIP-64 receipts");
+        assert_eq!(
+            json_str.matches("\"baseFee\"").count(),
+            1,
+            "baseFee must appear exactly once in the wire output, got: {json_str}"
+        );
 
         // Verify baseFee value
         let base_fee_hex = json["baseFee"].as_str().unwrap();
