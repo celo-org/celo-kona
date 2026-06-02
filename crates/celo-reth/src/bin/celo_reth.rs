@@ -12,10 +12,14 @@ use celo_reth::{
     },
     state_import::ImportCeloStateCommand,
 };
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches, Parser};
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
-use reth_cli_commands::{db, p2p, prune, re_execute, stage};
+use reth_cli_commands::{
+    db,
+    download::{DownloadCommand, manifest_cmd::SnapshotManifestCommand},
+    p2p, prune, re_execute, stage,
+};
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
@@ -43,16 +47,29 @@ const DB: &str = "db";
 const P2P: &str = "p2p";
 const PRUNE: &str = "prune";
 const RE_EXECUTE: &str = "re-execute";
+const DOWNLOAD: &str = "download";
+const SNAPSHOT_MANIFEST: &str = "snapshot-manifest";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
-const CELO_SUBCOMMANDS: &[&str] = &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE];
+const CELO_SUBCOMMANDS: &[&str] =
+    &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE, DOWNLOAD, SNAPSHOT_MANIFEST];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
 // `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the
 // first CIP-64 transaction it touches. See https://github.com/celo-org/celo-kona/issues/189
 // for the port plan. `proofs init` and `proofs prune` are safe on the op-reth dispatch
 // (no tx decoding).
+
+/// Default snapshot manifest URL for `celo-reth download`. Overrides the upstream
+/// `--manifest-url` default (which is empty, triggering interactive selection against
+/// `snapshots.reth.rs` — an Ethereum-mainnet-only host).
+const DEFAULT_MANIFEST_URL: &str =
+    "https://fsn1.your-objectstorage.com/celo/snapshots/manifest.json";
+
+/// Default chain ID embedded in `celo-reth snapshot-manifest` output. Overrides the upstream
+/// `--chain-id` default of `1` (Ethereum mainnet).
+const DEFAULT_CHAIN_ID: &str = "42220";
 
 /// Top-level Celo-only subcommand wrapper.
 ///
@@ -91,6 +108,14 @@ enum CeloCommand {
     /// Re-execute blocks in parallel to verify historical sync correctness.
     #[command(name = RE_EXECUTE)]
     ReExecute(re_execute::Command<CeloChainSpecParser>),
+    /// Download a Celo reth snapshot. Defaults `--manifest-url` to the cLabs-operated
+    /// publication endpoint; pass `--url`, `--manifest-url`, or `--manifest-path` to override.
+    #[command(name = DOWNLOAD)]
+    Download(Box<DownloadCommand<CeloChainSpecParser>>),
+    /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
+    /// Defaults `--chain-id` to Celo Mainnet (42220).
+    #[command(name = SNAPSHOT_MANIFEST)]
+    SnapshotManifest(Box<SnapshotManifestCommand>),
 }
 
 impl CeloCommand {
@@ -102,8 +127,22 @@ impl CeloCommand {
             Self::P2P(command) => command.chain_spec(),
             Self::Prune(command) => command.chain_spec(),
             Self::ReExecute(command) => command.chain_spec(),
+            Self::Download(command) => command.chain_spec(),
+            Self::SnapshotManifest(_) => None,
         }
     }
+}
+
+/// Build the Celo clap [`Command`] with Celo-specific argument defaults applied. The defaults
+/// override upstream values that are Ethereum-mainnet-centric (chain id 1, snapshots.reth.rs).
+fn celo_cli_command() -> clap::Command {
+    CeloCli::command()
+        .mut_subcommand(SNAPSHOT_MANIFEST, |sub| {
+            sub.mut_arg("chain_id", |a| a.default_value(DEFAULT_CHAIN_ID))
+        })
+        .mut_subcommand(DOWNLOAD, |sub| {
+            sub.mut_arg("manifest_url", |a| a.default_value(DEFAULT_MANIFEST_URL))
+        })
 }
 
 #[global_allocator]
@@ -153,7 +192,9 @@ fn main() {
     // the subcommand slot (where we surface clap's own help/version/error output instead of a
     // confusing "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    match CeloCli::try_parse_from(&argv) {
+    let parsed =
+        celo_cli_command().try_get_matches_from(&argv).and_then(|m| CeloCli::from_arg_matches(&m));
+    match parsed {
         Ok(cli) => {
             if let Err(err) = run_celo_subcommand(cli) {
                 eprintln!("Error: {err:?}");
@@ -323,6 +364,12 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
             let runtime = runner.runtime();
             runner.run_until_ctrl_c(cmd.execute::<CeloNode>(components, runtime))
         }
+        // Download is chain-agnostic file shuttling; CeloNode satisfies the `N` type bound
+        // without requiring Celo-aware decoding (archives are tarballs over MDBX + static files).
+        CeloCommand::Download(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
+        // Snapshot manifest generation is synchronous: it tars static files and reads the
+        // `Finish` stage checkpoint from MDBX read-only. No runtime needed.
+        CeloCommand::SnapshotManifest(cmd) => cmd.execute(),
     }
 }
 
