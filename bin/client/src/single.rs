@@ -7,7 +7,6 @@ use alloy_primitives::B256;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
-use celo_protocol::CeloToOpProviderAdapter;
 use core::fmt::Debug;
 #[cfg(feature = "eigenda")]
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
@@ -87,8 +86,7 @@ where
         safe_head,
         boot.op_boot_info.agreed_l2_output_root,
         &mut l1_provider,
-        // new_oracle_pipeline_cursor requires l2_block_info_by_number
-        &mut CeloToOpProviderAdapter(l2_provider.clone()),
+        &mut l2_provider.clone(),
     )
     .await?;
     l2_provider.set_cursor(cursor.clone());

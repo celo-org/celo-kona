@@ -6,7 +6,7 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
-use celo_protocol::{CeloBatchValidationProvider, CeloL2BlockInfo, convert_celo_block_to_op_block};
+use celo_protocol::{CeloL2BlockInfo, convert_celo_block_to_op_block};
 use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
@@ -119,24 +119,12 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
     }
 }
 
-#[async_trait]
-impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2ChainProvider<T> {
-    type Error = OracleProviderError;
-
-    async fn l2_block_info_by_number(
+impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
+    /// Returns the [`CeloBlock`] for the given L2 block number.
+    pub async fn celo_block_by_number(
         &mut self,
         number: u64,
-    ) -> Result<L2BlockInfo, OracleProviderError> {
-        // Get the block at the given number.
-        let block = CeloBatchValidationProvider::block_by_number(self, number).await?;
-        // Construct the system config from the payload.
-        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
-            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
-            .map(|celo_info| celo_info.op_l2_block_info)
-            .map_err(OracleProviderError::BlockInfo)
-    }
-
-    async fn block_by_number(&mut self, number: u64) -> Result<CeloBlock, OracleProviderError> {
+    ) -> Result<CeloBlock, OracleProviderError> {
         // Fetch the header for the given block number.
         let header @ Header { transactions_root, timestamp, .. } =
             self.header_by_number(number).await?;
@@ -158,7 +146,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
             .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
-        let celo_block = CeloBlock {
+        Ok(CeloBlock {
             header,
             body: BlockBody {
                 transactions,
@@ -168,8 +156,7 @@ impl<T: CommsClient + Send + Sync> CeloBatchValidationProvider for CeloOracleL2C
                     .is_canyon_active(timestamp)
                     .then(|| alloy_eips::eip4895::Withdrawals::new(Vec::new())),
             },
-        };
-        Ok(celo_block)
+        })
     }
 }
 
@@ -181,13 +168,15 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
         &mut self,
         number: u64,
     ) -> Result<L2BlockInfo, OracleProviderError> {
-        CeloBatchValidationProvider::l2_block_info_by_number(self, number).await
+        let block = self.celo_block_by_number(number).await?;
+        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
+            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
+            .map(|celo_info| celo_info.op_l2_block_info)
+            .map_err(OracleProviderError::BlockInfo)
     }
 
     async fn block_by_number(&mut self, number: u64) -> Result<OpBlock, OracleProviderError> {
-        CeloBatchValidationProvider::block_by_number(self, number)
-            .await
-            .map(convert_celo_block_to_op_block)
+        self.celo_block_by_number(number).await.map(convert_celo_block_to_op_block)
     }
 }
 
@@ -200,7 +189,7 @@ impl<T: CommsClient + Send + Sync> L2ChainProvider for CeloOracleL2ChainProvider
         number: u64,
         rollup_config: Arc<RollupConfig>,
     ) -> Result<SystemConfig, <Self as L2ChainProvider>::Error> {
-        let block = CeloBatchValidationProvider::block_by_number(self, number).await?;
+        let block = self.celo_block_by_number(number).await?;
         // Construct the system config from the payload.
         // `CeloBlock` can be safely converted to `OpBlock` here
         // since `to_system_config` depends solely on the block header (and not on transactions)

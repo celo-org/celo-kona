@@ -22,17 +22,3 @@ pub use pre_gingerbread::pre_gingerbread_header_hash;
 
 #[cfg(feature = "reth")]
 mod reth_compat;
-
-/// Bincode-compatible serde implementations for consensus types.
-///
-/// `bincode` crate doesn't work well with optionally serializable serde fields, but some of the
-/// consensus types require optional serialization for RPC compatibility. This module makes so that
-/// all fields are serialized.
-///
-/// Read more: <https://github.com/bincode-org/bincode/issues/326>
-#[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
-pub mod serde_bincode_compat {
-    pub use crate::transaction::{
-        cip64::serde_bincode_compat::TxCip64, serde_bincode_compat as transaction,
-    };
-}
