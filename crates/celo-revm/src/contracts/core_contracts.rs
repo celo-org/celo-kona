@@ -194,6 +194,15 @@ where
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
+            // DIAG: capture the EVM DB view of the directory + its EIP-1967 implementation at the
+            // failure, to localize the transient codeless read (account-level vs bytecode lookup).
+            let dir_ch = evm.ctx().db_mut().basic(fee_currency_directory).ok().flatten().map(|a| a.code_hash);
+            let impl_slot =
+                U256::from_be_bytes(hex!("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"));
+            let impl_word = evm.ctx().db_mut().storage(fee_currency_directory, impl_slot).unwrap_or_default();
+            let impl_addr = Address::from_slice(&impl_word.to_be_bytes::<32>()[12..]);
+            let impl_ch = evm.ctx().db_mut().basic(impl_addr).ok().flatten().map(|a| a.code_hash);
+            debug!(target: "celo_codeprobe", "get_currencies FAIL: block={:?} dir_code_hash={:?} impl=0x{:x} impl_code_hash={:?}", evm.ctx().block().number(), dir_ch, impl_addr, impl_ch);
             return Vec::new();
         }
     };
