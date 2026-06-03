@@ -205,6 +205,44 @@ fn log_directory_read_failure<DB, INSP, P>(
     }
 }
 
+/// Re-issue the `getCurrencies` call once and log the outcome at `warn!`.
+///
+/// Issue #192: if the codeless read is a transient race in the state-provider
+/// layer, an immediate second call may return real bytecode. If it does, retry
+/// is a viable fix; if the second call also comes back codeless, the bug is
+/// elsewhere (wrong block addressing, persistent corruption) and retry will
+/// not help. Result is logged only — the original (empty) answer is still
+/// returned to keep consensus behavior unchanged.
+fn log_directory_retry_outcome<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>, directory: Address)
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    let block_number = evm.ctx_ref().block().number;
+    let retry = call_read_only(
+        evm,
+        directory,
+        getCurrenciesCall {}.abi_encode().into(),
+        None,
+    );
+    let outcome = match retry {
+        Err(e) => format!("call failed: {e}"),
+        Ok((bytes, _, _, _)) if bytes.is_empty() => "empty output (still codeless)".to_string(),
+        Ok((bytes, _, _, _)) => match getCurrenciesCall::abi_decode_returns(bytes.as_ref()) {
+            Ok(decoded) => format!("succeeded with {} currencies", decoded.len()),
+            Err(e) => format!("decode failed (bytes: 0x{}): {e}", hex::encode(&bytes)),
+        },
+    };
+    warn!(
+        target: "celo_core_contracts",
+        %block_number,
+        %directory,
+        outcome,
+        "FeeCurrencyDirectory retry (issue #192)"
+    );
+}
+
 /// Fetches the list of registered fee currencies from the FeeCurrencyDirectory contract.
 fn get_currencies<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -236,6 +274,7 @@ where
             fee_currency_directory,
             "empty output (codeless contract)",
         );
+        log_directory_retry_outcome(evm, fee_currency_directory);
         return Vec::new();
     }
 
