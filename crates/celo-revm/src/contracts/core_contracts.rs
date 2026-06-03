@@ -173,6 +173,41 @@ where
     }
 }
 
+/// DIAG interpretation key for `celo_codeprobe` output at a core-contract read failure:
+///   code_hash == KECCAK_EMPTY (len 0)    => account loaded code-less (account-level transient)
+///   code_hash correct but resolved len 0 => bytecode lookup miss (`code_by_hash` transient)
+///   both correct & non-zero len          => DB view fine; codeless-ness is in the execution frame
+fn probe_dir_db_state<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>, dir: Address, site: &str)
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    let block = evm.ctx().block().number;
+
+    let dir_ch = evm.ctx().db_mut().basic(dir).ok().flatten().map(|a| a.code_hash);
+    let dir_code_len = match dir_ch {
+        Some(h) => evm.ctx().db_mut().code_by_hash(h).map(|b| b.len()).unwrap_or(0),
+        None => 0,
+    };
+
+    let impl_slot =
+        U256::from_be_bytes(hex!("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"));
+    let impl_word = evm.ctx().db_mut().storage(dir, impl_slot).unwrap_or_default();
+    let impl_addr = Address::from_slice(&impl_word.to_be_bytes::<32>()[12..]);
+    let impl_ch = evm.ctx().db_mut().basic(impl_addr).ok().flatten().map(|a| a.code_hash);
+    let impl_code_len = match impl_ch {
+        Some(h) => evm.ctx().db_mut().code_by_hash(h).map(|b| b.len()).unwrap_or(0),
+        None => 0,
+    };
+
+    debug!(
+        target: "celo_codeprobe",
+        "{}: block={:?} dir=0x{:x} dir_code_hash={:?} dir_code_len={} impl=0x{:x} impl_code_hash={:?} impl_code_len={}",
+        site, block, dir, dir_ch, dir_code_len, impl_addr, impl_ch, impl_code_len
+    );
+}
+
 /// Fetches the list of registered fee currencies from the FeeCurrencyDirectory contract.
 fn get_currencies<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -194,21 +229,14 @@ where
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
-            // DIAG: capture the EVM DB view of the directory + its EIP-1967 implementation at the
-            // failure, to localize the transient codeless read (account-level vs bytecode lookup).
-            let dir_ch = evm.ctx().db_mut().basic(fee_currency_directory).ok().flatten().map(|a| a.code_hash);
-            let impl_slot =
-                U256::from_be_bytes(hex!("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"));
-            let impl_word = evm.ctx().db_mut().storage(fee_currency_directory, impl_slot).unwrap_or_default();
-            let impl_addr = Address::from_slice(&impl_word.to_be_bytes::<32>()[12..]);
-            let impl_ch = evm.ctx().db_mut().basic(impl_addr).ok().flatten().map(|a| a.code_hash);
-            debug!(target: "celo_codeprobe", "get_currencies FAIL: block={:?} dir_code_hash={:?} impl=0x{:x} impl_code_hash={:?}", evm.ctx().block().number(), dir_ch, impl_addr, impl_ch);
+            probe_dir_db_state(evm, fee_currency_directory, "get_currencies ERR");
             return Vec::new();
         }
     };
 
     if output_bytes.is_empty() {
         debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_currency_directory);
+        probe_dir_db_state(evm, fee_currency_directory, "get_currencies EMPTY");
         return Vec::new();
     }
 
@@ -286,6 +314,7 @@ where
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
+            probe_dir_db_state(evm, fee_currency_directory, "get_exchange_rate ERR");
             return None;
         }
     };
@@ -329,6 +358,7 @@ where
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
+            probe_dir_db_state(evm, fee_currency_directory, "get_intrinsic_gas ERR");
             return None;
         }
     };
