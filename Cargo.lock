@@ -2020,7 +2020,6 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-serde 2.0.4",
  "arbitrary",
- "bincode 2.0.1",
  "bytes",
  "modular-bitfield",
  "op-alloy-consensus",
@@ -2030,7 +2029,6 @@ dependencies = [
  "reth-primitives-traits",
  "serde",
  "serde_json",
- "serde_with",
 ]
 
 [[package]]

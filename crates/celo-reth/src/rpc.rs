@@ -147,34 +147,50 @@ impl AsMut<TransactionRequest> for CeloTransactionRequest {
     }
 }
 
+/// CIP-64 is EIP-1559-based with no `authorizationList`. Pairing `feeCurrency` with
+/// `gasPrice` or with an EIP-7702 authorization list would silently drop the conflicting
+/// fields during conversion — the resulting tx wouldn't match caller intent. Each
+/// `feeCurrency`-aware request entry point uses this to reject the conflict explicitly
+/// rather than silently dropping (intentional divergence from op-geth, which silently
+/// drops on both paths).
+#[derive(Debug, Clone, Copy)]
+enum Cip64Conflict {
+    GasPrice,
+    AuthorizationList,
+}
+
+impl Cip64Conflict {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::GasPrice => "CIP-64 is not compatible with legacy gasPrice",
+            Self::AuthorizationList => {
+                "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
+            }
+        }
+    }
+}
+
+const fn check_cip64_compatibility(
+    req: &TransactionRequest,
+    fee_currency: Option<Address>,
+) -> Result<(), Cip64Conflict> {
+    if fee_currency.is_some() {
+        if req.gas_price.is_some() {
+            return Err(Cip64Conflict::GasPrice);
+        }
+        if req.authorization_list.is_some() {
+            return Err(Cip64Conflict::AuthorizationList);
+        }
+    }
+    Ok(())
+}
+
 impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
     fn try_into_sim_tx(self) -> Result<CeloTransactionSigned, ValueError<Self>> {
         let fee_currency = self.fee_currency;
 
-        // CIP-64 is EIP-1559-based. If the caller sets only `gasPrice` (legacy)
-        // alongside `feeCurrency`, the inner OP conversion produces a Legacy tx
-        // and fee_currency would be silently dropped — the user would think
-        // they're simulating in the ERC-20 but actually simulate with native
-        // CELO. Reject early so `eth_call` fails the same way `eth_sendTransaction`
-        // does (intentional divergence from op-geth, which silently drops on
-        // both paths).
-        if fee_currency.is_some() {
-            let inner_ref = self.inner.as_ref();
-            if inner_ref.gas_price.is_some() {
-                return Err(ValueError::new_static(
-                    self,
-                    "CIP-64 is not compatible with legacy gasPrice",
-                ));
-            }
-            // CIP-64 has no `authorizationList` field, so EIP-7702 authorizations
-            // would be silently dropped on conversion to CIP-64 — producing a tx
-            // that doesn't match caller intent. Reject instead.
-            if inner_ref.authorization_list.is_some() {
-                return Err(ValueError::new_static(
-                    self,
-                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList",
-                ));
-            }
+        if let Err(conflict) = check_cip64_compatibility(self.inner.as_ref(), fee_currency) {
+            return Err(ValueError::new_static(self, conflict.message()));
         }
 
         self.inner
@@ -229,33 +245,17 @@ impl<Spec, Block: BlockEnvironment>
     ) -> Result<CeloTransaction<TxEnv>, Self::Err> {
         let fee_currency = self.fee_currency;
 
-        // Same guard as `try_into_sim_tx`: reject `{gasPrice, feeCurrency}`
-        // early so `eth_estimateGas` fails consistently with `eth_sendTransaction`.
-        if fee_currency.is_some() {
-            let inner_ref = self.inner.as_ref();
-            if inner_ref.gas_price.is_some() {
-                // Log the CIP-64-specific reason; the returned error type is
-                // constrained to `EthTxEnvError` (foreign type, orphan rule) so
-                // the RPC message will be the generic `ConflictingFeeFieldsInRequest`
-                // text rather than a Celo-specific one.
-                tracing::warn!(
-                    target: "celo::rpc",
-                    ?fee_currency,
-                    "CIP-64 is not compatible with legacy gasPrice"
-                );
-                return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
-            }
-            // CIP-64 has no `authorizationList` field — silently dropping
-            // EIP-7702 authorizations would let `eth_estimateGas` return a
-            // gas figure for a tx the caller did not actually request.
-            if inner_ref.authorization_list.is_some() {
-                tracing::warn!(
-                    target: "celo::rpc",
-                    ?fee_currency,
-                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
-                );
-                return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
-            }
+        // The returned error type is constrained to `EthTxEnvError` (foreign type, orphan rule)
+        // so the RPC message will be the generic `ConflictingFeeFieldsInRequest` text rather
+        // than a Celo-specific one; the warn-log carries the precise CIP-64 reason.
+        if let Err(conflict) = check_cip64_compatibility(self.inner.as_ref(), fee_currency) {
+            tracing::warn!(
+                target: "celo::rpc",
+                ?fee_currency,
+                "{}",
+                conflict.message(),
+            );
+            return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
         }
 
         // Build a base TxEnv from the inner TransactionRequest, then wrap in
@@ -288,30 +288,8 @@ impl SignableTxRequest<CeloTransactionSigned> for CeloTransactionRequest {
             // Build a CIP-64 tx directly so fee_currency is preserved.
             let req = self.inner.as_ref();
 
-            // Reject {gasPrice + feeCurrency}: CIP-64 is EIP-1559-style and
-            // gasPrice is not compatible. Without this guard, gasPrice would
-            // be silently ignored, producing a CIP-64 tx that doesn't match
-            // the caller's intent.
-            if req.gas_price.is_some() {
-                tracing::warn!(
-                    target: "celo::rpc",
-                    ?fc,
-                    "CIP-64 feeCurrency is not compatible with legacy gasPrice"
-                );
-                return Err(SignTxRequestError::InvalidTransactionRequest);
-            }
-
-            // CIP-64 has no `authorizationList` field. Without this guard the
-            // authorization data would be silently dropped from the signed tx,
-            // so a request that pairs `feeCurrency` with EIP-7702 authorizations
-            // would produce a CIP-64 tx that materially differs from caller
-            // intent (e.g. delegations the caller expected to perform are gone).
-            if req.authorization_list.is_some() {
-                tracing::warn!(
-                    target: "celo::rpc",
-                    ?fc,
-                    "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
-                );
+            if let Err(conflict) = check_cip64_compatibility(req, Some(fc)) {
+                tracing::warn!(target: "celo::rpc", ?fc, "{}", conflict.message());
                 return Err(SignTxRequestError::InvalidTransactionRequest);
             }
 
