@@ -100,9 +100,20 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
+    // SAFETY (consensus-critical): `checkpoint_revert` alone does NOT undo this call.
+    // The inner system call reaches `journal.commit_tx()` (run_system_call ->
+    // execution_result), which clears the journal change-log; `checkpoint_revert` then has
+    // nothing to revert, so accounts loaded/touched here (notably the FeeCurrencyDirectory)
+    // would leak into the block `BundleState` and poison the in-memory state overlay for
+    // later blocks -> intermittent codeless directory reads -> INVALID block. The explicit
+    // journal-state snapshot/restore below is therefore required for true read-only
+    // semantics. (Runs once per block via `load_fee_currency_context`, so the clone is cheap.)
+    let saved_state = evm.ctx().journal_ref().state.clone();
     let checkpoint = evm.ctx().journal_mut().checkpoint();
     let result = call(evm, address, calldata, gas_limit);
-    evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+    let journal = evm.ctx().journal_mut();
+    journal.checkpoint_revert(checkpoint);
+    journal.state = saved_state;
     result
 }
 
