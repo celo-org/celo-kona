@@ -21,9 +21,17 @@ default:
 setup:
   git config core.hooksPath .githooks
 
-# Test for the native target with all features.
+# Test for the native target with all features. Excludes the slow trybuild
+# compile-fail guard (see `test-trybuild`).
 test:
-  cargo nextest run --workspace --all-features {{exclude_members}}
+  cargo nextest run --workspace --all-features {{exclude_members}} -E 'not binary(units_compile_fail)'
+
+# Slow trybuild compile-fail guard for `celo_revm::units` mixed-denomination
+# defenses. Each UI fixture triggers a fresh from-scratch compile in a
+# trybuild-managed sub-target, so this is split off from `just test` and only
+# runs in CI post-merge to main.
+test-trybuild:
+  cargo nextest run -p celo-reth --test units_compile_fail
 
 # Runs benchmarks
 benches:

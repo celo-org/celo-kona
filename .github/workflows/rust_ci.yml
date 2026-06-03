@@ -30,6 +30,26 @@ jobs:
       - name: cargo test
         run: just test
 
+  # The trybuild compile-fail guard for `celo_revm::units` (see
+  # `crates/celo-reth/tests/units_compile_fail.rs`) recompiles the full
+  # dep tree once per UI fixture in a trybuild-managed sub-target, which
+  # routinely pushes past the main `test` job's 40-minute budget. Run it
+  # in its own job, only on push to main, so PRs aren't blocked on it.
+  trybuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    name: trybuild
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          components: rustfmt
+      - uses: taiki-e/install-action@nextest
+      - name: cargo test (trybuild)
+        run: just test-trybuild
+
   cargo-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 40
