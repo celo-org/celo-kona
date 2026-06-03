@@ -24,7 +24,7 @@ use alloy_primitives::{
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
 use revm::{
     Database,
-    context_interface::ContextTr,
+    context_interface::{ContextTr, JournalTr},
     handler::{EvmTr, PrecompileProvider, SystemCallEvm},
     inspector::Inspector,
     interpreter::InterpreterResult,
@@ -39,7 +39,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -162,6 +162,49 @@ where
     }
 }
 
+/// Log a structured diagnostic record when a FeeCurrencyDirectory read fails.
+///
+/// Issue #192: we occasionally see the directory return as if it had no code,
+/// triggering a chain-divergence. The fields here let us reconstruct what the
+/// EVM saw at the moment of failure (account state, block number); the calling
+/// path (sequencing / derivation / RPC) comes through implicitly via the active
+/// tracing span context.
+fn log_directory_read_failure<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+    directory: Address,
+    reason: &str,
+) where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    let block_number = evm.ctx_ref().block().number;
+    match evm.ctx().journal_mut().load_account(directory) {
+        Ok(state_load) => {
+            let info = &state_load.data.info;
+            warn!(
+                target: "celo_core_contracts",
+                %block_number,
+                %directory,
+                code_hash = %info.code_hash,
+                nonce = info.nonce,
+                balance = %info.balance,
+                reason,
+                "FeeCurrencyDirectory read failed (issue #192)"
+            );
+        }
+        Err(_) => {
+            warn!(
+                target: "celo_core_contracts",
+                %block_number,
+                %directory,
+                reason,
+                "FeeCurrencyDirectory read failed; account load also failed (issue #192)"
+            );
+        }
+    }
+}
+
 /// Fetches the list of registered fee currencies from the FeeCurrencyDirectory contract.
 fn get_currencies<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -182,13 +225,17 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
         Err(e) => {
-            debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
+            log_directory_read_failure(evm, fee_currency_directory, &format!("call failed: {e}"));
             return Vec::new();
         }
     };
 
     if output_bytes.is_empty() {
-        debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_currency_directory);
+        log_directory_read_failure(
+            evm,
+            fee_currency_directory,
+            "empty output (codeless contract)",
+        );
         return Vec::new();
     }
 
@@ -196,7 +243,12 @@ where
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
         Ok(decoded_return) => decoded_return,
         Err(e) => {
-            debug!(target: "celo_core_contracts", "get_currencies: failed to decode (bytes: 0x{}): {}", hex::encode(output_bytes), e);
+            let reason = format!(
+                "decode failed (bytes: 0x{}): {}",
+                hex::encode(&output_bytes),
+                e
+            );
+            log_directory_read_failure(evm, fee_currency_directory, &reason);
             Vec::new()
         }
     }
