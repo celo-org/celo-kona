@@ -76,6 +76,7 @@ celo-alloy-rpc-types = { version = "1.0.0", path = "crates/celo-alloy/rpc-types"
 celo-alloy-network = { version = "1.0.0", path = "crates/celo-alloy/network", default-features = false }
 alloy-celo-evm = { version = "1.0.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "1.0.0", path = "crates/kona/executor", default-features = false }
+celo-derive = { version = "1.0.0", path = "crates/kona/derive", default-features = false }
 celo-driver = { version = "1.0.0", path = "crates/kona/driver", default-features = false }
 celo-proof = { version = "1.0.0", path = "crates/kona/proof", default-features = false }
 celo-protocol = { version = "1.0.0", path = "crates/kona/protocol", default-features = false }
@@ -200,12 +201,15 @@ reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", ta
 reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-node/v1.5.1" }
 
 # Hokulea
-# celo-org/hokulea karlb/version-bump — fork pinned at the kona-node/v1.5.1
-# bump (commit b717a24). Switch back to upstream Layr-Labs/hokulea once
-# a hokulea-client release with v1.5.x support is cut.
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "b717a24bc6f95f196fc2515add000c1b091ee5ff", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "b717a24bc6f95f196fc2515add000c1b091ee5ff", default-features = false }
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "b717a24bc6f95f196fc2515add000c1b091ee5ff", default-features = false }
+# celo-org/hokulea — pinned at the kona-node/v1.5.1 bump (commit b717a24) plus
+# the EigenDADataSource generalization over DataAvailabilityProvider (commit
+# fccc98c, celo-org/hokulea#2), which lets the eigenda path wrap celo-kona's
+# CeloEthereumDataSource (Espresso batch auth). Bump to the merged commit once
+# celo-org/hokulea#2 lands. Switch back to upstream Layr-Labs/hokulea once a
+# hokulea-client release with v1.5.x support and the generalized data source is cut.
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "fccc98c2d2fa1549bb0dce55d9dbf21a5c3026f6", default-features = false }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "fccc98c2d2fa1549bb0dce55d9dbf21a5c3026f6", default-features = false }
+hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "fccc98c2d2fa1549bb0dce55d9dbf21a5c3026f6", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
@@ -225,6 +229,7 @@ anyhow = { version = "1.0.101", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 derive_more = { version = "2.1.1", default-features = false }
 lazy_static = { version = "1.5.0", default-features = false }
+lru = { version = "0.16.4", default-features = false }
 
 bytes = { version = "1.11.0", default-features = false }
 eyre = "0.6.12"

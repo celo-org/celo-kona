@@ -1,0 +1,51 @@
+[package]
+name = "celo-derive"
+version.workspace = true
+description = "Celo-specific derivation-pipeline extensions (Espresso batch authentication)"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+exclude.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Workspace
+celo-genesis.workspace = true
+
+# Kona
+kona-derive.workspace = true
+kona-protocol.workspace = true
+
+# Alloy
+alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+
+# Misc
+async-trait.workspace = true
+lru.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+kona-derive = { workspace = true, features = ["test-utils"] }
+kona-genesis.workspace = true
+alloy-rlp.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+default = []
+std = [
+    "celo-genesis/std",
+    "kona-protocol/std",
+    "alloy-primitives/std",
+    "alloy-consensus/std",
+]

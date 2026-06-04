@@ -6,4 +6,7 @@
 extern crate alloc;
 
 mod rollup;
-pub use rollup::CeloRollupConfig;
+pub use rollup::{
+    CeloEspressoConfig, CeloEspressoConfigError, CeloRollupConfig,
+    DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW,
+};

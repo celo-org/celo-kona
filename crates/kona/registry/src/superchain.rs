@@ -74,7 +74,7 @@ impl Registry {
                     rollup.da_challenge_address = None;
                 }
                 // Wrap RollupConfig to CeloRollupConfig
-                let celo_rollup = CeloRollupConfig(rollup);
+                let celo_rollup = CeloRollupConfig::new(rollup);
                 rollup_configs.insert(chain_config.chain_id, celo_rollup);
                 op_chains.insert(chain_config.chain_id, chain_config);
             }
@@ -104,15 +104,15 @@ mod tests {
         // kona fork patched the constant globally. The chainList JSON value for Sepolia/Chaos
         // (600) describes the pre-Fjord drift; post-Fjord, the chain ran with 2892.
         let mainnet = registry.rollup_configs.get(&CELO_MAINNET_CHAIN_ID).unwrap();
-        assert_eq!(mainnet.0.max_sequencer_drift, 2892);
-        assert_eq!(mainnet.0.fjord_max_sequencer_drift, 2892);
+        assert_eq!(mainnet.max_sequencer_drift, 2892);
+        assert_eq!(mainnet.fjord_max_sequencer_drift, 2892);
 
         let sepolia = registry.rollup_configs.get(&CELO_SEPOLIA_CHAIN_ID).unwrap();
-        assert_eq!(sepolia.0.max_sequencer_drift, 600);
-        assert_eq!(sepolia.0.fjord_max_sequencer_drift, 2892);
+        assert_eq!(sepolia.max_sequencer_drift, 600);
+        assert_eq!(sepolia.fjord_max_sequencer_drift, 2892);
 
         let chaos = registry.rollup_configs.get(&CELO_CHAOS_CHAIN_ID).unwrap();
-        assert_eq!(chaos.0.max_sequencer_drift, 600);
-        assert_eq!(chaos.0.fjord_max_sequencer_drift, 2892);
+        assert_eq!(chaos.max_sequencer_drift, 600);
+        assert_eq!(chaos.fjord_max_sequencer_drift, 2892);
     }
 }

@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use alloy_primitives::B256;
+use celo_derive::CeloEthereumDataSource;
 use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
@@ -14,7 +15,6 @@ use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
 #[cfg(feature = "eigenda")]
 use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
-use kona_derive::EthereumDataSource;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -42,8 +42,10 @@ where
         Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
-    // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config = CeloRollupConfig(boot.op_boot_info.rollup_config.clone());
+    // Wrap RollupConfig to CeloRollupConfig, carrying the Espresso batch-authentication settings
+    // resolved during boot.
+    let mut celo_rollup_config = CeloRollupConfig::new(boot.op_boot_info.rollup_config.clone());
+    celo_rollup_config.espresso = boot.espresso;
     let celo_rollup_config = Arc::new(celo_rollup_config);
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
@@ -98,8 +100,15 @@ where
     let l1_config = Arc::new(boot.op_boot_info.l1_config);
 
     // Set up data source and build the pipeline.
-    let eth_data_source =
-        EthereumDataSource::new_from_parts(l1_provider.clone(), beacon, &rollup_config);
+    //
+    // Use the Celo data source, which behaves identically to kona's `EthereumDataSource` pre-fork
+    // and switches to Espresso event-based batch authentication post-fork (see `celo-derive`).
+    let eth_data_source = CeloEthereumDataSource::new_from_parts(
+        l1_provider.clone(),
+        beacon,
+        celo_rollup_config.as_ref(),
+    )
+    .map_err(|e| OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e)))?;
 
     #[cfg(feature = "eigenda")]
     let da_provider = {
