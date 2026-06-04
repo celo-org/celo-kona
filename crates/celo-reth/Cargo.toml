@@ -105,7 +105,12 @@ op-revm.workspace = true
 
 # Reth codecs and db
 reth-codecs.workspace = true
+reth-config.workspace = true
 reth-db-api.workspace = true
+reth-etl.workspace = true
+reth-stages-types.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 
 # RPC
 jsonrpsee.workspace = true
