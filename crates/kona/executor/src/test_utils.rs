@@ -26,7 +26,7 @@ pub async fn load_and_execute_fixture(
         load_test_fixture(fixture_path).await;
 
     // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config = CeloRollupConfig(fixture.rollup_config.clone());
+    let celo_rollup_config = CeloRollupConfig::new(fixture.rollup_config.clone());
     let mut executor = CeloStatelessL2Builder::new(
         &celo_rollup_config,
         CeloEvmFactory::default(),
@@ -127,7 +127,7 @@ pub async fn create_static_fixture(
 
     let fixture_path = creator.data_dir.join("fixture.json");
     let fixture = ExecutorTestFixture {
-        rollup_config: rollup_config.0.clone(),
+        rollup_config: rollup_config.op_rollup_config.clone(),
         parent_header: parent_header.inner().clone(),
         expected_block_hash: executing_header.hash_slow(),
         executing_payload: payload_attrs.clone(),

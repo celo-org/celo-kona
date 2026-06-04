@@ -4,6 +4,7 @@
 //! remove `CeloBootInfo`.
 
 use alloy_primitives::B256;
+use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_registry::ROLLUP_CONFIGS;
 use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -23,6 +24,13 @@ use tracing::warn;
 pub struct CeloBootInfo {
     /// The boot information for OP.
     pub op_boot_info: BootInfo,
+    /// Celo-specific Espresso batch-authentication settings.
+    ///
+    /// Sourced from the [`CeloRollupConfig`] (registry entry or the rollup config deserialized
+    /// from the preimage oracle). The OP [`BootInfo`] carries only the upstream `RollupConfig`,
+    /// which has no place for these fields, so they are tracked alongside it here.
+    #[serde(default)]
+    pub espresso: CeloEspressoConfig,
 }
 
 impl CeloBootInfo {
@@ -77,8 +85,10 @@ impl CeloBootInfo {
 
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
-        let rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
-            config.0.clone()
+        let celo_rollup_config: CeloRollupConfig = if let Some(config) =
+            ROLLUP_CONFIGS.get(&chain_id)
+        {
+            config.clone()
         } else {
             warn!(
                 target: "boot_loader",
@@ -91,6 +101,14 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
+        // Reject internally inconsistent Espresso settings (e.g. `espresso_time` set without a
+        // `BatchAuthenticator` address) up front, so a misconfiguration fails fast here instead of
+        // silently stalling derivation at the fork boundary.
+        celo_rollup_config.validate_espresso().map_err(|e| {
+            OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e))
+        })?;
+        let espresso = celo_rollup_config.espresso;
+        let rollup_config = celo_rollup_config.op_rollup_config;
 
         // Attempt to load the L1 config from the L1 chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
@@ -140,6 +158,7 @@ impl CeloBootInfo {
                 rollup_config,
                 l1_config,
             },
+            espresso,
         })
     }
 }
