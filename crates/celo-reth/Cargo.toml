@@ -134,6 +134,7 @@ zstd.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 trybuild = "1"
+reth-provider = { workspace = true, features = ["test-utils"] }
 
 [features]
 default = ["std"]
