@@ -144,14 +144,24 @@ impl ImportCeloStateCommand {
         let Environment { config, provider_factory, .. } =
             open_env_skip_init_and_consistency_check(env_args, runtime)?;
 
-        // Refuse a populated datadir before writing ANY metadata, so an accidental run on an
-        // existing node can't clobber its storage settings / stage checkpoints. `last_block_number`
-        // is 0 on a fresh (genesis-only/empty) datadir and the tip on a synced one.
-        let last_block_number = provider_factory.provider()?.last_block_number()?;
-        if last_block_number != 0 {
+        // Refuse anything but a truly uninitialized datadir before writing ANY metadata, so an
+        // accidental run on an existing node can't clobber its state / settings / checkpoints.
+        // Two reject cases:
+        //   - a synced datadir: `last_block_number` is the tip (> 0);
+        //   - a genesis-only / partially-initialized datadir (e.g. after a stock `init`, or an
+        //     aborted import that already committed the bootstrap block): `last_block_number` is
+        //     still 0, but a genesis header already exists. We insert the genesis header ourselves
+        //     below, so its presence here means the DB was already initialized — importing onto it
+        //     would mix state and then fail the state-root check after mutating the datadir.
+        let (last_block_number, genesis_present) = {
+            let provider = provider_factory.provider()?;
+            (provider.last_block_number()?, provider.block_hash(0)?.is_some())
+        };
+        if last_block_number != 0 || genesis_present {
             return Err(eyre::eyre!(
-                "data directory must be empty when running import-celo-state \
-                 (current tip block #{last_block_number})"
+                "import-celo-state requires an empty, uninitialized data directory \
+                 (tip block #{last_block_number}, genesis header present: {genesis_present}); \
+                 wipe the datadir and retry"
             ));
         }
 
