@@ -141,8 +141,28 @@ impl CeloMigrateV2Command {
         let current_settings = provider.storage_settings()?;
 
         if current_settings.is_some_and(|s| s.is_v2()) {
-            info!(target: "reth::cli", "Storage is already v2, nothing to do");
-            return Ok(());
+            // A v2 datadir is a genuine no-op ONLY if a prior migration ran to completion. Phase 4
+            // empties the MDBX `AccountsHistory` / `StoragesHistory` tables, so on a finished
+            // migration — and on a natively-synced v2 node, which never writes history to MDBX —
+            // both read empty. If either is still populated, a previous run crashed after the
+            // Phase 3 v2 flip but before the Phase 4 clear, leaving the RocksDB v2 history index
+            // incomplete. We must NOT silently report success and deliberately do NOT resume a
+            // partial migration — fail loudly so the operator re-imports a clean v1
+            // datadir.
+            drop(provider);
+            if Self::v2_history_tables_cleared(&provider_factory)? {
+                info!(target: "reth::cli", "Storage is already v2, nothing to do");
+                return Ok(());
+            }
+            eyre::bail!(
+                "Datadir is in a partially-migrated v2 state: StorageSettings is v2 but the MDBX \
+                 AccountsHistory/StoragesHistory tables are still populated, which means a \
+                 previous celo-migrate-v2 run crashed after flipping to v2 (Phase 3) but before \
+                 clearing the MDBX history (Phase 4). The RocksDB v2 history index is therefore \
+                 incomplete, so the node wouldn't serve historical state fetch once it syncs past \
+                 the in-memory canonical buffer. celo-migrate-v2 cannot resume a partial migration: \
+                 re-run import-celo-state to rebuild a clean v1 datadir, then run celo-migrate-v2 again."
+            );
         }
 
         let tip =
@@ -264,6 +284,22 @@ impl CeloMigrateV2Command {
              rebuild is required.",
         );
         Ok(())
+    }
+
+    /// Whether a v2 datadir's MDBX history tables have already been cleared (i.e. Phase 4 ran).
+    ///
+    /// A completed migration empties `AccountsHistory` / `StoragesHistory` in MDBX, and a
+    /// natively-synced v2 node never writes history to MDBX, so for both the tables read empty.
+    /// If either is still populated, a previous `celo-migrate-v2` run crashed after the Phase 3
+    /// v2 flip but before the Phase 4 clear, leaving the RocksDB v2 history index incomplete; the
+    /// Phase 0 guard uses this to fail loudly instead of silently reporting success.
+    fn v2_history_tables_cleared<N: ProviderNodeTypes>(
+        factory: &ProviderFactory<N>,
+    ) -> eyre::Result<bool> {
+        let provider = factory.provider()?;
+        let mut accounts = provider.tx_ref().cursor_read::<tables::AccountsHistory>()?;
+        let mut storages = provider.tx_ref().cursor_read::<tables::StoragesHistory>()?;
+        Ok(accounts.first()?.is_none() && storages.first()?.is_none())
     }
 
     // The following helpers are adapted from the upstream private associated functions on
@@ -741,5 +777,40 @@ mod tests {
         assert_eq!(shards.len(), 1, "expected exactly one migrated shard");
         assert_eq!(shards[0].0, key);
         assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), blocks.to_vec());
+    }
+
+    /// A v2 datadir whose MDBX history tables are still populated is a partially-migrated datadir
+    /// — a previous run crashed between the Phase 3 v2 flip and the Phase 4 history clear. The
+    /// Phase 0 guard relies on this check to fail loudly rather than silently report "nothing to
+    /// do" on an incomplete datadir that would later wedge with #192.
+    #[test]
+    fn v2_history_tables_cleared_detects_partial_migration() {
+        let factory = create_test_provider_factory();
+
+        // A fresh datadir has empty history tables → reads as cleared (a legitimate no-op).
+        assert!(
+            CeloMigrateV2Command::v2_history_tables_cleared(&factory).unwrap(),
+            "empty AccountsHistory/StoragesHistory must read as cleared",
+        );
+
+        // Seed one AccountsHistory shard, mimicking a crash after the v2 flip but before Phase 4.
+        {
+            let provider_rw = factory.database_provider_rw().unwrap();
+            provider_rw
+                .tx_ref()
+                .put::<tables::AccountsHistory>(
+                    ShardedKey::new(Address::with_last_byte(0x42), u64::MAX),
+                    tables::BlockNumberList::new([1u64]).unwrap(),
+                )
+                .unwrap();
+            provider_rw.commit().unwrap();
+        }
+
+        // A populated history table must read as NOT cleared so the guard bails instead of
+        // silently exiting.
+        assert!(
+            !CeloMigrateV2Command::v2_history_tables_cleared(&factory).unwrap(),
+            "a populated AccountsHistory must read as not cleared",
+        );
     }
 }
