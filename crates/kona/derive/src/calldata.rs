@@ -11,7 +11,7 @@ use crate::batch_auth::{
 };
 use alloc::{
     boxed::Box,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
 };
 use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{Address, B256, Bytes};
@@ -78,7 +78,7 @@ impl<CP: ChainProvider + Send> CeloCalldataSource<CP> {
         // upstream OP Stack (the BatchAuthenticator events are still emitted on L1 but ignored).
         let espresso_active =
             self.batch_auth_config.is_some_and(|c| c.is_active(block_ref.timestamp));
-        let authenticated_hashes: BTreeSet<B256> = if espresso_active {
+        let authenticated_hashes: BTreeMap<B256, Address> = if espresso_active {
             let config = self.batch_auth_config.expect("config present when espresso active");
             let cache = self.auth_cache.as_mut().expect("cache present when config present");
             collect_authenticated_batches(
@@ -89,7 +89,7 @@ impl<CP: ChainProvider + Send> CeloCalldataSource<CP> {
             )
             .await?
         } else {
-            BTreeSet::new()
+            BTreeMap::new()
         };
 
         self.calldata = txs
@@ -333,13 +333,16 @@ mod tests {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
+        let sender = tx.recover_signer().unwrap();
         let data = match &tx {
             TxEnvelope::Legacy(t) => t.tx().input.clone(),
             _ => unreachable!(),
         };
         let commitment = keccak256(&data);
 
-        // Build a block whose receipts contain the authenticating event.
+        // Build a block whose receipts contain the authenticating event. The commitment is the
+        // unindexed data word; the authenticating `caller` (= the batch tx sender) is the indexed
+        // topic.
         let mut source = CeloCalldataSource::new(
             TestChainProvider::default(),
             batch_inbox,
@@ -350,8 +353,8 @@ mod tests {
         let log = Log {
             address: auth_addr,
             data: LogData::new_unchecked(
-                vec![BATCH_INFO_AUTHENTICATED_TOPIC, commitment],
-                Default::default(),
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, sender.into_word()],
+                commitment.as_slice().to_vec().into(),
             ),
         };
         let receipt =
@@ -359,9 +362,47 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
 
-        // Post-fork: even with a wrong sender, the event authorizes the batch.
+        // Post-fork: the commitment is authenticated and the tx sender matches the authenticating
+        // caller, so the batch is authorized.
         source.load_calldata(&block_info, Address::ZERO).await.unwrap();
         assert_eq!(source.calldata.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_post_fork_caller_mismatch_rejected() {
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let tx = test_legacy_tx(batch_inbox);
+        let data = match &tx {
+            TxEnvelope::Legacy(t) => t.tx().input.clone(),
+            _ => unreachable!(),
+        };
+        let commitment = keccak256(&data);
+
+        // The commitment is authenticated, but by a different caller than the batch tx sender.
+        let mut source = CeloCalldataSource::new(
+            TestChainProvider::default(),
+            batch_inbox,
+            Some(auth_config(auth_addr)),
+        );
+
+        let block_info = BlockInfo::default();
+        let other_caller = address!("00000000000000000000000000000000000000bb");
+        let log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, other_caller.into_word()],
+                commitment.as_slice().to_vec().into(),
+            ),
+        };
+        let receipt =
+            Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+
+        // Post-fork: commitment authenticated but tx sender != authenticating caller: rejected.
+        source.load_calldata(&block_info, Address::ZERO).await.unwrap();
+        assert!(source.calldata.is_empty());
     }
 
     #[tokio::test]
