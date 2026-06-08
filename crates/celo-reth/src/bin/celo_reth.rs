@@ -54,8 +54,17 @@ const CELO_MIGRATE_V2: &str = "celo-migrate-v2";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
-const CELO_SUBCOMMANDS: &[&str] =
-    &[IMPORT_CELO_STATE, STAGE, DB, P2P, PRUNE, RE_EXECUTE, DOWNLOAD, SNAPSHOT_MANIFEST, CELO_MIGRATE_V2];
+const CELO_SUBCOMMANDS: &[&str] = &[
+    IMPORT_CELO_STATE,
+    STAGE,
+    DB,
+    P2P,
+    PRUNE,
+    RE_EXECUTE,
+    DOWNLOAD,
+    SNAPSHOT_MANIFEST,
+    CELO_MIGRATE_V2,
+];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
 // `N::Primitives = OpPrimitives`, which `CeloNode` can't satisfy. It will panic on the

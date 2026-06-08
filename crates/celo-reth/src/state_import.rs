@@ -16,7 +16,7 @@ use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
     BlockHashReader, BlockNumReader, ChainSpecProvider, DBProvider, DatabaseProviderFactory,
     MetadataWriter, ProviderFactory, StageCheckpointWriter, StaticFileProviderFactory,
-    StaticFileWriter, StorageSettings,
+    StaticFileWriter, StorageSettings, StorageSettingsCache,
     providers::{RocksDBProvider, StaticFileProviderBuilder},
 };
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -164,6 +164,13 @@ impl ImportCeloStateCommand {
         {
             let provider_rw = provider_factory.database_provider_rw()?;
             provider_rw.write_storage_settings(StorageSettings::v1())?;
+            // `write_storage_settings` persists the metadata but does NOT update the in-memory
+            // storage-settings cache. The cache is seeded by `ProviderFactory::new`, which at the
+            // current reth pin defaults a fresh datadir to v1 — so it already matches. We set it
+            // explicitly so a future reth that defaults the cache to v2 (and/or makes the state
+            // dump cache-sensitive) can't leave the cache diverging from the v1 metadata/import
+            // layout we write here. See the https://github.com/celo-org/celo-kona/pull/198#discussion_r3328416058.
+            provider_rw.set_storage_settings_cache(StorageSettings::v1());
             insert_genesis_header(&provider_rw, provider_factory.chain_spec().as_ref())?;
             let genesis_block_number = provider_factory.chain_spec().genesis_header().number;
             let checkpoint = StageCheckpoint::new(genesis_block_number);
