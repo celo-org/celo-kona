@@ -61,6 +61,9 @@ pub mod chainspec;
 #[cfg(feature = "std")]
 pub mod state_import;
 
+#[cfg(feature = "std")]
+pub mod celo_migrate_v2;
+
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
 
