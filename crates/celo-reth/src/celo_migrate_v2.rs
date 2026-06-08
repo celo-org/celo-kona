@@ -252,11 +252,12 @@ impl CeloMigrateV2Command {
         Ok(())
     }
 
-    // The following four helpers are direct copies of the upstream private associated
-    // functions on `reth_cli_commands::db::migrate_v2::Command`. They are duplicated
-    // here because upstream marks them as `fn` (private), and we need to call them
-    // from the celo-reth crate. Keep them byte-for-byte in sync with upstream when
-    // bumping the reth pin.
+    // The following helpers are adapted from the upstream private associated functions on
+    // `reth_cli_commands::db::migrate_v2::Command`. They are duplicated here because upstream
+    // marks them as `fn` (private), and we need to call them from the celo-reth crate. Keep
+    // them in sync with upstream when bumping the reth pin — EXCEPT for the Celo-specific
+    // chunked commits in `migrate_account_changesets` / `migrate_storage_changesets` (see the
+    // note inside each), which must be re-applied after any upstream sync.
 
     fn migrate_account_changesets<N: ProviderNodeTypes>(
         factory: &ProviderFactory<N>,
@@ -278,7 +279,15 @@ impl CeloMigrateV2Command {
             writer.ensure_at_block(first_block - 1)?;
         }
 
+        // Celo deviation from the upstream copy: commit every `COMMIT_INTERVAL_BLOCKS`. A single
+        // commit over Celo's ~31M dummy pre-migration blocks accumulates per-block segment
+        // metadata in the writer until flush — the same unbounded growth that OOM'd
+        // `seed_transaction_senders` at 18 GB (see its docs). Chunked commits bound memory.
+        // 500k aligns with the static-file segment boundary.
+        const COMMIT_INTERVAL_BLOCKS: u64 = 500_000;
+
         let mut count = 0u64;
+        let mut blocks_since_commit = 0u64;
         let mut walker = cursor.walk(Some(first_block))?.peekable();
 
         for block in first_block..=tip {
@@ -294,6 +303,12 @@ impl CeloMigrateV2Command {
 
             count += entries.len() as u64;
             writer.append_account_changeset(entries, block)?;
+
+            blocks_since_commit += 1;
+            if blocks_since_commit >= COMMIT_INTERVAL_BLOCKS {
+                writer.commit()?;
+                blocks_since_commit = 0;
+            }
         }
 
         writer.commit()?;
@@ -322,7 +337,12 @@ impl CeloMigrateV2Command {
             writer.ensure_at_block(first_block - 1)?;
         }
 
+        // Celo deviation from the upstream copy: chunked commits to bound writer memory over
+        // Celo's ~31M dummy pre-migration blocks. See the note in `migrate_account_changesets`.
+        const COMMIT_INTERVAL_BLOCKS: u64 = 500_000;
+
         let mut count = 0u64;
+        let mut blocks_since_commit = 0u64;
         let mut walker =
             cursor.walk(Some((first_block, alloy_primitives::Address::ZERO).into()))?.peekable();
 
@@ -343,6 +363,12 @@ impl CeloMigrateV2Command {
 
             count += entries.len() as u64;
             writer.append_storage_changeset(entries, block)?;
+
+            blocks_since_commit += 1;
+            if blocks_since_commit >= COMMIT_INTERVAL_BLOCKS {
+                writer.commit()?;
+                blocks_since_commit = 0;
+            }
         }
 
         writer.commit()?;
