@@ -42,9 +42,6 @@ where
     /// Espresso batch-authentication configuration. When `Some` and active for the L1 origin time
     /// of the block being scanned, event-based batch authentication is used. Otherwise (no config,
     /// or fork not yet active) the source falls back to vanilla OP Stack sender verification.
-    ///
-    /// Bundling the authenticator address, fork time and lookback window together makes the
-    /// "fork scheduled but no authenticator" state unrepresentable.
     pub batch_auth_config: Option<BatchAuthConfig>,
     /// LRU caches for batch auth lookback window traversal (receipts + headers). Present iff
     /// [`Self::batch_auth_config`] is set.
@@ -63,7 +60,7 @@ where
         batcher_address: Address,
         batch_auth_config: Option<BatchAuthConfig>,
     ) -> Self {
-        let auth_cache = batch_auth_config.map(|c| BatchAuthCache::new(c.lookback_window));
+        let auth_cache = batch_auth_config.map(|_| BatchAuthCache::new());
         Self {
             chain_provider,
             blob_fetcher,
@@ -190,7 +187,6 @@ where
                     &mut self.chain_provider,
                     block_ref,
                     config.authenticator_address,
-                    config.lookback_window,
                     cache,
                 )
                 .await
@@ -425,7 +421,7 @@ mod tests {
 
     /// A `BatchAuthConfig` active from genesis (`espresso_time = 0`).
     fn auth_config(authenticator_address: Address) -> BatchAuthConfig {
-        BatchAuthConfig { authenticator_address, espresso_time: 0, lookback_window: 100 }
+        BatchAuthConfig { authenticator_address, espresso_time: 0 }
     }
 
     #[tokio::test]
@@ -563,11 +559,7 @@ mod tests {
             TestChainProvider::default(),
             TestBlobProvider::default(),
             batch_inbox,
-            Some(BatchAuthConfig {
-                authenticator_address: auth_addr,
-                espresso_time: 1_000,
-                lookback_window: 100,
-            }),
+            Some(BatchAuthConfig { authenticator_address: auth_addr, espresso_time: 1_000 }),
         );
         let tx = test_legacy_tx(batch_inbox);
         let block_info = BlockInfo::default(); // timestamp 0 < espresso_time 1000
