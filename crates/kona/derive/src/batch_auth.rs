@@ -28,6 +28,7 @@
 use alloc::{collections::BTreeSet, vec::Vec};
 use alloy_consensus::{Receipt, TxEnvelope, TxReceipt, transaction::SignerRecoverable};
 use alloy_primitives::{Address, B256, b256, keccak256};
+use celo_genesis::BATCH_AUTH_LOOKBACK_WINDOW;
 use kona_derive::ChainProvider;
 use kona_protocol::BlockInfo;
 use lru::LruCache;
@@ -41,11 +42,8 @@ pub const BATCH_INFO_AUTHENTICATED_TOPIC: B256 =
 
 /// Configuration for event-based batch authentication.
 ///
-/// The presence of this config (as `Some` on a data source) means Espresso event-based batch
-/// authentication is configured for the chain. By bundling the authenticator address together
-/// with the fork time and lookback window, the illegal state "Espresso fork scheduled but no
-/// authenticator address" is unrepresentable: there is no way to have an `espresso_time` without
-/// also having a (non-zero) `authenticator_address`.
+/// The lookback window is not part of this config: it is the hardcoded consensus constant
+/// [`celo_genesis::BATCH_AUTH_LOOKBACK_WINDOW`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchAuthConfig {
     /// The L1 address of the `BatchAuthenticator` contract. Guaranteed non-zero by construction
@@ -57,9 +55,6 @@ pub struct BatchAuthConfig {
     /// the data source layer is gated on the L1 origin time of the block being scanned (see
     /// [`Self::is_active`]) — mirroring the upstream `ecotoneTime` precedent.
     pub espresso_time: u64,
-    /// Number of L1 blocks to scan for `BatchInfoAuthenticated` events. Configured per-chain via
-    /// [`celo_genesis::CeloRollupConfig::batch_auth_lookback_window`].
-    pub lookback_window: u64,
 }
 
 impl BatchAuthConfig {
@@ -119,10 +114,10 @@ pub fn collect_auth_events_from_receipts(
     result
 }
 
-/// Scans L1 receipts in the inclusive range `[block_ref.number - lookback_window,
-/// block_ref.number]` — that is `lookback_window + 1` blocks (the batch's L1 origin block plus
-/// `lookback_window` ancestors) — and returns the set of all batch commitment hashes that were
-/// authenticated via `BatchInfoAuthenticated` events.
+/// Scans L1 receipts in the inclusive range `[block_ref.number - BATCH_AUTH_LOOKBACK_WINDOW,
+/// block_ref.number]` — that is `BATCH_AUTH_LOOKBACK_WINDOW + 1` blocks (the batch's L1 origin
+/// block plus [`BATCH_AUTH_LOOKBACK_WINDOW`] ancestors) — and returns the set of all batch
+/// commitment hashes that were authenticated via `BatchInfoAuthenticated` events.
 ///
 /// This boundary is consensus-critical and must match the op-node batcher/verifier exactly.
 ///
@@ -131,14 +126,13 @@ pub fn collect_auth_events_from_receipts(
 /// for every individual batch transaction.
 ///
 /// Results are cached per block hash in the provided LRU cache. For consecutive L1 blocks
-/// the lookback windows overlap by `lookback_window - 1` blocks, so only one new block's
-/// receipts need to be fetched on each call. The cache is keyed by block hash (not number)
-/// so it is naturally reorg-safe.
+/// the lookback windows overlap by `BATCH_AUTH_LOOKBACK_WINDOW - 1` blocks, so only one new
+/// block's receipts need to be fetched on each call. The cache is keyed by block hash (not
+/// number) so it is naturally reorg-safe.
 pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
     provider: &mut CP,
     block_ref: &BlockInfo,
     authenticator_addr: Address,
-    lookback_window: u64,
     cache: &mut BatchAuthCache,
 ) -> Result<BTreeSet<B256>, CP::Error> {
     let mut all_authenticated = BTreeSet::new();
@@ -157,7 +151,7 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
             cache.receipts.put(current_hash, events);
         }
 
-        if current_number == 0 || block_ref.number - current_number >= lookback_window {
+        if current_number == 0 || block_ref.number - current_number >= BATCH_AUTH_LOOKBACK_WINDOW {
             break;
         }
 
@@ -179,8 +173,8 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
 /// LRU caches used during the batch authentication lookback window traversal.
 ///
 /// Bundles the receipt-event cache and the header (block hash → parent hash) cache.
-/// Both caches are sized slightly larger than the configured lookback window to avoid
-/// thrashing at the boundary.
+/// Both caches are sized slightly larger than the lookback window to avoid thrashing at the
+/// boundary.
 #[derive(Debug, Clone)]
 pub struct BatchAuthCache {
     /// Authenticated batch commitment hashes extracted from receipts, keyed by L1 block hash.
@@ -189,11 +183,19 @@ pub struct BatchAuthCache {
     pub headers: LruCache<B256, B256>,
 }
 
+impl Default for BatchAuthCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BatchAuthCache {
-    /// Creates a new [`BatchAuthCache`] with both caches sized to `lookback_window + 2`.
-    pub fn new(lookback_window: u64) -> Self {
-        let cap =
-            lookback_window.try_into().map(|w: usize| w.saturating_add(2)).unwrap_or(usize::MAX);
+    /// Creates a new [`BatchAuthCache`] with both caches sized to
+    /// [`BATCH_AUTH_LOOKBACK_WINDOW`] `+ 2`.
+    pub fn new() -> Self {
+        let cap = usize::try_from(BATCH_AUTH_LOOKBACK_WINDOW)
+            .map(|w| w.saturating_add(2))
+            .unwrap_or(usize::MAX);
         let cap = core::num::NonZeroUsize::new(cap).expect("cache size must be non-zero");
         Self { receipts: LruCache::new(cap), headers: LruCache::new(cap) }
     }
@@ -340,7 +342,7 @@ mod tests {
 
     /// A `BatchAuthConfig` active from genesis (`espresso_time = 0`).
     fn active_config(authenticator_address: Address) -> BatchAuthConfig {
-        BatchAuthConfig { authenticator_address, espresso_time: 0, lookback_window: 100 }
+        BatchAuthConfig { authenticator_address, espresso_time: 0 }
     }
 
     // L1 origin time used as "post-fork" for an `active_config` (espresso_time = 0).
@@ -431,11 +433,7 @@ mod tests {
         // Config present but fork not yet active at this L1 time: only the sender check is honored,
         // even if a matching auth event exists.
         let auth_addr = address!("1234567890123456789012345678901234567890");
-        let config = BatchAuthConfig {
-            authenticator_address: auth_addr,
-            espresso_time: 1_000,
-            lookback_window: 100,
-        };
+        let config = BatchAuthConfig { authenticator_address: auth_addr, espresso_time: 1_000 };
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
         let mut authenticated = BTreeSet::new();
         authenticated.insert(batch_hash);
@@ -472,9 +470,8 @@ mod tests {
 
     #[test]
     fn test_new_batch_auth_cache() {
-        let lookback = 100u64;
-        let cache = BatchAuthCache::new(lookback);
-        let expected_cap = (lookback as usize) + 2;
+        let cache = BatchAuthCache::new();
+        let expected_cap = (BATCH_AUTH_LOOKBACK_WINDOW as usize) + 2;
         assert_eq!(cache.receipts.len(), 0);
         assert_eq!(cache.receipts.cap().get(), expected_cap);
         assert_eq!(cache.headers.len(), 0);

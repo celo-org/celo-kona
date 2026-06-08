@@ -57,13 +57,10 @@ where
         blobs: B,
         cfg: &CeloRollupConfig,
     ) -> Result<Self, CeloEspressoConfigError> {
-        let batch_auth_config = cfg.batch_auth_params()?.map(
-            |(authenticator_address, espresso_time, lookback_window)| BatchAuthConfig {
-                authenticator_address,
-                espresso_time,
-                lookback_window,
-            },
-        );
+        let batch_auth_config =
+            cfg.batch_auth_params()?.map(|(authenticator_address, espresso_time)| {
+                BatchAuthConfig { authenticator_address, espresso_time }
+            });
         Ok(Self {
             ecotone_timestamp: cfg.op_rollup_config.hardforks.ecotone_time,
             blob_source: CeloBlobSource::new(
@@ -135,7 +132,6 @@ mod tests {
         cfg.espresso.batch_authenticator_address =
             Some(address!("00000000000000000000000000000000000000aa"));
         cfg.espresso.espresso_time = Some(42);
-        cfg.espresso.batch_auth_lookback_window = Some(7);
 
         let ds = CeloEthereumDataSource::new_from_parts(
             TestChainProvider::default(),
@@ -149,7 +145,6 @@ mod tests {
             address!("00000000000000000000000000000000000000aa")
         );
         assert_eq!(calldata_cfg.espresso_time, 42);
-        assert_eq!(calldata_cfg.lookback_window, 7);
         assert!(ds.blob_source.batch_auth_config.is_some());
     }
 

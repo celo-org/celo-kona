@@ -4,19 +4,15 @@ use alloy_op_hardforks::{OpHardfork, OpHardforks};
 use alloy_primitives::Address;
 use kona_genesis::RollupConfig;
 
-/// The default batch-auth lookback window, in L1 blocks.
+/// The batch-auth lookback window, in L1 blocks.
 ///
 /// The scan covers the batch's L1 origin block plus this many ancestor blocks — i.e. an
 /// inclusive range of `window + 1` blocks (see `celo_derive::collect_authenticated_batches`).
 /// Roughly 20 minutes of ancestry on Ethereum mainnet (12s blocks).
 ///
-/// This parameter affects derivation consensus, so it must remain a single value across all
-/// participants for the lifetime of the chain, and must match the op-node batcher/verifier. It is
-/// configured per-chain via `rollup.json` rather than as a per-operator CLI flag.
-///
 /// The constant is duplicated here (rather than added to upstream `kona-genesis`) because
 /// celo-kona wraps upstream kona instead of patching it at source.
-pub const DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW: u64 = 100;
+pub const BATCH_AUTH_LOOKBACK_WINDOW: u64 = 100;
 
 /// Celo-specific Espresso batch-authentication configuration.
 ///
@@ -43,14 +39,6 @@ pub struct CeloEspressoConfig {
     /// authenticate batches.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
     pub batch_authenticator_address: Option<Address>,
-    /// Number of L1 blocks before the batch submission to scan for a `BatchInfoAuthenticated`
-    /// event. When `None`, defaults to [`DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW`] via
-    /// [`CeloRollupConfig::batch_auth_lookback_window`].
-    ///
-    /// This must remain a single value across all participants for the chain's lifetime, so it
-    /// is configured per-chain in `rollup.json` rather than via a CLI flag.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub batch_auth_lookback_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, derive_more::Deref, derive_more::DerefMut)]
@@ -76,11 +64,7 @@ impl CeloRollupConfig {
     pub const fn new(op_rollup_config: RollupConfig) -> Self {
         Self {
             op_rollup_config,
-            espresso: CeloEspressoConfig {
-                espresso_time: None,
-                batch_authenticator_address: None,
-                batch_auth_lookback_window: None,
-            },
+            espresso: CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None },
         }
     }
 
@@ -91,12 +75,6 @@ impl CeloRollupConfig {
     /// events instead of relying on sender verification.
     pub fn is_batch_auth_enabled(&self) -> bool {
         self.espresso.batch_authenticator_address.is_some_and(|addr| !addr.is_zero())
-    }
-
-    /// Returns the configured batch auth lookback window, falling back to
-    /// [`DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW`] when unset.
-    pub fn batch_auth_lookback_window(&self) -> u64 {
-        self.espresso.batch_auth_lookback_window.unwrap_or(DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW)
     }
 
     /// Returns true if Espresso event-only batch authorization is active at the given L1 origin
@@ -120,17 +98,15 @@ impl CeloRollupConfig {
     /// - `Ok(None)` when no `espresso_time` is configured (Espresso is off; the derivation pipeline
     ///   runs vanilla OP Stack semantics). A `BatchAuthenticator` address without an
     ///   `espresso_time` is treated as "not yet scheduled" and likewise yields `None`.
-    /// - `Ok(Some((authenticator_address, espresso_time, lookback_window)))` when both an
-    ///   `espresso_time` and a non-zero authenticator address are configured.
+    /// - `Ok(Some((authenticator_address, espresso_time)))` when both an `espresso_time` and a
+    ///   non-zero authenticator address are configured.
     /// - `Err(MissingAuthenticatorAddress)` when `espresso_time` is set but no usable authenticator
     ///   address is configured (missing or zero) — otherwise no batch could ever be authorized
     ///   post-fork and derivation would silently stall at the fork boundary.
     ///
-    /// The tuple bundles the three coupled parameters so downstream code cannot represent the
+    /// The tuple bundles the two coupled parameters so downstream code cannot represent the
     /// illegal "fork scheduled but no authenticator" state.
-    pub fn batch_auth_params(
-        &self,
-    ) -> Result<Option<(Address, u64, u64)>, CeloEspressoConfigError> {
+    pub fn batch_auth_params(&self) -> Result<Option<(Address, u64)>, CeloEspressoConfigError> {
         let Some(espresso_time) = self.espresso.espresso_time else {
             return Ok(None);
         };
@@ -139,7 +115,7 @@ impl CeloRollupConfig {
             .batch_authenticator_address
             .filter(|addr| !addr.is_zero())
             .ok_or(CeloEspressoConfigError::MissingAuthenticatorAddress)?;
-        Ok(Some((authenticator_address, espresso_time, self.batch_auth_lookback_window())))
+        Ok(Some((authenticator_address, espresso_time)))
     }
 
     /// Validates that the Espresso batch-authentication settings are internally consistent.
@@ -196,8 +172,6 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
             espresso_time: take_u64(&mut json_obj, "espresso_time")
                 .map_err(serde::de::Error::custom)?,
             batch_authenticator_address: take_address(&mut json_obj, "batch_authenticator_address")
-                .map_err(serde::de::Error::custom)?,
-            batch_auth_lookback_window: take_u64(&mut json_obj, "batch_auth_lookback_window")
                 .map_err(serde::de::Error::custom)?,
         };
 
@@ -379,7 +353,6 @@ mod tests {
         assert_eq!(deserialized.espresso, CeloEspressoConfig::default());
         assert!(!deserialized.is_batch_auth_enabled());
         assert!(!deserialized.is_espresso_active(u64::MAX));
-        assert_eq!(deserialized.batch_auth_lookback_window(), DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW);
     }
 
     #[test]
@@ -399,7 +372,6 @@ mod tests {
     fn test_batch_auth_helpers() {
         let mut cfg = CeloRollupConfig::new(RollupConfig::default());
         assert!(!cfg.is_batch_auth_enabled());
-        assert_eq!(cfg.batch_auth_lookback_window(), DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW);
 
         // Zero address does not enable batch auth.
         cfg.espresso.batch_authenticator_address = Some(Address::ZERO);
@@ -408,9 +380,6 @@ mod tests {
         cfg.espresso.batch_authenticator_address =
             Some(address!("1234567890123456789012345678901234567890"));
         assert!(cfg.is_batch_auth_enabled());
-
-        cfg.espresso.batch_auth_lookback_window = Some(7);
-        assert_eq!(cfg.batch_auth_lookback_window(), 7);
     }
 
     #[test]
@@ -455,18 +424,11 @@ mod tests {
         cfg.espresso.batch_authenticator_address = Some(auth);
         assert_eq!(cfg.batch_auth_params(), Ok(None));
 
-        // espresso_time + valid authenticator => bundled params with default window.
+        // espresso_time + valid authenticator => bundled 2-tuple (no lookback window).
         let mut cfg = CeloRollupConfig::new(RollupConfig::default());
         cfg.espresso.espresso_time = Some(42);
         cfg.espresso.batch_authenticator_address = Some(auth);
-        assert_eq!(
-            cfg.batch_auth_params(),
-            Ok(Some((auth, 42, DEFAULT_BATCH_AUTH_LOOKBACK_WINDOW)))
-        );
-
-        // Explicit lookback window is threaded through.
-        cfg.espresso.batch_auth_lookback_window = Some(7);
-        assert_eq!(cfg.batch_auth_params(), Ok(Some((auth, 42, 7))));
+        assert_eq!(cfg.batch_auth_params(), Ok(Some((auth, 42))));
 
         // espresso_time without authenticator (or zero) => hard error.
         let mut cfg = CeloRollupConfig::new(RollupConfig::default());
@@ -508,7 +470,6 @@ mod tests {
           "cel2_time": 0,
           "espresso_time": 1234,
           "batch_authenticator_address": "0x00000000000000000000000000000000000000aa",
-          "batch_auth_lookback_window": 42,
           "batch_inbox_address": "0xff00000000000000000000000000000000042069",
           "deposit_contract_address": "0x08073dc48dde578137b8af042bcbc1c2491f1eb2",
           "l1_system_config_address": "0x94ee52a9d8edd72a85dea7fae3ba6d75e4bf1710",
@@ -522,10 +483,8 @@ mod tests {
             cfg.espresso.batch_authenticator_address,
             Some(address!("00000000000000000000000000000000000000aa"))
         );
-        assert_eq!(cfg.espresso.batch_auth_lookback_window, Some(42));
         assert!(cfg.is_batch_auth_enabled());
         assert!(cfg.is_espresso_active(1234));
         assert!(!cfg.is_espresso_active(1233));
-        assert_eq!(cfg.batch_auth_lookback_window(), 42);
     }
 }
