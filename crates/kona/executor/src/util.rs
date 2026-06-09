@@ -166,7 +166,7 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params_missing() {
-        let cfg = CeloRollupConfig(RollupConfig {
+        let cfg = CeloRollupConfig::new(RollupConfig {
             chain_op_config: BaseFeeConfig {
                 eip1559_denominator: 32,
                 eip1559_elasticity: 64,
@@ -183,7 +183,7 @@ mod test {
     fn test_encode_holocene_eip_1559_params_default() {
         // Use different values for pre-canyon and canyon denominators to verify
         // we're using the canyon params (0x30) not pre-canyon (0x20)
-        let cfg = CeloRollupConfig(RollupConfig {
+        let cfg = CeloRollupConfig::new(RollupConfig {
             chain_op_config: BaseFeeConfig {
                 eip1559_denominator: 32,        // 0x20 - pre-canyon
                 eip1559_elasticity: 64,         // 0x40
@@ -202,7 +202,7 @@ mod test {
 
     #[test]
     fn test_encode_holocene_eip_1559_params() {
-        let cfg = CeloRollupConfig(RollupConfig {
+        let cfg = CeloRollupConfig::new(RollupConfig {
             chain_op_config: BaseFeeConfig {
                 eip1559_denominator: 32,
                 eip1559_elasticity: 64,
