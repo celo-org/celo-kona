@@ -40,7 +40,7 @@ use reth_optimism_node::{
 };
 use reth_optimism_payload_builder::{
     OpExecData, OpPayloadTypes,
-    config::{OpDAConfig, OpGasLimitConfig},
+    config::{OpDAConfig, OpGasLimitConfig, SdmPostExecOptIn},
 };
 use reth_optimism_primitives::DepositReceipt;
 use reth_optimism_storage::OpStorage;
@@ -400,11 +400,11 @@ where
             ),
             self.da_config.clone(),
             self.gas_limit_config.clone(),
+            // SDM is unscheduled on Celo; the default `SdmPostExecOptIn` is disabled.
+            SdmPostExecOptIn::default(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
-            // SDM is unscheduled on Celo; mirror op-reth's default of disabled.
-            false,
             self.args.enable_tx_conditional,
             self.args.min_suggested_priority_fee,
         )

@@ -12,7 +12,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{
     OpTxError, map_op_err,
-    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext},
+    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext, WarmingState},
 };
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
@@ -519,8 +519,10 @@ impl EvmFactory for CeloEvmFactory {
 // the `PostExecEvm` bound that `OpBlockExecutor: BlockExecutor` requires (mirroring the direct
 // `PostExecEvm for OpEvm` impl in alloy-op-evm).
 //
-// Both methods panic: if SDM is ever activated on Celo (e.g. via an upstream rebase), the
+// All four methods panic: if SDM is ever activated on Celo (e.g. via an upstream rebase), the
 // panic surfaces the gap immediately rather than silently returning a default value.
+// `warming_state`/`seed_warming_state` only carry SDM block-warming refund state across
+// flashblock executors (op-rbuilder), a path Celo never takes.
 impl<DB, I, P> PostExecEvm for CeloEvm<DB, I, P>
 where
     DB: Database,
@@ -531,6 +533,14 @@ where
     }
 
     fn take_last_post_exec_tx_result(&mut self) -> PostExecExecutedTx {
+        panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
+    }
+
+    fn warming_state(&self) -> WarmingState {
+        panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
+    }
+
+    fn seed_warming_state(&mut self, _state: WarmingState) {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 }

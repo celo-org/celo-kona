@@ -14,9 +14,10 @@ use reth_node_core::args::{DatabaseArgs, DatadirArgs, StaticFilesArgs, StorageAr
 use reth_optimism_node::OpNode;
 use reth_primitives_traits::{SealedHeader, header::HeaderMut};
 use reth_provider::{
-    BlockHashReader, BlockNumReader, ChainSpecProvider, DBProvider, DatabaseProviderFactory,
-    MetadataWriter, ProviderFactory, StageCheckpointWriter, StaticFileProviderFactory,
-    StaticFileWriter, StorageSettings, StorageSettingsCache,
+    BalConfig, BalStoreHandle, BlockHashReader, BlockNumReader, ChainSpecProvider, DBProvider,
+    DatabaseProviderFactory, InMemoryBalStore, MetadataWriter, ProviderFactory,
+    StageCheckpointWriter, StaticFileProviderFactory, StaticFileWriter, StorageSettings,
+    StorageSettingsCache,
     providers::{RocksDBProvider, StaticFileProviderBuilder},
 };
 use reth_stages_types::{StageCheckpoint, StageId};
@@ -335,6 +336,14 @@ pub(crate) fn open_env_skip_init_and_consistency_check(
         builder.build()?
     };
 
+    // Mirror upstream `EnvironmentArgs::create_provider_factory`: attach an in-memory BAL store.
+    // Unused by Celo (BAL/EIP-7928 is inactive) and by these offline commands, but kept in lockstep
+    // with upstream so the factory setup stays faithful to what the normal node start path builds.
+    let balstore_cache_size =
+        args.db.balstore_cache_size.unwrap_or(BalConfig::DEFAULT_IN_MEMORY_RETENTION_DISTANCE);
+    let bal_store = BalStoreHandle::new(InMemoryBalStore::new(
+        BalConfig::with_in_memory_retention_distance(balstore_cache_size),
+    ));
     let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<OpNode, DatabaseEnv>>::new(
         db,
         args.chain,
@@ -343,7 +352,8 @@ pub(crate) fn open_env_skip_init_and_consistency_check(
         runtime,
     )?
     .with_prune_modes(config.prune.segments.clone())
-    .with_minimum_pruning_distance(config.prune.minimum_pruning_distance);
+    .with_minimum_pruning_distance(config.prune.minimum_pruning_distance)
+    .with_bal_store(bal_store);
 
     Ok(Environment { config, provider_factory, data_dir })
 }
