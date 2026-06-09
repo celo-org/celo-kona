@@ -87,10 +87,9 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
     "https://github.com/Layr-Labs/hokulea",
-    # celo-org fork at karlb/version-bump while a v1.5.x-compatible hokulea
-    # release is in flight.
+    "https://github.com/sp1-patches/bn",
+    # celo-org fork at seolaoh/v2.3.1-on-upstream while a compatible hokulea release is in flight.
     "https://github.com/celo-org/hokulea",
-    "https://github.com/Layr-Labs/rust-kzg-bn254.git",
     "https://github.com/celo-org/alloy",
     # kona crates are pulled from the optimism monorepo via the
     # kona-node/v1.5.1 tag.
