@@ -813,4 +813,97 @@ mod tests {
             "a populated AccountsHistory must read as not cleared",
         );
     }
+
+    /// A multi-shard account must have *every* shard copied verbatim. The single-shard test above
+    /// would also pass under a broken `append_account_history_shard`-based copy — a single append
+    /// call never trips the once-per-address-per-batch rule — so it cannot guard the property the
+    /// `migrate_account_history` doc comment relies on. Seeding a closed shard plus the open
+    /// `u64::MAX` shard for one address pins the verbatim copy and would fail if a second shard's
+    /// write overwrote the first.
+    #[test]
+    fn migrate_account_history_copies_all_shards_of_multi_shard_address() {
+        let factory = create_test_provider_factory();
+        let address = Address::with_last_byte(0x42);
+
+        // Closed shard keyed by its last block, then the open shard keyed by u64::MAX.
+        let closed_key = ShardedKey::new(address, 1000u64);
+        let closed_blocks = [10u64, 500, 1000];
+        let open_key = ShardedKey::new(address, u64::MAX);
+        let open_blocks = [1001u64, 2000, 3000];
+
+        {
+            let provider_rw = factory.database_provider_rw().unwrap();
+            provider_rw
+                .tx_ref()
+                .put::<tables::AccountsHistory>(
+                    closed_key.clone(),
+                    tables::BlockNumberList::new(closed_blocks).unwrap(),
+                )
+                .unwrap();
+            provider_rw
+                .tx_ref()
+                .put::<tables::AccountsHistory>(
+                    open_key.clone(),
+                    tables::BlockNumberList::new(open_blocks).unwrap(),
+                )
+                .unwrap();
+            provider_rw.commit().unwrap();
+        }
+
+        CeloMigrateV2Command::migrate_account_history(&factory).unwrap();
+
+        // Shards are returned in ascending highest_block_number order: closed shard first.
+        let shards = factory.rocksdb_provider().account_history_shards(address).unwrap();
+        assert_eq!(shards.len(), 2, "both shards of the address must be copied");
+        assert_eq!(shards[0].0, closed_key);
+        assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), closed_blocks.to_vec());
+        assert_eq!(shards[1].0, open_key);
+        assert_eq!(shards[1].1.iter().collect::<Vec<_>>(), open_blocks.to_vec());
+    }
+
+    /// Storage-slot counterpart of
+    /// [`migrate_account_history_copies_all_shards_of_multi_shard_address`]: every shard of a
+    /// multi-shard `(address, slot)` must be copied verbatim.
+    #[test]
+    fn migrate_storage_history_copies_all_shards_of_multi_shard_key() {
+        use alloy_primitives::B256;
+        use reth_db_api::models::storage_sharded_key::StorageShardedKey;
+
+        let factory = create_test_provider_factory();
+        let address = Address::with_last_byte(0x42);
+        let slot = B256::with_last_byte(0x07);
+
+        let closed_key = StorageShardedKey::new(address, slot, 1000u64);
+        let closed_blocks = [11u64, 22, 1000];
+        let open_key = StorageShardedKey::new(address, slot, u64::MAX);
+        let open_blocks = [1001u64, 2002, 3003];
+
+        {
+            let provider_rw = factory.database_provider_rw().unwrap();
+            provider_rw
+                .tx_ref()
+                .put::<tables::StoragesHistory>(
+                    closed_key.clone(),
+                    tables::BlockNumberList::new(closed_blocks).unwrap(),
+                )
+                .unwrap();
+            provider_rw
+                .tx_ref()
+                .put::<tables::StoragesHistory>(
+                    open_key.clone(),
+                    tables::BlockNumberList::new(open_blocks).unwrap(),
+                )
+                .unwrap();
+            provider_rw.commit().unwrap();
+        }
+
+        CeloMigrateV2Command::migrate_storage_history(&factory).unwrap();
+
+        let shards = factory.rocksdb_provider().storage_history_shards(address, slot).unwrap();
+        assert_eq!(shards.len(), 2, "both shards of the (address, slot) must be copied");
+        assert_eq!(shards[0].0, closed_key);
+        assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), closed_blocks.to_vec());
+        assert_eq!(shards[1].0, open_key);
+        assert_eq!(shards[1].1.iter().collect::<Vec<_>>(), open_blocks.to_vec());
+    }
 }
