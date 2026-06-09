@@ -26,6 +26,7 @@ use reth_db::{
 use reth_db_api::{
     cursor::DbCursorRO,
     database::Database,
+    table::Table,
     tables,
     transaction::{DbTx, DbTxMut},
 };
@@ -237,8 +238,8 @@ impl CeloMigrateV2Command {
         // empty, so every historical-state read past the in-memory canonical buffer misses and
         // reads as an empty account — including the FeeCurrencyDirectory, which surfaces as
         // "fee currency not registered" and stalls the chain (#192).
-        Self::migrate_account_history(&provider_factory)?;
-        Self::migrate_storage_history(&provider_factory)?;
+        Self::migrate_to_rocksdb::<_, tables::AccountsHistory>(&provider_factory)?;
+        Self::migrate_to_rocksdb::<_, tables::StoragesHistory>(&provider_factory)?;
 
         // === Phase 4: Clear MDBX tables superseded by the v2 layout ===
         //
@@ -427,63 +428,40 @@ impl CeloMigrateV2Command {
         Ok(())
     }
 
-    /// Copy the MDBX `AccountsHistory` index into the v2 RocksDB store.
+    /// Copy an MDBX index table into the v2 RocksDB store.
     ///
-    /// MDBX and RocksDB use identical `ShardedKey` / `BlockNumberList` encoding and the same
-    /// per-shard chunking, so every `(ShardedKey, BlockNumberList)` pair is copied verbatim —
-    /// no regrouping by address or re-sharding. (`append_account_history_shard` is deliberately
-    /// avoided: it reads existing shards from committed state and must be called at most once per
-    /// address per batch, which a verbatim shard-by-shard walk would violate for any
-    /// multi-shard address.) The batch auto-commits on a size threshold so a full-mainnet
-    /// history table does not accumulate in memory.
-    fn migrate_account_history<N: ProviderNodeTypes>(
+    /// Byte-for-byte copy of the upstream private `Command::migrate_to_rocksdb` (see the
+    /// "adapted from the upstream private associated functions" note above), used in place of a
+    /// bespoke Celo copier so the migrate-v2 helpers stay uniformly re-diffable on a reth bump.
+    /// Celo calls it from Phase 3b for `AccountsHistory` / `StoragesHistory`: the v2 layout serves
+    /// those indices from RocksDB, but a Celo import never runs the IndexHistory pipeline stages
+    /// that would populate them, so the imported MDBX history must be moved across before Phase 4
+    /// clears it (#192). MDBX and RocksDB share the `ShardedKey` / `BlockNumberList` encoding, so
+    /// the walk is a verbatim shard-by-shard copy; the leading `clear` keeps it idempotent (the
+    /// table is empty on a fresh Celo import, so the clear is a no-op there).
+    fn migrate_to_rocksdb<N: ProviderNodeTypes, T: Table>(
         factory: &ProviderFactory<N>,
     ) -> eyre::Result<()> {
-        info!(target: "reth::cli", "Migrating AccountsHistory index → RocksDB");
-        let provider_rw = factory.database_provider_rw()?;
+        info!(target: "reth::cli", table = T::NAME, "Migrating MDBX table → RocksDB");
 
-        let count = provider_rw.with_rocksdb_batch_auto_commit(|mut batch| {
-            let mut cursor = provider_rw.tx_ref().cursor_read::<tables::AccountsHistory>()?;
-            let mut count = 0u64;
-            for entry in cursor.walk(None)? {
-                let (key, value) = entry?;
-                batch.put::<tables::AccountsHistory>(key, &value)?;
-                count += 1;
-            }
-            Ok((count, Some(batch.into_inner())))
-        })?;
+        let provider = factory.provider()?.disable_long_read_transaction_safety();
+        let mut cursor = provider.tx_ref().cursor_read::<T>()?;
 
-        provider_rw.commit()?;
+        let rocksdb = factory.rocksdb_provider();
+        rocksdb.clear::<T>()?;
+        let mut batch = rocksdb.batch_with_auto_commit();
 
-        info!(target: "reth::cli", count, "AccountsHistory shards migrated");
-        Ok(())
-    }
+        let mut count = 0u64;
+        for entry in cursor.walk(None)? {
+            let (key, value) = entry?;
+            batch.put::<T>(key, &value)?;
+            count += 1;
+        }
 
-    /// Copy the MDBX `StoragesHistory` index into the v2 RocksDB store.
-    ///
-    /// Storage-slot counterpart of [`Self::migrate_account_history`]; see its docs for why the
-    /// copy is verbatim (identical `StorageShardedKey` / `BlockNumberList` encoding and sharding)
-    /// and why the batch auto-commits.
-    fn migrate_storage_history<N: ProviderNodeTypes>(
-        factory: &ProviderFactory<N>,
-    ) -> eyre::Result<()> {
-        info!(target: "reth::cli", "Migrating StoragesHistory index → RocksDB");
-        let provider_rw = factory.database_provider_rw()?;
+        batch.commit()?;
+        rocksdb.flush(&[T::NAME])?;
 
-        let count = provider_rw.with_rocksdb_batch_auto_commit(|mut batch| {
-            let mut cursor = provider_rw.tx_ref().cursor_read::<tables::StoragesHistory>()?;
-            let mut count = 0u64;
-            for entry in cursor.walk(None)? {
-                let (key, value) = entry?;
-                batch.put::<tables::StoragesHistory>(key, &value)?;
-                count += 1;
-            }
-            Ok((count, Some(batch.into_inner())))
-        })?;
-
-        provider_rw.commit()?;
-
-        info!(target: "reth::cli", count, "StoragesHistory shards migrated");
+        info!(target: "reth::cli", table = T::NAME, count, "MDBX table migrated to RocksDB");
         Ok(())
     }
 
@@ -699,7 +677,7 @@ mod tests {
         assert!(cmd.config.is_none());
     }
 
-    /// `migrate_account_history` must copy each MDBX `AccountsHistory` shard verbatim into
+    /// `migrate_to_rocksdb` must copy each MDBX `AccountsHistory` shard verbatim into
     /// RocksDB. This is the #192 fix: without it the v2 datadir's history index is empty and
     /// every historical state read past the in-memory buffer misses.
     #[test]
@@ -729,7 +707,7 @@ mod tests {
             "precondition: RocksDB account history index must start empty",
         );
 
-        CeloMigrateV2Command::migrate_account_history(&factory).unwrap();
+        CeloMigrateV2Command::migrate_to_rocksdb::<_, tables::AccountsHistory>(&factory).unwrap();
 
         // The shard now exists in RocksDB with the same key and block list as the MDBX source.
         let shards = factory.rocksdb_provider().account_history_shards(address).unwrap();
@@ -738,7 +716,7 @@ mod tests {
         assert_eq!(shards[0].1.iter().collect::<Vec<_>>(), blocks.to_vec());
     }
 
-    /// `migrate_storage_history` must copy each MDBX `StoragesHistory` shard verbatim into
+    /// `migrate_to_rocksdb` must copy each MDBX `StoragesHistory` shard verbatim into
     /// RocksDB, the storage-slot counterpart of the account-history copy above (#192).
     #[test]
     fn migrate_storage_history_copies_mdbx_shard_to_rocksdb() {
@@ -770,7 +748,7 @@ mod tests {
             "precondition: RocksDB storage history index must start empty",
         );
 
-        CeloMigrateV2Command::migrate_storage_history(&factory).unwrap();
+        CeloMigrateV2Command::migrate_to_rocksdb::<_, tables::StoragesHistory>(&factory).unwrap();
 
         // The shard now exists in RocksDB with the same key and block list as the MDBX source.
         let shards = factory.rocksdb_provider().storage_history_shards(address, slot).unwrap();
@@ -817,7 +795,7 @@ mod tests {
     /// A multi-shard account must have *every* shard copied verbatim. The single-shard test above
     /// would also pass under a broken `append_account_history_shard`-based copy — a single append
     /// call never trips the once-per-address-per-batch rule — so it cannot guard the property the
-    /// `migrate_account_history` doc comment relies on. Seeding a closed shard plus the open
+    /// `migrate_to_rocksdb` doc comment relies on. Seeding a closed shard plus the open
     /// `u64::MAX` shard for one address pins the verbatim copy and would fail if a second shard's
     /// write overwrote the first.
     #[test]
@@ -850,7 +828,7 @@ mod tests {
             provider_rw.commit().unwrap();
         }
 
-        CeloMigrateV2Command::migrate_account_history(&factory).unwrap();
+        CeloMigrateV2Command::migrate_to_rocksdb::<_, tables::AccountsHistory>(&factory).unwrap();
 
         // Shards are returned in ascending highest_block_number order: closed shard first.
         let shards = factory.rocksdb_provider().account_history_shards(address).unwrap();
@@ -897,7 +875,7 @@ mod tests {
             provider_rw.commit().unwrap();
         }
 
-        CeloMigrateV2Command::migrate_storage_history(&factory).unwrap();
+        CeloMigrateV2Command::migrate_to_rocksdb::<_, tables::StoragesHistory>(&factory).unwrap();
 
         let shards = factory.rocksdb_provider().storage_history_shards(address, slot).unwrap();
         assert_eq!(shards.len(), 2, "both shards of the (address, slot) must be copied");
