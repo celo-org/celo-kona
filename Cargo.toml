@@ -207,10 +207,11 @@ reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", 
 # Hokulea
 # celo-org/hokulea seolaoh/v2.3.1-on-upstream (commit 6217bcf): the celo
 # op-reth/v2.3.1 adaptations rebased onto Layr-Labs/hokulea master, so the fork
-# tracks upstream again. Upstream made hokulea-proof require an explicit KZG
-# batch-verifier backend (`ark` or `sp1-bn`); `ark` is the arkworks default.
+# tracks upstream again. hokulea-proof's KZG batch-verifier backend is selected
+# via feature: `sp1-bn` swaps the arkworks verifier for one built on the sp1
+# `bn` precompile, cutting KZG batch verification ~74% on the zkVM proving path.
 hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false, features = ["ark"] }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false, features = ["sp1-bn"] }
 hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false }
 
 # General
