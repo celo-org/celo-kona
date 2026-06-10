@@ -16,7 +16,6 @@ use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloStatelessL2Builder;
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
@@ -408,30 +407,28 @@ async fn verify_block(
 
     let executing_header = executing_block.header.clone();
 
-    let payload_attrs = CeloPayloadAttributes {
-        op_payload_attributes: OpPayloadAttributes {
-            payload_attributes: PayloadAttributes {
-                timestamp: executing_header.timestamp,
-                parent_beacon_block_root: executing_header.parent_beacon_block_root,
-                prev_randao: executing_header.mix_hash,
-                withdrawals: Default::default(),
-                suggested_fee_recipient: executing_header.beneficiary,
-                slot_number: None,
-            },
-            gas_limit: Some(executing_header.gas_limit),
-            transactions: Some(encoded_executing_transactions),
-            no_tx_pool: None,
-            eip_1559_params: rollup_config
-                .is_holocene_active(executing_header.timestamp)
-                .then(|| executing_header.extra_data[1..9].try_into())
-                .transpose()
-                .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
-            min_base_fee: rollup_config
-                .is_jovian_active(executing_header.timestamp)
-                .then(|| executing_header.extra_data[9..17].try_into().map(u64::from_be_bytes))
-                .transpose()
-                .map_err(|_| anyhow::anyhow!("Invalid header format for Jovian"))?,
+    let payload_attrs = OpPayloadAttributes {
+        payload_attributes: PayloadAttributes {
+            timestamp: executing_header.timestamp,
+            parent_beacon_block_root: executing_header.parent_beacon_block_root,
+            prev_randao: executing_header.mix_hash,
+            withdrawals: Default::default(),
+            suggested_fee_recipient: executing_header.beneficiary,
+            slot_number: None,
         },
+        gas_limit: Some(executing_header.gas_limit),
+        transactions: Some(encoded_executing_transactions),
+        no_tx_pool: None,
+        eip_1559_params: rollup_config
+            .is_holocene_active(executing_header.timestamp)
+            .then(|| executing_header.extra_data[1..9].try_into())
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
+        min_base_fee: rollup_config
+            .is_jovian_active(executing_header.timestamp)
+            .then(|| executing_header.extra_data[9..17].try_into().map(u64::from_be_bytes))
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("Invalid header format for Jovian"))?,
     };
 
     let mut executor = CeloStatelessL2Builder::new(

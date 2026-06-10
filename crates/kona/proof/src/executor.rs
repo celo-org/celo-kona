@@ -4,13 +4,13 @@ use alloc::boxed::Box;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use async_trait::async_trait;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_driver::CeloExecutorTr;
 use celo_executor::{CeloBlockBuildingOutcome, CeloEvmFactory, CeloStatelessL2Builder};
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
 use kona_executor::TrieDBProvider;
 use kona_mpt::TrieHinter;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// An executor wrapper type.
 #[derive(Debug)]
@@ -79,7 +79,7 @@ where
     /// Execute the given payload attributes.
     async fn execute_payload(
         &mut self,
-        attributes: CeloPayloadAttributes,
+        attributes: OpPayloadAttributes,
     ) -> Result<CeloBlockBuildingOutcome, Self::Error> {
         self.inner.as_mut().map_or_else(
             || Err(kona_executor::ExecutorError::MissingExecutor),

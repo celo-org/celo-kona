@@ -17,7 +17,6 @@ workspace = true
 
 [dependencies]
 # Workspace
-celo-alloy-rpc-types-engine.workspace = true
 celo-alloy-consensus.workspace = true
 celo-executor.workspace = true
 celo-protocol.workspace = true
@@ -32,6 +31,9 @@ kona-driver.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+
+# OP Alloy
+op-alloy-rpc-types-engine.workspace = true
 
 # Misc
 async-trait.workspace = true

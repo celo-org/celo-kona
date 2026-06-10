@@ -3,13 +3,13 @@
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::eip1559::BaseFeeParams;
 use alloy_primitives::Bytes;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{Eip1559ValidationError, ExecutorError, ExecutorResult};
 use op_alloy_consensus::{
     EIP1559ParamError, decode_holocene_extra_data, decode_jovian_extra_data,
     encode_holocene_extra_data, encode_jovian_extra_data,
 };
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// Parse Holocene [Header] extra data.
 ///
@@ -58,20 +58,17 @@ pub(crate) fn decode_jovian_eip_1559_params_block_header(
 ///
 /// ## Takes
 /// - `config`: The [CeloRollupConfig] for the chain.
-/// - `attributes`: The [CeloPayloadAttributes] for the block.
+/// - `attributes`: The [OpPayloadAttributes] for the block.
 ///
 /// ## Returns
 /// - `Ok(data)`: The encoded extra data.
 /// - `Err(ExecutorError::MissingEIP1559Params)`: If the EIP-1559 parameters are missing.
 pub(crate) fn encode_holocene_eip_1559_params(
     config: &CeloRollupConfig,
-    attributes: &CeloPayloadAttributes,
+    attributes: &OpPayloadAttributes,
 ) -> ExecutorResult<Bytes> {
     Ok(encode_holocene_extra_data(
-        attributes
-            .op_payload_attributes
-            .eip_1559_params
-            .ok_or(ExecutorError::MissingEIP1559Params)?,
+        attributes.eip_1559_params.ok_or(ExecutorError::MissingEIP1559Params)?,
         config.chain_op_config.post_canyon_params(),
     )?)
 }
@@ -80,7 +77,7 @@ pub(crate) fn encode_holocene_eip_1559_params(
 ///
 /// ## Takes
 /// - `config`: The [CeloRollupConfig] for the chain.
-/// - `attributes`: The [CeloPayloadAttributes] for the block.
+/// - `attributes`: The [OpPayloadAttributes] for the block.
 ///
 /// ## Returns
 /// - `Ok(data)`: The encoded extra data (17 bytes: version + eip1559 params + min base fee).
@@ -88,15 +85,12 @@ pub(crate) fn encode_holocene_eip_1559_params(
 ///   missing.
 pub(crate) fn encode_jovian_eip_1559_params(
     config: &CeloRollupConfig,
-    attributes: &CeloPayloadAttributes,
+    attributes: &OpPayloadAttributes,
 ) -> ExecutorResult<Bytes> {
     Ok(encode_jovian_extra_data(
-        attributes
-            .op_payload_attributes
-            .eip_1559_params
-            .ok_or(ExecutorError::MissingEIP1559Params)?,
+        attributes.eip_1559_params.ok_or(ExecutorError::MissingEIP1559Params)?,
         config.chain_op_config.post_canyon_params(),
-        attributes.op_payload_attributes.min_base_fee.ok_or(ExecutorError::InvalidExtraData(
+        attributes.min_base_fee.ok_or(ExecutorError::InvalidExtraData(
             Eip1559ValidationError::Decode(EIP1559ParamError::MinBaseFeeNotSet),
         ))?,
     )?)
@@ -108,28 +102,25 @@ mod test {
     use alloy_consensus::Header;
     use alloy_primitives::{B64, b64, hex};
     use alloy_rpc_types_engine::PayloadAttributes;
-    use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
     use celo_genesis::CeloRollupConfig;
     use kona_genesis::{BaseFeeConfig, RollupConfig};
     use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
-    fn mock_payload(eip_1559_params: Option<B64>) -> CeloPayloadAttributes {
-        CeloPayloadAttributes {
-            op_payload_attributes: OpPayloadAttributes {
-                payload_attributes: PayloadAttributes {
-                    timestamp: 0,
-                    prev_randao: Default::default(),
-                    suggested_fee_recipient: Default::default(),
-                    withdrawals: Default::default(),
-                    parent_beacon_block_root: Default::default(),
-                    slot_number: None,
-                },
-                transactions: None,
-                no_tx_pool: None,
-                gas_limit: None,
-                eip_1559_params,
-                min_base_fee: None,
+    fn mock_payload(eip_1559_params: Option<B64>) -> OpPayloadAttributes {
+        OpPayloadAttributes {
+            payload_attributes: PayloadAttributes {
+                timestamp: 0,
+                prev_randao: Default::default(),
+                suggested_fee_recipient: Default::default(),
+                withdrawals: Default::default(),
+                parent_beacon_block_root: Default::default(),
+                slot_number: None,
             },
+            transactions: None,
+            no_tx_pool: None,
+            gas_limit: None,
+            eip_1559_params,
+            min_base_fee: None,
         }
     }
 

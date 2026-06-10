@@ -6,7 +6,6 @@ use alloy_consensus::Header;
 use alloy_primitives::{B256, Bytes, Sealable};
 use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_registry::ROLLUP_CONFIGS;
 use kona_executor::{
@@ -62,8 +61,9 @@ pub async fn load_and_execute_fixture(
         fixture.op_executor_test_fixture.parent_header.clone().seal_slow(),
     );
 
-    let outcome =
-        executor.build_block(fixture.executing_payload.clone()).expect("Failed to execute block");
+    let outcome = executor
+        .build_block(fixture.op_executor_test_fixture.executing_payload.clone())
+        .expect("Failed to execute block");
 
     (outcome, fixture)
 }
@@ -85,8 +85,6 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
 pub struct ExecutorTestFixture {
     /// [`kona_executor::test_utils::ExecutorTestFixture`]
     pub op_executor_test_fixture: OpExecutorTestFixture,
-    /// The executing payload attributes.
-    pub executing_payload: CeloPayloadAttributes,
 }
 
 /// A test fixture creator for the [`CeloStatelessL2Builder`].
@@ -156,36 +154,32 @@ impl ExecutorTestFixtureCreator {
             _ => panic!("Only BlockTransactions::Hashes are supported."),
         };
 
-        let payload_attrs = CeloPayloadAttributes {
-            op_payload_attributes: OpPayloadAttributes {
-                payload_attributes: PayloadAttributes {
-                    timestamp: executing_header.timestamp,
-                    parent_beacon_block_root: executing_header.parent_beacon_block_root,
-                    prev_randao: executing_header.mix_hash,
-                    withdrawals: Default::default(),
-                    suggested_fee_recipient: executing_header.beneficiary,
-                    slot_number: None,
-                },
-                gas_limit: Some(executing_header.gas_limit),
-                transactions: Some(encoded_executing_transactions),
-                no_tx_pool: None,
-                eip_1559_params: rollup_config.is_holocene_active(executing_header.timestamp).then(
-                    || {
-                        executing_header.extra_data[1..9]
-                            .try_into()
-                            .expect("Invalid header format for Holocene")
-                    },
-                ),
-                min_base_fee: rollup_config.is_jovian_active(executing_header.timestamp).then(
-                    || {
-                        // The min base fee is the bytes 9-17 of the extra data.
-                        executing_header.extra_data[9..17]
-                            .try_into()
-                            .map(u64::from_be_bytes)
-                            .expect("Invalid header format for Jovian")
-                    },
-                ),
+        let payload_attrs = OpPayloadAttributes {
+            payload_attributes: PayloadAttributes {
+                timestamp: executing_header.timestamp,
+                parent_beacon_block_root: executing_header.parent_beacon_block_root,
+                prev_randao: executing_header.mix_hash,
+                withdrawals: Default::default(),
+                suggested_fee_recipient: executing_header.beneficiary,
+                slot_number: None,
             },
+            gas_limit: Some(executing_header.gas_limit),
+            transactions: Some(encoded_executing_transactions),
+            no_tx_pool: None,
+            eip_1559_params: rollup_config.is_holocene_active(executing_header.timestamp).then(
+                || {
+                    executing_header.extra_data[1..9]
+                        .try_into()
+                        .expect("Invalid header format for Holocene")
+                },
+            ),
+            min_base_fee: rollup_config.is_jovian_active(executing_header.timestamp).then(|| {
+                // The min base fee is the bytes 9-17 of the extra data.
+                executing_header.extra_data[9..17]
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .expect("Invalid header format for Jovian")
+            }),
         };
 
         let fixture_path = self.op_executor_test_fixture_creator.data_dir.join("fixture.json");
@@ -194,9 +188,8 @@ impl ExecutorTestFixtureCreator {
                 rollup_config: rollup_config.0.clone(),
                 parent_header: parent_header.inner().clone(),
                 expected_block_hash: executing_header.hash_slow(),
-                executing_payload: payload_attrs.op_payload_attributes.clone(),
+                executing_payload: payload_attrs.clone(),
             },
-            executing_payload: payload_attrs.clone(),
         };
 
         let mut executor = CeloStatelessL2Builder::new(

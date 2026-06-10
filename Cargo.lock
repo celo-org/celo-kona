@@ -2109,10 +2109,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "celo-alloy-consensus",
- "op-alloy-consensus",
  "op-alloy-rpc-types-engine",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2148,13 +2145,13 @@ dependencies = [
  "alloy-rlp",
  "async-trait",
  "celo-alloy-consensus",
- "celo-alloy-rpc-types-engine",
  "celo-executor",
  "celo-genesis",
  "celo-protocol",
  "kona-derive",
  "kona-driver",
  "kona-protocol",
+ "op-alloy-rpc-types-engine",
  "spin 0.10.0",
  "tracing",
 ]
@@ -2282,7 +2279,6 @@ dependencies = [
  "alloy-primitives",
  "async-trait",
  "celo-alloy-consensus",
- "celo-alloy-rpc-types-engine",
  "celo-driver",
  "celo-executor",
  "celo-genesis",
@@ -3663,7 +3659,6 @@ dependencies = [
  "alloy-transport-ipc",
  "alloy-transport-ws",
  "anyhow",
- "celo-alloy-rpc-types-engine",
  "celo-executor",
  "celo-otel",
  "celo-registry",

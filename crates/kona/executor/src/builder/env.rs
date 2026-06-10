@@ -9,11 +9,11 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::EvmEnv;
 use alloy_primitives::U256;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_revm::constants::CELO_MAX_CODE_SIZE;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use op_revm::OpSpecId;
 use revm::{
     context::{BlockEnv, CfgEnv},
@@ -33,7 +33,7 @@ where
         &self,
         spec_id: OpSpecId,
         parent_header: &Header,
-        payload_attrs: &CeloPayloadAttributes,
+        payload_attrs: &OpPayloadAttributes,
         base_fee_params: &BaseFeeParams,
         min_base_fee: u64,
     ) -> ExecutorResult<EvmEnv<OpSpecId>> {
@@ -44,8 +44,7 @@ where
             base_fee_params,
             min_base_fee,
         )?;
-        let cfg_env =
-            self.evm_cfg_env(payload_attrs.op_payload_attributes.payload_attributes.timestamp);
+        let cfg_env = self.evm_cfg_env(payload_attrs.payload_attributes.timestamp);
         Ok(EvmEnv::new(cfg_env, block_env))
     }
 
@@ -93,12 +92,12 @@ where
         Some(next_block_base_fee)
     }
 
-    /// Prepares a [BlockEnv] with the given [CeloPayloadAttributes].
+    /// Prepares a [BlockEnv] with the given [OpPayloadAttributes].
     pub(crate) fn prepare_block_env(
         &self,
         spec_id: OpSpecId,
         parent_header: &Header,
-        payload_attrs: &CeloPayloadAttributes,
+        payload_attrs: &OpPayloadAttributes,
         base_fee_params: &BaseFeeParams,
         min_base_fee: u64,
     ) -> ExecutorResult<BlockEnv> {
@@ -119,14 +118,13 @@ where
             .next_block_base_fee(*base_fee_params, parent_header, min_base_fee)
             .unwrap_or_default();
 
-        let op_payload_attrs = &payload_attrs.op_payload_attributes;
         Ok(BlockEnv {
             number: U256::from(parent_header.number + 1),
-            beneficiary: op_payload_attrs.payload_attributes.suggested_fee_recipient,
-            timestamp: U256::from(op_payload_attrs.payload_attributes.timestamp),
-            gas_limit: op_payload_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
+            beneficiary: payload_attrs.payload_attributes.suggested_fee_recipient,
+            timestamp: U256::from(payload_attrs.payload_attributes.timestamp),
+            gas_limit: payload_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
             basefee: next_block_base_fee,
-            prevrandao: Some(op_payload_attrs.payload_attributes.prev_randao),
+            prevrandao: Some(payload_attrs.payload_attributes.prev_randao),
             blob_excess_gas_and_price,
             ..Default::default()
         })

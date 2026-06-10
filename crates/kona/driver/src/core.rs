@@ -6,7 +6,6 @@ use alloy_consensus::BlockBody;
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Decodable;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, CeloTxType};
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
 use celo_genesis::CeloRollupConfig;
 use celo_protocol::CeloL2BlockInfo;
@@ -114,10 +113,8 @@ where
                 }
             };
 
-            let celo_attributes =
-                CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
             self.executor.update_safe_head(tip_cursor.l2_safe_head_header.clone());
-            let outcome = match self.executor.execute_payload(celo_attributes).await {
+            let outcome = match self.executor.execute_payload(attributes.clone()).await {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     error!(target: "client", "Failed to execute L2 block: {}", e);
@@ -140,10 +137,8 @@ where
                         });
 
                         // Retry the execution.
-                        let celo_attributes =
-                            CeloPayloadAttributes { op_payload_attributes: attributes.clone() };
                         self.executor.update_safe_head(tip_cursor.l2_safe_head_header.clone());
-                        match self.executor.execute_payload(celo_attributes).await {
+                        match self.executor.execute_payload(attributes.clone()).await {
                             Ok(header) => header,
                             Err(e) => {
                                 error!(
