@@ -2107,7 +2107,6 @@ dependencies = [
  "alloy-eips 2.0.5",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-rpc-types-engine",
  "celo-alloy-consensus",
  "op-alloy-rpc-types-engine",
 ]

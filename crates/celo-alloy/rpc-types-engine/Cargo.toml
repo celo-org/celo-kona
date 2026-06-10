@@ -19,12 +19,11 @@ celo-alloy-consensus = { workspace = true, features = ["k256"] }
 
 # Alloy
 alloy-eips.workspace = true
-alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus = { workspace = true, optional = true }
 
 # OP Alloy
-op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
+op-alloy-rpc-types-engine.workspace = true
 
 [dev-dependencies]
 alloy-consensus.workspace = true
@@ -32,9 +31,6 @@ alloy-primitives.workspace = true
 
 [features]
 default = ["std", "serde"]
-std = [
-    "alloy-rpc-types-engine/ssz",
-    "alloy-rpc-types-engine/std",
-]
-serde = ["alloy-rpc-types-engine/serde"]
+std = ["op-alloy-rpc-types-engine/std"]
+serde = ["op-alloy-rpc-types-engine/serde"]
 k256 = ["alloy-consensus/k256"]
