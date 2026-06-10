@@ -373,7 +373,13 @@ where
         attributes: Self::NextBlockEnvCtx,
         post_exec_mode: PostExecMode,
     ) -> Result<
-        impl BlockBuilder<Primitives = Self::Primitives, Executor: PostExecExecutorExt> + 'a,
+        impl BlockBuilder<
+            Primitives = Self::Primitives,
+            Executor: PostExecExecutorExt
+                          + BlockExecutor<
+                Evm: alloy_evm::Evm<DB: core::ops::DerefMut<Target = revm::database::State<DB>>>,
+            >,
+        > + 'a,
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;

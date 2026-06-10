@@ -40,7 +40,7 @@ use reth_optimism_node::{
 };
 use reth_optimism_payload_builder::{
     OpExecData, OpPayloadTypes,
-    config::{OpDAConfig, OpGasLimitConfig},
+    config::{OpDAConfig, OpGasLimitConfig, SdmPostExecOptIn},
 };
 use reth_optimism_primitives::DepositReceipt;
 use reth_optimism_storage::OpStorage;
@@ -136,7 +136,10 @@ pub struct CeloEngineTypes<T: PayloadTypes = OpPayloadTypes<CeloPrimitives>> {
     _marker: core::marker::PhantomData<T>,
 }
 
-impl<T: PayloadTypes<ExecutionData = OpExecData>> PayloadTypes for CeloEngineTypes<T> {
+impl<T: PayloadTypes<ExecutionData = OpExecData>> PayloadTypes for CeloEngineTypes<T>
+where
+    OpExecData: From<<T as PayloadTypes>::BuiltPayload>,
+{
     type ExecutionData = T::ExecutionData;
     type BuiltPayload = T::BuiltPayload;
     type PayloadAttributes = T::PayloadAttributes;
@@ -145,8 +148,9 @@ impl<T: PayloadTypes<ExecutionData = OpExecData>> PayloadTypes for CeloEngineTyp
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
+        _bal: Option<alloy_primitives::Bytes>,
     ) -> <T as PayloadTypes>::ExecutionData {
-        OpExecData::from(OpExecutionData::from_block_unchecked(
+        OpExecData(OpExecutionData::from_block_unchecked(
             block.hash(),
             &block.into_block().into_ethereum_block(),
         ))
@@ -155,6 +159,7 @@ impl<T: PayloadTypes<ExecutionData = OpExecData>> PayloadTypes for CeloEngineTyp
 
 impl<T: PayloadTypes<ExecutionData = OpExecData>> EngineTypes for CeloEngineTypes<T>
 where
+    OpExecData: From<<T as PayloadTypes>::BuiltPayload>,
     T::BuiltPayload: BuiltPayload<
             Primitives: NodePrimitives<
                 Block = CeloBlock,
@@ -395,11 +400,11 @@ where
             ),
             self.da_config.clone(),
             self.gas_limit_config.clone(),
+            // SDM is unscheduled on Celo; the default `SdmPostExecOptIn` is disabled.
+            SdmPostExecOptIn::default(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
-            // SDM is unscheduled on Celo; mirror op-reth's default of disabled.
-            false,
             self.args.enable_tx_conditional,
             self.args.min_suggested_priority_fee,
         )
@@ -567,12 +572,14 @@ where
         block: &RecoveredBlock<N::Block>,
         result: &reth_execution_types::BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
+        block_access_list_hash: Option<alloy_primitives::B256>,
     ) -> Result<(), ConsensusError> {
         <OpBeaconConsensus<ChainSpec> as FullConsensus<N>>::validate_block_post_execution(
             &self.inner,
             block,
             result,
             receipt_root_bloom,
+            block_access_list_hash,
         )
     }
 }
