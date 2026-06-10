@@ -24,12 +24,10 @@ fn main() {
     println!("cargo:rustc-env=CELO_KONA_GIT_SHA_LONG={sha_long}");
     println!("cargo:rustc-env=CELO_KONA_GIT_SHA={sha_display}");
 
-    // Re-run when the env override or the local HEAD/refs change. Best-effort: these
-    // paths only exist for local cargo builds; Docker builds rely on the env var.
+    // Do not add `cargo:rerun-if-changed=<path>` here: emitting any path directive
+    // disables Cargo's default package-wide change detection and lets the `-dirty`
+    // flag go stale on local edits. Env-changed alone is enough.
     println!("cargo:rerun-if-env-changed=CELO_KONA_GIT_SHA");
-    for p in [".git/HEAD", ".git/refs/heads", ".git/packed-refs"] {
-        println!("cargo:rerun-if-changed=../../{p}");
-    }
 }
 
 fn resolve_sha() -> (String, bool) {

@@ -36,4 +36,4 @@ jobs:
       workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos
       concurrency-group: ${{ github.workflow }}-build-reth-${{ github.head_ref || github.ref }}
       build-args: |
-        CELO_KONA_GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+        CELO_KONA_GIT_SHA=${{ github.sha }}
