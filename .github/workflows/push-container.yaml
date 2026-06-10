@@ -17,6 +17,10 @@ on:
       concurrency-group:
         required: false
         type: string
+      build-args:
+        required: false
+        type: string
+        description: "Newline-separated list of build-time variables (KEY=VALUE) forwarded to the reusable workflow's `docker/build-push-action`."
 jobs:
   infer_image_metadata:
     name: Infer image tags from github ref type
@@ -63,4 +67,5 @@ jobs:
       context: .
       file: ${{ inputs.file }}
       tags: ${{ needs.infer_image_metadata.outputs.tags }}
+      build-args: ${{ inputs.build-args }}
       trivy-enabled: false
