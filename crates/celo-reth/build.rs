@@ -2,16 +2,16 @@
 //! it alongside the upstream reth commit.
 //!
 //! Resolution order (first hit wins):
-//!   1. `CELO_KONA_GIT_SHA` env var passed by the build environment (Docker build-arg or
-//!      explicit shell override). This is the path Docker/CI builds use, because
-//!      `.dockerignore` excludes `.git/` and the in-container source has no git repo.
-//!   2. `git rev-parse HEAD` against the workspace. Works for local `cargo build`
-//!      invocations where `.git/` is on disk.
+//!   1. `CELO_KONA_GIT_SHA` env var passed by the build environment (Docker build-arg or explicit
+//!      shell override). This is the path Docker/CI builds use, because `.dockerignore` excludes
+//!      `.git/` and the in-container source has no git repo.
+//!   2. `git rev-parse HEAD` against the workspace. Works for local `cargo build` invocations where
+//!      `.git/` is on disk.
 //!   3. The literal string `"unknown"`, with a build warning.
 //!
 //! Output env vars (set via `cargo:rustc-env`):
-//!   * `CELO_KONA_GIT_SHA`       — 7-char short SHA (with optional `-dirty` suffix
-//!                                  when git reports uncommitted changes), e.g. `6ee40f2`.
+//!   * `CELO_KONA_GIT_SHA`       — 7-char short SHA (with optional `-dirty` suffix when git reports
+//!     uncommitted changes), e.g. `6ee40f2`.
 //!   * `CELO_KONA_GIT_SHA_LONG`  — full 40-char SHA.
 
 use std::{env, process::Command};
