@@ -1,18 +1,15 @@
 //! Environment utility functions for [CeloStatelessL2Builder].
 
 use super::CeloStatelessL2Builder;
-use crate::{
-    constants::CELO_EIP_1559_BASE_FEE_FLOOR,
-    util::{
-        decode_holocene_eip_1559_params_block_header, decode_jovian_eip_1559_params_block_header,
-    },
+use crate::util::{
+    decode_holocene_eip_1559_params_block_header, decode_jovian_eip_1559_params_block_header,
 };
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams, eip7840::BlobParams};
 use alloy_evm::EvmEnv;
 use alloy_primitives::U256;
 use celo_genesis::CeloRollupConfig;
-use celo_revm::constants::CELO_MAX_CODE_SIZE;
+use celo_revm::constants::{CELO_EIP_1559_BASE_FEE_FLOOR, CELO_MAX_CODE_SIZE};
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;

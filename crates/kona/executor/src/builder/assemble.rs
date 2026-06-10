@@ -1,13 +1,10 @@
 //! [Header] assembly logic for the [CeloStatelessL2Builder].
 
 use super::CeloStatelessL2Builder;
-use crate::{
-    constants::SHA256_EMPTY,
-    util::{encode_holocene_eip_1559_params, encode_jovian_eip_1559_params},
-};
+use crate::util::{encode_holocene_eip_1559_params, encode_jovian_eip_1559_params};
 use alloc::vec::Vec;
 use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, Sealed};
-use alloy_eips::Encodable2718;
+use alloy_eips::{Encodable2718, eip7685::EMPTY_REQUESTS_HASH};
 use alloy_evm::block::BlockExecutionResult;
 use alloy_primitives::{B256, Sealable, U256, logs_bloom};
 use alloy_trie::EMPTY_ROOT_HASH;
@@ -86,7 +83,7 @@ where
         }?;
 
         // The requests hash on Celo, if Isthmus is active, is always the empty SHA256 hash.
-        let requests_hash = self.config.is_isthmus_active(timestamp).then_some(SHA256_EMPTY);
+        let requests_hash = self.config.is_isthmus_active(timestamp).then_some(EMPTY_REQUESTS_HASH);
 
         // Construct the new header.
         let header = Header {
