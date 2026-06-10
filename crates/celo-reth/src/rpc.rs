@@ -2488,7 +2488,6 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = CeloTxEnvelope::Deposit(alloy_consensus::Sealed::new(deposit));
-        let consensus_tx = envelope;
 
         // The mapper would populate these from the receipt. For the L1Block system deposit,
         // `deposit_nonce` equals the L2 block number — matching op-geth's `nonce` field.
@@ -2510,7 +2509,7 @@ mod tests {
             cip64_fc_base_fee: None,
         };
 
-        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, from, tx_info).unwrap();
+        let rpc = CeloRpcTransaction::from_consensus_tx(envelope, from, tx_info).unwrap();
         let value = serde_json::to_value(&rpc).unwrap();
         let obj = value.as_object().unwrap();
 
@@ -2559,7 +2558,6 @@ mod tests {
             input: Bytes::new(),
         };
         let envelope = CeloTxEnvelope::Cip64(tx.into_signed(Signature::test_signature()));
-        let consensus_tx = envelope;
 
         let tx_info = CeloTransactionInfo {
             inner: OpTransactionInfo::new(
@@ -2576,7 +2574,7 @@ mod tests {
             cip64_fc_base_fee: None,
         };
 
-        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        let rpc = CeloRpcTransaction::from_consensus_tx(envelope, signer, tx_info).unwrap();
         assert_eq!(rpc.fee_currency(), Some(fee_currency));
 
         let value = serde_json::to_value(&rpc).unwrap();
@@ -2632,7 +2630,6 @@ mod tests {
             Default::default(),
         );
         let envelope = CeloTxEnvelope::Cip64(signed);
-        let consensus_tx = envelope;
 
         // Native base fee on the block header — must NOT be used for CIP-64; we assert below
         // that the resulting gasPrice is the FC-derived value, not anything involving this.
@@ -2653,7 +2650,7 @@ mod tests {
             cip64_fc_base_fee: Some(base_fee_fc),
         };
 
-        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        let rpc = CeloRpcTransaction::from_consensus_tx(envelope, signer, tx_info).unwrap();
         let value = serde_json::to_value(&rpc).unwrap();
         let obj = value.as_object().unwrap();
 
@@ -2701,7 +2698,6 @@ mod tests {
             Default::default(),
         );
         let envelope = CeloTxEnvelope::Cip64(signed);
-        let consensus_tx = envelope;
 
         let tx_info = CeloTransactionInfo {
             inner: OpTransactionInfo::new(
@@ -2718,7 +2714,7 @@ mod tests {
             cip64_fc_base_fee: None,
         };
 
-        let rpc = CeloRpcTransaction::from_consensus_tx(consensus_tx, signer, tx_info).unwrap();
+        let rpc = CeloRpcTransaction::from_consensus_tx(envelope, signer, tx_info).unwrap();
         let value = serde_json::to_value(&rpc).unwrap();
         let gas_price = value.get("gasPrice").and_then(|v| v.as_str()).unwrap();
         assert_eq!(gas_price, format!("0x{:x}", max_fee_fc));
