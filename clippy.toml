@@ -1,1 +1,11 @@
 msrv = "1.94"
+
+# These inherent methods decode payload-attribute transactions as OpTxEnvelope, which
+# rejects the CIP-64 tx type (0x7b). Celo code must use the celo_-prefixed equivalents
+# from celo_alloy_rpc_types_engine::CeloPayloadAttributesExt instead.
+disallowed-methods = [
+    { path = "op_alloy_rpc_types_engine::OpPayloadAttributes::decoded_transactions", reason = "decodes OpTxEnvelope, which rejects CIP-64 (0x7b); use CeloPayloadAttributesExt::celo_decoded_transactions" },
+    { path = "op_alloy_rpc_types_engine::OpPayloadAttributes::decoded_transactions_with_encoded", reason = "decodes OpTxEnvelope, which rejects CIP-64 (0x7b); use CeloPayloadAttributesExt::celo_decoded_transactions_with_encoded" },
+    { path = "op_alloy_rpc_types_engine::OpPayloadAttributes::recovered_transactions", reason = "decodes OpTxEnvelope, which rejects CIP-64 (0x7b); use CeloPayloadAttributesExt::celo_recovered_transactions" },
+    { path = "op_alloy_rpc_types_engine::OpPayloadAttributes::recovered_transactions_with_encoded", reason = "decodes OpTxEnvelope, which rejects CIP-64 (0x7b); use CeloPayloadAttributesExt::celo_recovered_transactions_with_encoded" },
+]
