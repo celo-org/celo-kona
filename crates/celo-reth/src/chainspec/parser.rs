@@ -279,4 +279,19 @@ mod tests {
     fn supported_chains_list() {
         assert_eq!(CeloChainSpecParser::SUPPORTED_CHAINS, &["celo", "celo-sepolia"]);
     }
+
+    /// `From<Sealed<TxPostExec>> for CeloTxEnvelope` is `unreachable!` on the
+    /// assumption that SDM post-exec txs never activate on Celo. SDM rides the
+    /// Interop hardfork, so pin Interop as unscheduled in both embedded specs.
+    #[test]
+    fn sdm_never_active_on_celo_chains() {
+        for chain in CeloChainSpecParser::SUPPORTED_CHAINS {
+            let spec = CeloChainSpecParser::parse(chain).unwrap();
+            assert!(
+                !reth_optimism_evm::is_sdm_active_at_timestamp(spec.as_ref(), u64::MAX),
+                "SDM activated on {chain}; revisit the unreachable! in \
+                 `From<Sealed<TxPostExec>> for CeloTxEnvelope`",
+            );
+        }
+    }
 }

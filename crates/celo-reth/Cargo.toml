@@ -91,7 +91,7 @@ futures-util.workspace = true
 
 # Celo
 celo-alloy-consensus = { workspace = true, features = ["reth", "serde"] }
-celo-alloy-rpc-types.workspace = true
+celo-alloy-rpc-types = { workspace = true, features = ["reth", "std"] }
 # optional_no_base_fee is required in production: reth sets disable_base_fee=true
 # for eth_call and gas estimation RPCs. Without this feature those calls would fail
 # with "insufficient funds for gas" because the base fee check cannot be skipped.
@@ -135,6 +135,7 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 trybuild = "1"
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-basic-payload-builder.workspace = true
 
 [features]
 default = ["std"]

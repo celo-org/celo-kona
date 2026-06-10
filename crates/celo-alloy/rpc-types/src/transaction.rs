@@ -78,6 +78,43 @@ impl CeloTransaction {
     }
 }
 
+/// Per-tx metadata consumed when building a [`CeloTransaction`] RPC response from a
+/// consensus tx.
+///
+/// Wraps [`op_alloy_consensus::transaction::OpTransactionInfo`] (which carries deposit metadata)
+/// and adds the fee-currency-denominated base fee for CIP-64 transactions, sourced from the
+/// CIP-64 receipt.
+/// The FC base fee lets us report a meaningful `gasPrice` for CIP-64 RPC responses; without
+/// it we'd be forced to mix native and FC units (see [`cip64_effective_gas_price`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CeloTransactionInfo {
+    /// Standard OP transaction info (block context + deposit metadata).
+    pub inner: op_alloy_consensus::transaction::OpTransactionInfo,
+    /// FC-denominated base fee from the CIP-64 receipt. `None` for non-CIP-64 txs or when the
+    /// receipt isn't available.
+    pub cip64_fc_base_fee: Option<u128>,
+}
+
+/// Compute the effective gas price for a CIP-64 tx given its fee-currency-denominated
+/// base fee.
+///
+/// Equivalent to `min(max_fee_per_gas, base_fee + max_priority_fee_per_gas)` — same
+/// formula used elsewhere in reth/alloy, but entirely in `u128` space.
+///
+/// Avoids narrowing `base_fee_in_erc20` (a `u128`) to `u64` before calling the
+/// alloy-consensus `effective_gas_price` helper: for fee currencies with high
+/// exchange-rate numerators (cheap token, expensive CELO), `base_fee_in_erc20` can
+/// exceed `u64::MAX`, and the narrowing cast would wrap and report an incorrect
+/// `effectiveGasPrice` in RPC receipts.
+#[inline]
+pub fn cip64_effective_gas_price(
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    base_fee: u128,
+) -> u128 {
+    max_fee_per_gas.min(base_fee.saturating_add(max_priority_fee_per_gas))
+}
+
 impl Typed2718 for CeloTransaction {
     fn ty(&self) -> u8 {
         self.inner.ty()
