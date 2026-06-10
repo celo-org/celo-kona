@@ -20,7 +20,7 @@ workspace = true
 celo-registry.workspace = true
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
-celo-alloy-rpc-types-engine = { workspace = true, features = ["k256", "serde"] }
+celo-alloy-rpc-types-engine = { workspace = true, features = ["k256"] }
 celo-genesis = { workspace = true, features = ["revm"] }
 celo-revm.workspace = true
 
