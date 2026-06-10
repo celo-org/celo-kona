@@ -13,17 +13,8 @@ use kona_executor::test_utils::{
 use kona_mpt::NoopTrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use rocksdb::{DB, Options};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
-
-/// The on-disk layout of `fixture.json`, with the kona [`ExecutorTestFixture`] nested under
-/// `op_executor_test_fixture`. Existing fixtures additionally contain a legacy top-level
-/// `executing_payload` field, which serde ignores on deserialization.
-#[derive(Debug, Serialize, Deserialize)]
-struct FixtureFile {
-    op_executor_test_fixture: ExecutorTestFixture,
-}
 
 /// Loads and executes a test fixture from a tarball path.
 ///
@@ -49,7 +40,7 @@ pub async fn load_and_execute_fixture(
     let kv_store = DB::open(&options, fixture_dir.path().join("kv"))
         .unwrap_or_else(|e| panic!("Failed to open database at {fixture_dir:?}: {e}"));
     let provider = DiskTrieNodeProvider::new(kv_store);
-    let FixtureFile { op_executor_test_fixture: fixture } =
+    let fixture: ExecutorTestFixture =
         serde_json::from_slice(&fs::read(fixture_dir.path().join("fixture.json")).await.unwrap())
             .expect("Failed to deserialize fixture");
 
@@ -154,13 +145,11 @@ pub async fn create_static_fixture(
     };
 
     let fixture_path = creator.data_dir.join("fixture.json");
-    let fixture = FixtureFile {
-        op_executor_test_fixture: ExecutorTestFixture {
-            rollup_config: rollup_config.0.clone(),
-            parent_header: parent_header.inner().clone(),
-            expected_block_hash: executing_header.hash_slow(),
-            executing_payload: payload_attrs.clone(),
-        },
+    let fixture = ExecutorTestFixture {
+        rollup_config: rollup_config.0.clone(),
+        parent_header: parent_header.inner().clone(),
+        expected_block_hash: executing_header.hash_slow(),
+        executing_payload: payload_attrs.clone(),
     };
 
     let mut executor = CeloStatelessL2Builder::new(
