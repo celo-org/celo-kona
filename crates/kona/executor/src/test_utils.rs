@@ -8,11 +8,10 @@ use alloy_rpc_types_engine::PayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_registry::ROLLUP_CONFIGS;
 use kona_executor::test_utils::{
-    DiskTrieNodeProvider, ExecutorTestFixture, ExecutorTestFixtureCreator,
+    ExecutorTestFixture, ExecutorTestFixtureCreator, LoadedExecutorTestFixture, load_test_fixture,
 };
 use kona_mpt::NoopTrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use rocksdb::{DB, Options};
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -22,27 +21,9 @@ use tokio::fs;
 pub async fn load_and_execute_fixture(
     fixture_path: PathBuf,
 ) -> (CeloBlockBuildingOutcome, ExecutorTestFixture) {
-    // First, untar the fixture.
-    let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
-    tokio::process::Command::new("tar")
-        .arg("-xvf")
-        .arg(fixture_path.as_path())
-        .arg("-C")
-        .arg(fixture_dir.path())
-        .arg("--strip-components=1")
-        .output()
-        .await
-        .expect("Failed to untar fixture");
-
-    let mut options = Options::default();
-    options.set_compression_type(rocksdb::DBCompressionType::Snappy);
-    options.create_if_missing(true);
-    let kv_store = DB::open(&options, fixture_dir.path().join("kv"))
-        .unwrap_or_else(|e| panic!("Failed to open database at {fixture_dir:?}: {e}"));
-    let provider = DiskTrieNodeProvider::new(kv_store);
-    let fixture: ExecutorTestFixture =
-        serde_json::from_slice(&fs::read(fixture_dir.path().join("fixture.json")).await.unwrap())
-            .expect("Failed to deserialize fixture");
+    // `_fixture_dir` keeps the untarred fixture directory alive while the provider is in use.
+    let LoadedExecutorTestFixture { fixture_dir: _fixture_dir, fixture, provider } =
+        load_test_fixture(fixture_path).await;
 
     // Wrap RollupConfig to CeloRollupConfig
     let celo_rollup_config = CeloRollupConfig(fixture.rollup_config.clone());

@@ -2186,11 +2186,9 @@ dependencies = [
  "op-revm",
  "rand 0.9.4",
  "revm",
- "rocksdb",
  "rstest",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing",
 ]
