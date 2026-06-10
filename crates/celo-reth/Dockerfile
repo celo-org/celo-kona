@@ -9,6 +9,12 @@ RUN cargo chef prepare --recipe-path recipe.json --bin celo-reth
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 ARG BUILD_PROFILE=release
+# `.dockerignore` excludes `.git/`, so `crates/celo-reth/build.rs` cannot run
+# `git rev-parse HEAD` inside the build. CI must supply the SHA via `--build-arg`
+# (see `.github/workflows/push-container-dev.yaml`). Defaults to `unknown` so local
+# `docker build` without the arg still succeeds.
+ARG CELO_KONA_GIT_SHA=unknown
+ENV CELO_KONA_GIT_SHA=$CELO_KONA_GIT_SHA
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \

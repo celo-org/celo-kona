@@ -25,7 +25,10 @@ use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_core::args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs};
+use reth_node_core::{
+    args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs},
+    version::{default_reth_version_metadata, try_init_version_metadata},
+};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
@@ -190,7 +193,31 @@ pub struct CeloArgs {
     pub fee_currency_default: f64,
 }
 
+/// Augment reth's version metadata with the celo-kona git SHA so `celo-reth --version` shows
+/// both the upstream reth commit and the celo-kona commit that built the binary.
+///
+/// Must run before any clap command building that surfaces `--version`. The underlying global
+/// is a [`OnceLock`], so the first call wins; we ignore the `Err` (already-set) case for safety
+/// in tests or other entry points.
+///
+/// `CELO_KONA_GIT_SHA` / `CELO_KONA_GIT_SHA_LONG` are injected at compile time by
+/// `crates/celo-reth/build.rs` from either the `CELO_KONA_GIT_SHA` build env (Docker build-arg
+/// path) or `git rev-parse HEAD` (local cargo build path).
+fn init_celo_version_metadata() {
+    let mut meta = default_reth_version_metadata();
+    let celo_sha = env!("CELO_KONA_GIT_SHA");
+    let celo_sha_long = env!("CELO_KONA_GIT_SHA_LONG");
+    // `short_version` is what reth's clap renders for `--version`. Keep reth's existing string
+    // (which already includes reth's short SHA + build profile) and append the celo-kona SHA.
+    meta.short_version = format!("{} / celo-kona {}", meta.short_version, celo_sha).into();
+    // `long_version` is the multi-line output for `--version --verbose` style consumers.
+    meta.long_version =
+        format!("{}\nCelo-Kona Commit SHA: {}", meta.long_version, celo_sha_long).into();
+    let _ = try_init_version_metadata(meta);
+}
+
 fn main() {
+    init_celo_version_metadata();
     reth_cli_util::sigsegv_handler::install();
 
     if std::env::var_os("RUST_BACKTRACE").is_none() {
