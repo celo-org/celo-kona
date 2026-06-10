@@ -3,7 +3,9 @@
 use super::CeloStatelessL2Builder;
 use crate::{
     constants::CELO_EIP_1559_BASE_FEE_FLOOR,
-    util::{decode_holocene_eip_1559_params, decode_jovian_eip_1559_params_block_header},
+    util::{
+        decode_holocene_eip_1559_params_block_header, decode_jovian_eip_1559_params_block_header,
+    },
 };
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams, eip7840::BlobParams};
@@ -162,7 +164,7 @@ where
             // `extraData` field of the parent header. If Holocene wasn't active in the
             // parent block, the default base fee parameters are used.
             _ if config.is_holocene_active(parent_header.timestamp) => {
-                decode_holocene_eip_1559_params(parent_header)
+                decode_holocene_eip_1559_params_block_header(parent_header)
                     .map(|base_fee_params| (base_fee_params, celo_floor))
             }
             // If the next payload attribute timestamp is past canyon activation,
