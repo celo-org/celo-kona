@@ -13,7 +13,7 @@ pub use kona_genesis::ChainConfig;
 pub use kona_genesis::{Chain, ChainList};
 
 pub mod superchain;
-pub use superchain::Registry;
+pub use superchain::{CELO_FJORD_MAX_SEQUENCER_DRIFT, Registry};
 
 lazy_static::lazy_static! {
     /// Private initializer that loads the superchain configurations.

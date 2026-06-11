@@ -4,7 +4,8 @@
 //! remove `CeloBootInfo`.
 
 use alloy_primitives::B256;
-use celo_registry::ROLLUP_CONFIGS;
+use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS};
+use kona_genesis::RollupConfig;
 use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
     BootInfo,
@@ -77,7 +78,7 @@ impl CeloBootInfo {
 
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
-        let rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
+        let mut rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
             config.0.clone()
         } else {
             warn!(
@@ -91,6 +92,13 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
+
+        // Celo chains run with a non-default Fjord max sequencer drift (2892). The embedded
+        // registry stamps it onto every Celo rollup config, but a config arriving via the
+        // oracle fallback above deserializes with serde's OP default (1800). Re-apply the known
+        // value for the known Celo chain IDs so the proof never derives with a drift that
+        // disagrees with op-node (which would split on batches with drift in (1800, 2892]).
+        enforce_celo_fjord_sequencer_drift(&mut rollup_config, chain_id);
 
         // Attempt to load the L1 config from the L1 chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
@@ -141,5 +149,52 @@ impl CeloBootInfo {
                 l1_config,
             },
         })
+    }
+}
+
+/// Re-apply the Celo Fjord max sequencer drift ([`CELO_FJORD_MAX_SEQUENCER_DRIFT`]) to a
+/// rollup config for the known Celo chain IDs (Mainnet, Sepolia, Chaos).
+///
+/// The embedded registry already stamps this value, so for registry-sourced configs this is a
+/// no-op. It exists for the preimage-oracle fallback in [`CeloBootInfo::load`], where the
+/// host-supplied JSON deserializes `fjord_max_sequencer_drift` with serde's OP default (1800);
+/// without this override a Celo proof would accept/reject batches differently from op-node for
+/// drift in (1800, 2892], breaking node-vs-proof determinism.
+fn enforce_celo_fjord_sequencer_drift(rollup_config: &mut RollupConfig, chain_id: u64) {
+    // Celo Mainnet, Celo Sepolia, and Celo Chaos (same set special-cased for BPO above).
+    if matches!(chain_id, 42220 | 11142220 | 11162320) &&
+        rollup_config.fjord_max_sequencer_drift != CELO_FJORD_MAX_SEQUENCER_DRIFT
+    {
+        warn!(
+            target: "boot_loader",
+            "Overriding fjord_max_sequencer_drift {} -> {} for Celo chain {} (config did not carry the Celo value)",
+            rollup_config.fjord_max_sequencer_drift, CELO_FJORD_MAX_SEQUENCER_DRIFT, chain_id,
+        );
+        rollup_config.fjord_max_sequencer_drift = CELO_FJORD_MAX_SEQUENCER_DRIFT;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fjord_drift_forced_for_celo_chain_ids() {
+        for chain_id in [42220, 11142220, 11162320] {
+            let mut cfg = RollupConfig { fjord_max_sequencer_drift: 1800, ..Default::default() };
+            enforce_celo_fjord_sequencer_drift(&mut cfg, chain_id);
+            assert_eq!(
+                cfg.fjord_max_sequencer_drift, CELO_FJORD_MAX_SEQUENCER_DRIFT,
+                "chain {chain_id} must derive with the Celo Fjord drift",
+            );
+        }
+    }
+
+    #[test]
+    fn fjord_drift_untouched_for_non_celo_chain() {
+        // A non-Celo chain ID (OP Mainnet) keeps whatever drift its config carried.
+        let mut cfg = RollupConfig { fjord_max_sequencer_drift: 1800, ..Default::default() };
+        enforce_celo_fjord_sequencer_drift(&mut cfg, 10);
+        assert_eq!(cfg.fjord_max_sequencer_drift, 1800);
     }
 }

@@ -7,7 +7,14 @@ const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
 const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 
-const CELO_FJORD_MAX_SEQUENCER_DRIFT: u64 = 2892;
+/// Fjord max sequencer drift for every Celo chain (Mainnet, Sepolia, Chaos).
+///
+/// op-node hardcodes `maxSequencerDriftCelo = 1800 + 1092 = 2892` for Cel2 chains, where
+/// the OP default is 1800. This is the single source of truth for the value: the registry
+/// stamps it onto every Celo rollup config here, and the proof boot loader re-applies it to
+/// any Celo config that arrives without it (e.g. via the preimage-oracle fallback), so the
+/// derivation pipeline never splits from op-node on batches with drift in (1800, 2892].
+pub const CELO_FJORD_MAX_SEQUENCER_DRIFT: u64 = 2892;
 
 use celo_genesis::CeloRollupConfig;
 use kona_genesis::{ChainConfig, Superchains};
