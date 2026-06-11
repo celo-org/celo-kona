@@ -17,7 +17,7 @@
 //!   defaults to `celo-executor`'s `testdata` directory.
 
 use anyhow::{Result, anyhow};
-use celo_executor::test_utils::ExecutorTestFixtureCreator;
+use celo_executor::test_utils::create_static_fixture;
 use clap::Parser;
 use kona_cli::{LogArgs, LogConfig};
 use std::path::PathBuf;
@@ -66,9 +66,7 @@ async fn main() -> Result<()> {
             .join("crates/kona/executor/testdata")
     };
 
-    ExecutorTestFixtureCreator::new(cli.l2_rpc.as_str(), cli.block_number, output_dir)
-        .create_static_fixture()
-        .await;
+    create_static_fixture(cli.l2_rpc.as_str(), cli.block_number, output_dir).await;
 
     info!(block_number = cli.block_number, "Successfully created static test fixture");
     Ok(())

@@ -18,40 +18,19 @@ workspace = true
 celo-alloy-consensus = { workspace = true, features = ["k256"] }
 
 # Alloy
-alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus = { workspace = true, optional = true }
 
 # OP Alloy
-op-alloy-consensus.workspace = true
-op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
-
-# serde
-serde = { workspace = true, optional = true }
+op-alloy-rpc-types-engine.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
-alloy-primitives = { workspace = true, features = ["arbitrary"] }
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
 
 [features]
 default = ["std", "serde"]
-std = [
-    "alloy-rpc-types-engine/ssz",
-    "alloy-primitives/std",
-    "alloy-rpc-types-engine/std",
-    "op-alloy-consensus/std",
-]
-serde = [
-    "dep:serde",
-    "alloy-rpc-types-engine/serde",
-    "op-alloy-consensus/serde"
-]
-k256 = ["op-alloy-consensus/k256", "alloy-consensus/k256"]
-arbitrary = [
-    "std",
-    "alloy-primitives/arbitrary",
-    "alloy-primitives/rand",
-    "op-alloy-consensus/arbitrary"
-]
+std = ["op-alloy-rpc-types-engine/std"]
+serde = ["op-alloy-rpc-types-engine/serde"]
+k256 = ["alloy-consensus/k256"]

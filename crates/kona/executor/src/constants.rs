@@ -1,9 +1,0 @@
-//! Protocol constants for the executor.
-//! Identical to kona-executor, but had to duplicate it because the original is private.
-use alloy_primitives::{B256, b256};
-
-/// Empty SHA-256 hash.
-pub(crate) const SHA256_EMPTY: B256 =
-    b256!("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-
-pub(crate) use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR;

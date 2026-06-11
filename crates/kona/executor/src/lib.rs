@@ -15,7 +15,5 @@ pub use alloy_celo_evm::CeloEvmFactory;
 
 pub(crate) mod util;
 
-pub(crate) mod constants;
-
 #[cfg(feature = "test-utils")]
 pub mod test_utils;

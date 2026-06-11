@@ -4,9 +4,9 @@ use alloc::boxed::Box;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use async_trait::async_trait;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_executor::CeloBlockBuildingOutcome;
 use core::error::Error;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// CeloExecutorTr
 ///
@@ -22,10 +22,10 @@ pub trait CeloExecutorTr {
     /// Updates the safe header.
     fn update_safe_head(&mut self, header: Sealed<Header>);
 
-    /// Execute the given [CeloPayloadAttributes].
+    /// Execute the given [OpPayloadAttributes].
     async fn execute_payload(
         &mut self,
-        attributes: CeloPayloadAttributes,
+        attributes: OpPayloadAttributes,
     ) -> Result<CeloBlockBuildingOutcome, Self::Error>;
 
     /// Computes the output root.

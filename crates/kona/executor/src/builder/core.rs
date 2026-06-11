@@ -14,12 +14,13 @@ use alloy_evm::{
 };
 use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use celo_alloy_consensus::CeloReceiptEnvelope;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_alloy_rpc_types_engine::CeloPayloadAttributesExt;
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_alloy_consensus::parse_post_exec_payload_from_transactions;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use revm::database::{State, states::bundle_state::BundleRetention};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
@@ -59,21 +60,19 @@ where
         Self { config, trie_db, factory }
     }
 
-    /// Builds a new block on top of the parent state, using the given [`CeloPayloadAttributes`].
+    /// Builds a new block on top of the parent state, using the given [`OpPayloadAttributes`].
     pub fn build_block(
         &mut self,
-        attrs: CeloPayloadAttributes,
+        attrs: OpPayloadAttributes,
     ) -> ExecutorResult<CeloBlockBuildingOutcome> {
-        let op_attrs = attrs.op_payload_attributes.clone();
-
         // Step 1. Set up the execution environment.
         let (base_fee_params, min_base_fee) = Self::active_base_fee_params(
             self.config,
             self.trie_db.parent_block_header(),
-            op_attrs.payload_attributes.timestamp,
+            attrs.payload_attributes.timestamp,
         )?;
         let evm_env = self.evm_env(
-            self.config.spec_id(op_attrs.payload_attributes.timestamp),
+            self.config.spec_id(attrs.payload_attributes.timestamp),
             self.trie_db.parent_block_header(),
             &attrs,
             &base_fee_params,
@@ -88,7 +87,7 @@ where
         // without it and fall back on on-demand preimage fetching for execution.
         self.trie_db
             .hinter
-            .hint_execution_witness(parent_hash, &op_attrs)
+            .hint_execution_witness(parent_hash, &attrs)
             .map_err(|e| TrieDBError::Provider(e.to_string()))?;
 
         info!(
@@ -96,7 +95,7 @@ where
             block_number = %block_env.number,
             block_timestamp = %block_env.timestamp,
             block_gas_limit = block_env.gas_limit,
-            transactions = op_attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
+            transactions = attrs.transactions.as_ref().map_or(0, |txs| txs.len()),
             "Beginning block building."
         );
 
@@ -113,7 +112,7 @@ where
 
         // Step 3. Decode and validate the block transactions within the payload attributes.
         let transactions = attrs
-            .recovered_transactions_with_encoded()
+            .celo_recovered_transactions_with_encoded()
             .collect::<Result<Vec<_>, RecoveryError>>()
             .map_err(ExecutorError::Recovery)?;
         let sdm_active = self.config.is_sdm_active(block_env.timestamp.saturating_to());
@@ -128,7 +127,7 @@ where
 
         let ctx = OpBlockExecutionCtx {
             parent_hash,
-            parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
+            parent_beacon_block_root: attrs.payload_attributes.parent_beacon_block_root,
             // This field is unused for individual block building jobs.
             extra_data: Default::default(),
             post_exec_mode,

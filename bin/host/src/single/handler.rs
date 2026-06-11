@@ -9,7 +9,6 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
-use celo_alloy_rpc_types_engine::OpPayloadAttributes;
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
@@ -18,6 +17,7 @@ use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use tracing::warn;
 
 /// The [HintHandler] for the [CeloSingleChainHost].

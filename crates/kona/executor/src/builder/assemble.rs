@@ -1,22 +1,19 @@
 //! [Header] assembly logic for the [CeloStatelessL2Builder].
 
 use super::CeloStatelessL2Builder;
-use crate::{
-    constants::SHA256_EMPTY,
-    util::{encode_holocene_eip_1559_params, encode_jovian_eip_1559_params},
-};
+use crate::util::{encode_holocene_eip_1559_params, encode_jovian_eip_1559_params};
 use alloc::vec::Vec;
 use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, Sealed};
-use alloy_eips::Encodable2718;
+use alloy_eips::{Encodable2718, eip7685::EMPTY_REQUESTS_HASH};
 use alloy_evm::block::BlockExecutionResult;
 use alloy_primitives::{B256, Sealable, U256, logs_bloom};
 use alloy_trie::EMPTY_ROOT_HASH;
 use celo_alloy_consensus::CeloReceiptEnvelope;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBError, TrieDBProvider};
 use kona_mpt::{TrieHinter, ordered_trie_with_encoder};
 use kona_protocol::{OutputRoot, Predeploys};
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use revm::{context::BlockEnv, database::BundleState};
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
@@ -24,17 +21,16 @@ where
     P: TrieDBProvider,
     H: TrieHinter,
 {
-    /// Seals the block executed from the given [CeloPayloadAttributes] and [BlockEnv], returning
+    /// Seals the block executed from the given [OpPayloadAttributes] and [BlockEnv], returning
     /// the computed [Header].
     pub(crate) fn seal_block(
         &mut self,
-        attrs: &CeloPayloadAttributes,
+        attrs: &OpPayloadAttributes,
         parent_hash: B256,
         block_env: &BlockEnv,
         ex_result: &BlockExecutionResult<CeloReceiptEnvelope>,
         bundle: BundleState,
     ) -> ExecutorResult<Sealed<Header>> {
-        let op_attrs = &attrs.op_payload_attributes.clone();
         let timestamp: u64 = block_env.timestamp.try_into().expect("timestamp should fit in u64");
         let block_number: u64 =
             block_env.number.try_into().expect("block number should fit in u64");
@@ -45,7 +41,7 @@ where
             // SAFETY: The OP Stack protocol will never generate a payload attributes with an empty
             // transactions field. Panicking here is the desired behavior, as it indicates a severe
             // protocol violation.
-            op_attrs.transactions.as_ref().expect("Transactions must be non-empty"),
+            attrs.transactions.as_ref().expect("Transactions must be non-empty"),
             |tx, buf| buf.put_slice(tx.as_ref()),
         )
         .root();
@@ -87,13 +83,13 @@ where
         }?;
 
         // The requests hash on Celo, if Isthmus is active, is always the empty SHA256 hash.
-        let requests_hash = self.config.is_isthmus_active(timestamp).then_some(SHA256_EMPTY);
+        let requests_hash = self.config.is_isthmus_active(timestamp).then_some(EMPTY_REQUESTS_HASH);
 
         // Construct the new header.
         let header = Header {
             parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
-            beneficiary: op_attrs.payload_attributes.suggested_fee_recipient,
+            beneficiary: attrs.payload_attributes.suggested_fee_recipient,
             state_root,
             transactions_root,
             receipts_root,
@@ -102,15 +98,15 @@ where
             logs_bloom,
             difficulty: U256::ZERO,
             number: block_number,
-            gas_limit: op_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
+            gas_limit: attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
             gas_used: ex_result.gas_used,
             timestamp,
-            mix_hash: op_attrs.payload_attributes.prev_randao,
+            mix_hash: attrs.payload_attributes.prev_randao,
             nonce: Default::default(),
             base_fee_per_gas: Some(block_env.basefee),
             blob_gas_used,
             excess_blob_gas: excess_blob_gas.and_then(|x| x.try_into().ok()),
-            parent_beacon_block_root: op_attrs.payload_attributes.parent_beacon_block_root,
+            parent_beacon_block_root: attrs.payload_attributes.parent_beacon_block_root,
             extra_data: encoded_base_fee_params,
             block_access_list_hash: None,
             slot_number: None,
