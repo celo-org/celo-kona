@@ -6,7 +6,9 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
-use celo_protocol::{CeloL2BlockInfo, convert_celo_block_to_op_block};
+use celo_protocol::{
+    CeloL2BlockInfo, convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked,
+};
 use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
@@ -176,7 +178,14 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
     }
 
     async fn block_by_number(&mut self, number: u64) -> Result<OpBlock, OracleProviderError> {
-        self.celo_block_by_number(number).await.map(convert_celo_block_to_op_block)
+        // Fail closed on CIP-64: this is the transaction-content-sensitive consumer (it feeds the
+        // span-batch overlap check), so a silently dropped CIP-64 tx here could let a forged block
+        // pass. `system_config_by_number` below keeps the lossy conversion on purpose: it reads
+        // only the header and the L1-info deposit at `transactions[0]`, never a CIP-64 tx.
+        self.celo_block_by_number(number).await.and_then(|block| {
+            convert_celo_block_to_op_block_checked(block)
+                .map_err(OracleProviderError::OpBlockConversion)
+        })
     }
 }
 
