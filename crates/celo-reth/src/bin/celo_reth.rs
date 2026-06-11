@@ -6,7 +6,9 @@ use celo_reth::{
     celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
-    payload::{DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits},
+    payload::{
+        DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
+    },
     rpc::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
@@ -207,6 +209,7 @@ pub struct CeloArgs {
         long = "celo.feecurrency.default",
         value_name = "FRACTION",
         default_value_t = DEFAULT_FEE_CURRENCY_LIMIT_FRACTION,
+        value_parser = parse_fee_currency_fraction,
     )]
     pub fee_currency_default: f64,
 }
