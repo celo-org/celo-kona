@@ -315,17 +315,23 @@ where
         match &result {
             Ok(_) => {
                 // CIP64 NOTE:
-                // Extract and store the cip64 info to a shared storage to be able to add the
-                // credit/debit logs when building the receipt in the receipts_builder.
-                // Only store during real execution (sequencing and import), not RPC
-                // simulation/tracing: storage is per-EVM (so cross-EVM pollution is
-                // impossible), but multi-tx RPC tracing (`debug_traceBlock`,
-                // `debug_traceTransaction`) re-executes multiple txs through one EVM
-                // without calling `build_receipt`. Skipping the store here keeps the
-                // slot-occupied panic in `store_cip64_info` a signal of a real executor
-                // bug instead of firing on legitimate RPC paths.
+                // Extract and store the cip64 info so the receipt builder can add the
+                // credit/debit logs when building the receipt. Store only on the real
+                // execution path, the only place `build_receipt` consumes it. We require both:
+                //   - `base_fee_check_enabled`: RPC simulation (eth_call/estimateGas) disables the
+                //     base-fee check and never builds receipts.
+                //   - `!self.inspect`: tracing replays many txs through one shared, inspecting EVM
+                //     and never builds receipts. parity `trace_block`/`trace_filter` and otterscan
+                //     `ots_*` keep the base-fee check enabled, so without this conjunct the second
+                //     CIP-64 tx would trip the slot-occupied panic in `store_cip64_info`.
+                // Confining the store to the receipt-building path keeps that panic a true
+                // signal of an executor double-store bug (see `Cip64Storage` docs), rather than
+                // a false positive on legitimate tracing.
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
-                if base_fee_check_enabled && let Some(cip64_info) = cip64_info {
+                if base_fee_check_enabled
+                    && !self.inspect
+                    && let Some(cip64_info) = cip64_info
+                {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
@@ -766,13 +772,10 @@ mod tests {
         assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
     }
 
-    /// Verify that RPC simulation paths (eth_call / eth_estimateGas / debug_trace*)
-    /// never store CIP-64 receipt data. Storage is per-EVM, so cross-EVM
-    /// corruption is impossible — but multi-tx tracing (`debug_traceBlock`,
-    /// `debug_traceTransaction`) re-executes multiple txs through one EVM
-    /// without calling `build_receipt`. Without the `base_fee_check_enabled` gate
-    /// in `transact_raw`, the second CIP-64 tx would trip the slot-occupied
-    /// panic in `store_cip64_info` on perfectly legitimate RPC paths.
+    /// Verify that base-fee-disabled RPC simulation (eth_call / eth_estimateGas) never stores
+    /// CIP-64 receipt data: the `base_fee_check_enabled` gate in `transact_raw` skips the store
+    /// on those paths, which never build receipts. (The inspecting/tracing path is covered
+    /// separately by [`test_cip64_info_not_stored_while_inspecting`].)
     ///
     /// The handler still populates `cip64_tx_info` during simulation for
     /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
@@ -806,6 +809,39 @@ mod tests {
         assert!(
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
             "RPC simulation must not store CIP-64 receipt data"
+        );
+    }
+
+    /// Verify that an inspecting EVM (block tracing) does not store CIP-64 receipt data even
+    /// with the base-fee check ENABLED — the parity `trace_block` / otterscan `ots_*` path.
+    /// Before the `!self.inspect` gate in `transact_raw`, the store ran here and a second
+    /// CIP-64 tx replayed through the same EVM tripped the slot-occupied panic in
+    /// `store_cip64_info`. The panic is intentional for the executor path (see `Cip64Storage`
+    /// docs), so the fix skips the store while inspecting rather than weakening the panic.
+    #[test]
+    fn test_cip64_info_not_stored_while_inspecting() {
+        use revm::state::AccountInfo;
+
+        let blocklist = FeeCurrencyBlocklist::default();
+        let mut evm = make_test_evm(blocklist);
+
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        // Tracing EVM: inspecting, but base fee left ENABLED (unlike eth_call / estimateGas).
+        evm.set_inspector_enabled(true);
+
+        let mut tx = make_cip64_tx(Address::ZERO);
+        tx.fee_currency = Some(Address::ZERO);
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok(), "inspecting tx should succeed: {result:?}");
+
+        assert!(
+            evm.cip64_storage.pop_cip64_receipt_data().is_none(),
+            "tracing (inspecting EVM) must not store CIP-64 receipt data"
         );
     }
 
