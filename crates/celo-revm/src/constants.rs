@@ -54,18 +54,21 @@ lazy_static! {
     };
 }
 
-/// Returns the addresses for the given chain ID, or Celo Mainnet addresses if not found.
+/// Returns the addresses for the given chain ID, falling back to Celo Mainnet's
+/// addresses if the chain is not in the table.
 ///
-/// Logs a warning for unknown chain IDs since the Celo Mainnet addresses are almost
-/// certainly wrong on other chains and will cause fee debit/credit to target
-/// non-existent or incorrect contracts.
+/// The fallback mirrors op-geth's `GetAddressesOrDefault(chainID, MainnetAddresses)`
+/// and is correct for chains that reuse Mainnet's deterministic system-contract
+/// addresses (e.g. dev and internal testnets). It is only wrong on a chain whose
+/// addresses genuinely differ, so the miss is logged at `debug` rather than `warn`.
 pub fn get_addresses(chain_id: u64) -> &'static CeloAddresses {
     CELO_ADDRESSES.get(&chain_id).unwrap_or_else(|| {
-        tracing::warn!(
+        tracing::debug!(
             target: "celo::constants",
             chain_id,
-            "Unknown chain ID — falling back to Celo Mainnet contract addresses. \
-             Fee currency operations will likely fail on this chain."
+            "chain ID not in the known address table; using Celo Mainnet \
+             system-contract addresses (correct for chains that reuse Mainnet's \
+             deterministic addresses, e.g. dev/internal testnets)"
         );
         &CELO_ADDRESSES[&CELO_MAINNET_CHAIN_ID]
     })
