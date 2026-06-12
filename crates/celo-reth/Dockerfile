@@ -14,6 +14,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo chef cook --profile $BUILD_PROFILE --recipe-path recipe.json --bin celo-reth
 COPY . .
+# SHA injected AFTER chef cook so dep-cache layer stays valid across PR commits.
+# `.dockerignore` excludes `.git/`, so `crates/celo-reth/build.rs` cannot run
+# `git rev-parse HEAD` in-container. CI passes the SHA via `--build-arg`; defaults
+# to `unknown` so local `docker build` without the arg still succeeds.
+ARG CELO_KONA_GIT_SHA=unknown
+ENV CELO_KONA_GIT_SHA=$CELO_KONA_GIT_SHA
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
