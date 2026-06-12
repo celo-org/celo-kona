@@ -1,5 +1,6 @@
 use crate::{
     CeloContext, CeloEvm,
+    constants::FEE_CURRENCY_NOT_REGISTERED_PREFIX,
     contracts::core_contracts::get_currency_info,
     units::{FcU256, NativeU256},
 };
@@ -61,7 +62,9 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
             Some(info) => Ok(info.intrinsic_gas),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(format!(
+                "{FEE_CURRENCY_NOT_REGISTERED_PREFIX}: {currency_addr}"
+            )),
         }
     }
 
@@ -88,7 +91,9 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
             Some(info) => Ok(info.exchange_rate),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(format!(
+                "{FEE_CURRENCY_NOT_REGISTERED_PREFIX}: {currency_addr}"
+            )),
         }
     }
 
@@ -113,7 +118,9 @@ impl FeeCurrencyContext {
             Some(info) => Ok(FcU256::new(
                 amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
             )),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(format!(
+                "{FEE_CURRENCY_NOT_REGISTERED_PREFIX}: {currency_addr}"
+            )),
         }
     }
 
@@ -133,7 +140,9 @@ impl FeeCurrencyContext {
             Some(info) => Ok(NativeU256::new(
                 amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
             )),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(format!(
+                "{FEE_CURRENCY_NOT_REGISTERED_PREFIX}: {currency_addr}"
+            )),
         }
     }
 }

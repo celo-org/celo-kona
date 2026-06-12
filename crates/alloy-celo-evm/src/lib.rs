@@ -17,7 +17,9 @@ use alloy_op_evm::{
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
-    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX},
+    constants::{
+        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_DEBIT_ERROR_PREFIX,
+    },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
 use core::{
@@ -328,20 +330,39 @@ where
                 }
             }
             Err(e) if apply_blocklist && fee_currency.is_some() => {
-                // Only blocklist when the error is a fee-currency debit/credit failure,
-                // not for unrelated validation errors (nonce, gas limit, etc.) that
-                // happen to involve a CIP-64 tx.
+                // Classify why this CIP-64 tx failed during block building. Only a
+                // fee-currency debit/credit failure should blocklist the currency, not
+                // unrelated validation errors (nonce, gas limit, etc.) that happen to
+                // involve a CIP-64 tx.
+                let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
-                    let fc = fee_currency.unwrap();
                     tracing::warn!(
                         target: "celo",
                         "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
                     );
                     let block_timestamp: u64 = self.ctx().block.timestamp.to();
                     self.blocklist.block_currency(fc, block_timestamp);
+                } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
+                    // The fee currency is not in the per-block fee-currency context: its
+                    // directory config could not be read, so it was dropped while loading
+                    // (see `celo_revm::contracts::core_contracts::get_currency_info`). The
+                    // tx is excluded from the block. This is otherwise silent — it fails
+                    // before debit/credit, so the blocklist branch above never logs it —
+                    // so surface it here as both a log and a metric.
+                    tracing::warn!(
+                        target: "celo",
+                        "CIP-64 tx excluded from block: fee currency {fc} is not loaded in the \
+                         per-block fee-currency context ({e})"
+                    );
+                    #[cfg(feature = "std")]
+                    metrics::counter!(
+                        "celo_payload_skipped_total",
+                        "reason" => "fee_currency_not_registered"
+                    )
+                    .increment(1);
                 }
             }
             _ => {}

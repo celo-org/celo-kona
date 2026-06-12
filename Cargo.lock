@@ -109,6 +109,7 @@ dependencies = [
  "alloy-primitives",
  "celo-alloy-consensus",
  "celo-revm",
+ "metrics",
  "op-alloy-consensus",
  "op-revm",
  "revm",

@@ -39,7 +39,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError {
@@ -219,16 +219,34 @@ where
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
     for token in currencies {
-        // Fetch exchange rate
+        // Fetch exchange rate. A registered currency whose config cannot be read is
+        // dropped from the context; without this warning that drop is silent and any
+        // CIP-64 tx paying in this currency is excluded from blocks with no trace
+        // (it fails with "fee currency not registered" before debit/credit, so the
+        // blocklist path never logs it).
         let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, token) {
             Some(rate) => rate,
-            None => continue,
+            None => {
+                warn!(
+                    target: "celo_core_contracts",
+                    "registered fee currency 0x{token:x} dropped from the fee-currency context: \
+                     exchange rate read failed (CIP-64 txs in this currency will be excluded from blocks)"
+                );
+                continue;
+            }
         };
 
-        // Fetch intrinsic gas
+        // Fetch intrinsic gas (same drop semantics as the exchange rate above).
         let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, token) {
             Some(gas) => gas,
-            None => continue,
+            None => {
+                warn!(
+                    target: "celo_core_contracts",
+                    "registered fee currency 0x{token:x} dropped from the fee-currency context: \
+                     intrinsic gas read failed (CIP-64 txs in this currency will be excluded from blocks)"
+                );
+                continue;
+            }
         };
 
         // Only insert if BOTH succeeded
