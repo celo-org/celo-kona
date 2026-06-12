@@ -35,6 +35,7 @@ use reth_optimism_trie::{
     OpProofsStorage, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},
 };
+use reth_rpc_server_types::RethRpcModule;
 use reth_tasks::TaskExecutor;
 use reth_tracing::{FileWorkerGuard, Layers};
 use std::{ffi::OsString, sync::Arc, time::Duration};
@@ -509,7 +510,8 @@ where
 
     // Single consolidated extend_rpc_modules. Installs:
     //   1. proofs-history EthApiExt (overrides eth_getProof) — only when enabled
-    //   2. Celo gas / fee-history / tx / admin modules — always
+    //   2. Celo gas / fee-history / tx modules — always; admin module only on transports where the
+    //      `admin` namespace is enabled
     let handle = node_builder
         .extend_rpc_modules(move |ctx| {
             // 1. proofs-history eth_getProof override (if enabled).
@@ -542,8 +544,36 @@ where
             let fee_history_module = celo_fee_history_module(fee_api);
             ctx.modules.replace_configured(fee_history_module)?;
 
-            let admin_module = celo_admin_module(blocklist);
-            ctx.modules.merge_configured(admin_module)?;
+            // Celo admin (fee-currency blocklist) methods. `merge_configured` installs
+            // them on every transport regardless of `--http.api` / `--ws.api`, exposing
+            // admin endpoints even when the operator did not enable the `admin` namespace
+            // (standard reth `admin_*` methods stay gated, so this is a surprising
+            // divergence). Gate http and ws on their own module selection instead; the
+            // default selection is eth/net/web3, which excludes admin. IPC is a local,
+            // permission-gated socket with no per-namespace selection, so it keeps the
+            // prior behavior (the merge is a no-op when IPC is disabled).
+            let admin_methods: jsonrpsee::Methods = celo_admin_module(blocklist).into();
+            // Resolve the selections into booleans first so the `&ctx.config()` borrow is
+            // released before the `&mut ctx.modules` merges below.
+            let http_admin_enabled = ctx
+                .config()
+                .rpc
+                .http_api
+                .as_ref()
+                .is_some_and(|sel| sel.contains(&RethRpcModule::Admin));
+            let ws_admin_enabled = ctx
+                .config()
+                .rpc
+                .ws_api
+                .as_ref()
+                .is_some_and(|sel| sel.contains(&RethRpcModule::Admin));
+            if http_admin_enabled {
+                ctx.modules.merge_http(admin_methods.clone())?;
+            }
+            if ws_admin_enabled {
+                ctx.modules.merge_ws(admin_methods.clone())?;
+            }
+            ctx.modules.merge_ipc(admin_methods)?;
             Ok(())
         })
         .launch_with_debug_capabilities()
