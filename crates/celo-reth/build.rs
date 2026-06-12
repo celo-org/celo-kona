@@ -24,10 +24,14 @@ fn main() {
     println!("cargo:rustc-env=CELO_KONA_GIT_SHA_LONG={sha_long}");
     println!("cargo:rustc-env=CELO_KONA_GIT_SHA={sha_display}");
 
-    // Do not add `cargo:rerun-if-changed=<path>` here: emitting any path directive
-    // disables Cargo's default package-wide change detection and lets the `-dirty`
-    // flag go stale on local edits. Env-changed alone is enough.
+    // Any `rerun-if` directive (env or path) disables Cargo's default package-wide
+    // scan, so the env watch below already opts us out of it. Watch git metadata to
+    // re-run on commits/branch switches; a stale `-dirty` flag on uncommitted edits
+    // is a known best-effort limitation. CI is unaffected (env var path).
     println!("cargo:rerun-if-env-changed=CELO_KONA_GIT_SHA");
+    for p in [".git/HEAD", ".git/refs/heads", ".git/packed-refs"] {
+        println!("cargo:rerun-if-changed=../../{p}");
+    }
 }
 
 fn resolve_sha() -> (String, bool) {
