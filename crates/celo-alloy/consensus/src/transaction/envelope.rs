@@ -3,12 +3,12 @@
 use crate::TxCip64;
 use alloy_consensus::{
     EthereumTxEnvelope, Sealable, Sealed, SignableTransaction, Signed, TransactionEnvelope,
-    TxEip1559, TxEip2930, TxEip7702, TxEnvelope, TxLegacy,
+    TxEip1559, TxEip2930, TxEip7702, TxEnvelope, TxLegacy, error::ValueError,
 };
 #[cfg(feature = "k256")]
 use alloy_primitives::Address;
 use alloy_primitives::{B256, Bytes, Signature};
-use op_alloy_consensus::{OpTransaction, TxDeposit, TxPostExec};
+use op_alloy_consensus::{OpPooledTransaction, OpTransaction, TxDeposit, TxPostExec};
 
 /// The Ethereum [EIP-2718] Transaction Envelope, modified for Celo.
 ///
@@ -184,6 +184,45 @@ impl From<Sealed<TxPostExec>> for CeloTxEnvelope {
             "SDM post-exec transactions are not supported on Celo; \
              the Interop hardfork is unscheduled on Celo chains."
         )
+    }
+}
+
+// The proofs-history `debug_executePayload` override (op-reth's `DebugApiExt`) is hard-coded
+// against op-alloy's wire pooled type, `OpPooledTransaction`, and its `DebugApiOverrideServer` impl
+// requires bidirectional conversion with the node's signed-tx type — `<CeloPrimitives as
+// OpPayloadPrimitives>::_TX`, i.e. `CeloTxEnvelope`. The witness path builds with
+// `NoopPayloadTransactions`, so these conversions are never exercised at runtime; they exist only
+// to satisfy the trait bounds. See ethereum-optimism/optimism @ kona-node/v1.5.1:
+// rust/op-reth/crates/rpc/src/debug.rs.
+impl From<OpPooledTransaction> for CeloTxEnvelope {
+    fn from(tx: OpPooledTransaction) -> Self {
+        match tx {
+            OpPooledTransaction::Legacy(tx) => Self::Legacy(tx),
+            OpPooledTransaction::Eip2930(tx) => Self::Eip2930(tx),
+            OpPooledTransaction::Eip1559(tx) => Self::Eip1559(tx),
+            OpPooledTransaction::Eip7702(tx) => Self::Eip7702(tx),
+        }
+    }
+}
+
+// CIP-64 (`TxCip64`, type `0x7b`) and deposits have no `OpPooledTransaction` analogue, so this
+// direction is fallible.
+impl TryFrom<CeloTxEnvelope> for OpPooledTransaction {
+    type Error = ValueError<CeloTxEnvelope>;
+
+    fn try_from(tx: CeloTxEnvelope) -> Result<Self, Self::Error> {
+        match tx {
+            CeloTxEnvelope::Legacy(tx) => Ok(Self::Legacy(tx)),
+            CeloTxEnvelope::Eip2930(tx) => Ok(Self::Eip2930(tx)),
+            CeloTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
+            CeloTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
+            tx @ (CeloTxEnvelope::Cip64(_) | CeloTxEnvelope::Deposit(_)) => {
+                Err(ValueError::new_static(
+                    tx,
+                    "CIP-64 and deposit transactions have no op-alloy OpPooledTransaction representation",
+                ))
+            }
+        }
     }
 }
 
@@ -573,6 +612,47 @@ mod tests {
             CeloTxType::Deposit,
         ];
         assert_eq!(CeloTxType::ALL.to_vec(), all);
+    }
+
+    #[test]
+    fn op_pooled_converts_to_celo_envelope() {
+        let sig = Signature::test_signature();
+        let cases: [(OpPooledTransaction, CeloTxType); 4] = [
+            (OpPooledTransaction::Legacy(TxLegacy::default().into_signed(sig)), CeloTxType::Legacy),
+            (
+                OpPooledTransaction::Eip2930(TxEip2930::default().into_signed(sig)),
+                CeloTxType::Eip2930,
+            ),
+            (
+                OpPooledTransaction::Eip1559(TxEip1559::default().into_signed(sig)),
+                CeloTxType::Eip1559,
+            ),
+            (
+                OpPooledTransaction::Eip7702(TxEip7702::default().into_signed(sig)),
+                CeloTxType::Eip7702,
+            ),
+        ];
+        for (op_pooled, expected) in cases {
+            let envelope: CeloTxEnvelope = op_pooled.into();
+            assert_eq!(envelope.tx_type(), expected);
+            // OP-poolable variants round-trip back into an `OpPooledTransaction`.
+            assert!(OpPooledTransaction::try_from(envelope).is_ok());
+        }
+    }
+
+    #[test]
+    fn celo_envelope_to_op_pooled_rejects_cip64() {
+        let sig = Signature::test_signature();
+        let cip64 = CeloTxEnvelope::Cip64(TxCip64::default().into_signed(sig));
+        let err = OpPooledTransaction::try_from(cip64).unwrap_err();
+        assert!(err.into_value().is_cip64());
+    }
+
+    #[test]
+    fn celo_envelope_to_op_pooled_rejects_deposit() {
+        let deposit = CeloTxEnvelope::from(op_alloy_consensus::TxDeposit::default());
+        let err = OpPooledTransaction::try_from(deposit).unwrap_err();
+        assert!(err.into_value().is_deposit());
     }
 
     #[test]

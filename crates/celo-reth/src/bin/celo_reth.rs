@@ -24,7 +24,7 @@ use reth_cli_commands::{
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
-use reth_node_builder::{NodeBuilder, WithLaunchContext};
+use reth_node_builder::{FullNodeComponents, NodeBuilder, WithLaunchContext};
 use reth_node_core::{
     args::{LogArgs, OtlpInitStatus, OtlpLogsStatus, TraceArgs},
     version::{default_reth_version_metadata, try_init_version_metadata},
@@ -33,7 +33,10 @@ use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_cli::Cli;
 use reth_optimism_exex::OpProofsExEx;
-use reth_optimism_rpc::eth::proofs::{EthApiExt, EthApiOverrideServer};
+use reth_optimism_rpc::{
+    debug::{DebugApiExt, DebugApiOverrideServer},
+    eth::proofs::{EthApiExt, EthApiOverrideServer},
+};
 use reth_optimism_trie::{
     OpProofsStorage, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},
@@ -486,13 +489,6 @@ struct ProofsHistoryConfig<S> {
 /// `on_node_started` and `install_exex` return `Self`, so installing the sidecar leaves the
 /// builder type unchanged and the store type `S` stays erased behind the boxed hooks — that
 /// is what lets the v1/v2 dispatch in `main` funnel into this one generic function.
-///
-/// TODO: also install `DebugApiExt` so `debug_executePayload` is served from the sidecar
-/// (mirrors the OP launcher in ethereum-optimism/optimism @ kona-node/v1.5.1:
-/// rust/op-reth/crates/node/src/proof_history.rs). First attempt at porting hit a
-/// generic-bounds mismatch on `DebugApiExt::into_rpc` when instantiated with CeloNode's
-/// component types (5 generic params on this side vs 4 in OP). Left for follow-up; the
-/// `eth_getProof` override is the load-bearing one for archive-RPC use.
 async fn launch_celo_node<S>(
     builder: WithLaunchContext<NodeBuilder<DatabaseEnv, OpChainSpec>>,
     node: CeloNode,
@@ -535,22 +531,34 @@ where
         };
 
     // Single consolidated extend_rpc_modules. Installs:
-    //   1. proofs-history EthApiExt (overrides eth_getProof) — only when enabled
+    //   1. proofs-history EthApiExt + DebugApiExt (override eth_getProof and the debug_* sidecar
+    //      methods) — only when enabled
     //   2. Celo gas / fee-history / tx / admin modules — always
     let handle = node_builder
         .extend_rpc_modules(move |ctx| {
-            // 1. proofs-history eth_getProof override (if enabled).
+            // 1. proofs-history RPC overrides (if enabled). Mirrors the OP launcher in
+            //    ethereum-optimism/optimism @ kona-node/v1.5.1:
+            //    rust/op-reth/crates/node/src/proof_history.rs.
             if let Some(storage_rpc) = proofs_storage_rpc {
                 info!(
                     target: "reth::cli",
-                    "Installing proofs-history RPC override (eth_getProof)"
+                    "Installing proofs-history RPC overrides (eth_getProof, debug_executePayload)"
                 );
-                let api_ext = EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc);
+                let api_ext = EthApiExt::new(ctx.registry.eth_api().clone(), storage_rpc.clone());
+                let debug_ext = DebugApiExt::new(
+                    ctx.node().provider().clone(),
+                    ctx.registry.eth_api().clone(),
+                    storage_rpc,
+                    ctx.node().task_executor().clone(),
+                    ctx.node().evm_config().clone(),
+                );
                 let eth_replaced = ctx.modules.replace_configured(api_ext.into_rpc())?;
+                let debug_replaced = ctx.modules.replace_configured(debug_ext.into_rpc())?;
                 info!(
                     target: "reth::cli",
                     eth_replaced,
-                    "Proofs-history eth_getProof override installed"
+                    debug_replaced,
+                    "Proofs-history RPC overrides installed"
                 );
             }
 
