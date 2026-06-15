@@ -457,6 +457,55 @@ mod tests {
     }
 
     #[test]
+    fn filter_native_celo_bypasses_the_per_currency_cap() {
+        // A native CELO tx far above any per-currency cap (25M > 0.5*30M = 15M) must
+        // still pass — native CELO is unlimited. (filter_passes_native_celo_tx only
+        // uses a trivial 21k tx, so it never exercises "past the cap".)
+        let sender = Address::with_last_byte(1);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![make_test_tx(None, 25_000_000, sender)],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+        };
+        assert!(filter.next(()).is_some(), "native CELO must bypass the per-currency cap");
+        assert!(filter.next(()).is_none());
+    }
+
+    #[test]
+    fn filter_applies_per_currency_fraction_from_limits_map() {
+        // fc_a configured at 0.9 (-> 27M cap), fc_b uses the 0.5 default (-> 15M cap)
+        // on a 30M block. A 20M tx passes for fc_a but is skipped for fc_b — proving
+        // the filter applies the per-address fraction, not just the default.
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let fc_a = fc_addr(10);
+        let fc_b = fc_addr(11);
+        let mut limits = FeeCurrencyLimits::default();
+        limits.limits.insert(fc_a, 0.9);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc_a), 20_000_000, sender_a),
+                    make_test_tx(Some(fc_b), 20_000_000, sender_b),
+                ],
+                invalid: vec![],
+            },
+            limits,
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+        };
+        let t1 = filter.next(()).unwrap();
+        assert_eq!(t1.fee_currency(), Some(fc_a), "fc_a 20M is under its 27M (0.9) cap");
+        assert!(filter.next(()).is_none(), "fc_b 20M exceeds its 15M (0.5 default) cap");
+    }
+
+    #[test]
     fn filter_skips_when_gas_limit_exceeded() {
         let sender = Address::with_last_byte(1);
         let fc = fc_addr(10);

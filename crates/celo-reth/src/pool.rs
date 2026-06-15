@@ -595,7 +595,12 @@ fn lookup_rate_and_balance_impl(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest state for FC lookup");
-            return FcLookupResult { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
+            return FcLookupResult {
+                rate: None,
+                balance: None,
+                debit_ok: None,
+                intrinsic_gas: None,
+            };
         }
     };
     let db = StateProviderDatabase::new(state);
@@ -1715,6 +1720,40 @@ mod tests {
         assert!(tx_b.max_fee_per_gas() > tx_a.max_fee_per_gas());
     }
 
+    /// The pool's `CoinbaseTipOrdering` must rank CIP-64 txs by their
+    /// native-equivalent effective tip, not by raw fee-currency magnitude: a tx
+    /// whose fee currency is "cheaper per unit" still wins when its native tip is
+    /// higher. The cross-currency test above only checks the `max_fee_per_gas()`
+    /// accessor; this drives the actual comparator the pool orders with.
+    #[test]
+    fn test_coinbase_tip_ordering_ranks_by_native_equivalent_tip() {
+        use reth_transaction_pool::{CoinbaseTipOrdering, TransactionOrdering};
+
+        let base_fee = 100u64;
+        let sender = Address::with_last_byte(1);
+
+        // A: raw FC max_fee=1000, priority=1000; rate 1 FC = 2 native
+        //    -> native max_fee=2000, priority=2000 -> tip = min(2000-100, 2000) = 1900
+        let mut tx_a =
+            make_test_tx(Some(Address::with_last_byte(0xA1)), 21_000, 1000, 1000, sender);
+        tx_a.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 2 });
+        assert_eq!(tx_a.max_fee_per_gas(), 2000);
+
+        // B: raw FC max_fee=500 (LOWER than A's raw 1000), priority=500; rate 1 FC = 5 native
+        //    -> native max_fee=2500, priority=2500 -> tip = min(2500-100, 2500) = 2400
+        let mut tx_b = make_test_tx(Some(Address::with_last_byte(0xB1)), 21_000, 500, 500, sender);
+        tx_b.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 5 });
+        assert_eq!(tx_b.max_fee_per_gas(), 2500);
+
+        let ordering = CoinbaseTipOrdering::<CeloPoolTx>::default();
+        // Despite B's lower raw fee-currency fee, its native-equivalent tip is higher,
+        // so the comparator must rank B strictly above A.
+        assert!(
+            ordering.priority(&tx_b, base_fee) > ordering.priority(&tx_a, base_fee),
+            "CoinbaseTipOrdering must order CIP-64 txs by native-equivalent tip"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // MockFcLookup + apply_exchange_rates_to_pool_tx integration tests
     // -----------------------------------------------------------------------
@@ -2099,7 +2138,8 @@ mod tests {
         for cap in [Some(0), None] {
             let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
-            let mock = MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
+            let mock =
+                MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
             let result = apply_exchange_rates_to_pool_tx(
                 &mock,
                 &mut tx,
