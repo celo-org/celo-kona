@@ -25,6 +25,7 @@ use reth_transaction_pool::{
     TransactionValidator,
     error::{InvalidPoolTransactionError, PoolTransactionError},
 };
+use revm::{interpreter::gas::calculate_initial_tx_gas, primitives::hardfork::SpecId};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -527,6 +528,12 @@ pub(crate) struct FcLookupResult {
     /// Raw ERC20 balance of the sender. `None` if the query failed or was not requested.
     pub(crate) balance: Option<U256>,
     pub(crate) debit_ok: Option<bool>,
+    /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`), added on
+    /// top of the standard intrinsic gas at block-build time. `None` if the rate
+    /// lookup failed (the currency is rejected as unregistered anyway) or the
+    /// config read failed — in which case the intrinsic-gas admission check is
+    /// skipped and the block builder remains the backstop.
+    pub(crate) intrinsic_gas: Option<u64>,
 }
 
 /// Trait for looking up fee currency exchange rates, balances, and debit simulation.
@@ -576,7 +583,10 @@ fn lookup_rate_and_balance_impl(
     use alloy_sol_types::SolCall;
     use celo_revm::{
         CeloBuilder, DefaultCelo,
-        contracts::{core_contracts::getExchangeRateCall, erc20::IFeeCurrencyERC20},
+        contracts::{
+            core_contracts::{getCurrencyConfigCall, getExchangeRateCall},
+            erc20::IFeeCurrencyERC20,
+        },
     };
     use reth_revm::database::StateProviderDatabase;
     use revm::{Context, context_interface::result::ExecutionResult};
@@ -585,7 +595,7 @@ fn lookup_rate_and_balance_impl(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest state for FC lookup");
-            return FcLookupResult { rate: None, balance: None, debit_ok: None };
+            return FcLookupResult { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
         }
     };
     let db = StateProviderDatabase::new(state);
@@ -624,8 +634,39 @@ fn lookup_rate_and_balance_impl(
     // regardless of balance/debit — skip the remaining EVM calls to avoid wasted
     // work (and adversarial-tx DoS amplification).
     if rate.is_none() {
-        return FcLookupResult { rate, balance: None, debit_ok: None };
+        return FcLookupResult { rate, balance: None, debit_ok: None, intrinsic_gas: None };
     }
+
+    // 1b. Fetch the fee currency's extra intrinsic gas (getCurrencyConfig).
+    // The block builder adds this on top of the standard intrinsic gas
+    // (`validate_celo_initial_tx_gas` in celo-revm), so the pool needs it to
+    // reject under-funded CIP-64 txs at admission instead of letting them drop
+    // silently at build time. Mirrors `get_intrinsic_gas` in core_contracts,
+    // including the saturating u64 cap. A failed/undecodable read leaves it
+    // `None` and the intrinsic-gas check is skipped (build remains the backstop).
+    let intrinsic_gas = {
+        let cfg_calldata = getCurrencyConfigCall { token: fee_currency }.abi_encode();
+        evm.transact_system_call_with_gas_limit(
+            fee_currency_directory,
+            cfg_calldata.into(),
+            POOL_SYSTEM_CALL_GAS_LIMIT,
+        )
+        .inspect_err(|e| {
+            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "EVM system call failed for currency config lookup");
+        })
+        .ok()
+        .and_then(|result| match result {
+            ExecutionResult::Success { output, .. } => Some(output.into_data()),
+            other => {
+                tracing::warn!(target: "celo::pool", ?fee_currency, ?other, "Currency config query returned non-success");
+                None
+            }
+        })
+        .and_then(|output| {
+            let cfg = getCurrencyConfigCall::abi_decode_returns(&output).ok()?;
+            Some(u64::try_from(cfg.intrinsicGas).unwrap_or(u64::MAX))
+        })
+    };
 
     // 2. Check ERC20 balance (only if requested)
     let balance = balance_check.as_ref().and_then(|(sender, _required)| {
@@ -688,7 +729,7 @@ fn lookup_rate_and_balance_impl(
         }
     });
 
-    FcLookupResult { rate, balance, debit_ok }
+    FcLookupResult { rate, balance, debit_ok, intrinsic_gas }
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +738,13 @@ fn lookup_rate_and_balance_impl(
 
 /// Type alias for the base fee floor computation closure.
 pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> u64 + Send + Sync>;
+
+/// Computes the eth [`SpecId`] for the next block from the chain spec, given the
+/// estimated next-block timestamp. Refreshed each head block (like
+/// [`BaseFeeFloorFn`]) so the CIP-64 intrinsic-gas admission check always uses
+/// the chain's current fork — matching the block builder, which derives the spec
+/// dynamically too. No hardcoded spec to update on a future hardfork.
+pub type EthSpecFn = Arc<dyn Fn(u64) -> SpecId + Send + Sync>;
 
 /// Cumulative fee-currency costs per (sender, fee_currency) pair.
 ///
@@ -733,6 +781,13 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// and estimated next-block timestamp.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
+    /// Eth spec for the next block, refreshed each head block via `eth_spec_fn`.
+    /// Used to compute the standard intrinsic gas in the CIP-64 intrinsic-gas
+    /// admission check, so it matches what the block builder computes (which also
+    /// derives the spec dynamically) — no hardcoded spec to update on a hardfork.
+    next_block_eth_spec: Arc<Mutex<SpecId>>,
+    /// Computes the next-block eth spec from the chain spec. See [`EthSpecFn`].
+    eth_spec_fn: EthSpecFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
@@ -752,12 +807,15 @@ impl<V: Debug, P> Debug for CeloExchangeRateApplier<V, P> {
 
 impl<V, P> CeloExchangeRateApplier<V, P> {
     /// Create a new [`CeloExchangeRateApplier`].
+    #[allow(clippy::too_many_arguments)] // flat config mirrors the node-builder call site
     pub fn new(
         inner: V,
         provider: P,
         fee_currency_directory: Address,
         base_fee_floor: u64,
         base_fee_floor_fn: BaseFeeFloorFn,
+        eth_spec: SpecId,
+        eth_spec_fn: EthSpecFn,
         minimum_priority_fee: u128,
         tx_fee_cap: Option<u128>,
     ) -> Self {
@@ -767,6 +825,8 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             fee_currency_directory,
             base_fee_floor: Arc::new(std::sync::atomic::AtomicU64::new(base_fee_floor)),
             base_fee_floor_fn,
+            next_block_eth_spec: Arc::new(Mutex::new(eth_spec)),
+            eth_spec_fn,
             minimum_priority_fee,
             tx_fee_cap,
             cumulative_fc_costs: Arc::new(Mutex::new(HashMap::new())),
@@ -805,6 +865,11 @@ enum CeloPoolRejection {
         /// Set when the tx uses a CIP-64 fee currency.
         fee_currency: Option<Address>,
     },
+    /// The gas limit cannot cover the CIP-64 build-time intrinsic gas: the
+    /// standard intrinsic gas plus the fee currency's extra intrinsic gas. The
+    /// block builder would drop such a tx (`CallGasCostMoreThanGasLimit`) with no
+    /// trace, so reject it at admission with a clear, permanent error instead.
+    IntrinsicGasTooLow { currency: Address, gas_limit: u64, required: u64 },
 }
 
 impl std::fmt::Display for CeloPoolRejection {
@@ -864,6 +929,13 @@ impl std::fmt::Display for CeloPoolRejection {
                     )
                 }
             }
+            Self::IntrinsicGasTooLow { currency, gas_limit, required } => {
+                write!(
+                    f,
+                    "intrinsic gas too low: gas limit {gas_limit} below required {required} \
+                     (standard intrinsic + fee-currency intrinsic) for fee-currency {currency}"
+                )
+            }
         }
     }
 }
@@ -922,6 +994,7 @@ fn rollback_cumulative_fc_cost(
 /// cumulative reservation was staged (the caller must roll it back via
 /// [`rollback_cumulative_fc_cost`] if the inner validator subsequently
 /// rejects the tx), or `None` if no reservation was made.
+#[allow(clippy::too_many_arguments)] // flat pool-admission config; a struct adds no clarity here
 fn apply_exchange_rates_to_pool_tx(
     lookup: &dyn FcLookup,
     tx: &mut CeloPoolTx,
@@ -930,6 +1003,7 @@ fn apply_exchange_rates_to_pool_tx(
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
     cumulative_fc_costs: &CumulativeFcCosts,
+    eth_spec: SpecId,
 ) -> Result<Option<(Address, Address, U256)>, CeloPoolRejection> {
     // Tracks whether a cumulative FC reservation was made. If set, the reservation
     // must be rolled back on any subsequent rejection (debit_ok, fee cap) to avoid
@@ -963,6 +1037,49 @@ fn apply_exchange_rates_to_pool_tx(
                 return Err(CeloPoolRejection::UnregisteredCurrency(fc));
             }
         };
+
+        // Check: gas limit must cover the build-time intrinsic gas (standard
+        // intrinsic + the fee currency's extra intrinsic gas). The inner
+        // validator only enforces the standard intrinsic, so without this a tx
+        // with a gas limit in [standard, standard + fc_intrinsic) passes
+        // admission and is then silently dropped by the block builder
+        // (CallGasCostMoreThanGasLimit, with no log/metric). Mirrors celo-revm's
+        // `validate_celo_initial_tx_gas`. Skipped when `intrinsic_gas` is None
+        // (the config read failed) — the block builder stays the backstop.
+        if let Some(fc_intrinsic) = result.intrinsic_gas {
+            let (access_list_accounts, access_list_storage_keys) =
+                tx.access_list().map_or((0, 0), |al| {
+                    (al.0.len() as u64, al.0.iter().map(|i| i.storage_keys.len() as u64).sum())
+                });
+            let authorization_list_num = tx.authorization_list().map_or(0, |a| a.len() as u64);
+            let standard_intrinsic = calculate_initial_tx_gas(
+                eth_spec,
+                tx.input().as_ref(),
+                tx.is_create(),
+                access_list_accounts,
+                access_list_storage_keys,
+                authorization_list_num,
+            )
+            .initial_total_gas;
+            let required = standard_intrinsic.saturating_add(fc_intrinsic);
+            if tx.gas_limit() < required {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fc,
+                    gas_limit = tx.gas_limit(),
+                    required,
+                    standard_intrinsic,
+                    fc_intrinsic,
+                    "Rejecting CIP-64 tx: gas limit below build-time intrinsic gas"
+                );
+                CeloPoolMetrics::cip64_rejection("intrinsic_gas_too_low");
+                return Err(CeloPoolRejection::IntrinsicGasTooLow {
+                    currency: fc,
+                    gas_limit: tx.gas_limit(),
+                    required,
+                });
+            }
+        }
 
         // Check: fee cap must be >= base fee floor converted to FC.
         let base_fee_floor_fc = rate.to_fc(Native::new(base_fee_floor as u128));
@@ -1155,6 +1272,7 @@ where
         // of which `expect` `native_fees` to be populated — for CIP-64 txs
         // that population only happens here.
         let base_fee_floor = self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
+        let eth_spec = *self.next_block_eth_spec.lock().unwrap_or_else(|e| e.into_inner());
         let prepared = apply_exchange_rates_to_pool_tx(
             &self.provider,
             &mut transaction,
@@ -1163,6 +1281,7 @@ where
             self.minimum_priority_fee,
             self.tx_fee_cap,
             &self.cumulative_fc_costs,
+            eth_spec,
         );
         let cumulative_fc_costs = self.cumulative_fc_costs.clone();
         // Split into Ok/Err up-front so both branches of the async block
@@ -1211,6 +1330,12 @@ where
         let next_ts = header.timestamp().saturating_add(1);
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
         self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
+
+        // Recompute the eth spec for the next block (same trigger as the floor) so
+        // the CIP-64 intrinsic-gas admission check tracks fork activations
+        // automatically — nothing to update by hand when a hardfork lands.
+        let new_spec = (self.eth_spec_fn)(next_ts);
+        *self.next_block_eth_spec.lock().unwrap_or_else(|e| e.into_inner()) = new_spec;
     }
 }
 
@@ -1599,6 +1724,9 @@ mod tests {
         /// Raw ERC20 balance to return. `None` means query failed.
         balance: Option<U256>,
         debit_ok: Option<bool>,
+        /// Fee-currency extra intrinsic gas to return. `None` skips the
+        /// intrinsic-gas admission check (mirrors a failed config read).
+        intrinsic_gas: Option<u64>,
     }
 
     impl FcLookup for MockFcLookup {
@@ -1608,12 +1736,87 @@ mod tests {
             _fee_currency_directory: Address,
             _balance_check: Option<(Address, U256)>,
         ) -> FcLookupResult {
-            FcLookupResult { rate: self.rate, balance: self.balance, debit_ok: self.debit_ok }
+            FcLookupResult {
+                rate: self.rate,
+                balance: self.balance,
+                debit_ok: self.debit_ok,
+                intrinsic_gas: self.intrinsic_gas,
+            }
         }
     }
 
     fn empty_cumulative_costs() -> CumulativeFcCosts {
         Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// A CIP-64 tx whose gas limit cannot cover the build-time intrinsic gas
+    /// (standard intrinsic + the fee currency's extra intrinsic gas) must be
+    /// rejected at pool admission, not silently dropped by the block builder.
+    /// This is the real cause of the "cEUR tx pending but never mined" reports:
+    /// a probe hardcoded gas=90_000, but a cEUR CIP-64 needs 21_000 + 80_000.
+    #[test]
+    fn test_apply_rates_rejects_cip64_below_build_intrinsic_gas() {
+        let fc = Address::with_last_byte(0xEE);
+        // 90_000 < 21_000 (standard, empty input) + 80_000 (fee-currency intrinsic)
+        let mut tx = make_test_tx(Some(fc), 90_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+            intrinsic_gas: Some(80_000),
+        };
+
+        let result = apply_exchange_rates_to_pool_tx(
+            &mock,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+            SpecId::PRAGUE,
+        );
+
+        match result {
+            Err(CeloPoolRejection::IntrinsicGasTooLow { currency, gas_limit, required }) => {
+                assert_eq!(currency, fc);
+                assert_eq!(gas_limit, 90_000);
+                assert_eq!(required, 101_000, "21_000 standard + 80_000 fee-currency intrinsic");
+            }
+            other => panic!("expected IntrinsicGasTooLow, got {other:?}"),
+        }
+    }
+
+    /// The same tx with a gas limit exactly at the build-time intrinsic gas
+    /// (21_000 + 80_000 = 101_000) must pass the intrinsic-gas admission check.
+    #[test]
+    fn test_apply_rates_accepts_cip64_at_build_intrinsic_gas() {
+        let fc = Address::with_last_byte(0xEF);
+        let mut tx =
+            make_test_tx(Some(fc), 101_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+            intrinsic_gas: Some(80_000),
+        };
+
+        let result = apply_exchange_rates_to_pool_tx(
+            &mock,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+            SpecId::PRAGUE,
+        );
+        assert!(
+            result.is_ok(),
+            "gas limit at exactly the build intrinsic must be admitted: {result:?}"
+        );
     }
 
     #[test]
@@ -1625,6 +1828,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
 
         let result = apply_exchange_rates_to_pool_tx(
@@ -1635,6 +1839,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
 
@@ -1662,6 +1867,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 2 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
 
         apply_exchange_rates_to_pool_tx(
@@ -1672,6 +1878,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         )
         .expect("ok");
 
@@ -1687,7 +1894,7 @@ mod tests {
         let fc = Address::with_last_byte(0xAA);
         let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
-        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
@@ -1696,6 +1903,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::UnregisteredCurrency(_))));
     }
@@ -1709,6 +1917,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::ZERO),
             debit_ok: None,
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1718,6 +1927,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance { .. })));
     }
@@ -1735,6 +1945,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1744,6 +1955,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor { .. })));
     }
@@ -1761,6 +1973,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1770,6 +1983,7 @@ mod tests {
             100,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowMinTip { .. })));
     }
@@ -1783,6 +1997,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(false),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1792,6 +2007,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
     }
@@ -1815,6 +2031,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1824,6 +2041,7 @@ mod tests {
             0,
             Some(100_000),
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
     }
@@ -1840,6 +2058,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1849,6 +2068,7 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -1859,7 +2079,7 @@ mod tests {
         // cost - value = 21_000 * 1_000_000_000 = 21_000_000_000_000
         let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
-        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
@@ -1868,6 +2088,7 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -1878,7 +2099,7 @@ mod tests {
         for cap in [Some(0), None] {
             let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
-            let mock = MockFcLookup { rate: None, balance: None, debit_ok: None };
+            let mock = MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
             let result = apply_exchange_rates_to_pool_tx(
                 &mock,
                 &mut tx,
@@ -1887,6 +2108,7 @@ mod tests {
                 0,
                 cap,
                 &empty_cumulative_costs(),
+                SpecId::PRAGUE,
             );
             assert!(result.is_ok(), "cap={cap:?} should disable fee cap check");
         }
@@ -1911,6 +2133,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1920,6 +2143,7 @@ mod tests {
             150,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::BelowMinTip { actual: 100, .. })),
@@ -1942,6 +2166,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -1951,6 +2176,7 @@ mod tests {
             100,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Should accept: effective tip (200) >= min tip (100)");
     }
@@ -2005,6 +2231,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -2014,6 +2241,7 @@ mod tests {
             0,
             Some(100_000_000),
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
@@ -2033,6 +2261,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1000, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -2042,6 +2271,7 @@ mod tests {
             0,
             Some(100_000_000),
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Favorable rate should keep cost within cap; got {result:?}");
     }
@@ -2061,6 +2291,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         // base_fee_floor = 0 → floor check: 100 < 0 is false → passes
         let result = apply_exchange_rates_to_pool_tx(
@@ -2071,6 +2302,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "floor=0 should accept any fee; got {result:?}");
     }
@@ -2087,6 +2319,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
@@ -2096,6 +2329,7 @@ mod tests {
             0,
             None,
             &empty_cumulative_costs(),
+            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "max_fee == floor should be accepted; got {result:?}");
     }
@@ -2117,6 +2351,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(balance),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
 
         let cumulative = empty_cumulative_costs();
@@ -2131,6 +2366,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(r1.is_ok(), "First tx should pass; got {r1:?}");
 
@@ -2144,6 +2380,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(
             matches!(r2, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
@@ -2166,6 +2403,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(balance),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
 
         let cumulative = empty_cumulative_costs();
@@ -2186,6 +2424,7 @@ mod tests {
                 0,
                 None,
                 &cumulative,
+                SpecId::PRAGUE,
             );
             assert!(r.is_ok(), "{label} should pass independently; got {r:?}");
         }
@@ -2202,6 +2441,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(balance),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
 
         let cumulative = empty_cumulative_costs();
@@ -2216,6 +2456,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(r1.is_ok());
 
@@ -2229,6 +2470,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(matches!(r2, Err(CeloPoolRejection::InsufficientBalance { .. })));
 
@@ -2245,6 +2487,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(r3.is_ok(), "After clear, tx should pass again; got {r3:?}");
     }
@@ -2266,6 +2509,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(balance),
             debit_ok: Some(false),
+            intrinsic_gas: None,
         };
         let cumulative = empty_cumulative_costs();
         let mut tx1 = make_test_tx(Some(fc), 100, 100, 10, sender);
@@ -2277,6 +2521,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(matches!(r1, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
         assert_eq!(
@@ -2292,6 +2537,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(balance),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let mut tx2 = make_test_tx(Some(fc), 100, 100, 10, sender);
         let r2 = apply_exchange_rates_to_pool_tx(
@@ -2302,6 +2548,7 @@ mod tests {
             0,
             None,
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(r2.is_ok(), "Follow-up tx should pass (no stale reservation); got {r2:?}");
     }
@@ -2318,6 +2565,7 @@ mod tests {
             rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
             balance: Some(U256::MAX),
             debit_ok: Some(true),
+            intrinsic_gas: None,
         };
         let cumulative = empty_cumulative_costs();
         // native_cost = 21_000 * 1_000_000_000 = 2.1e13; cap = 1e12 → rejected
@@ -2329,6 +2577,7 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &cumulative,
+            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
         assert_eq!(
