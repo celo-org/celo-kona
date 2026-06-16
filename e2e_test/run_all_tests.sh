@@ -49,6 +49,7 @@ fi
 # ---------------------------------------------------------------------------
 
 DATADIR=$(mktemp -d)
+PROOFS_DIR=$(mktemp -d)
 CELO_RETH_PID=
 
 cleanup() {
@@ -56,7 +57,7 @@ cleanup() {
         kill "$CELO_RETH_PID" 2>/dev/null || true
         wait "$CELO_RETH_PID" 2>/dev/null || true
     fi
-    rm -rf "$DATADIR"
+    rm -rf "$DATADIR" "$PROOFS_DIR"
 }
 trap cleanup EXIT
 
@@ -73,15 +74,37 @@ fi
 
 GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
 
+# Seed the proofs-history sidecar before launch so the node serves eth_getProof and
+# the debug_* sidecar methods (debug_executePayload, debug_executionWitness,
+# debug_proofsSyncStatus) from the bounded-history store. `proofs init` snapshots the
+# freshly written genesis state to anchor the proof window; the ExEx extends it from
+# there as blocks are mined. (Exercised by test_proofs_history_debug.sh.)
+echo "Initializing datadir and proofs-history storage..."
+if ! "$CELO_RETH" init --chain "$GENESIS_JSON" --datadir "$DATADIR" \
+    &>"$SCRIPT_DIR/celo-reth.log"; then
+    echo "ERROR: celo-reth init failed."
+    tail -40 "$SCRIPT_DIR/celo-reth.log"
+    exit 1
+fi
+if ! "$CELO_RETH" proofs init --chain "$GENESIS_JSON" --datadir "$DATADIR" \
+    --proofs-history.storage-path "$PROOFS_DIR" &>"$SCRIPT_DIR/celo-reth.log"; then
+    echo "ERROR: celo-reth proofs init failed."
+    tail -40 "$SCRIPT_DIR/celo-reth.log"
+    exit 1
+fi
+
 echo "Starting celo-reth in dev mode (datadir=$DATADIR)..."
 "$CELO_RETH" node --dev \
     --chain "$GENESIS_JSON" \
     --datadir "$DATADIR" \
     --http \
     --http.port "$HTTP_PORT" \
-    --http.api eth,web3,net,admin \
+    --http.api eth,web3,net,admin,debug \
     --authrpc.port "$AUTH_PORT" \
     --disable-discovery \
+    --proofs-history \
+    --proofs-history.storage-path "$PROOFS_DIR" \
+    --proofs-history.window 100000 \
     &>"$SCRIPT_DIR/celo-reth.log" &
 CELO_RETH_PID=$!
 
