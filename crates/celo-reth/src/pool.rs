@@ -14,6 +14,7 @@ use alloy_eips::{
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::CeloPooledTransaction;
 use celo_revm::units::{Fc, FcU256, Native, NativeU256};
+use op_revm::OpSpecId;
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
@@ -549,15 +550,29 @@ pub(crate) trait FcLookup {
     ) -> FcLookupResult;
 }
 
-/// Blanket implementation for any `StateProviderFactory`.
-impl<P: StateProviderFactory> FcLookup for P {
+/// Couples a [`StateProviderFactory`] with the chain's active [`OpSpecId`] so the
+/// pool's system-call EVM runs fee-currency bytecode at the right fork (see
+/// `build_pool_evm`). Holds the provider by reference; constructed per
+/// validation from the spec cached on [`CeloExchangeRateApplier`].
+pub(crate) struct ProviderFcLookup<'a, P> {
+    pub(crate) provider: &'a P,
+    pub(crate) spec: OpSpecId,
+}
+
+impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
     fn lookup_rate_and_balance(
         &self,
         fee_currency: Address,
         fee_currency_directory: Address,
         balance_check: Option<(Address, U256)>,
     ) -> FcLookupResult {
-        lookup_rate_and_balance_impl(self, fee_currency, fee_currency_directory, balance_check)
+        lookup_rate_and_balance_impl(
+            self.provider,
+            fee_currency,
+            fee_currency_directory,
+            balance_check,
+            self.spec,
+        )
     }
 }
 
@@ -574,22 +589,40 @@ impl<P: StateProviderFactory> FcLookup for P {
 /// ERC20 transfers.
 const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 
+/// Build the pool's system-call EVM over `db`, configured at chain fork `spec`.
+///
+/// The spec MUST be the chain's active fork rather than the `DefaultCelo`
+/// BEDROCK default: fee-currency contracts compiled with a recent Solidity emit
+/// post-Merge opcodes (PUSH0 = Shanghai, MCOPY/TLOAD = Cancun, i.e. any standard
+/// modern OpenZeppelin ERC20). At BEDROCK those halt with `NotActivated`, so the
+/// `getExchangeRate` / `balanceOf` / `debitGasFees` simulations fail and the
+/// pool's pre-checks silently no-op. Raising the spec keeps legacy bytecode
+/// working (opcodes are only added across forks) while letting modern bytecode
+/// run, matching what execution does.
+fn build_pool_evm<DB: revm::Database>(
+    db: DB,
+    spec: OpSpecId,
+) -> celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector> {
+    use celo_revm::{CeloBuilder, DefaultCelo};
+    use revm::Context;
+
+    Context::celo().with_db(db).modify_cfg_chained(|cfg| cfg.spec = spec).build_celo()
+}
+
 fn lookup_rate_and_balance_impl(
     provider: &dyn StateProviderFactory,
     fee_currency: Address,
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
+    spec: OpSpecId,
 ) -> FcLookupResult {
     use alloy_sol_types::SolCall;
-    use celo_revm::{
-        CeloBuilder, DefaultCelo,
-        contracts::{
-            core_contracts::{getCurrencyConfigCall, getExchangeRateCall},
-            erc20::IFeeCurrencyERC20,
-        },
+    use celo_revm::contracts::{
+        core_contracts::{getCurrencyConfigCall, getExchangeRateCall},
+        erc20::IFeeCurrencyERC20,
     };
     use reth_revm::database::StateProviderDatabase;
-    use revm::{Context, context_interface::result::ExecutionResult};
+    use revm::context_interface::result::ExecutionResult;
 
     let state = match provider.latest() {
         Ok(s) => s,
@@ -604,7 +637,7 @@ fn lookup_rate_and_balance_impl(
         }
     };
     let db = StateProviderDatabase::new(state);
-    let mut evm = Context::celo().with_db(db).build_celo();
+    let mut evm = build_pool_evm(db, spec);
 
     // 1. Look up exchange rate
     let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
@@ -744,12 +777,14 @@ fn lookup_rate_and_balance_impl(
 /// Type alias for the base fee floor computation closure.
 pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> u64 + Send + Sync>;
 
-/// Computes the eth [`SpecId`] for the next block from the chain spec, given the
+/// Computes the [`OpSpecId`] for the next block from the chain spec, given the
 /// estimated next-block timestamp. Refreshed each head block (like
-/// [`BaseFeeFloorFn`]) so the CIP-64 intrinsic-gas admission check always uses
-/// the chain's current fork — matching the block builder, which derives the spec
-/// dynamically too. No hardcoded spec to update on a future hardfork.
-pub type EthSpecFn = Arc<dyn Fn(u64) -> SpecId + Send + Sync>;
+/// [`BaseFeeFloorFn`]) so the pool tracks the chain's current fork, matching the
+/// block builder, which derives the spec dynamically too. No hardcoded spec to
+/// update on a future hardfork. Drives both the pool's system-call EVM (see
+/// `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the CIP-64
+/// intrinsic-gas admission check.
+pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
 
 /// Cumulative fee-currency costs per (sender, fee_currency) pair.
 ///
@@ -786,13 +821,14 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// and estimated next-block timestamp.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
-    /// Eth spec for the next block, refreshed each head block via `eth_spec_fn`.
-    /// Used to compute the standard intrinsic gas in the CIP-64 intrinsic-gas
-    /// admission check, so it matches what the block builder computes (which also
-    /// derives the spec dynamically) — no hardcoded spec to update on a hardfork.
-    next_block_eth_spec: Arc<Mutex<SpecId>>,
-    /// Computes the next-block eth spec from the chain spec. See [`EthSpecFn`].
-    eth_spec_fn: EthSpecFn,
+    /// Active fork for the next block, refreshed each head block via `spec_fn`.
+    /// Drives the pool's system-call EVM (so modern fee-currency bytecode runs;
+    /// see `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the standard
+    /// intrinsic gas in the CIP-64 intrinsic-gas admission check. Matches what the
+    /// block builder derives, so there is no hardcoded spec to update on a hardfork.
+    next_block_spec: Arc<Mutex<OpSpecId>>,
+    /// Computes the next-block [`OpSpecId`] from the chain spec. See [`SpecFn`].
+    spec_fn: SpecFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
@@ -819,8 +855,8 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         fee_currency_directory: Address,
         base_fee_floor: u64,
         base_fee_floor_fn: BaseFeeFloorFn,
-        eth_spec: SpecId,
-        eth_spec_fn: EthSpecFn,
+        spec: OpSpecId,
+        spec_fn: SpecFn,
         minimum_priority_fee: u128,
         tx_fee_cap: Option<u128>,
     ) -> Self {
@@ -830,8 +866,8 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             fee_currency_directory,
             base_fee_floor: Arc::new(std::sync::atomic::AtomicU64::new(base_fee_floor)),
             base_fee_floor_fn,
-            next_block_eth_spec: Arc::new(Mutex::new(eth_spec)),
-            eth_spec_fn,
+            next_block_spec: Arc::new(Mutex::new(spec)),
+            spec_fn,
             minimum_priority_fee,
             tx_fee_cap,
             cumulative_fc_costs: Arc::new(Mutex::new(HashMap::new())),
@@ -1277,9 +1313,14 @@ where
         // of which `expect` `native_fees` to be populated — for CIP-64 txs
         // that population only happens here.
         let base_fee_floor = self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
-        let eth_spec = *self.next_block_eth_spec.lock().unwrap_or_else(|e| e.into_inner());
+        // One cached fork drives both the pool's system-call EVM (so modern
+        // fee-currency bytecode runs; see `build_pool_evm`) and the intrinsic-gas
+        // admission check (via its eth-spec projection).
+        let spec = *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner());
+        let eth_spec = spec.into_eth_spec();
+        let lookup = ProviderFcLookup { provider: &self.provider, spec };
         let prepared = apply_exchange_rates_to_pool_tx(
-            &self.provider,
+            &lookup,
             &mut transaction,
             self.fee_currency_directory,
             base_fee_floor,
@@ -1336,11 +1377,11 @@ where
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
         self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
 
-        // Recompute the eth spec for the next block (same trigger as the floor) so
-        // the CIP-64 intrinsic-gas admission check tracks fork activations
-        // automatically — nothing to update by hand when a hardfork lands.
-        let new_spec = (self.eth_spec_fn)(next_ts);
-        *self.next_block_eth_spec.lock().unwrap_or_else(|e| e.into_inner()) = new_spec;
+        // Recompute the active fork for the next block (same trigger as the floor)
+        // so the pool EVM spec and the intrinsic-gas admission check track fork
+        // activations automatically — nothing to update by hand when a hardfork lands.
+        let new_spec = (self.spec_fn)(next_ts);
+        *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner()) = new_spec;
     }
 }
 
@@ -1379,15 +1420,20 @@ where
     /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
     fn query_registered_currencies(&self) -> Option<std::collections::HashSet<Address>> {
         use alloy_sol_types::SolCall;
-        use celo_revm::{CeloBuilder, DefaultCelo, contracts::core_contracts::getCurrenciesCall};
+        use celo_revm::contracts::core_contracts::getCurrenciesCall;
         use reth_revm::database::StateProviderDatabase;
-        use revm::{Context, context_interface::result::ExecutionResult};
+        use revm::context_interface::result::ExecutionResult;
 
         let state = self.provider.latest().inspect_err(|e| {
             tracing::warn!(target: "celo::pool", %e, "Failed to get latest state for currency query");
         }).ok()?;
         let db = StateProviderDatabase::new(state);
-        let mut evm = Context::celo().with_db(db).build_celo();
+        // The FeeCurrencyDirectory is legacy bytecode and this read-only
+        // `getCurrencies` query has no fork-gated semantics, so a modern default
+        // spec suffices (and stays forward-compatible if the directory is ever
+        // redeployed with PUSH0-emitting bytecode). The maintainer never rejects
+        // txs, so unlike the validator it needs no per-head spec tracking.
+        let mut evm = build_pool_evm(db, OpSpecId::default());
 
         let calldata = getCurrenciesCall {}.abi_encode();
         let result = evm
@@ -1513,6 +1559,55 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::make_test_tx;
+
+    /// A fee-currency contract compiled with a recent Solidity emits PUSH0
+    /// (0x5f, EIP-3855, a Shanghai opcode). The pool's system-call EVM must run
+    /// at the chain's active fork, otherwise that bytecode halts `NotActivated`
+    /// and the pool's balance/debit/rate pre-checks silently no-op. Build a
+    /// minimal contract whose code is `PUSH0; POP; STOP` and confirm it halts at
+    /// BEDROCK (pre-Shanghai, the `DefaultCelo` default) but runs at the active
+    /// spec once `build_pool_evm` raises it.
+    #[test]
+    fn build_pool_evm_honors_chain_spec_for_modern_opcodes() {
+        use revm::{
+            context_interface::result::ExecutionResult,
+            database::InMemoryDB,
+            state::{AccountInfo, Bytecode},
+        };
+
+        let target = Address::with_last_byte(0x42);
+        let make_db = || {
+            // PUSH0, POP, STOP
+            let code = Bytecode::new_raw(Bytes::from_static(&[0x5f, 0x50, 0x00]));
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(target, AccountInfo::from_bytecode(code));
+            db
+        };
+
+        // BEDROCK maps to SpecId::MERGE (pre-Shanghai): PUSH0 is not activated.
+        let mut bedrock = build_pool_evm(make_db(), OpSpecId::BEDROCK);
+        let at_bedrock = bedrock.transact_system_call_with_gas_limit(
+            target,
+            Bytes::new(),
+            POOL_SYSTEM_CALL_GAS_LIMIT,
+        );
+        assert!(
+            !matches!(at_bedrock, Ok(ExecutionResult::Success { .. })),
+            "PUSH0 must not execute at BEDROCK, got {at_bedrock:?}",
+        );
+
+        // Isthmus maps to SpecId::PRAGUE: the same bytecode runs to completion.
+        let mut isthmus = build_pool_evm(make_db(), OpSpecId::ISTHMUS);
+        let at_isthmus = isthmus.transact_system_call_with_gas_limit(
+            target,
+            Bytes::new(),
+            POOL_SYSTEM_CALL_GAS_LIMIT,
+        );
+        assert!(
+            matches!(at_isthmus, Ok(ExecutionResult::Success { .. })),
+            "PUSH0 must execute at the active spec, got {at_isthmus:?}",
+        );
+    }
 
     #[test]
     fn test_exchange_rate_to_native() {
