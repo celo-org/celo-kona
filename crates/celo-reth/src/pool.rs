@@ -899,6 +899,9 @@ enum CeloPoolRejection {
     BelowMinTip { currency: Address, min_tip_fc: u128, actual: u128 },
     /// The `debitGasFees()` simulation failed (e.g. token is paused or blacklisted).
     DebitSimulationFailed { currency: Address, sender: Address },
+    /// The fee currency is registered but its `balanceOf` query failed (reverted or returned
+    /// undecodable data), so the sender's balance could not be verified.
+    BalanceLookupFailed { currency: Address, sender: Address },
     /// The transaction fee (`gas_limit * max_fee_per_gas`) exceeds the configured fee cap.
     ExceedsFeeCap {
         max_tx_fee_wei: u128,
@@ -955,6 +958,13 @@ impl std::fmt::Display for CeloPoolRejection {
                      in fee-currency {currency}"
                 )
             }
+            Self::BalanceLookupFailed { currency, sender } => {
+                write!(
+                    f,
+                    "fee-currency balanceOf query failed for sender {sender} \
+                     in fee-currency {currency}"
+                )
+            }
             Self::ExceedsFeeCap { max_tx_fee_wei, tx_fee_cap_wei, fee_currency } => {
                 if let Some(fc) = fee_currency {
                     write!(
@@ -990,6 +1000,8 @@ impl PoolTransactionError for CeloPoolRejection {
             Self::InsufficientBalance { .. } => false,
             // Debit simulation failure is transient — token state may change.
             Self::DebitSimulationFailed { .. } => false,
+            // A failed balanceOf query is treated as transient — the token/state may recover.
+            Self::BalanceLookupFailed { .. } => false,
             // Fee cap rejection is permanent — the tx's gas cost won't change.
             Self::ExceedsFeeCap { .. } => true,
             _ => true,
@@ -1232,6 +1244,22 @@ fn apply_exchange_rates_to_pool_tx(
                 *entry = entry.saturating_add(required_fc);
             }
             reserved_cumulative = Some((sender, fc, required_fc));
+        } else {
+            // The currency is registered (rate found) and a balance check was requested, so a
+            // missing balance here means the balanceOf query failed (reverted / undecodable).
+            // Fail closed: such a token cannot pay fees (the execution-time debit would fail
+            // too), and admitting it would be a fail-open divergence from upstream's
+            // deterministic balance rejection. Safe now that the pool EVM runs at the chain's
+            // active spec (see `build_pool_evm`): a modern currency's balanceOf no longer
+            // returns None merely because PUSH0 halted at the BEDROCK default.
+            tracing::warn!(
+                target: "celo::pool",
+                ?fc,
+                ?sender,
+                "Rejecting CIP-64 tx: fee currency balanceOf query failed"
+            );
+            CeloPoolMetrics::cip64_rejection("balance_lookup_failed");
+            return Err(CeloPoolRejection::BalanceLookupFailed { currency: fc, sender });
         }
 
         // Check debit simulation result. If debit_ok is None (not attempted
@@ -2064,6 +2092,40 @@ mod tests {
             SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance { .. })));
+    }
+
+    #[test]
+    fn test_apply_rates_rejects_balance_lookup_failure() {
+        // Registered currency (rate Some) whose balanceOf query failed (balance None). Must fail
+        // closed, not be admitted: admitting it is a fail-open divergence from upstream's
+        // deterministic balance rejection. (The currency was requested for balance check, and the
+        // rate was found, so a None balance here can only mean the query itself failed.) This is
+        // safe to enforce now that the pool EVM runs at the chain's active spec — see
+        // `build_pool_evm`: previously balanceOf=None was the norm for modern (PUSH0) currencies
+        // at the BEDROCK default, so fail-closed wrongly rejected valid txs.
+        let fc = Address::with_last_byte(0xAA);
+        let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: None,
+            debit_ok: None,
+            intrinsic_gas: None,
+        };
+        let result = apply_exchange_rates_to_pool_tx(
+            &mock,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &empty_cumulative_costs(),
+            SpecId::PRAGUE,
+        );
+        assert!(
+            matches!(result, Err(CeloPoolRejection::BalanceLookupFailed { .. })),
+            "registered currency with failed balanceOf must fail closed, got {result:?}",
+        );
     }
 
     #[test]
