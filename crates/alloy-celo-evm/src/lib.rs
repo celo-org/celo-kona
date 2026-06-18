@@ -334,6 +334,13 @@ where
                 // fee-currency debit/credit failure should blocklist the currency, not
                 // unrelated validation errors (nonce, gas limit, etc.) that happen to
                 // involve a CIP-64 tx.
+                //
+                // Classification is by error-message prefix, not by matching a typed
+                // variant: the celo-revm errors are typed at the source (e.g.
+                // `FeeCurrencyError`, the FEE_DEBIT/CREDIT prefixes), but they reach here
+                // flattened into op-revm's `OpTransactionError` / revm's
+                // `InvalidTransaction` — closed enums with no Celo variant — so the only
+                // signal that survives the boundary is the Display string.
                 let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
