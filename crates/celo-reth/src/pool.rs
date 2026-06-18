@@ -1457,11 +1457,11 @@ where
         }).ok()?;
         let db = StateProviderDatabase::new(state);
         // The FeeCurrencyDirectory is legacy bytecode and this read-only
-        // `getCurrencies` query has no fork-gated semantics, so a modern default
+        // `getCurrencies` query has no fork-gated semantics, so the Celo default
         // spec suffices (and stays forward-compatible if the directory is ever
         // redeployed with PUSH0-emitting bytecode). The maintainer never rejects
         // txs, so unlike the validator it needs no per-head spec tracking.
-        let mut evm = build_pool_evm(db, OpSpecId::default());
+        let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
 
         let calldata = getCurrenciesCall {}.abi_encode();
         let result = evm
