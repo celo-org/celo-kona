@@ -1185,9 +1185,9 @@ fn apply_exchange_rates_to_pool_tx(
             "Applied exchange rate to CIP-64 pool tx"
         );
 
-        // Check ERC20 balance result (query already done above).
-        // If balance is None (query failed), we allow the tx through —
-        // it will be caught during execution.
+        // Check ERC20 balance result (query already done above). A `None` balance
+        // means the balanceOf query failed; the `else` branch rejects it (fail
+        // closed) now that the pool EVM runs at the chain's active spec.
         if let Some(balance) = result.balance {
             if required_fc > balance {
                 tracing::warn!(
