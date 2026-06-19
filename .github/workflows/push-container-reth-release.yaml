@@ -39,8 +39,8 @@ jobs:
       artifact-registry: us-west1-docker.pkg.dev/devopsre/celo-blockchain-public/op-reth
       tags: ${{ needs.compute-tag.outputs.modified_tag }}
       platforms: linux/amd64
-      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona/providers/github-by-repos
-      service-account: celo-kona-gh@devopsre.iam.gserviceaccount.com
+      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona-release/providers/github-by-repos
+      service-account: celo-kona-release@devopsre.iam.gserviceaccount.com
       access-token-lifetime: 120m
       timeout-minutes: 120
       context: .
