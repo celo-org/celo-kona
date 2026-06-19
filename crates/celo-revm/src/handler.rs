@@ -83,6 +83,13 @@ pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
 }
 
+// The wrapped revm handlers are not `Debug`, so the fields are elided.
+impl<EVM, ERROR, FRAME> core::fmt::Debug for CeloHandler<EVM, ERROR, FRAME> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloHandler").finish_non_exhaustive()
+    }
+}
+
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {

@@ -55,7 +55,7 @@ pub struct FeeCurrencyContext {
 }
 
 impl FeeCurrencyContext {
-    pub fn new(
+    pub const fn new(
         currencies: HashMap<Address, FeeCurrencyInfo>,
         updated_at_block: Option<U256>,
     ) -> Self {
@@ -66,7 +66,7 @@ impl FeeCurrencyContext {
     }
 
     /// Initialize with values read from the EVM
-    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> FeeCurrencyContext
+    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> Self
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
@@ -74,7 +74,7 @@ impl FeeCurrencyContext {
     {
         let currencies = get_currency_info(evm);
         let current_block_number = evm.ctx().block().number;
-        FeeCurrencyContext::new(currencies, Some(current_block_number))
+        Self::new(currencies, Some(current_block_number))
     }
 
     pub fn currency_intrinsic_gas_cost(
@@ -86,10 +86,10 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(info.intrinsic_gas),
-            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
-        }
+        self.currencies.get(&currency_addr).map_or_else(
+            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
+            |info| Ok(info.intrinsic_gas),
+        )
     }
 
     /// Allow the contract to overshoot 2 times the deducted intrinsic gas
@@ -113,10 +113,10 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(info.exchange_rate),
-            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
-        }
+        self.currencies.get(&currency_addr).map_or_else(
+            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
+            |info| Ok(info.exchange_rate),
+        )
     }
 
     /// Convert a native-CELO amount to its fee-currency equivalent at the
@@ -136,12 +136,14 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(FcU256::new(
-                amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
-            )),
-            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
-        }
+        self.currencies.get(&currency_addr).map_or_else(
+            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
+            |info| {
+                Ok(FcU256::new(
+                    amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
+                ))
+            },
+        )
     }
 
     /// Convert a fee-currency amount to its native-CELO equivalent. Same
@@ -156,12 +158,14 @@ impl FeeCurrencyContext {
         }
 
         let currency_addr = currency.unwrap();
-        match self.currencies.get(&currency_addr) {
-            Some(info) => Ok(NativeU256::new(
-                amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
-            )),
-            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
-        }
+        self.currencies.get(&currency_addr).map_or_else(
+            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
+            |info| {
+                Ok(NativeU256::new(
+                    amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
+                ))
+            },
+        )
     }
 }
 

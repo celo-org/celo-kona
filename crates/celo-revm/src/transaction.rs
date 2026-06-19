@@ -34,10 +34,7 @@ pub trait CeloTxTr: OpTxTr {
     /// matches op-geth's `feeCurrency == nil` check (Go's nil `common.Address` is
     /// the zero value).
     fn is_fee_in_celo(&self) -> bool {
-        match self.fee_currency() {
-            None => true,
-            Some(addr) => addr == Address::ZERO,
-        }
+        self.fee_currency().is_none_or(|addr| addr == Address::ZERO)
     }
 }
 
@@ -74,7 +71,7 @@ pub struct CeloTransaction<T: Transaction> {
 }
 
 impl<T: Transaction> CeloTransaction<T> {
-    pub fn new(op_tx: OpTransaction<T>) -> Self {
+    pub const fn new(op_tx: OpTransaction<T>) -> Self {
         Self {
             op_tx,
             fee_currency: None,
@@ -113,7 +110,7 @@ impl CeloTransaction<TxEnv> {
         data: Bytes,
         gas_limit: u64,
     ) -> Self {
-        CeloTransaction::new(OpTransaction::new(TxEnv {
+        Self::new(OpTransaction::new(TxEnv {
             caller,
             data,
             kind: TxKind::Call(system_contract_address),

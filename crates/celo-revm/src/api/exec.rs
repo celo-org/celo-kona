@@ -37,11 +37,8 @@ where
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
-        let mut h = CeloHandler::<
-            CeloEvm<DB, INSP, P>,
-            CeloError<CeloContext<DB>>,
-            EthFrame<EthInterpreter>,
-        >::new();
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.run(self)
     }
 
@@ -52,11 +49,8 @@ where
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
-        let mut h = CeloHandler::<
-            CeloEvm<DB, INSP, P>,
-            CeloError<CeloContext<DB>>,
-            EthFrame<EthInterpreter>,
-        >::new();
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.run(self).map(|result| {
             let state = self.finalize();
             ExecResultAndState::new(result, state)
@@ -89,11 +83,8 @@ where
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
-        let mut h = CeloHandler::<
-            CeloEvm<DB, INSP, P>,
-            CeloError<CeloContext<DB>>,
-            EthFrame<EthInterpreter>,
-        >::new();
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.inspect_run(self)
     }
 }
@@ -125,11 +116,8 @@ where
                 data,
             ),
         );
-        let mut h = CeloHandler::<
-            CeloEvm<DB, INSP, P>,
-            CeloError<CeloContext<DB>>,
-            EthFrame<EthInterpreter>,
-        >::new();
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.run_system_call(self)
     }
 }
@@ -155,11 +143,8 @@ where
                 gas_limit,
             ),
         );
-        let mut h = CeloHandler::<
-            CeloEvm<DB, INSP, P>,
-            CeloError<CeloContext<DB>>,
-            EthFrame<EthInterpreter>,
-        >::new();
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.run_system_call(self)
     }
 }

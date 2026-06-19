@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
+// TODO: document the public API (~60 items) and drop this allow so the
+// workspace `missing-docs` lint applies to celo-revm too.
+#![allow(missing_docs)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
