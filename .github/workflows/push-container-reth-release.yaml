@@ -1,0 +1,50 @@
+name: Build celo-reth release container on tag
+
+on:
+  push:
+    tags:
+      - 'celo/reth-v[0-9]+.[0-9]+.[0-9]+'
+      - 'celo/reth-v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+jobs:
+  compute-tag:
+    name: Compute image tag from git tag
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref_name, 'celo/reth-')
+    permissions:
+      contents: read
+    outputs:
+      modified_tag: ${{ steps.strip.outputs.modified_tag }}
+    steps:
+      - name: Strip celo/reth- prefix from tag
+        id: strip
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "modified_tag=$(echo "$REF_NAME" | sed 's|^celo/reth-|celo-|')" >> "$GITHUB_OUTPUT"
+
+  build-container-reth-tag:
+    needs: compute-tag
+    name: Build and push celo-reth release image on tag
+    uses: celo-org/reusable-workflows/.github/workflows/docker-build.yaml@v3.1
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      security-events: write
+      attestations: write
+      id-token: write
+    with:
+      runs-on: '["self-hosted", "org", "8-cpu"]'
+      artifact-registry: us-west1-docker.pkg.dev/devopsre/celo-blockchain-public/op-reth
+      tags: ${{ needs.compute-tag.outputs.modified_tag }}
+      platforms: linux/amd64
+      workload-id-provider: projects/1094498259535/locations/global/workloadIdentityPools/gh-celo-kona-release/providers/github-by-repos
+      service-account: celo-kona-release@devopsre.iam.gserviceaccount.com
+      access-token-lifetime: 120m
+      timeout-minutes: 120
+      context: .
+      file: crates/celo-reth/Dockerfile
+      build-args: |
+        CELO_KONA_GIT_SHA=${{ github.sha }}
+      trivy-enabled: false
