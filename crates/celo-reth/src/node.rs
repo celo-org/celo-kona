@@ -300,21 +300,21 @@ where
                     _ => crate::CELO_BASE_FEE_FLOOR,
                 }
             };
-            // Mirror the base-fee floor: derive the eth spec for the next block
+            // Mirror the base-fee floor: derive the active fork for the next block
             // from the chain spec (refreshed each head block in `on_new_head_block`)
-            // so the CIP-64 intrinsic-gas admission check tracks fork activations
-            // automatically. The block builder derives its spec the same way, so
-            // there is no hardcoded spec to update on a future hardfork.
+            // so the pool's system-call EVM and the CIP-64 intrinsic-gas admission
+            // check track fork activations automatically. The block builder derives
+            // its spec the same way, so there is no hardcoded spec to update on a
+            // future hardfork.
             let cs_spec = ctx.chain_spec();
-            let eth_spec_fn: crate::pool::EthSpecFn = std::sync::Arc::new(move |next_ts: u64| {
+            let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
                 reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
-                    .into_eth_spec()
             });
-            let eth_spec = match ctx.provider().latest_header() {
-                Ok(Some(header)) => eth_spec_fn(header.timestamp().saturating_add(1)),
+            let spec = match ctx.provider().latest_header() {
+                Ok(Some(header)) => spec_fn(header.timestamp().saturating_add(1)),
                 // Fresh chain / read error: use the newest configured fork;
                 // `on_new_head_block` corrects it on the first canonical block.
-                _ => eth_spec_fn(u64::MAX),
+                _ => spec_fn(u64::MAX),
             };
             CeloExchangeRateApplier::new(
                 validator,
@@ -322,8 +322,8 @@ where
                 fee_currency_directory,
                 base_fee_floor,
                 base_fee_floor_fn,
-                eth_spec,
-                eth_spec_fn,
+                spec,
+                spec_fn,
                 minimum_priority_fee,
                 tx_fee_cap,
             )
