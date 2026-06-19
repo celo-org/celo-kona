@@ -53,8 +53,10 @@ pub struct CeloRollupConfig {
     /// The wrapped upstream OP Stack rollup config. `Deref`/`DerefMut` target.
     #[deref]
     #[deref_mut]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub op_rollup_config: RollupConfig,
     /// Celo-specific Espresso batch-authentication settings parsed from the same `rollup.json`.
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub espresso: CeloEspressoConfig,
 }
 
@@ -486,5 +488,50 @@ mod tests {
         assert!(cfg.is_batch_auth_enabled());
         assert!(cfg.is_espresso_active(1234));
         assert!(!cfg.is_espresso_active(1233));
+    }
+
+    /// The derived `Serialize` must emit the same flat shape the custom `Deserialize` consumes, so
+    /// a config can survive a serialize -> deserialize round-trip. Before `#[serde(flatten)]` was
+    /// applied, the named-field struct serialized to a nested `{op_rollup_config, espresso}` object
+    /// that the flat deserializer could not read back. Exercises the Espresso fields specifically,
+    /// since those are the ones the host/oracle round-trip (`CeloBootInfo::load`) relies on.
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serialize_deserialize_roundtrip_with_espresso() {
+        let mut original = CeloRollupConfig::new(RollupConfig::default());
+        original.espresso.espresso_time = Some(1234);
+        original.espresso.batch_authenticator_address =
+            Some(address!("00000000000000000000000000000000000000aa"));
+
+        let json = serde_json::to_string(&original).unwrap();
+
+        // The flattened serialization must place the Espresso keys at the top level (not nested
+        // under an `espresso` object), matching the flat `rollup.json` shape.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("espresso").is_none(), "espresso must be flattened, not nested");
+        assert_eq!(value.get("espresso_time").and_then(serde_json::Value::as_u64), Some(1234));
+        assert!(value.get("batch_authenticator_address").is_some());
+
+        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+    }
+
+    /// Non-Espresso configs round-trip too: with both Espresso fields unset, `skip_serializing_if`
+    /// omits the keys entirely and the deserializer restores the disabled defaults.
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serialize_deserialize_roundtrip_without_espresso() {
+        let original = CeloRollupConfig::new(RollupConfig::default());
+
+        let json = serde_json::to_string(&original).unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("espresso").is_none());
+        assert!(value.get("espresso_time").is_none());
+        assert!(value.get("batch_authenticator_address").is_none());
+
+        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+        assert_eq!(roundtripped.espresso, CeloEspressoConfig::default());
     }
 }
