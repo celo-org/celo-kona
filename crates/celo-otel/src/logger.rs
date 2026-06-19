@@ -5,6 +5,15 @@ use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Initializes the global tracing subscriber.
+///
+/// Maps `verbosity_level` (1 = ERROR through 5+ = TRACE) to a tracing level,
+/// layers it over the optional `env_filter`, and, when `export_telemetry` is
+/// set, bridges logs to an OTLP exporter built from `otel_resource`.
+///
+/// # Errors
+///
+/// Returns an error if `verbosity_level` is zero.
 pub fn init_tracing(
     verbosity_level: u8,
     env_filter: Option<impl Into<EnvFilter>>,
