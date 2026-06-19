@@ -78,11 +78,15 @@ const CELO_SUBCOMMANDS: &[&str] = &[
 // for the port plan. `proofs init` and `proofs prune` are safe on the op-reth dispatch
 // (no tx decoding).
 
-/// Default snapshot manifest URL for `celo-reth download`. Overrides the upstream
-/// `--manifest-url` default (which is empty, triggering interactive selection against
-/// `snapshots.reth.rs` — an Ethereum-mainnet-only host).
-const DEFAULT_MANIFEST_URL: &str =
-    "https://fsn1.your-objectstorage.com/celo/snapshots/manifest.json";
+/// Default snapshot manifest URLs for `celo-reth download`, served from the cLabs-operated
+/// `snapshots.celo.org` publication endpoint. Override the upstream `--manifest-url` default
+/// (empty → interactive selection against `snapshots.reth.rs`, an Ethereum-mainnet-only host).
+///
+/// The applied default is selected by `--chain`: `celo-sepolia` resolves to
+/// [`DEFAULT_MANIFEST_URL_SEPOLIA`]; every other value — including the `--chain celo` default —
+/// resolves to [`DEFAULT_MANIFEST_URL_MAINNET`]. Wired up in [`celo_cli_command`].
+const DEFAULT_MANIFEST_URL_MAINNET: &str = "https://snapshots.celo.org/mainnet/manifest.json";
+const DEFAULT_MANIFEST_URL_SEPOLIA: &str = "https://snapshots.celo.org/celo-sepolia/manifest.json";
 
 /// Default chain ID embedded in `celo-reth snapshot-manifest` output. Overrides the upstream
 /// `--chain-id` default of `1` (Ethereum mainnet).
@@ -126,7 +130,8 @@ enum CeloCommand {
     #[command(name = RE_EXECUTE)]
     ReExecute(re_execute::Command<CeloChainSpecParser>),
     /// Download a Celo reth snapshot. Defaults `--manifest-url` to the cLabs-operated
-    /// publication endpoint; pass `--url`, `--manifest-url`, or `--manifest-path` to override.
+    /// `snapshots.celo.org` endpoint for the selected `--chain` (Mainnet or Celo Sepolia);
+    /// pass `--url`, `--manifest-url`, or `--manifest-path` to override.
     #[command(name = DOWNLOAD)]
     Download(Box<DownloadCommand<CeloChainSpecParser>>),
     /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
@@ -163,7 +168,16 @@ fn celo_cli_command() -> clap::Command {
             sub.mut_arg("chain_id", |a| a.default_value(DEFAULT_CHAIN_ID))
         })
         .mut_subcommand(DOWNLOAD, |sub| {
-            sub.mut_arg("manifest_url", |a| a.default_value(DEFAULT_MANIFEST_URL))
+            // Per-chain default: only an explicit `--chain celo-sepolia` swaps in the Sepolia
+            // manifest; everything else (incl. the `--chain celo` default and an omitted flag)
+            // keeps the mainnet `default_value`.
+            sub.mut_arg("manifest_url", |a| {
+                a.default_value(DEFAULT_MANIFEST_URL_MAINNET).default_value_if(
+                    "chain",
+                    "celo-sepolia",
+                    DEFAULT_MANIFEST_URL_SEPOLIA,
+                )
+            })
         })
 }
 
