@@ -713,6 +713,59 @@ mod tests {
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
     }
 
+    /// A CIP-64 tx in a fee currency missing from the per-block context fails
+    /// before debit/credit, so the blocklist branch never logs it — `transact_raw`
+    /// must instead classify it via `FEE_CURRENCY_NOT_REGISTERED_PREFIX` and meter
+    /// it as `celo_payload_skipped_total{reason=fee_currency_not_registered}`.
+    /// This drives the real path: the empty fee-currency context genuinely produces
+    /// the typed `NotRegistered` error, flattened to a string carrying the prefix
+    /// the classifier matches on — not a mocked error.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_unregistered_fee_currency_is_metered_not_blocklisted() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let fc = Address::with_last_byte(0xCD);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        let err_msg = metrics::with_local_recorder(&recorder, || {
+            let mut evm = make_test_evm(blocklist.clone());
+            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            evm.ctx_mut().block.basefee = 1_000_000_000;
+            let result = evm.transact_raw(make_cip64_tx(fc));
+            format!("{:?}", result.expect_err("unregistered fee currency must fail"))
+        });
+
+        // Real classification signal: the tx genuinely took the NotRegistered path.
+        assert!(
+            err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX),
+            "expected the not-registered prefix in the error, got: {err_msg}"
+        );
+        // NotRegistered is not a debit/credit failure, so it must not blocklist.
+        assert!(!blocklist.is_blocked(fc), "unregistered currency must not be blocklisted");
+
+        // ...and it must have incremented the skip counter with the right reason label.
+        let skipped: u64 = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(ck, _, _, _)| {
+                ck.key().name() == "celo_payload_skipped_total"
+                    && ck
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "reason" && l.value() == "fee_currency_not_registered")
+            })
+            .map(|(_, _, _, v)| match v {
+                DebugValue::Counter(c) => c,
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
+    }
+
     /// Verify that RPC simulation paths (eth_call / eth_estimateGas / debug_trace*)
     /// never store CIP-64 receipt data. Storage is per-EVM, so cross-EVM
     /// corruption is impossible — but multi-tx tracing (`debug_traceBlock`,

@@ -38,6 +38,8 @@ metrics = { workspace = true, optional = true }
 [dev-dependencies]
 # Tests exercise RPC-simulation paths that need to disable the base-fee check.
 revm = { workspace = true, features = ["optional_no_base_fee"] }
+# Test-only: a local recorder to assert the std-only skip metric is emitted.
+metrics-util = "0.20"
 
 [features]
 default = ["std"]

@@ -538,4 +538,44 @@ pub(crate) mod tests {
         );
         assert_eq!(currency_info, expected);
     }
+
+    #[test]
+    fn test_get_currency_info_drops_currency_with_unreadable_config() {
+        // A currency registered in the directory (returned by getCurrencies) but whose
+        // config cannot be read — here, no oracle configured, so getExchangeRate reverts —
+        // must be dropped from the context rather than surface partial data. Without the
+        // drop, a CIP-64 tx in this currency would be silently excluded from blocks. The
+        // fully-configured currency from make_celo_test_db must still load.
+        let mut db = make_celo_test_db();
+        let dir = get_addresses(0).fee_currency_directory;
+        let unconfigured = address!("0x2222222222222222222222222222222222222222");
+
+        // Append `unconfigured` to the directory's currencies array (slot 2), leaving its
+        // currencyConfig mapping (slot 1) unset so getExchangeRate reverts for it.
+        let currencies_slot = U256::from(2);
+        db.insert_account_storage(dir, currencies_slot, U256::from(2))
+            .unwrap(); // length 1 -> 2
+        let slot_bytes: [u8; 32] = currencies_slot.to_be_bytes();
+        let data_start = U256::from_be_bytes(keccak256(slot_bytes).0);
+        db.insert_account_storage(
+            dir,
+            data_start + U256::from(1),
+            unconfigured.into_word().into(),
+        )
+        .unwrap();
+
+        let ctx = Context::celo().with_db(db);
+        let mut evm = ctx.build_celo();
+        let currency_info = get_currency_info(&mut evm);
+
+        assert!(
+            currency_info.contains_key(&TEST_FEE_CURRENCY),
+            "fully-configured currency must load"
+        );
+        assert!(
+            !currency_info.contains_key(&unconfigured),
+            "currency with unreadable config must be dropped from the context"
+        );
+        assert_eq!(currency_info.len(), 1, "exactly one currency should remain");
+    }
 }
