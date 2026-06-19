@@ -591,10 +591,10 @@ const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 
 /// Build the pool's system-call EVM over `db`, configured at chain fork `spec`.
 ///
-/// The spec MUST be the chain's active fork rather than the `DefaultCelo`
-/// BEDROCK default: fee-currency contracts compiled with a recent Solidity emit
-/// post-Merge opcodes (PUSH0 = Shanghai, MCOPY/TLOAD = Cancun, i.e. any standard
-/// modern OpenZeppelin ERC20). At BEDROCK those halt with `NotActivated`, so the
+/// The spec MUST be the chain's active fork rather than a context-free default:
+/// fee-currency contracts compiled with a recent Solidity emit post-Merge opcodes
+/// (PUSH0 = Shanghai, MCOPY/TLOAD = Cancun, i.e. any standard modern OpenZeppelin
+/// ERC20). At a pre-Shanghai fork (e.g. BEDROCK) those halt with `NotActivated`, so the
 /// `getExchangeRate` / `balanceOf` / `debitGasFees` simulations fail and the
 /// pool's pre-checks silently no-op. Raising the spec keeps legacy bytecode
 /// working (opcodes are only added across forks) while letting modern bytecode
@@ -1251,7 +1251,8 @@ fn apply_exchange_rates_to_pool_tx(
             // too), and admitting it would be a fail-open divergence from upstream's
             // deterministic balance rejection. Safe now that the pool EVM runs at the chain's
             // active spec (see `build_pool_evm`): a modern currency's balanceOf no longer
-            // returns None merely because PUSH0 halted at the BEDROCK default.
+            // returns None merely because PUSH0 halted at the pre-Shanghai default the pool
+            // EVM previously used.
             tracing::warn!(
                 target: "celo::pool",
                 ?fc,
@@ -1593,8 +1594,8 @@ mod tests {
     /// at the chain's active fork, otherwise that bytecode halts `NotActivated`
     /// and the pool's balance/debit/rate pre-checks silently no-op. Build a
     /// minimal contract whose code is `PUSH0; POP; STOP` and confirm it halts at
-    /// BEDROCK (pre-Shanghai, the `DefaultCelo` default) but runs at the active
-    /// spec once `build_pool_evm` raises it.
+    /// BEDROCK (pre-Shanghai) but runs at the active spec once `build_pool_evm`
+    /// raises it.
     #[test]
     fn build_pool_evm_honors_chain_spec_for_modern_opcodes() {
         use revm::{
@@ -2102,7 +2103,8 @@ mod tests {
         // rate was found, so a None balance here can only mean the query itself failed.) This is
         // safe to enforce now that the pool EVM runs at the chain's active spec — see
         // `build_pool_evm`: previously balanceOf=None was the norm for modern (PUSH0) currencies
-        // at the BEDROCK default, so fail-closed wrongly rejected valid txs.
+        // at the pre-Shanghai default the pool EVM previously used, so fail-closed wrongly
+        // rejected valid txs.
         let fc = Address::with_last_byte(0xAA);
         let mut tx = make_test_tx(Some(fc), 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
 
