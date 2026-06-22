@@ -171,10 +171,13 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
         // Extract the Espresso fields (if present) before deserializing the upstream config,
         // since `RollupConfig` does not know about them.
         let espresso = CeloEspressoConfig {
-            espresso_time: take_u64(&mut json_obj, "espresso_time")
+            espresso_time: take::<u64>(&mut json_obj, "espresso_time")
                 .map_err(serde::de::Error::custom)?,
-            batch_authenticator_address: take_address(&mut json_obj, "batch_authenticator_address")
-                .map_err(serde::de::Error::custom)?,
+            batch_authenticator_address: take::<Address>(
+                &mut json_obj,
+                "batch_authenticator_address",
+            )
+            .map_err(serde::de::Error::custom)?,
         };
 
         let op_rollup_config = RollupConfig::deserialize(serde_json::Value::Object(json_obj))
@@ -185,23 +188,10 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
 }
 
 #[cfg(feature = "serde")]
-fn take_u64(
+fn take<T: serde::de::DeserializeOwned>(
     obj: &mut serde_json::Map<alloc::string::String, serde_json::Value>,
     key: &str,
-) -> Result<Option<u64>, alloc::string::String> {
-    match obj.remove(key) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(v) => {
-            serde_json::from_value(v).map(Some).map_err(|e| alloc::format!("invalid `{key}`: {e}"))
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-fn take_address(
-    obj: &mut serde_json::Map<alloc::string::String, serde_json::Value>,
-    key: &str,
-) -> Result<Option<Address>, alloc::string::String> {
+) -> Result<Option<T>, alloc::string::String> {
     match obj.remove(key) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(v) => {
