@@ -269,8 +269,9 @@ pub fn is_batch_authorized(
 mod tests {
     use super::*;
     use alloc::{vec, vec::Vec};
-    use alloy_consensus::{Eip658Value, Receipt, Signed, TxLegacy};
+    use alloy_consensus::{Eip658Value, Header, Receipt, Signed, TxLegacy};
     use alloy_primitives::{Address, Log, LogData, Signature, TxKind, address, b256};
+    use kona_derive::test_utils::TestChainProvider;
 
     fn make_auth_receipt(
         authenticator_addr: Address,
@@ -553,5 +554,222 @@ mod tests {
         assert_eq!(cache.receipts.cap().get(), expected_cap);
         assert_eq!(cache.headers.len(), 0);
         assert_eq!(cache.headers.cap().get(), expected_cap);
+    }
+
+    // ---- Multi-block lookback traversal -------------------------------------------------------
+    //
+    // These mirror op-node's `TestCollectAuthenticatedBatches`
+    // (`espresso_batch_authenticator_test.go`). Every other test in this module operates on
+    // `BlockInfo::default()` (block 0), so the lookback loop breaks after a single iteration and
+    // never exercises the backward parent-hash walk, the cross-block newest-wins merge, the
+    // genesis clamp, or the inclusive `[n - WINDOW, n]` window boundary. The chains below do.
+
+    const TEST_AUTH_ADDR: Address = address!("1234567890123456789012345678901234567890");
+
+    /// Builds a parent-linked L1 header chain for blocks `0..=top` and registers each block's
+    /// header and receipts with `provider`, returning the [`BlockInfo`] for every block (indexed
+    /// by number). Blocks absent from `receipts` get an empty receipt list — still inserted so
+    /// [`TestChainProvider::receipts_by_hash`] resolves for every block the walk visits.
+    ///
+    /// Block hashes are the real `header.hash_slow()` and each header's `parent_hash` points at
+    /// its predecessor, so [`collect_authenticated_batches`] performs a genuine backward walk.
+    fn build_l1_chain(
+        provider: &mut TestChainProvider,
+        top: u64,
+        receipts: &BTreeMap<u64, Vec<Receipt>>,
+    ) -> Vec<BlockInfo> {
+        let mut headers: Vec<Header> = Vec::with_capacity(top as usize + 1);
+        let mut parent = B256::ZERO;
+        for number in 0..=top {
+            let header = Header { parent_hash: parent, number, ..Default::default() };
+            parent = header.hash_slow();
+            headers.push(header);
+        }
+        headers
+            .into_iter()
+            .map(|header| {
+                let hash = header.hash_slow();
+                let number = header.number;
+                provider.insert_header(hash, header);
+                provider.insert_receipts(hash, receipts.get(&number).cloned().unwrap_or_default());
+                BlockInfo { hash, number, ..Default::default() }
+            })
+            .collect()
+    }
+
+    /// Convenience: a single-event receipt set for one block.
+    fn auth_receipts(commitment: B256, caller: Address) -> Vec<Receipt> {
+        vec![make_auth_receipt(TEST_AUTH_ADDR, commitment, caller)]
+    }
+
+    /// Event in the ref (newest) block itself is found. The ref sits one block above the lookback
+    /// window (`number = WINDOW + 1`) so the walk terminates via the window-distance break rather
+    /// than the genesis clamp — covering the realistic case where the ref block is scanned at a
+    /// height `>= WINDOW`.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_event_in_ref_block() {
+        let ref_number = BATCH_AUTH_LOOKBACK_WINDOW + 1;
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000a1");
+        let caller = address!("00000000000000000000000000000000000000aa");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        receipts.insert(ref_number, auth_receipts(commitment, caller));
+        let infos = build_l1_chain(&mut provider, ref_number, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result = collect_authenticated_batches(
+            &mut provider,
+            &infos[ref_number as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.get(&commitment), Some(&caller));
+        assert_eq!(result.len(), 1);
+    }
+
+    /// Event in the *earliest* block of the window (`ref - BATCH_AUTH_LOOKBACK_WINDOW`) is found —
+    /// the inclusive lower bound. Exercises the full-depth backward walk.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_event_in_earliest_window_block() {
+        let window = BATCH_AUTH_LOOKBACK_WINDOW;
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000b2");
+        let caller = address!("00000000000000000000000000000000000000bb");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        // Block 0 == ref(window) - WINDOW: the oldest block still in range.
+        receipts.insert(0, auth_receipts(commitment, caller));
+        let infos = build_l1_chain(&mut provider, window, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result = collect_authenticated_batches(
+            &mut provider,
+            &infos[window as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.get(&commitment), Some(&caller), "event at ref-WINDOW must be in range");
+        assert_eq!(result.len(), 1);
+    }
+
+    /// Event one block *older* than the window (`ref - BATCH_AUTH_LOOKBACK_WINDOW - 1`) is
+    /// excluded. Together with the previous test this pins the inclusive `[n - WINDOW, n]`
+    /// boundary exactly.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_event_outside_window_excluded() {
+        let window = BATCH_AUTH_LOOKBACK_WINDOW;
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000c3");
+        let caller = address!("00000000000000000000000000000000000000cc");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        // Block 0 == ref(window + 1) - WINDOW - 1: just outside the window.
+        receipts.insert(0, auth_receipts(commitment, caller));
+        let infos = build_l1_chain(&mut provider, window + 1, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result = collect_authenticated_batches(
+            &mut provider,
+            &infos[(window + 1) as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_empty(), "event one block older than the window must be excluded");
+    }
+
+    /// No authenticating event anywhere in the window: an empty (non-error) map.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_not_found_returns_empty() {
+        let mut provider = TestChainProvider::default();
+        let infos = build_l1_chain(&mut provider, 10, &BTreeMap::new());
+
+        let mut cache = BatchAuthCache::new();
+        let result =
+            collect_authenticated_batches(&mut provider, &infos[10], TEST_AUTH_ADDR, &mut cache)
+                .await
+                .unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    /// When `ref.number < WINDOW`, the walk clamps at genesis (`current_number == 0`) without
+    /// underflowing, and an event in block 0 is still found.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_window_clamps_at_genesis() {
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000d4");
+        let caller = address!("00000000000000000000000000000000000000dd");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        receipts.insert(0, auth_receipts(commitment, caller));
+        // ref number 10 is far below WINDOW (100), so only the genesis guard can stop the walk.
+        let infos = build_l1_chain(&mut provider, 10, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result =
+            collect_authenticated_batches(&mut provider, &infos[10], TEST_AUTH_ADDR, &mut cache)
+                .await
+                .unwrap();
+
+        assert_eq!(result.get(&commitment), Some(&caller));
+        assert_eq!(result.len(), 1);
+    }
+
+    /// Distinct commitments authenticated in different blocks of the window each keep their own
+    /// caller.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_multiple_commitments() {
+        let c1 = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        let c2 = b256!("0000000000000000000000000000000000000000000000000000000000000002");
+        let caller1 = address!("00000000000000000000000000000000000000a1");
+        let caller2 = address!("00000000000000000000000000000000000000a2");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        receipts.insert(3, auth_receipts(c1, caller1));
+        receipts.insert(7, auth_receipts(c2, caller2));
+        let infos = build_l1_chain(&mut provider, 10, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result =
+            collect_authenticated_batches(&mut provider, &infos[10], TEST_AUTH_ADDR, &mut cache)
+                .await
+                .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(&c1), Some(&caller1));
+        assert_eq!(result.get(&c2), Some(&caller2));
+    }
+
+    /// The same commitment authenticated in two blocks resolves to the *newest* block's caller —
+    /// the newest-wins merge across the newest-first walk.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_newest_caller_wins() {
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000e5");
+        let older_caller = address!("00000000000000000000000000000000000000a0");
+        let newer_caller = address!("00000000000000000000000000000000000000a9");
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        receipts.insert(2, auth_receipts(commitment, older_caller));
+        receipts.insert(8, auth_receipts(commitment, newer_caller));
+        let infos = build_l1_chain(&mut provider, 10, &receipts);
+
+        let mut cache = BatchAuthCache::new();
+        let result =
+            collect_authenticated_batches(&mut provider, &infos[10], TEST_AUTH_ADDR, &mut cache)
+                .await
+                .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result.get(&commitment),
+            Some(&newer_caller),
+            "newest block's caller must win on duplicate commitments"
+        );
     }
 }
