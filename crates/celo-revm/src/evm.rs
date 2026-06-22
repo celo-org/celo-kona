@@ -29,12 +29,19 @@ where
     DB: Database,
 {
     pub fn new(ctx: CeloContext<DB>, inspector: INSP) -> Self {
+        // Derive the spec from the context, like upstream `OpEvm::new`, instead of hardcoding
+        // OSAKA instructions + ISTHMUS precompiles. This is a parity/future-proofing change with
+        // no behavior delta today: the production factory overrides precompiles per-block via
+        // `with_precompiles(celo_precompiles_map(spec))`, and EVM instruction static gas is
+        // identical for every spec >= BERLIN (Celo only runs post-Berlin). Reading the spec here
+        // keeps a directly-constructed `CeloEvm` correct without relying on those overrides.
+        let spec = *ctx.cfg().spec();
         Self {
             inner: OpEvm(Evm {
                 ctx,
                 inspector,
-                instruction: EthInstructions::new_mainnet_with_spec(Default::default()),
-                precompiles: CeloPrecompiles::default(),
+                instruction: EthInstructions::new_mainnet_with_spec(spec.into_eth_spec()),
+                precompiles: CeloPrecompiles::new_with_spec(spec),
                 frame_stack: FrameStack::new(),
             }),
             fee_currency_context: FeeCurrencyContext::default(),

@@ -346,6 +346,15 @@ impl Decodable for TxCip64 {
     }
 }
 
+/// Convert a [`TxCip64`] into a bare alloy [`TransactionRequest`].
+///
+/// **This drops `fee_currency`.** A [`TransactionRequest`] has no field to hold it, so the
+/// CIP-64 fee currency is structurally lost at this boundary: a transaction round-tripped
+/// through this conversion would rebuild and re-sign as a native-CELO transaction. It is
+/// intended only for read-only RPC convenience and still sets `transaction_type` to the CIP-64
+/// type byte so the shape stays recognizable. Do NOT use it on any path that re-signs or
+/// resubmits the transaction; use Celo's own `CeloTransactionRequest` when the fee currency
+/// must be preserved.
 impl From<TxCip64> for TransactionRequest {
     fn from(tx: TxCip64) -> Self {
         let ty = tx.ty();
@@ -374,6 +383,29 @@ impl From<TxCip64> for TransactionRequest {
             transaction_type: Some(ty),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod request_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn cip64_to_transaction_request_drops_fee_currency() {
+        // Characterizes an intentional, known limitation: the bare alloy `TransactionRequest`
+        // has no `fee_currency` field, so converting a CIP-64 tx through it loses the fee
+        // currency. The request is still typed CIP-64 and every other field round-trips;
+        // re-signing from it would yield a native-CELO tx. See the `From<TxCip64>` impl docs.
+        let tx = TxCip64 {
+            nonce: 7,
+            fee_currency: Some(Address::with_last_byte(0xFC)),
+            ..Default::default()
+        };
+        let req: TransactionRequest = tx.into();
+        // Typed as CIP-64 (0x7b) and canonical fields preserved...
+        assert_eq!(req.transaction_type, Some(CeloTxType::Cip64 as u8));
+        assert_eq!(req.nonce, Some(7));
+        // ...but the fee currency is structurally absent: `TransactionRequest` cannot carry it.
     }
 }
 

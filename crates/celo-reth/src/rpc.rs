@@ -856,8 +856,10 @@ impl CeloFeeApi {
                 .ok_or_else(|| rate_overflow_error("maxFeePerGas default"))?;
             let tip_fc =
                 FcU256::new(U256::from(request.as_ref().max_priority_fee_per_gas.unwrap_or(0)));
+            // 2x base-fee headroom, matching op-geth's setLondonFeeDefaults, so a filled tx
+            // survives a single 12.5% base-fee bump instead of going unincludable next block.
             request.as_mut().max_fee_per_gas = Some(fee_default_to_u128(
-                base_fee_fc.saturating_add(tip_fc).into_inner(),
+                base_fee_fc.saturating_add(base_fee_fc).saturating_add(tip_fc).into_inner(),
                 "maxFeePerGas",
             )?);
         }
@@ -1961,8 +1963,9 @@ mod tests {
     #[tokio::test]
     async fn fill_cip64_fee_defaults_converts_native_to_fc() {
         // Native gas_price=25 Gwei, priority_fee=1 Gwei, rate: num=2, denom=1.
-        // Expected: max_priority_fee = 1 Gwei * 2 = 2 Gwei.
-        //           max_fee = (25 Gwei * 2) + (1 Gwei * 2) = 52 Gwei.
+        // Expected: max_priority_fee = 1 Gwei * 2 (rate) = 2 Gwei.
+        //           max_fee = 2 * (25 Gwei * 2 [rate]) + (1 Gwei * 2 [rate]) = 102 Gwei
+        //           (op-geth setLondonFeeDefaults gives 2x base-fee headroom + tip).
         //
         // Note: block_by_number returns None → base_fee defaults to 0, so
         // max_fee = 0 + tip_fc. To test the base fee path properly we need
@@ -2015,8 +2018,9 @@ mod tests {
 
         api.fill_cip64_fee_defaults(&mut request).await.expect("should succeed");
 
-        let expected_tip_fc = priority_fee_native as u128 * 2;
-        let expected_max_fee_fc = (base_fee_native as u128 * 2) + expected_tip_fc;
+        let expected_tip_fc = priority_fee_native as u128 * 2; // native tip * rate
+        // 2x base-fee headroom (op-geth setLondonFeeDefaults): 2 * (base_fee * rate) + tip.
+        let expected_max_fee_fc = 2 * (base_fee_native as u128 * 2) + expected_tip_fc;
 
         assert_eq!(
             request.as_ref().max_priority_fee_per_gas,
@@ -2026,7 +2030,7 @@ mod tests {
         assert_eq!(
             request.as_ref().max_fee_per_gas,
             Some(expected_max_fee_fc),
-            "max fee should be (base_fee + tip) * rate"
+            "max fee should be 2 * base_fee_fc + tip_fc"
         );
     }
 

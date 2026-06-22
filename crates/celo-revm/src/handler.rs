@@ -219,6 +219,17 @@ where
             .checked_sub(base_fee_in_erc20)
             .expect("effective_gas_price >= base_fee_in_erc20 enforced by validate_env");
 
+        // EIP-8037 reservoir TODO (inert until an Amsterdam-equivalent OpSpecId
+        // activates; `gas().reservoir()` is always 0 before that): this CIP-64 credit
+        // split does not handle a non-zero reservoir. The debit prepaid the full
+        // `tx.gas_limit` (reservoir included), but `refund_in_erc20` below reimburses
+        // only `remaining + refunded` and omits the leftover `reservoir()`, so the user
+        // would be over-charged by `effective_gas_price * reservoir()`; the tip/base
+        // split is also metered on `spent_sub_refunded()` (regular-budget gas), not the
+        // true consumed gas. op-revm subtracts the reservoir in its native path, but only
+        // after resetting `Gas` to the full tx limit, so that formula does not port onto
+        // this frame's `Gas` (limit == regular budget). Rework the debit+credit accounting
+        // for reservoir>0 here when Amsterdam lands, with a credit conservation test.
         let tx_fee_tip_in_erc20 = FcU256::new(U256::from(
             tip_gas_price
                 .into_inner()
@@ -776,6 +787,15 @@ where
             ));
         };
 
+        // EIP-8037 reservoir TODO (inert until an Amsterdam-equivalent OpSpecId
+        // activates; `gas().used()` is reservoir-free before that): the caller refund
+        // (`reimburse_caller`) and the coinbase tip (`self.mainnet.reward_beneficiary`
+        // above) delegate to the mainnet handler and inherit its reservoir handling, but
+        // the celo-specific base-fee and operator-fee distribution below meters on raw
+        // `frame_result.gas().used()`. Once the reservoir can be non-zero, `used()` must
+        // be reservoir-adjusted (true consumed gas) here so the FeeHandler and operator-
+        // fee recipient are not paid on reserved-but-unused state gas. Fix alongside the
+        // CIP-64 credit TODO in `cip64_credit_fee_currency`.
         let l1_cost = l1_block_info.calculate_tx_l1_cost(enveloped_tx, spec);
         let operator_fee_cost = if spec.is_enabled_in(OpSpecId::ISTHMUS) {
             l1_block_info.operator_fee_charge(

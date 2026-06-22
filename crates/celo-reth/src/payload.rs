@@ -23,6 +23,23 @@ use std::collections::HashMap;
 /// explicitly configured. Matches op-geth's `DefaultFeeCurrencyLimit`.
 pub const DEFAULT_FEE_CURRENCY_LIMIT_FRACTION: f64 = 0.5;
 
+/// Parse and validate a fee-currency block-space fraction (the value of
+/// `--celo.feecurrency.default`).
+///
+/// Rejects non-finite and out-of-range values at parse time. The field is a plain `f64`, and
+/// the downstream cap is computed as `(block_gas_limit as f64 * fraction) as u64`. `clamp`
+/// would let `NaN` through and `NaN as u64 == 0`, silently zeroing the default cap so the
+/// sequencer drops every fee-currency tx not named in `--celo.feecurrency.limits`.
+/// `(0.0..=1.0).contains` is `false` for `NaN` (and infinities), so this rejects them.
+pub fn parse_fee_currency_fraction(s: &str) -> Result<f64, String> {
+    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a valid number"))?;
+    if (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("fee currency fraction must be in [0.0, 1.0], got `{s}`"))
+    }
+}
+
 /// Per-fee-currency block space limits.
 ///
 /// Each entry maps a fee currency address to the maximum fraction of block gas
@@ -329,6 +346,22 @@ mod tests {
             "0x765DE816845861e75A25fCA122bb6898B8B1282a=0.0,0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73=1.0",
         );
         assert_eq!(limits.len(), 2, "0.0 and 1.0 should both be accepted");
+    }
+
+    #[test]
+    fn parse_fraction_accepts_unit_interval() {
+        assert_eq!(parse_fee_currency_fraction("0.0").unwrap(), 0.0);
+        assert_eq!(parse_fee_currency_fraction("0.5").unwrap(), 0.5);
+        assert_eq!(parse_fee_currency_fraction("1.0").unwrap(), 1.0);
+    }
+
+    #[test]
+    fn parse_fraction_rejects_nan_inf_and_out_of_range() {
+        assert!(parse_fee_currency_fraction("NaN").is_err(), "NaN must be rejected");
+        assert!(parse_fee_currency_fraction("inf").is_err(), "infinity must be rejected");
+        assert!(parse_fee_currency_fraction("1.5").is_err(), "> 1.0 must be rejected");
+        assert!(parse_fee_currency_fraction("-0.1").is_err(), "< 0.0 must be rejected");
+        assert!(parse_fee_currency_fraction("abc").is_err(), "non-numeric must be rejected");
     }
 
     #[test]
