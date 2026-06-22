@@ -141,6 +141,7 @@ reth-basic-payload-builder.workspace = true
 [features]
 default = ["std"]
 std = [
+    "alloy-celo-evm/std",
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
