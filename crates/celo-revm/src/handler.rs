@@ -151,7 +151,7 @@ where
         let fee_currency_context = &evm.fee_currency_context;
         let base_fee_in_erc20 = fee_currency_context
             .celo_to_currency(fee_currency, NativeU256::new(U256::from(basefee)))
-            .map_err(InvalidTransaction::from)?;
+            .map_err(|e| InvalidTransaction::from(e.to_string()))?;
         // Narrow FcU256 → Fc. Downstream u128 gas-price multiplications saturate,
         // so a silent truncation here would mask only catastrophic on-chain rates —
         // we want a hard error instead.
@@ -170,7 +170,7 @@ where
         let fee_currency_context = &evm.fee_currency_context;
         let max_allowed_gas_cost = fee_currency_context
             .max_allowed_currency_intrinsic_gas_cost(fee_currency.unwrap())
-            .map_err(InvalidTransaction::from)?;
+            .map_err(|e| InvalidTransaction::from(e.to_string()))?;
         Ok(max_allowed_gas_cost)
     }
 
@@ -281,7 +281,7 @@ where
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
-            .map_err(InvalidTransaction::from)?;
+            .map_err(|e| InvalidTransaction::from(e.to_string()))?;
 
         // Log the gas summary for debugging and verification
         // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
@@ -415,7 +415,7 @@ where
             let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
-                .map_err(InvalidTransaction::from)?;
+                .map_err(|e| InvalidTransaction::from(e.to_string()))?;
             // Adding only in the initial gas, and not the floor because we never adapted the
             // eip7623 to the cip64 (discussions being taken)
             gas.initial_total_gas = gas

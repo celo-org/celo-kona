@@ -20,7 +20,7 @@ pub mod units;
 
 pub use api::{
     builder::CeloBuilder,
-    default_ctx::{CeloContext, DefaultCelo},
+    default_ctx::{CELO_DEFAULT_SPEC, CeloContext, DefaultCelo},
 };
 pub use evm::CeloEvm;
 pub use fee_currency_context::FeeCurrencyContext;

@@ -41,6 +41,7 @@ use reth_optimism_trie::{
     OpProofsStorage, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},
 };
+use reth_rpc_server_types::RethRpcModule;
 use reth_tasks::TaskExecutor;
 use reth_tracing::{FileWorkerGuard, Layers};
 use std::{ffi::OsString, sync::Arc, time::Duration};
@@ -547,7 +548,8 @@ where
     // Single consolidated extend_rpc_modules. Installs:
     //   1. proofs-history EthApiExt + DebugApiExt (override eth_getProof and the debug_* sidecar
     //      methods) — only when enabled
-    //   2. Celo gas / fee-history / tx / admin modules — always
+    //   2. Celo gas / fee-history / tx modules — always; admin module only on transports where the
+    //      `admin` namespace is enabled
     let handle = node_builder
         .extend_rpc_modules(move |ctx| {
             // 1. proofs-history RPC overrides (if enabled). Mirrors the OP launcher in
@@ -591,8 +593,16 @@ where
             let fee_history_module = celo_fee_history_module(fee_api);
             ctx.modules.replace_configured(fee_history_module)?;
 
+            // Celo admin (fee-currency blocklist) methods, gated per transport on the
+            // `admin` namespace via reth's own `merge_if_module_configured`: it installs
+            // the methods on http/ws/ipc only when that transport's configured selection
+            // contains `admin` (it checks `contains_http`/`contains_ws`/`contains_ipc`).
+            // The default selection is eth/net/web3, which excludes admin, so these
+            // blocklist mutators are not exposed unless the operator opts in — on every
+            // transport, IPC included. (`merge_configured` would instead install them on
+            // all transports unconditionally, which is the exposure we are avoiding.)
             let admin_module = celo_admin_module(blocklist);
-            ctx.modules.merge_configured(admin_module)?;
+            ctx.modules.merge_if_module_configured(RethRpcModule::Admin, admin_module)?;
             Ok(())
         })
         .launch_with_debug_capabilities()

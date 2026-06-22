@@ -31,9 +31,15 @@ celo-revm = { workspace = true, features = ["alloy-op-evm"] }
 spin.workspace = true
 tracing.workspace = true
 
+# Optional: metrics are only emitted on the std (node) build; the no-std FPVM
+# build does not record them.
+metrics = { workspace = true, optional = true }
+
 [dev-dependencies]
 # Tests exercise RPC-simulation paths that need to disable the base-fee check.
 revm = { workspace = true, features = ["optional_no_base_fee"] }
+# Test-only: a local recorder to assert the std-only skip metric is emitted.
+metrics-util = "0.20"
 
 [features]
 default = ["std"]
@@ -44,7 +50,8 @@ std = [
     "op-revm/std",
     "alloy-consensus/std",
     "alloy-eips/std",
-    "op-alloy-consensus/std"
+    "op-alloy-consensus/std",
+    "dep:metrics",
 ]
 # Enables accumulation of every `Cip64ReceiptData` in `Cip64Storage::all_entries`,
 # intended purely for post-execution inspection in tests. Leaving this on in

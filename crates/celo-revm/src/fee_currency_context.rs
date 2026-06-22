@@ -1,5 +1,6 @@
 use crate::{
     CeloContext, CeloEvm,
+    constants::FEE_CURRENCY_NOT_REGISTERED_PREFIX,
     contracts::core_contracts::get_currency_info,
     units::{FcU256, NativeU256},
 };
@@ -12,7 +13,30 @@ use revm::{
     primitives::{Address, U256},
 };
 
-use std::{format, string::String};
+/// Error returned by [`FeeCurrencyContext`] lookups.
+///
+/// Typed on the producer side. It is flattened to a string at the revm boundary
+/// (`InvalidTransaction::from(err.to_string())`) because revm's `InvalidTransaction`
+/// and op-revm's `OpTransactionError` are closed enums with no Celo variant, so a
+/// fully-typed error cannot cross that boundary without forking op-revm. The
+/// `Display` text carries [`FEE_CURRENCY_NOT_REGISTERED_PREFIX`] so the EVM layer
+/// can still classify it (see `alloy-celo-evm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeCurrencyError {
+    /// The fee currency is not present in the per-block fee-currency context
+    /// (its directory config could not be read, so it was dropped while loading).
+    NotRegistered(Address),
+}
+
+impl core::fmt::Display for FeeCurrencyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotRegistered(addr) => {
+                write!(f, "{FEE_CURRENCY_NOT_REGISTERED_PREFIX}: {addr}")
+            }
+        }
+    }
+}
 
 /// Complete fee currency information for a registered currency.
 /// Both exchange rate and intrinsic gas are required - partial data is rejected.
@@ -53,7 +77,10 @@ impl FeeCurrencyContext {
         FeeCurrencyContext::new(currencies, Some(current_block_number))
     }
 
-    pub fn currency_intrinsic_gas_cost(&self, currency: Option<Address>) -> Result<u64, String> {
+    pub fn currency_intrinsic_gas_cost(
+        &self,
+        currency: Option<Address>,
+    ) -> Result<u64, FeeCurrencyError> {
         if currency.is_none_or(|currency| currency == Address::ZERO) {
             return Ok(0);
         }
@@ -61,7 +88,7 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
             Some(info) => Ok(info.intrinsic_gas),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
         }
     }
 
@@ -72,7 +99,7 @@ impl FeeCurrencyContext {
     pub fn max_allowed_currency_intrinsic_gas_cost(
         &self,
         currency: Address,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, FeeCurrencyError> {
         self.currency_intrinsic_gas_cost(Some(currency))
             .map(|cost| cost.saturating_mul(3))
     }
@@ -80,7 +107,7 @@ impl FeeCurrencyContext {
     pub fn currency_exchange_rate(
         &self,
         currency: Option<Address>,
-    ) -> Result<(U256, U256), String> {
+    ) -> Result<(U256, U256), FeeCurrencyError> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok((U256::ONE, U256::ONE));
         }
@@ -88,7 +115,7 @@ impl FeeCurrencyContext {
         let currency_addr = currency.unwrap();
         match self.currencies.get(&currency_addr) {
             Some(info) => Ok(info.exchange_rate),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
         }
     }
 
@@ -103,7 +130,7 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
         amount: NativeU256,
-    ) -> Result<FcU256, String> {
+    ) -> Result<FcU256, FeeCurrencyError> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok(FcU256::new(amount.into_inner()));
         }
@@ -113,7 +140,7 @@ impl FeeCurrencyContext {
             Some(info) => Ok(FcU256::new(
                 amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
             )),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
         }
     }
 
@@ -123,7 +150,7 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
         amount: FcU256,
-    ) -> Result<NativeU256, String> {
+    ) -> Result<NativeU256, FeeCurrencyError> {
         if currency.is_none() || currency.unwrap() == Address::ZERO {
             return Ok(NativeU256::new(amount.into_inner()));
         }
@@ -133,7 +160,7 @@ impl FeeCurrencyContext {
             Some(info) => Ok(NativeU256::new(
                 amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
             )),
-            None => Err(format!("fee currency not registered: {currency_addr}")),
+            None => Err(FeeCurrencyError::NotRegistered(currency_addr)),
         }
     }
 }

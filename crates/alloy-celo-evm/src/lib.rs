@@ -17,7 +17,9 @@ use alloy_op_evm::{
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
-    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX},
+    constants::{
+        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_DEBIT_ERROR_PREFIX,
+    },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
 use core::{
@@ -328,20 +330,46 @@ where
                 }
             }
             Err(e) if apply_blocklist && fee_currency.is_some() => {
-                // Only blocklist when the error is a fee-currency debit/credit failure,
-                // not for unrelated validation errors (nonce, gas limit, etc.) that
-                // happen to involve a CIP-64 tx.
+                // Classify why this CIP-64 tx failed during block building. Only a
+                // fee-currency debit/credit failure should blocklist the currency, not
+                // unrelated validation errors (nonce, gas limit, etc.) that happen to
+                // involve a CIP-64 tx.
+                //
+                // Classification is by error-message prefix, not by matching a typed
+                // variant: the celo-revm errors are typed at the source (e.g.
+                // `FeeCurrencyError`, the FEE_DEBIT/CREDIT prefixes), but they reach here
+                // flattened into op-revm's `OpTransactionError` / revm's
+                // `InvalidTransaction` — closed enums with no Celo variant — so the only
+                // signal that survives the boundary is the Display string.
+                let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
-                    let fc = fee_currency.unwrap();
                     tracing::warn!(
                         target: "celo",
                         "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
                     );
                     let block_timestamp: u64 = self.ctx().block.timestamp.to();
                     self.blocklist.block_currency(fc, block_timestamp);
+                } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
+                    // The fee currency is not in the per-block fee-currency context: its
+                    // directory config could not be read, so it was dropped while loading
+                    // (see `celo_revm::contracts::core_contracts::get_currency_info`). The
+                    // tx is excluded from the block. This is otherwise silent — it fails
+                    // before debit/credit, so the blocklist branch above never logs it —
+                    // so surface it here as both a log and a metric.
+                    tracing::warn!(
+                        target: "celo",
+                        "CIP-64 tx excluded from block: fee currency {fc} is not loaded in the \
+                         per-block fee-currency context ({e})"
+                    );
+                    #[cfg(feature = "std")]
+                    metrics::counter!(
+                        "celo_payload_skipped_total",
+                        "reason" => "fee_currency_not_registered"
+                    )
+                    .increment(1);
                 }
             }
             _ => {}
@@ -683,6 +711,59 @@ mod tests {
         let result = evm.transact_raw(tx);
         assert!(result.is_err(), "Expected tx to fail");
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
+    }
+
+    /// A CIP-64 tx in a fee currency missing from the per-block context fails
+    /// before debit/credit, so the blocklist branch never logs it — `transact_raw`
+    /// must instead classify it via `FEE_CURRENCY_NOT_REGISTERED_PREFIX` and meter
+    /// it as `celo_payload_skipped_total{reason=fee_currency_not_registered}`.
+    /// This drives the real path: the empty fee-currency context genuinely produces
+    /// the typed `NotRegistered` error, flattened to a string carrying the prefix
+    /// the classifier matches on — not a mocked error.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_unregistered_fee_currency_is_metered_not_blocklisted() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let fc = Address::with_last_byte(0xCD);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        let err_msg = metrics::with_local_recorder(&recorder, || {
+            let mut evm = make_test_evm(blocklist.clone());
+            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            evm.ctx_mut().block.basefee = 1_000_000_000;
+            let result = evm.transact_raw(make_cip64_tx(fc));
+            format!("{:?}", result.expect_err("unregistered fee currency must fail"))
+        });
+
+        // Real classification signal: the tx genuinely took the NotRegistered path.
+        assert!(
+            err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX),
+            "expected the not-registered prefix in the error, got: {err_msg}"
+        );
+        // NotRegistered is not a debit/credit failure, so it must not blocklist.
+        assert!(!blocklist.is_blocked(fc), "unregistered currency must not be blocklisted");
+
+        // ...and it must have incremented the skip counter with the right reason label.
+        let skipped: u64 = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(ck, _, _, _)| {
+                ck.key().name() == "celo_payload_skipped_total"
+                    && ck
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "reason" && l.value() == "fee_currency_not_registered")
+            })
+            .map(|(_, _, _, v)| match v {
+                DebugValue::Counter(c) => c,
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
     }
 
     /// Verify that RPC simulation paths (eth_call / eth_estimateGas / debug_trace*)

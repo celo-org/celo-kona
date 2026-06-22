@@ -18,8 +18,8 @@ extern crate alloc;
 use {
     clap as _, futures_util as _, reth_cli_runner as _, reth_cli_util as _, reth_db as _,
     reth_node_metrics as _, reth_optimism_cli as _, reth_optimism_exex as _,
-    reth_optimism_trie as _, reth_provider as _, reth_tasks as _, reth_tracing as _,
-    reth_transaction_pool as _, tracing as _,
+    reth_optimism_trie as _, reth_provider as _, reth_rpc_server_types as _, reth_tasks as _,
+    reth_tracing as _, reth_transaction_pool as _, tracing as _,
 };
 
 use alloc::sync::Arc;

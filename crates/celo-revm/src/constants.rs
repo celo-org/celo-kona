@@ -12,6 +12,13 @@ pub const FEE_DEBIT_ERROR_PREFIX: &str = "Failed to debit gas fees";
 /// Error message prefix for CIP-64 fee currency credit failures.
 pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 
+/// Error message prefix used when a CIP-64 transaction's fee currency is not
+/// present in the per-block fee-currency context (the directory read failed, or
+/// the currency was dropped while loading). It surfaces as an
+/// `InvalidTransaction`, which excludes the transaction from the block. The EVM
+/// layer matches this prefix to log and meter the otherwise-silent exclusion.
+pub const FEE_CURRENCY_NOT_REGISTERED_PREFIX: &str = "fee currency not registered";
+
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///
 /// Applied as `max(computed_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR)` for blocks before
