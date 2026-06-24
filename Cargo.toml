@@ -216,9 +216,9 @@ reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", 
 # `sp1-bn` swaps the arkworks verifier for one built on the sp1 `bn` precompile,
 # cutting KZG batch verification ~74% on the zkVM proving path. Bump to the merged
 # commit once celo-org/hokulea#2 lands.
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "77d209d8938e65faf555d1b1762e42a7e3e4af5e", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "77d209d8938e65faf555d1b1762e42a7e3e4af5e", default-features = false, features = ["sp1-bn"] }
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "77d209d8938e65faf555d1b1762e42a7e3e4af5e", default-features = false }
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false, features = ["sp1-bn"] }
+hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }

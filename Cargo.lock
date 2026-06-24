@@ -2050,7 +2050,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -2059,7 +2059,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-genesis 1.8.3",
  "alloy-primitives",
@@ -2075,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -3527,7 +3527,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -4484,7 +4484,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-evm 0.34.0",
@@ -4506,7 +4506,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-evm 0.34.0",
  "alloy-op-evm",
@@ -4527,7 +4527,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -4543,7 +4543,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-op-evm",
  "alloy-primitives",
@@ -4571,7 +4571,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -4590,7 +4590,7 @@ dependencies = [
 [[package]]
 name = "hokulea-sp1-bn-verifier"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/hokulea?rev=77d209d8938e65faf555d1b1762e42a7e3e4af5e#77d209d8938e65faf555d1b1762e42a7e3e4af5e"
+source = "git+https://github.com/celo-org/hokulea?rev=a57a866dd35b06e1e0565b226641c658001272bb#a57a866dd35b06e1e0565b226641c658001272bb"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
