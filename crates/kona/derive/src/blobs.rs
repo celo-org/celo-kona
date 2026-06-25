@@ -1,9 +1,9 @@
 //! Celo Blob Data Source with Espresso event-based batch authentication.
 //!
 //! Duplicated from kona's `BlobSource` (celo-kona wraps upstream kona instead of patching it)
-//! with the batch-authentication branch from celo-org/optimism#449 folded in. Pre-fork behaviour
-//! is byte-identical to upstream; post-fork, batches are authorized by `BatchInfoAuthenticated`
-//! events instead of by transaction sender.
+//! with the batch-authentication branch from celo-org/optimism#449 folded in. Pre-Espresso
+//! behaviour is byte-identical to upstream; post-Espresso, batches are authorized by
+//! `BatchInfoAuthenticated` events instead of by transaction sender.
 
 use crate::{
     batch_auth::{
@@ -175,9 +175,10 @@ where
             .await
             .map_err(Into::into)?;
 
-        // Only scan for authenticating events when the fork is active. Pre-fork (or fork not yet
-        // active) the lookback walk is bypassed entirely so derivation is byte-identical to
-        // upstream OP Stack (the BatchAuthenticator events are still emitted on L1 but ignored).
+        // Only scan for authenticating events when Espresso is active. Pre-Espresso (or Espresso
+        // not yet active) the lookback walk is bypassed entirely so derivation is
+        // byte-identical to upstream OP Stack (the BatchAuthenticator events are still
+        // emitted on L1 but ignored).
         let espresso_active =
             self.batch_auth_config.is_some_and(|c| c.is_active(block_ref.timestamp));
         let authenticated_hashes: Option<BTreeMap<B256, Address>> = if espresso_active {
@@ -483,20 +484,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pre_fork_sender_path() {
+    async fn test_pre_espresso_sender_path() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let mut source = default_source();
         source.batcher_address = batch_inbox;
         let tx = test_legacy_tx(batch_inbox);
         let block_info = BlockInfo::default();
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
-        // Pre-fork: a calldata-carrying tx from the batcher is accepted.
+        // Pre-Espresso: a calldata-carrying tx from the batcher is accepted.
         source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
         assert_eq!(source.data.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_post_fork_event_path() {
+    async fn test_post_espresso_event_path() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -528,13 +529,13 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
 
-        // Post-fork: commitment authenticated and tx sender matches authenticating caller.
+        // Post-Espresso: commitment authenticated and tx sender matches authenticating caller.
         source.load_blobs(&block_info, Address::ZERO).await.unwrap();
         assert_eq!(source.data.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_post_fork_caller_mismatch_rejected() {
+    async fn test_post_espresso_caller_mismatch_rejected() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -565,13 +566,13 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
 
-        // Post-fork: commitment authenticated but tx sender != authenticating caller: rejected.
+        // Post-Espresso: commitment authenticated but tx sender != authenticating caller: rejected.
         source.load_blobs(&block_info, Address::ZERO).await.unwrap();
         assert!(source.data.is_empty());
     }
 
     #[tokio::test]
-    async fn test_post_fork_no_event_rejected() {
+    async fn test_post_espresso_no_event_rejected() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -606,7 +607,7 @@ mod tests {
         let block_info = BlockInfo::default(); // timestamp 0 < espresso_time 1000
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
 
-        // Sender matches: accepted via the pre-fork path.
+        // Sender matches: accepted via the pre-Espresso path.
         source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
         assert_eq!(source.data.len(), 1);
     }

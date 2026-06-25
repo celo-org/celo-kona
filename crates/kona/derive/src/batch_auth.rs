@@ -11,10 +11,10 @@
 //! on the L1 origin time of the block being scanned — mirroring the upstream `ecotoneTime`
 //! precedent.
 //!
-//! - **Pre-fork (or fork unset):** the pipeline runs vanilla OP Stack semantics. A batch is
+//! - **Pre-Espresso (or Espresso unset):** the pipeline runs vanilla OP Stack semantics. A batch is
 //!   authorized iff its sender matches `batcher_address`. The `BatchAuthenticator` event lookback
 //!   is bypassed entirely.
-//! - **Post-fork:** a batch is authorized iff its commitment hash was authenticated by a
+//! - **Post-Espresso:** a batch is authorized iff its commitment hash was authenticated by a
 //!   `BatchInfoAuthenticated(bytes32 commitment, address indexed caller)` event emitted by the
 //!   configured `BatchAuthenticator` contract within the lookback window AND the batch
 //!   transaction's recovered L1 sender equals the `caller` that emitted that event. This
@@ -238,16 +238,16 @@ impl BatchAuthCache {
 /// Behaviour is gated by `auth_config` together with `l1_origin_time` (the L1 origin time of the
 /// block being scanned):
 ///
-/// - **Pre-fork / vanilla OP Stack** — `auth_config` is `None`, or it is `Some` but the fork is not
-///   yet active at `l1_origin_time` ([`BatchAuthConfig::is_active`] is false): authorized iff the
-///   transaction sender matches `batcher_address`. `authenticated_hashes` is ignored.
-/// - **Post-fork** — `auth_config` is `Some` and active: authorized iff `batch_hash` is present in
-///   `authenticated_hashes` AND the transaction's recovered L1 sender equals the `caller` that
+/// - **Pre-Espresso / vanilla OP Stack** — `auth_config` is `None`, or it is `Some` but the fork is
+///   not yet active at `l1_origin_time` ([`BatchAuthConfig::is_active`] is false): authorized iff
+///   the transaction sender matches `batcher_address`. `authenticated_hashes` is ignored.
+/// - **Post-Espresso** — `auth_config` is `Some` and active: authorized iff `batch_hash` is present
+///   in `authenticated_hashes` AND the transaction's recovered L1 sender equals the `caller` that
 ///   authenticated that commitment. This caller-binding prevents one batcher from replaying a batch
 ///   authenticated by another.
 ///
-/// Because the fork time lives inside [`BatchAuthConfig`], the post-fork (caller-bound) branch is
-/// only reachable when an authenticator is configured — the "fork active but no authenticator"
+/// Because the fork time lives inside [`BatchAuthConfig`], the post-Espresso (caller-bound) branch
+/// is only reachable when an authenticator is configured — the "fork active but no authenticator"
 /// state is unrepresentable.
 ///
 /// If the gap between the authentication transaction and the batch data exceeds the configured
@@ -264,15 +264,15 @@ pub fn is_batch_authorized(
     if let Some(config) = auth_config &&
         config.is_active(l1_origin_time)
     {
-        // Post-fork: the commitment must be authenticated AND the recovered batch tx sender must
-        // equal the `caller` that emitted the authenticating event. Sender-based fallback is
-        // rejected.
+        // Post-Espresso: the commitment must be authenticated AND the recovered batch tx sender
+        // must equal the `caller` that emitted the authenticating event. Sender-based
+        // fallback is rejected.
         let Some(&caller) = authenticated_hashes.get(&batch_hash) else {
             return false;
         };
         return tx.recover_signer().map(|sender| sender == caller).unwrap_or(false);
     }
-    // Pre-fork (or fork not yet active): vanilla OP Stack sender verification.
+    // Pre-Espresso (or Espresso not yet active): vanilla OP Stack sender verification.
     tx.recover_signer().map(|sender| sender == batcher_address).unwrap_or(false)
 }
 
@@ -404,11 +404,11 @@ mod tests {
         BatchAuthConfig { authenticator_address, espresso_time: 0 }
     }
 
-    // L1 origin time used as "post-fork" for an `active_config` (espresso_time = 0).
-    const POST_FORK_TIME: u64 = 0;
+    // L1 origin time used as "post-Espresso" for an `active_config` (espresso_time = 0).
+    const POST_ESPRESSO_TIME: u64 = 0;
 
     #[test]
-    fn test_is_batch_authorized_post_fork_matching_caller_accepted() {
+    fn test_is_batch_authorized_post_espresso_matching_caller_accepted() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
@@ -419,19 +419,20 @@ mod tests {
         // The commitment was authenticated by the tx's own sender.
         authenticated.insert(batch_hash, sender);
 
-        // Post-fork, commitment authenticated and tx sender == authenticating caller: authorized.
+        // Post-Espresso, commitment authenticated and tx sender == authenticating caller:
+        // authorized.
         assert!(is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_FORK_TIME,
+            POST_ESPRESSO_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_fork_caller_mismatch_rejected() {
+    fn test_is_batch_authorized_post_espresso_caller_mismatch_rejected() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
@@ -442,39 +443,39 @@ mod tests {
         // The commitment is authenticated, but by a different caller than the tx sender.
         authenticated.insert(batch_hash, other_caller);
 
-        // Post-fork, commitment authenticated but tx sender != authenticating caller: rejected.
+        // Post-Espresso, commitment authenticated but tx sender != authenticating caller: rejected.
         assert!(!is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_FORK_TIME,
+            POST_ESPRESSO_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_fork_no_event_rejected() {
+    fn test_is_batch_authorized_post_espresso_no_event_rejected() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
         let authenticated = BTreeMap::new(); // empty
 
         let tx = test_legacy_tx(Address::ZERO);
-        // Post-fork, commitment absent: rejected even for an empty map.
+        // Post-Espresso, commitment absent: rejected even for an empty map.
         assert!(!is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_FORK_TIME,
+            POST_ESPRESSO_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_fork_sender_fallback_rejected() {
-        // Even when sender matches batcher_address, post-fork requires an authenticating event
+    fn test_is_batch_authorized_post_espresso_sender_fallback_rejected() {
+        // Even when sender matches batcher_address, post-Espresso requires an authenticating event
         // for the commitment.
         let batch_hash = B256::ZERO;
         let authenticated = BTreeMap::new();
@@ -490,12 +491,12 @@ mod tests {
             Some(&config),
             &authenticated,
             sender,
-            POST_FORK_TIME,
+            POST_ESPRESSO_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_pre_fork_vanilla_sender_path() {
+    fn test_is_batch_authorized_pre_espresso_vanilla_sender_path() {
         let batch_hash = B256::ZERO;
         let authenticated = BTreeMap::new();
 
@@ -527,7 +528,7 @@ mod tests {
         let sender = tx.recover_signer().unwrap();
         authenticated.insert(batch_hash, sender);
         let wrong_addr = address!("0000000000000000000000000000000000000001");
-        let pre_fork_time = 999; // < espresso_time
+        let pre_espresso_time = 999; // < espresso_time
 
         // Sender mismatch: even with an event present, we reject (event path is gated off).
         assert!(!is_batch_authorized(
@@ -536,16 +537,16 @@ mod tests {
             Some(&config),
             &authenticated,
             wrong_addr,
-            pre_fork_time,
+            pre_espresso_time,
         ));
-        // Sender match: authorized via the pre-fork path.
+        // Sender match: authorized via the pre-Espresso path.
         assert!(is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             sender,
-            pre_fork_time,
+            pre_espresso_time,
         ));
     }
 
