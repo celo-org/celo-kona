@@ -24,9 +24,6 @@ pub use batch_auth::{
 mod blob_data;
 pub use blob_data::CeloBlobData;
 
-mod calldata;
-pub use calldata::CeloCalldataSource;
-
 mod blobs;
 pub use blobs::CeloBlobSource;
 

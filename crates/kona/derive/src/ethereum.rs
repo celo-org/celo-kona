@@ -1,17 +1,23 @@
 //! Contains the [`CeloEthereumDataSource`], a Celo-specific [`DataAvailabilityProvider`] that
-//! mirrors kona's `EthereumDataSource` but routes through the Espresso-aware
-//! [`CeloCalldataSource`] / [`CeloBlobSource`].
+//! mirrors kona's `EthereumDataSource` but routes through the Espresso-aware [`CeloBlobSource`].
 //!
 //! celo-kona wraps upstream kona instead of patching it at source, so this factory duplicates the
 //! ecotone calldata/blob dispatch from kona's `EthereumDataSource` while threading the Espresso
-//! batch-authentication configuration (from celo-org/optimism#449) into the inner sources.
+//! batch-authentication configuration (from celo-org/optimism#449) into the blob source.
+//!
+//! The pre-ecotone calldata path uses upstream kona's [`CalldataSource`] verbatim. Ecotone is
+//! active from the L2 transition (`ecotone_time = 0`) on every Celo chain, and Espresso activates
+//! strictly later, so the calldata path is never reached on a real Celo chain and carries no
+//! Espresso-specific behaviour.
 
-use crate::{batch_auth::BatchAuthConfig, blobs::CeloBlobSource, calldata::CeloCalldataSource};
+use crate::{batch_auth::BatchAuthConfig, blobs::CeloBlobSource};
 use alloc::{boxed::Box, fmt::Debug};
 use alloy_primitives::{Address, Bytes};
 use async_trait::async_trait;
 use celo_genesis::{CeloEspressoConfigError, CeloRollupConfig};
-use kona_derive::{BlobProvider, ChainProvider, DataAvailabilityProvider, PipelineResult};
+use kona_derive::{
+    BlobProvider, CalldataSource, ChainProvider, DataAvailabilityProvider, PipelineResult,
+};
 use kona_protocol::BlockInfo;
 
 /// A factory for creating a Celo-aware Ethereum data source provider.
@@ -26,7 +32,7 @@ where
     /// The blob source.
     pub blob_source: CeloBlobSource<C, B>,
     /// The calldata source.
-    pub calldata_source: CeloCalldataSource<C>,
+    pub calldata_source: CalldataSource<C>,
 }
 
 impl<C, B> CeloEthereumDataSource<C, B>
@@ -37,7 +43,7 @@ where
     /// Instantiates a new [`CeloEthereumDataSource`] from its inner sources.
     pub const fn new(
         blob_source: CeloBlobSource<C, B>,
-        calldata_source: CeloCalldataSource<C>,
+        calldata_source: CalldataSource<C>,
         ecotone_timestamp: Option<u64>,
     ) -> Self {
         Self { ecotone_timestamp, blob_source, calldata_source }
@@ -69,10 +75,9 @@ where
                 cfg.op_rollup_config.batch_inbox_address,
                 batch_auth_config,
             ),
-            calldata_source: CeloCalldataSource::new(
+            calldata_source: CalldataSource::new(
                 provider,
                 cfg.op_rollup_config.batch_inbox_address,
-                batch_auth_config,
             ),
         })
     }
@@ -122,7 +127,6 @@ mod tests {
             &cfg,
         )
         .unwrap();
-        assert!(ds.calldata_source.batch_auth_config.is_none());
         assert!(ds.blob_source.batch_auth_config.is_none());
     }
 
@@ -139,13 +143,12 @@ mod tests {
             &cfg,
         )
         .unwrap();
-        let calldata_cfg = ds.calldata_source.batch_auth_config.expect("batch auth config present");
+        let blob_cfg = ds.blob_source.batch_auth_config.expect("batch auth config present");
         assert_eq!(
-            calldata_cfg.authenticator_address,
+            blob_cfg.authenticator_address,
             address!("00000000000000000000000000000000000000aa")
         );
-        assert_eq!(calldata_cfg.espresso_time, 42);
-        assert!(ds.blob_source.batch_auth_config.is_some());
+        assert_eq!(blob_cfg.espresso_time, 42);
     }
 
     #[test]
