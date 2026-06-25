@@ -322,6 +322,14 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_calldata_batch_hash_empty() {
+        // Empty calldata must hash to keccak256("") — the contract's calldata path and an empty
+        // input produce the same digest on both sides.
+        let hash = compute_calldata_batch_hash(&[]);
+        assert_eq!(hash, keccak256([]));
+    }
+
+    #[test]
     fn test_compute_blob_batch_hash() {
         let h1 = b256!("0000000000000000000000000000000000000000000000000000000000000001");
         let h2 = b256!("0000000000000000000000000000000000000000000000000000000000000002");
@@ -331,6 +339,15 @@ mod tests {
         expected_input.extend_from_slice(h1.as_slice());
         expected_input.extend_from_slice(h2.as_slice());
         assert_eq!(hash, keccak256(&expected_input));
+    }
+
+    #[test]
+    fn test_compute_blob_batch_hash_single() {
+        // A single blob hash must hash to keccak256 of that hash's bytes, i.e. concatenation is a
+        // no-op for one element.
+        let h = b256!("0000000000000000000000000000000000000000000000000000000000abcdef");
+        let hash = compute_blob_batch_hash(&[h]);
+        assert_eq!(hash, keccak256(h.as_slice()));
     }
 
     #[test]
