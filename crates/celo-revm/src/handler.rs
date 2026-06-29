@@ -2043,4 +2043,308 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // A CIP-64 tx rejected by a state check (here: nonce-too-low) must commit no ERC20
+    // fee debit.
+    //
+    // `cip64_validate_erc20_and_debit_gas_fees` debits the ERC20 gas fee via a system
+    // sub-transaction that *commits* (clearing its entries from the revert log, so the
+    // debit cannot be rolled back). It therefore runs only *after* the nonce / EIP-3607
+    // / native value-balance checks in `validate_against_state_and_deduct_caller`, so a
+    // tx rejected by one of those checks is skipped having charged nothing.
+    //
+    // Were the debit to run before a rejection check, a skipped tx would still have
+    // committed its debit. In a block builder — which reuses one journal across the
+    // block, skips the invalid tx, and finalizes once — that debit would leak into the
+    // sealed block; a validator re-executing only the *included* txs never applies it,
+    // so the fee-currency balance (hence the state root) would diverge: a consensus
+    // split. This test rejects a nonce-too-low CIP-64 tx and asserts nothing is debited.
+    #[test]
+    fn rejected_cip64_tx_does_not_persist_fee_debit() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // Advance the sender's on-chain nonce to 1 so a tx with nonce 0 is rejected as
+        // nonce-too-low. (The helper gives the sender 1 CELO at nonce 0; we only bump
+        // the nonce.)
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0; // on-chain nonce is 1 → NonceTooLow, after the debit
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            })
+            .build_celo();
+
+        // Mirror the builder: run the (rejected) tx through the handler, then
+        // finalize the journal (the builder reuses one journal across the block
+        // and finalizes once).
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .run(&mut evm)
+            .expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs before the debit), got: {err_str}"
+        );
+
+        let state = evm.finalize();
+
+        // `_balances[sender]` lives at slot keccak256(abi.encode(sender, 0)) in the
+        // fee currency contract (Solidity mapping in slot 0).
+        let balance_slot = {
+            let mut buf = [0u8; 64];
+            buf[12..32].copy_from_slice(sender.as_slice());
+            U256::from_be_bytes(keccak256(buf).0)
+        };
+        // If the debit never ran — the tx was rejected before reaching it — the slot
+        // is absent from the post-state and the balance is unchanged.
+        let final_balance = state
+            .get(&TEST_FEE_CURRENCY)
+            .and_then(|acct| acct.storage.get(&balance_slot))
+            .map(|slot| slot.present_value)
+            .unwrap_or(fc_balance);
+
+        assert_eq!(
+            final_balance, fc_balance,
+            "rejected CIP-64 tx leaked an ERC20 fee debit into the block \
+             (balance {final_balance} != original {fc_balance}); the fee debit must \
+             run only after all rejection checks so a skipped tx charges nothing"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Invariant guard: a CIP-64 tx whose ERC20 `debitGasFees` reverts must leave the
+    // caller untouched (no committed nonce bump).
+    //
+    // The debit runs as a system sub-transaction that *commits* (`commit_tx`), which
+    // clears its entries from the revert log so `discard_tx` can no longer roll them
+    // back. The handler therefore relies on an ordering invariant: the debit runs
+    // *after* every rejection check and *before* the only committable caller mutations
+    // (`set_balance` / `bump_nonce`), so a reverting debit short-circuits before the
+    // caller is mutated. This test pins that invariant — it fails if a future change
+    // ever moves `bump_nonce` ahead of the debit, letting a reverting debit commit it.
+    //
+    // Driven through the bare handler (`handler.run` + a manual `finalize`) — the
+    // worst case, which (unlike the production `transact` entry point) does not rely
+    // on the journal being discarded on the error path.
+    #[test]
+    fn rejected_cip64_tx_does_not_persist_nonce_bump_on_debit_failure() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        // Fee-currency balance far too small to cover gas → `debitGasFees` reverts
+        // (Solidity panic on the `_balances[from] -= value` underflow). The sender
+        // still has plenty of native CELO and a valid nonce, so the tx passes every
+        // rejection check and reaches the debit.
+        let mut db = make_celo_test_db_with_fee_currency(sender, U256::from(100u64));
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 0,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            })
+            .build_celo();
+
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .run(&mut evm)
+            .expect_err("a CIP-64 tx whose fee debit reverts must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains(FEE_DEBIT_ERROR_PREFIX),
+            "tx must be rejected by the fee debit (which runs after the nonce/value \
+             checks), got: {err_str}"
+        );
+
+        let state = evm.finalize();
+
+        // The sender's nonce must be untouched: the debit reverted, so the tx is
+        // skipped and must bump nothing. The debit runs before `set_balance` /
+        // `bump_nonce`, so a debit failure short-circuits before the caller is ever
+        // mutated. (Were `bump_nonce` to run ahead of the debit, the debit's
+        // `commit_tx` would commit it and this assertion would catch the leak.)
+        let sender_nonce = state.get(&sender).map(|acct| acct.info.nonce).unwrap_or(0);
+        assert_eq!(
+            sender_nonce, 0,
+            "rejected CIP-64 tx (fee debit reverted) leaked a nonce bump into the block \
+             (nonce {sender_nonce} != 0); the debit must run before the caller mutations \
+             so a rejected tx mutates nothing"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Companion to `rejected_cip64_tx_does_not_persist_fee_debit`.
+    //
+    // That test drives the bare handler (`handler.run` + a manual `finalize`) — the
+    // worst case, in which the handler *in isolation* does not discard a rejected tx's
+    // journal, so any state the rejected tx committed (such as an ERC20 fee debit
+    // committed via `commit_tx`) persists into the block.
+    //
+    // This test pins down what the *production* entry point does with the same
+    // rejected tx. The sequencer and the import/derivation executor both drive every
+    // tx through `ExecuteEvm::transact` (alloy-op-evm's block executor calls
+    // `self.evm.transact(tx)`, and `CeloEvm::transact_raw` forwards to
+    // `self.inner.transact(tx)`). `transact` calls `finalize()` unconditionally and
+    // only *then* propagates the error, so a rejected tx's journal — including that
+    // nonce bump — is reset before the next tx and never reaches the sealed bundle.
+    //
+    // The test builds a two-tx "block": tx1 (sender_a) is rejected because its
+    // fee-currency balance can't cover gas; tx2 (sender_b) is valid. The "sealed
+    // bundle" is the union of the *successful* txs' states, exactly the ones the
+    // builder commits. It asserts the rejected sender contributes nothing — which
+    // fails if `transact` ever stops discarding a rejected tx's journal (the leaked
+    // nonce bump would surface in the next tx's finalized state).
+    #[test]
+    fn rejected_cip64_tx_contributes_zero_state_via_transact() {
+        let sender_a = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // underfunded → rejected
+        let sender_b = address!("0xcccccccccccccccccccccccccccccccccccccccc"); // funded → included
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        // Deploy the fee currency + directory + oracle and fund sender_b richly. (The
+        // helper also sets `_totalSupply` to this value, which must be large enough
+        // that sender_b's debit doesn't underflow it.)
+        let fc_rich = U256::from(1_000_000_000_000u128);
+        let mut db = make_celo_test_db_with_fee_currency(sender_b, fc_rich);
+
+        // Give sender_a a fee-currency balance far too small to cover gas (so its
+        // debit reverts) plus a normal native account at nonce 0. `_balances[a]`
+        // lives at slot keccak256(abi.encode(sender_a, 0)) (Solidity mapping slot 0).
+        let slot_a = {
+            let mut buf = [0u8; 64];
+            buf[12..32].copy_from_slice(sender_a.as_slice());
+            U256::from_be_bytes(keccak256(buf).0)
+        };
+        db.insert_account_storage(TEST_FEE_CURRENCY, slot_a, U256::from(100u64))
+            .unwrap();
+        db.insert_account_info(
+            sender_a,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 0,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            })
+            .build_celo();
+
+        // Two txs, identical except for the caller.
+        let mut tx1 = evm.ctx().tx().clone();
+        tx1.op_tx.base.caller = sender_a;
+        let mut tx2 = evm.ctx().tx().clone();
+        tx2.op_tx.base.caller = sender_b;
+
+        // Model the builder's loop: transact each tx on the one EVM; the sealed
+        // bundle is the union of the *successful* txs' state. A rejected tx is
+        // skipped, and `transact` has already finalized-and-discarded its journal.
+        let mut sealed: Vec<Address> = Vec::new();
+        for (tx, should_be_rejected) in [(tx1, true), (tx2, false)] {
+            match evm.transact(tx) {
+                Ok(r) => {
+                    assert!(
+                        !should_be_rejected,
+                        "a tx expected to be rejected was included instead"
+                    );
+                    assert!(
+                        r.result.is_success(),
+                        "included tx must execute successfully: {:?}",
+                        r.result
+                    );
+                    sealed.extend(r.state.keys().copied());
+                }
+                Err(e) => assert!(
+                    should_be_rejected,
+                    "a tx expected to be included was rejected: {e:?}"
+                ),
+            }
+        }
+
+        // sender_b's valid tx must be in the bundle, else the assertion below is vacuous.
+        assert!(
+            sealed.contains(&sender_b),
+            "sender_b's included tx left no state — test would be vacuous"
+        );
+        // The rejected sender_a — whose fee-debit system call bumped its nonce before
+        // reverting — must contribute nothing to the sealed block. If `transact` ever
+        // stopped discarding a rejected tx's journal, sender_a's leaked nonce bump
+        // would surface in the next tx's finalized state and this would fail.
+        assert!(
+            !sealed.contains(&sender_a),
+            "rejected CIP-64 tx leaked sender {sender_a} into the sealed block bundle; \
+             the production `transact` entry point must discard a rejected tx's committed state"
+        );
+    }
 }
