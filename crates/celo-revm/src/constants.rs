@@ -28,6 +28,7 @@ pub const CELO_EIP_1559_BASE_FEE_FLOOR: u64 = 25_000_000_000;
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
 
+#[derive(Debug)]
 pub struct CeloAddresses {
     pub celo_token: Address,
     pub fee_handler: Address,

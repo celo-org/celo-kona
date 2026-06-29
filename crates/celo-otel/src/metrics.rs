@@ -4,6 +4,10 @@ use opentelemetry_sdk::{
     resource::Resource,
 };
 
+/// Builds an [`SdkMeterProvider`].
+///
+/// With `export_telemetry`, exports metrics over OTLP gRPC; otherwise (or if the
+/// OTLP exporter fails to build) falls back to a stdout exporter.
 pub fn build_meter_provider(resource: Resource, export_telemetry: bool) -> SdkMeterProvider {
     if export_telemetry {
         match MetricExporter::builder().with_tonic().build() {

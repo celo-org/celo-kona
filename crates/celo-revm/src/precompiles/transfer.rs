@@ -147,10 +147,11 @@ fn account_cold_status<CTX>(context: &mut CTX, address: Address) -> bool
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    match context.journal_mut().load_account(address) {
-        Ok(account) => account.is_cold,
-        Err(_) => true, // If account doesn't exist or error loading, treat as cold
-    }
+    // A missing account or load error is treated as cold.
+    context
+        .journal_mut()
+        .load_account(address)
+        .map_or(true, |account| account.is_cold)
 }
 
 fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold: bool)
