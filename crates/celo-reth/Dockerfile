@@ -9,6 +9,15 @@ RUN cargo chef prepare --recipe-path recipe.json --bin celo-reth
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 ARG BUILD_PROFILE=release
+# Profiling-friendly build: retain frame pointers + line-table debuginfo so
+# perf / eBPF profilers (Parca, Grafana Pyroscope) can unwind and symbolize
+# celo-reth stacks in production. The release profile already keeps the symbol
+# table (no `strip`); these flags add reliable stack unwinding (frame pointers)
+# and source line numbers (line-tables) at ~1% runtime cost and a modest binary
+# size increase. Set in the builder stage so chef-cooked deps and the final
+# binary are built with identical flags (avoids a full dep recompile).
+ARG RUSTFLAGS="-C force-frame-pointers=yes -C debuginfo=line-tables-only"
+ENV RUSTFLAGS=$RUSTFLAGS
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
