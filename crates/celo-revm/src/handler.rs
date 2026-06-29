@@ -616,15 +616,6 @@ where
             }
         }
 
-        let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
-        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
-        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
-        // rate. The GASPRICE opcode will therefore return native pricing instead of the
-        // ERC20-denominated price during simulations. This is a known limitation.
-        if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
-            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
-        }
-
         // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
         // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
         // rather than `None`. Without this the receipt encoding would differ from
@@ -642,7 +633,7 @@ where
 
         let (tx, journal) = evm.ctx().tx_journal_mut();
 
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        let caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
         if !is_deposit {
             // validates account nonce and code
@@ -711,10 +702,43 @@ where
             new_balance = new_balance.max(tx.value());
         }
 
-        // make changes to the account
-        //(for cip64, the set balance won't journal if the balance is the same)
+        // Capture the pending caller mutations, but DON'T apply them yet. The CIP-64
+        // fee debit below runs as a system sub-transaction ending in `commit_tx`, which
+        // clears the whole shared revert log (not just its own entries) — so it
+        // irreversibly commits any caller mutation already journaled. If the debit then
+        // fails (e.g. the ERC20 `debitGasFees` reverts on insufficient balance) the tx
+        // is rejected, but a committed nonce bump could not be rolled back by
+        // `discard_tx` — it would leak into the block. So the debit must run *after* every
+        // rejection check (the nonce / EIP-3607 / value-balance checks) and *before* any
+        // committable mutation (applied below).
+        let caller_addr = tx.caller();
+        let should_bump_nonce = tx.kind().is_call();
+
+        // CIP-64 ERC20 fee debit.
+        //
+        // NOTE: When the base-fee check is disabled (eth_call/eth_estimateGas) we skip
+        // the debit, which also skips setting tx.effective_gas_price to the fee-currency
+        // rate. The GASPRICE opcode will therefore return native pricing instead of the
+        // ERC20-denominated price during simulations. This is a known limitation.
+        let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
+        if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
+            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
+        }
+
+        // Re-load the caller (the earlier handle was invalidated by the debit's
+        // `&mut evm` borrows).
+        let mut caller_account = evm
+            .ctx()
+            .journal_mut()
+            .load_account_with_code_mut(caller_addr)
+            .expect("caller already resident; re-load is a journal cache hit")
+            .data;
+        // `set_balance` applies the native-CELO gas deduction computed above — for
+        // native txs and CIP-64 txs paying in CELO (`feeCurrency` unset/zero). For
+        // CIP-64 txs paying in an ERC20 it's a no-op: `new_balance` is the unchanged
+        // native balance, since that gas was charged in the ERC20 by the debit.
         caller_account.set_balance(new_balance);
-        if tx.kind().is_call() {
+        if should_bump_nonce {
             caller_account.bump_nonce();
         }
 
