@@ -32,7 +32,7 @@ alloy-eips.workspace = true
 
 # Misc
 async-trait.workspace = true
-lru.workspace = true
+lru = { workspace = true, features = ["hashbrown"] }
 tracing.workspace = true
 
 [dev-dependencies]
