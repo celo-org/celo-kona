@@ -128,8 +128,23 @@ impl CeloRollupConfig {
     /// configured (missing or zero), there is no way for any batch to be authorized post-fork, so
     /// derivation would silently stall at the fork boundary. Reject that combination up front so
     /// the misconfiguration surfaces as a clear error instead of a stuck pipeline.
+    ///
+    /// Also rejects `espresso_time` scheduled before `ecotone_time` (or with ecotone never
+    /// scheduled): Espresso event-based authentication only runs on the post-ecotone blob data
+    /// path, so a block in the `[espresso_time, ecotone_time)` window would be routed to the
+    /// pre-ecotone calldata source and silently fall back to sender-based authorization. Every
+    /// real Celo chain sets `ecotone_time = 0`, so this only guards against a misconfiguration.
     pub fn validate_espresso(&self) -> Result<(), CeloEspressoConfigError> {
-        self.batch_auth_params().map(|_| ())
+        let Some((_, espresso_time)) = self.batch_auth_params()? else {
+            return Ok(());
+        };
+        match self.op_rollup_config.hardforks.ecotone_time {
+            Some(ecotone_time) if espresso_time >= ecotone_time => Ok(()),
+            ecotone_time => Err(CeloEspressoConfigError::EspressoBeforeEcotone {
+                espresso_time,
+                ecotone_time: ecotone_time.unwrap_or(u64::MAX),
+            }),
+        }
     }
 }
 
@@ -143,6 +158,21 @@ pub enum CeloEspressoConfigError {
          post-fork derivation would reject all batches"
     )]
     MissingAuthenticatorAddress,
+    /// `espresso_time` is scheduled before `ecotone_time`. Espresso event-based batch
+    /// authentication only runs on the post-ecotone blob data path; a block in the
+    /// `[espresso_time, ecotone_time)` window is routed to the pre-ecotone calldata source, which
+    /// has no Espresso awareness and would silently fall back to sender-based authorization.
+    #[display(
+        "espresso_time ({espresso_time}) is before ecotone_time ({ecotone_time}); \
+         Espresso authentication only runs post-ecotone, so batches in \
+         [espresso_time, ecotone_time) would silently bypass event-based authorization"
+    )]
+    EspressoBeforeEcotone {
+        /// The configured Espresso activation timestamp.
+        espresso_time: u64,
+        /// The configured ecotone activation timestamp.
+        ecotone_time: u64,
+    },
 }
 
 impl core::error::Error for CeloEspressoConfigError {}
@@ -378,6 +408,7 @@ mod tests {
     fn test_validate_espresso() {
         // Nothing configured: valid (Espresso disabled).
         let mut cfg = CeloRollupConfig::new(RollupConfig::default());
+        cfg.op_rollup_config.hardforks.ecotone_time = Some(0);
         assert_eq!(cfg.validate_espresso(), Ok(()));
 
         // espresso_time set without an authenticator: invalid (would stall derivation).
@@ -394,7 +425,7 @@ mod tests {
             Err(CeloEspressoConfigError::MissingAuthenticatorAddress)
         );
 
-        // espresso_time + valid authenticator: valid.
+        // espresso_time + valid authenticator (and espresso >= ecotone): valid.
         cfg.espresso.batch_authenticator_address =
             Some(address!("1234567890123456789012345678901234567890"));
         assert_eq!(cfg.validate_espresso(), Ok(()));
@@ -404,6 +435,45 @@ mod tests {
         cfg2.espresso.batch_authenticator_address =
             Some(address!("1234567890123456789012345678901234567890"));
         assert_eq!(cfg2.validate_espresso(), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_espresso_ordering_vs_ecotone() {
+        let auth = address!("1234567890123456789012345678901234567890");
+        let with_times = |espresso: u64, ecotone: Option<u64>| {
+            let mut cfg = CeloRollupConfig::new(RollupConfig::default());
+            cfg.espresso.espresso_time = Some(espresso);
+            cfg.espresso.batch_authenticator_address = Some(auth);
+            cfg.op_rollup_config.hardforks.ecotone_time = ecotone;
+            cfg
+        };
+
+        // espresso == ecotone: valid (the first espresso-active block is already post-ecotone).
+        assert_eq!(with_times(100, Some(100)).validate_espresso(), Ok(()));
+
+        // espresso > ecotone: valid.
+        assert_eq!(with_times(100, Some(50)).validate_espresso(), Ok(()));
+
+        // The real Celo case: ecotone at genesis, espresso scheduled later.
+        assert_eq!(with_times(1_000_000, Some(0)).validate_espresso(), Ok(()));
+
+        // espresso < ecotone: invalid — the [espresso, ecotone) window would bypass auth.
+        assert_eq!(
+            with_times(50, Some(100)).validate_espresso(),
+            Err(CeloEspressoConfigError::EspressoBeforeEcotone {
+                espresso_time: 50,
+                ecotone_time: 100,
+            })
+        );
+
+        // espresso set but ecotone never scheduled: invalid (every espresso block bypasses auth).
+        assert_eq!(
+            with_times(50, None).validate_espresso(),
+            Err(CeloEspressoConfigError::EspressoBeforeEcotone {
+                espresso_time: 50,
+                ecotone_time: u64::MAX,
+            })
+        );
     }
 
     #[test]

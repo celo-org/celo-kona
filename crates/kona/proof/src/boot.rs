@@ -114,9 +114,11 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
-        // Reject internally inconsistent Espresso settings (e.g. `espresso_time` set without a
-        // `BatchAuthenticator` address) up front, so a misconfiguration fails fast here instead of
-        // silently stalling derivation at the fork boundary.
+        // Reject internally inconsistent Espresso settings up front, so a misconfiguration fails
+        // fast here instead of corrupting derivation. This covers `espresso_time` set without a
+        // `BatchAuthenticator` address (would stall at the fork boundary) and `espresso_time`
+        // scheduled before `ecotone_time` (would route post-espresso blocks to the pre-ecotone
+        // calldata source and silently bypass event-based authorization).
         celo_rollup_config.validate_espresso().map_err(|e| {
             OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e))
         })?;
