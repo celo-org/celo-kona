@@ -342,6 +342,15 @@ where
         Ok(())
     }
 
+    /// Charges the transaction's gas in its ERC20 fee currency by running the currency's
+    /// `debitGasFees`.
+    ///
+    /// Conformance invariant: a fee currency's `debitGasFees`/`creditGasFees` must confine
+    /// itself to its own ERC20 ledger — it must not read or modify the payer's native CELO
+    /// balance, nonce, or code (e.g. topping the payer up with CELO, or branching on
+    /// `BALANCE`/`EXTCODE*`/a call to the payer). Currencies that violate this are
+    /// unsupported and must not be registered. The admission ordering in
+    /// `validate_against_state_and_deduct_caller` relies on it.
     fn cip64_validate_erc20_and_debit_gas_fees(
         &self,
         evm: &mut CeloEvm<DB, INSP, P>,
