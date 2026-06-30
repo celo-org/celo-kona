@@ -143,6 +143,11 @@ pub fn collect_auth_events_from_receipts(
 /// the lookback windows overlap by `BATCH_AUTH_LOOKBACK_WINDOW - 1` blocks, so only one new
 /// block's receipts need to be fetched on each call. The cache is keyed by block hash (not
 /// number) so it is naturally reorg-safe.
+///
+/// The ref block's parent hash is pre-seeded into the header cache from `block_ref` itself, so a
+/// consecutive call also avoids re-fetching the ref block's header — mirroring the op-node
+/// verifier, which pre-seeds its `RefCache` with the ref block at the top of every call
+/// (`batch_authenticator.go`).
 pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
     provider: &mut CP,
     block_ref: &BlockInfo,
@@ -152,6 +157,12 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
     let mut all_authenticated: BTreeMap<B256, Address> = BTreeMap::new();
     let mut current_hash = block_ref.hash;
     let mut current_number = block_ref.number;
+
+    // Pre-seed the header cache with the ref block's parent hash. A `BlockInfo` already carries its
+    // own parent hash, so the first backward step never needs a header fetch. This matches the Go
+    // verifier's `RefCache` pre-seed: for consecutive L1 blocks the newer call then reuses the
+    // previous call's cached parent links and fetches zero headers.
+    cache.headers.put(block_ref.hash, block_ref.parent_hash);
 
     loop {
         // Check receipt cache first
@@ -572,7 +583,9 @@ mod tests {
     /// [`TestChainProvider::receipts_by_hash`] resolves for every block the walk visits.
     ///
     /// Block hashes are the real `header.hash_slow()` and each header's `parent_hash` points at
-    /// its predecessor, so [`collect_authenticated_batches`] performs a genuine backward walk.
+    /// its predecessor, so [`collect_authenticated_batches`] performs a genuine backward walk. The
+    /// returned [`BlockInfo`] carries its true `parent_hash` so the ref-block pre-seed in
+    /// [`collect_authenticated_batches`] resolves the correct parent.
     fn build_l1_chain(
         provider: &mut TestChainProvider,
         top: u64,
@@ -589,10 +602,10 @@ mod tests {
             .into_iter()
             .map(|header| {
                 let hash = header.hash_slow();
-                let number = header.number;
+                let (number, parent_hash) = (header.number, header.parent_hash);
                 provider.insert_header(hash, header);
                 provider.insert_receipts(hash, receipts.get(&number).cloned().unwrap_or_default());
-                BlockInfo { hash, number, ..Default::default() }
+                BlockInfo { hash, number, parent_hash, timestamp: 0 }
             })
             .collect()
     }
@@ -771,5 +784,101 @@ mod tests {
             Some(&newer_caller),
             "newest block's caller must win on duplicate commitments"
         );
+    }
+
+    // ---- Lookback cache reuse across consecutive windows --------------------------------------
+    //
+    // Mirrors op-node's `TestCollectAuthenticatedBatchesBlockRefCache`
+    // (`espresso_batch_authenticator_test.go`). The traversal tests above and
+    // `test_new_batch_auth_cache` cover correctness and capacity; these assert hit behaviour.
+    // "No refetch" is proven by *starving* the provider after the cache is primed: once a block's
+    // receipts/headers are removed, `TestChainProvider` errors on any further fetch of them, so a
+    // call that still succeeds must have been served from the cache.
+
+    /// Block `N` then `N + 1`: the windows overlap by `WINDOW - 1` blocks, so the second call must
+    /// fetch only the new block's receipts and *no* headers — the ref block's parent comes from the
+    /// pre-seed and every older parent link is already cached. Matches Go's "1 FetchReceipts, 0
+    /// L1BlockRefByHash".
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_consecutive_windows_reuse_cache() {
+        let window = BATCH_AUTH_LOOKBACK_WINDOW;
+        let first = window + 100; // comfortably past genesis so neither window clamps
+        let second = first + 1;
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000c0");
+        let caller = address!("00000000000000000000000000000000000000aa");
+
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        // Event in a block inside BOTH windows, so the authorized set is identical across calls.
+        receipts.insert(first - 1, auth_receipts(commitment, caller));
+        let infos = build_l1_chain(&mut provider, second, &receipts);
+        let mut cache = BatchAuthCache::new();
+
+        // Prime the cache over the whole [first - window, first] window.
+        let out_first = collect_authenticated_batches(
+            &mut provider,
+            &infos[first as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out_first.get(&commitment), Some(&caller));
+
+        // Starve the provider: drop every header and every receipt set except the new block's, so
+        // the only thing it can still serve is `second`'s receipts.
+        provider.clear_headers();
+        provider.clear_receipts();
+        provider.insert_receipts(infos[second as usize].hash, Vec::new());
+
+        let out_second = collect_authenticated_batches(
+            &mut provider,
+            &infos[second as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        // Success proves zero header fetches and that only the new block's receipts were fetched;
+        // the rest of the window was served from the cache, and the authorized set is unchanged.
+        assert_eq!(out_second.get(&commitment), Some(&caller));
+    }
+
+    /// Re-collecting the same block is a pure cache hit: after priming, the provider can be emptied
+    /// entirely and the call still succeeds with an identical result.
+    #[tokio::test]
+    async fn test_collect_authenticated_batches_same_block_fully_cached() {
+        let window = BATCH_AUTH_LOOKBACK_WINDOW;
+        let n = window + 100;
+        let commitment = b256!("00000000000000000000000000000000000000000000000000000000000000d0");
+        let caller = address!("00000000000000000000000000000000000000bb");
+
+        let mut provider = TestChainProvider::default();
+        let mut receipts = BTreeMap::new();
+        receipts.insert(n - 1, auth_receipts(commitment, caller));
+        let infos = build_l1_chain(&mut provider, n, &receipts);
+        let mut cache = BatchAuthCache::new();
+
+        let out_first = collect_authenticated_batches(
+            &mut provider,
+            &infos[n as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+
+        // Empty the provider; a fully-cached re-collection must still succeed identically.
+        provider.clear();
+        let out_second = collect_authenticated_batches(
+            &mut provider,
+            &infos[n as usize],
+            TEST_AUTH_ADDR,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out_second, out_first);
+        assert_eq!(out_second.get(&commitment), Some(&caller));
     }
 }
