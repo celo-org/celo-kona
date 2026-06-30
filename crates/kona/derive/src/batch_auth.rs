@@ -144,10 +144,13 @@ pub fn collect_auth_events_from_receipts(
 /// block's receipts need to be fetched on each call. The cache is keyed by block hash (not
 /// number) so it is naturally reorg-safe.
 ///
-/// The ref block's parent hash is pre-seeded into the header cache from `block_ref` itself, so a
-/// consecutive call also avoids re-fetching the ref block's header — mirroring the op-node
-/// verifier, which pre-seeds its `RefCache` with the ref block at the top of every call
-/// (`batch_authenticator.go`).
+/// The ref block is pre-seeded into the header cache from `block_ref` itself, so a consecutive
+/// call also avoids re-fetching the ref block's header — mirroring the op-node verifier, which
+/// pre-seeds its `RefCache` with the ref block at the top of every call (`batch_authenticator.go`).
+///
+/// The walk reads each block's authoritative `number` from the cached/fetched [`BlockInfo`] rather
+/// than deriving it by decrement, so the window boundary stays correct independent of any
+/// contiguous-numbering assumption.
 pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
     provider: &mut CP,
     block_ref: &BlockInfo,
@@ -155,18 +158,17 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
     cache: &mut BatchAuthCache,
 ) -> Result<BTreeMap<B256, Address>, CP::Error> {
     let mut all_authenticated: BTreeMap<B256, Address> = BTreeMap::new();
-    let mut current_hash = block_ref.hash;
-    let mut current_number = block_ref.number;
+    let mut current = *block_ref;
 
-    // Pre-seed the header cache with the ref block's parent hash. A `BlockInfo` already carries its
-    // own parent hash, so the first backward step never needs a header fetch. This matches the Go
-    // verifier's `RefCache` pre-seed: for consecutive L1 blocks the newer call then reuses the
-    // previous call's cached parent links and fetches zero headers.
-    cache.headers.put(block_ref.hash, block_ref.parent_hash);
+    // Pre-seed the header cache with the ref block itself. A `BlockInfo` already carries its own
+    // number and parent hash, so the first backward step never needs a header fetch. This matches
+    // the Go verifier's `RefCache` pre-seed: for consecutive L1 blocks the newer call then reuses
+    // the previous call's cached blocks and fetches zero headers.
+    cache.headers.put(block_ref.hash, *block_ref);
 
     loop {
         // Check receipt cache first
-        if let Some(cached) = cache.receipts.get(&current_hash) {
+        if let Some(cached) = cache.receipts.get(&current.hash) {
             // Newest-wins merge: traversal walks newest -> oldest, so a commitment already in the
             // accumulator came from a newer block and must not be overwritten by this older one.
             for (commitment, caller) in cached {
@@ -174,28 +176,41 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
             }
         } else {
             // Cache miss: fetch receipts, extract events, cache the result
-            let receipts = provider.receipts_by_hash(current_hash).await?;
+            let receipts = provider.receipts_by_hash(current.hash).await?;
             let events = collect_auth_events_from_receipts(&receipts, authenticator_addr);
             for (commitment, caller) in &events {
                 all_authenticated.entry(*commitment).or_insert(*caller);
             }
-            cache.receipts.put(current_hash, events);
+            cache.receipts.put(current.hash, events);
         }
 
-        if current_number == 0 || block_ref.number - current_number >= BATCH_AUTH_LOOKBACK_WINDOW {
+        if current.number == 0 ||
+            block_ref.number - current.number >= BATCH_AUTH_LOOKBACK_WINDOW
+        {
             break;
         }
 
-        // Walk backward using header to get parent hash
-        let parent_hash = if let Some(&cached_parent) = cache.headers.get(&current_hash) {
+        // Walk backward to the parent block, reading its authoritative `number` and `parent_hash`
+        // from the cached/fetched `BlockInfo` rather than deriving the number by decrement.
+        let (child_number, parent_hash) = (current.number, current.parent_hash);
+        current = if let Some(&cached_parent) = cache.headers.get(&parent_hash) {
             cached_parent
         } else {
-            let header = provider.header_by_hash(current_hash).await?;
-            cache.headers.put(current_hash, header.parent_hash);
-            header.parent_hash
+            let header = provider.header_by_hash(parent_hash).await?;
+            let parent = BlockInfo {
+                hash: parent_hash,
+                number: header.number,
+                parent_hash: header.parent_hash,
+                timestamp: header.timestamp,
+            };
+            cache.headers.put(parent_hash, parent);
+            parent
         };
-        current_hash = parent_hash;
-        current_number = current_number.saturating_sub(1);
+        debug_assert_eq!(
+            current.number + 1,
+            child_number,
+            "lookback walk expects contiguous L1 block numbering"
+        );
     }
 
     Ok(all_authenticated)
@@ -211,8 +226,11 @@ pub struct BatchAuthCache {
     /// Authenticated batch commitments (commitment hash → authenticating `caller`) extracted from
     /// receipts, keyed by L1 block hash.
     pub receipts: LruCache<B256, BTreeMap<B256, Address>>,
-    /// Block parent hashes keyed by block hash
-    pub headers: LruCache<B256, B256>,
+    /// Full [`BlockInfo`] keyed by block hash. The walk reads each block's authoritative `number`
+    /// and `parent_hash` from the cached/fetched [`BlockInfo`] rather than deriving the number by
+    /// decrement, so the lookback window boundary stays correct independent of contiguous numbering
+    /// assumptions.
+    pub headers: LruCache<B256, BlockInfo>,
 }
 
 impl Default for BatchAuthCache {
