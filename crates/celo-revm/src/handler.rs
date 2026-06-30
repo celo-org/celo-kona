@@ -721,7 +721,9 @@ where
         // rate. The GASPRICE opcode will therefore return native pricing instead of the
         // ERC20-denominated price during simulations. This is a known limitation.
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
-        if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
+        let debit_erc20_fees =
+            !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit;
+        if debit_erc20_fees {
             self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
         }
 
@@ -733,11 +735,13 @@ where
             .load_account_with_code_mut(caller_addr)
             .expect("caller already resident; re-load is a journal cache hit")
             .data;
-        // `set_balance` applies the native-CELO gas deduction computed above — for
-        // native txs and CIP-64 txs paying in CELO (`feeCurrency` unset/zero). For
-        // CIP-64 txs paying in an ERC20 it's a no-op: `new_balance` is the unchanged
-        // native balance, since that gas was charged in the ERC20 by the debit.
-        caller_account.set_balance(new_balance);
+        // When the ERC20 debit ran, gas was charged in the ERC20, not CELO, so there is no
+        // native deduction to apply.
+        if !debit_erc20_fees {
+            // Apply the native-CELO gas deduction computed above — for native txs and CIP-64
+            // txs paying in CELO (`feeCurrency` unset/zero).
+            caller_account.set_balance(new_balance);
+        }
         if should_bump_nonce {
             caller_account.bump_nonce();
         }
