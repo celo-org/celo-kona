@@ -42,7 +42,7 @@ where
     /// Espresso batch-authentication configuration. When `Some` and active for the L1 origin time
     /// of the block being scanned, event-based batch authentication is used. Otherwise (no config,
     /// or fork not yet active) the source falls back to vanilla OP Stack sender verification.
-    pub batch_auth_config: Option<BatchAuthConfig>,
+    pub(crate) batch_auth_config: Option<BatchAuthConfig>,
     /// LRU caches for batch auth lookback window traversal (receipts + headers). Present iff
     /// [`Self::batch_auth_config`] is set.
     pub(crate) auth_cache: Option<BatchAuthCache>,
