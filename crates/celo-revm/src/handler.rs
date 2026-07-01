@@ -2401,4 +2401,155 @@ mod tests {
              (balance {final_balance} was not reduced from {fc_balance})"
         );
     }
+
+    /// Runtime bytecode of a fee-currency stub whose response to *any* call transfers 1 wei of
+    /// its own native balance to `sink`, then returns success:
+    ///
+    ///   PUSH1 00 (retLen) PUSH1 00 (retOff) PUSH1 00 (argLen) PUSH1 00 (argOff)
+    ///   PUSH1 01 (value)  PUSH20 <sink> (addr) GAS CALL POP STOP
+    ///
+    /// Stands in for a non-conformant fee currency whose `debitGasFees` mutates *native* state,
+    /// not just its own ERC20 storage slot.
+    fn native_transfer_fee_currency_code(sink: Address) -> revm::state::Bytecode {
+        let mut code = vec![
+            0x60, 0x00, // PUSH1 0  -- retLength
+            0x60, 0x00, // PUSH1 0  -- retOffset
+            0x60, 0x00, // PUSH1 0  -- argsLength
+            0x60, 0x00, // PUSH1 0  -- argsOffset
+            0x60, 0x01, // PUSH1 1  -- value (1 wei)
+            0x73, //       PUSH20   -- address
+        ];
+        code.extend_from_slice(sink.as_slice());
+        code.extend_from_slice(&[
+            0x5a, // GAS  -- forward all remaining gas
+            0xf1, // CALL
+            0x50, // POP  -- discard the success flag
+            0x00, // STOP -- return success (empty output)
+        ]);
+        revm::state::Bytecode::new_raw(code.into())
+    }
+
+    // -----------------------------------------------------------------------
+    // A fee currency whose `debitGasFees` mutates *native* state (here: transfers native CELO
+    // out of itself) must have that mutation rolled back when the CIP-64 tx is rejected after
+    // the debit. The rollback checkpoint spans native balances, not only the ERC20 balance
+    // slot, so this closes the gap the removed conformance guard covered: a non-conformant
+    // currency that touches native accounts is reverted with the tx on the reject path.
+    //
+    // Positive control: the same stub on an *included* tx does land its native transfer, so a
+    // silently-skipped transfer (e.g. the inner CALL running out of gas) cannot make the
+    // reject-path assertion pass for the wrong reason.
+    #[test]
+    fn rejected_cip64_tx_reverts_native_mutation_by_fee_currency() {
+        use revm::primitives::TxKind;
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let sink = address!("0x00000000000000000000000000000000000000ee");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+        // Pre-fund the sink so the fee currency's CALL is not a (pricier) new-account write.
+        let sink_seed = U256::from(1_000u64);
+
+        // Build a DB whose fee currency transfers native CELO to `sink` on any call, holding
+        // enough native balance to do so. `sender_nonce` sets the sender's on-chain nonce.
+        let build_evm = |sender_nonce: u64, tx_nonce: u64, kind: TxKind| {
+            let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+            let code = native_transfer_fee_currency_code(sink);
+            db.insert_account_info(
+                TEST_FEE_CURRENCY,
+                AccountInfo {
+                    balance: U256::from(1_000_000u64),
+                    nonce: 0,
+                    code_hash: code.hash_slow(),
+                    account_id: None,
+                    code: Some(code),
+                },
+            );
+            db.insert_account_info(
+                sink,
+                AccountInfo {
+                    balance: sink_seed,
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                sender,
+                AccountInfo {
+                    balance: U256::from(1_000_000_000_000_000_000u128),
+                    nonce: sender_nonce,
+                    ..Default::default()
+                },
+            );
+
+            Context::celo()
+                .with_db(db)
+                .modify_tx_chained(|tx| {
+                    tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                    tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                    tx.op_tx.base.gas_limit = 200_000;
+                    tx.op_tx.base.gas_price = 100;
+                    tx.op_tx.base.gas_priority_fee = Some(10);
+                    tx.op_tx.base.caller = sender;
+                    tx.op_tx.base.nonce = tx_nonce;
+                    tx.op_tx.base.kind = kind;
+                    tx.op_tx.base.chain_id = Some(0);
+                    tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+                })
+                .modify_block_chained(|block| {
+                    block.basefee = 1;
+                    block.beneficiary = beneficiary;
+                })
+                .modify_cfg_chained(|cfg| {
+                    cfg.spec = OpSpecId::REGOLITH;
+                    cfg.chain_id = 0;
+                })
+                .build_celo()
+        };
+
+        let sink_balance = |state: &revm::state::EvmState| {
+            state
+                .get(&sink)
+                .map(|acct| acct.info.balance)
+                .unwrap_or(sink_seed)
+        };
+
+        // Positive control: a valid, included CIP-64 tx. The fee currency's native transfer
+        // during the debit (and credit) actually lands, so the sink balance grows.
+        let mut included = build_evm(0, 0, TxKind::Call(beneficiary));
+        let out = included
+            .replay()
+            .expect("a valid CIP-64 tx must be included");
+        assert!(
+            matches!(out.result, ExecutionResult::Success { .. }),
+            "control tx should succeed: {:?}",
+            out.result
+        );
+        assert!(
+            sink_balance(&out.state) > sink_seed,
+            "control: the fee currency's native transfer must land on an included tx \
+             (sink {} not increased from {sink_seed})",
+            sink_balance(&out.state)
+        );
+
+        // Reject path: on-chain nonce 1, tx nonce 0 -> NonceTooLow, which runs after the debit.
+        // The fee currency's native transfer done during the debit must be rolled back.
+        let mut rejected = build_evm(1, 0, TxKind::Call(beneficiary));
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .run(&mut rejected)
+            .expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+        let state = rejected.finalize();
+        assert_eq!(
+            sink_balance(&state),
+            sink_seed,
+            "rejected CIP-64 tx leaked a native mutation made by the fee currency's debitGasFees; \
+             the rollbackable debit must revert native balance changes, not only the ERC20 slot"
+        );
+    }
 }
