@@ -2246,9 +2246,13 @@ mod tests {
     // consensus split. This test rejects a nonce-too-low CIP-64 tx and asserts nothing is
     // debited.
     //
-    // Driven through the bare handler (`handler.run` + a manual `finalize`) — the worst
-    // case, which (unlike the production `transact` entry point) does not fall back on the
-    // journal being discarded on the error path.
+    // Driven through the bare handler (`handler.run` + a manual `finalize`), then asserting the
+    // finalized fee-currency balance. Note `handler.run` *does* discard the journal on the error
+    // path (`catch_error` -> `discard_tx`), so this test is not discriminating by bypassing that
+    // safety net. What makes it fail against a committing debit is different: `commit_tx` clears
+    // the revert log, so by the time `discard_tx` runs there is nothing left to undo and the
+    // debit leaks. The rollbackable (non-committing) debit keeps its revert-log entries, so
+    // `checkpoint_revert` unwinds it (and `discard_tx` would too) — the debit is reverted.
     #[test]
     fn rejected_cip64_tx_reverts_the_fee_debit() {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
