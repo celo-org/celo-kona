@@ -4,6 +4,7 @@ use crate::single::{CeloSingleChainHintHandler, CeloSingleChainLocalInputs};
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
+use celo_registry::ROLLUP_CONFIGS;
 use clap::Parser;
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
@@ -158,6 +159,27 @@ impl CeloSingleChainHost {
         Ok(Some(celo_rollup_config))
     }
 
+    /// Resolves the [`CeloRollupConfig`] the host serves under `L2_ROLLUP_CONFIG_KEY`, in
+    /// precedence order:
+    ///
+    /// 1. `--rollup-config-path`, when configured (see [`Self::read_rollup_config`]).
+    /// 2. the embedded registry entry for `--l2-chain-id`, when the chain ID is known.
+    ///
+    /// The registry fallback is required for the offline / native proof path. The client's boot
+    /// (`CeloBootInfo::load`) requests the rollup-config preimage for *known* chains too, to
+    /// overlay any host-supplied Espresso settings onto the registry config. If the host served
+    /// nothing for a known chain booted with only `--l2-chain-id` (no `--rollup-config-path`),
+    /// kona's native oracle server would treat the missing local key as a fatal error and abort
+    /// the whole run before the client's graceful `KeyNotFound` fallback could apply. Serving the
+    /// registry config — whose Espresso settings are the disabled default — satisfies the request,
+    /// and the client's overlay becomes a no-op.
+    fn resolve_rollup_config(&self) -> Result<Option<CeloRollupConfig>, SingleChainHostError> {
+        if let Some(config) = self.read_rollup_config()? {
+            return Ok(Some(config));
+        }
+        Ok(self.kona_cfg.l2_chain_id.and_then(|chain_id| ROLLUP_CONFIGS.get(&chain_id).cloned()))
+    }
+
     /// Creates the key-value store for the host backend.
     ///
     /// Wraps the upstream [`SingleChainLocalInputs`] in a [`CeloSingleChainLocalInputs`] so the
@@ -165,7 +187,7 @@ impl CeloSingleChainHost {
     /// included) rather than the upstream `RollupConfig`. The split-store wiring
     /// mirrors the upstream `kona_host::create_key_value_store` factory (which is crate-private).
     pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
-        let rollup_config = self.read_rollup_config()?;
+        let rollup_config = self.resolve_rollup_config()?;
         let local_kv_store = CeloSingleChainLocalInputs::new(
             SingleChainLocalInputs::new(self.kona_cfg.clone()),
             rollup_config,
@@ -306,7 +328,57 @@ pub struct CeloSingleChainProviders {
 mod test {
     use crate::single::CeloSingleChainHost;
     use alloy_primitives::B256;
+    use celo_registry::ROLLUP_CONFIGS;
     use clap::Parser;
+
+    /// Builds a `CeloSingleChainHost` from the required boot flags plus `extra`.
+    fn single_chain_host(extra: &[&str]) -> CeloSingleChainHost {
+        let zero = B256::ZERO.to_string();
+        let mut args = vec![
+            "single",
+            "--l1-head",
+            &zero,
+            "--l2-head",
+            &zero,
+            "--l2-output-root",
+            &zero,
+            "--l2-claim",
+            &zero,
+            "--l2-block-number",
+            "0",
+        ];
+        args.extend_from_slice(extra);
+        CeloSingleChainHost::try_parse_from(args).expect("valid args")
+    }
+
+    /// A known Celo chain ID booted with only `--l2-chain-id` (no `--rollup-config-path`) must
+    /// still resolve a config from the embedded registry, so the host serves the
+    /// `L2_ROLLUP_CONFIG_KEY` preimage the client's boot requests. Without this the native oracle
+    /// server aborts on the missing local key (regression fixed here).
+    #[test]
+    fn resolve_rollup_config_falls_back_to_registry_for_known_chain() {
+        let chain_id = 11142220u64; // Celo Sepolia
+        let cid = chain_id.to_string();
+        let host = single_chain_host(&["--native", "--l2-chain-id", &cid, "--data-dir", "dummy"]);
+
+        let resolved = host.resolve_rollup_config().expect("resolve should succeed");
+        assert!(resolved.is_some(), "known chain must resolve to the registry config");
+        assert_eq!(resolved, ROLLUP_CONFIGS.get(&chain_id).cloned());
+    }
+
+    /// An unknown chain ID with no `--rollup-config-path` resolves to nothing — there is no config
+    /// to serve, matching the previous behaviour for the unknown-chain oracle-fallback path.
+    #[test]
+    fn resolve_rollup_config_none_for_unknown_chain_without_path() {
+        let host = single_chain_host(&[
+            "--native",
+            "--l2-chain-id",
+            &u64::MAX.to_string(),
+            "--data-dir",
+            "dummy",
+        ]);
+        assert!(host.resolve_rollup_config().expect("resolve should succeed").is_none());
+    }
 
     #[test]
     fn test_flags() {

@@ -2333,6 +2333,7 @@ dependencies = [
  "celo-alloy-network",
  "celo-client",
  "celo-genesis",
+ "celo-registry",
  "clap",
  "hokulea-host-bin",
  "hokulea-proof",

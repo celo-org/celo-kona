@@ -16,6 +16,7 @@ workspace = true
 celo-client.workspace = true
 celo-alloy-network.workspace = true
 celo-genesis = { workspace = true, features = ["std", "serde"] }
+celo-registry.workspace = true
 
 # Kona Binaries
 kona-host = { workspace = true, features = ["single"] }
