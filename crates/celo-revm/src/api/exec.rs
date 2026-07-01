@@ -156,7 +156,7 @@ where
     /// `system_call_one` (same [`SYSTEM_ADDRESS`] caller and 30M default gas limit)
     /// except it does not `commit_tx`. Used only by
     /// [`call_read_only`](crate::contracts::core_contracts::call_read_only).
-    pub fn system_call_one_no_commit(
+    pub(crate) fn system_call_one_no_commit(
         &mut self,
         system_contract_address: Address,
         data: Bytes,
@@ -177,7 +177,7 @@ where
     ///
     /// See [`Self::system_call_one_no_commit`]; this variant uses the
     /// [`CELO_SYSTEM_ADDRESS`] caller and a caller-supplied gas limit.
-    pub fn transact_system_call_no_commit_with_gas_limit(
+    pub(crate) fn transact_system_call_no_commit_with_gas_limit(
         &mut self,
         system_contract_address: Address,
         data: Bytes,
