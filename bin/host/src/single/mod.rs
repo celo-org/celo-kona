@@ -6,5 +6,5 @@ pub use cfg::{CeloSingleChainHost, CeloSingleChainProviders};
 mod handler;
 pub use handler::CeloSingleChainHintHandler;
 
-mod local_kv;
-pub use local_kv::CeloSingleChainLocalInputs;
+mod backend;
+pub use backend::CeloConfigBackend;

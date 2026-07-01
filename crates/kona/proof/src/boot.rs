@@ -7,7 +7,7 @@ use alloy_primitives::B256;
 use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS};
 use kona_genesis::RollupConfig;
-use kona_preimage::{PreimageKey, PreimageOracleClient, errors::PreimageOracleError};
+use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
     BootInfo,
     boot::{
@@ -86,22 +86,10 @@ impl CeloBootInfo {
 
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
-        let celo_rollup_config: CeloRollupConfig = if let Some(config) =
+        let mut celo_rollup_config: CeloRollupConfig = if let Some(config) =
             ROLLUP_CONFIGS.get(&chain_id)
         {
-            // The embedded registry entry is trusted, but it is built via
-            // `CeloRollupConfig::new(..)`, which leaves the Celo Espresso settings
-            // (`espresso_time` / `batch_authenticator_address`) at their disabled default. The
-            // host serves those settings via the `L2_ROLLUP_CONFIG_KEY` preimage (see
-            // `CeloSingleChainLocalInputs`), so without merging them in, a known-chain proof
-            // would keep using the pre-fork sender-authorization path even after Espresso
-            // activation. Take *only* the Espresso fields from the oracle and overlay them onto
-            // the trusted registry config; every other field stays registry-authoritative.
-            let mut config = config.clone();
-            if let Some(oracle_espresso) = load_oracle_espresso_override(oracle, chain_id).await? {
-                config.espresso = oracle_espresso;
-            }
-            config
+            config.clone()
         } else {
             warn!(
                 target: "boot_loader",
@@ -114,6 +102,10 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
+        // Pin the Espresso settings for the known Celo chains to the program-baked values, so a
+        // proof always derives with the Espresso params bound by its verification key rather than
+        // any host-supplied value.
+        enforce_celo_espresso(&mut celo_rollup_config.espresso, chain_id);
         // Reject internally inconsistent Espresso settings up front, so a misconfiguration fails
         // fast here instead of corrupting derivation. This covers `espresso_time` set without a
         // `BatchAuthenticator` address (would stall at the fork boundary) and `espresso_time`
@@ -185,48 +177,34 @@ impl CeloBootInfo {
     }
 }
 
-/// Read the host-supplied [`CeloEspressoConfig`] from the `L2_ROLLUP_CONFIG_KEY` preimage for a
-/// known (registry) chain ID.
-///
-/// The embedded registry config is the source of truth for every rollup field *except* the Celo
-/// Espresso settings, which the registry leaves disabled (see [`CeloRollupConfig::new`]). The host
-/// carries `espresso_time` / `batch_authenticator_address` in the rollup-config preimage, so this
-/// extracts just those fields for the caller to overlay onto the trusted registry config. The rest
-/// of the deserialized oracle config is intentionally discarded — only the Espresso fields are
-/// trusted from the oracle for a known chain.
-///
-/// Returns:
-/// - `Ok(None)` when the host serves no rollup-config preimage (e.g. the native CLI booted with
-///   `--l2-chain-id` and no `--rollup-config-path`). The registry's disabled Espresso default is
-///   then kept.
-/// - `Ok(Some(espresso))` with the host-supplied Espresso settings otherwise.
-/// - `Err(_)` on any non-`KeyNotFound` preimage error or a malformed config payload.
-async fn load_oracle_espresso_override<O>(
-    oracle: &O,
-    chain_id: u64,
-) -> Result<Option<CeloEspressoConfig>, OracleProviderError>
-where
-    O: PreimageOracleClient + Send,
-{
-    let ser_cfg = match oracle.get(PreimageKey::new_local(L2_ROLLUP_CONFIG_KEY.to())).await {
-        Ok(ser_cfg) => ser_cfg,
-        // No rollup-config preimage was supplied for this known chain; keep the registry default.
-        Err(PreimageOracleError::KeyNotFound) => return Ok(None),
-        Err(e) => return Err(OracleProviderError::Preimage(e)),
-    };
+/// Celo Espresso batch-authentication settings for Celo Mainnet.
+// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
+// scheduled for Celo Mainnet. `None` keeps vanilla OP Stack sender-based batch authorization.
+const CELO_MAINNET_ESPRESSO: CeloEspressoConfig =
+    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
 
-    let oracle_config: CeloRollupConfig =
-        serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?;
+/// Celo Espresso batch-authentication settings for Celo Sepolia.
+// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
+// scheduled for Celo Sepolia. `None` keeps vanilla OP Stack sender-based batch authorization.
+const CELO_SEPOLIA_ESPRESSO: CeloEspressoConfig =
+    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
 
-    if oracle_config.espresso != CeloEspressoConfig::default() {
-        warn!(
-            target: "boot_loader",
-            "Applying host-supplied Espresso settings to the registry rollup config for chain {}",
-            chain_id,
-        );
+/// Pin the Espresso batch-authentication settings for the known Celo chain IDs (Mainnet, Sepolia)
+/// to the program-baked values [`CELO_MAINNET_ESPRESSO`] / [`CELO_SEPOLIA_ESPRESSO`].
+///
+/// Espresso settings are consensus-critical — `espresso_time` switches batch authorization from
+/// sender-based to `BatchAuthenticator` event-based — so for the known chains they are baked into
+/// the program and bound by the proof's verification key, rather than sourced from the
+/// unauthenticated `L2_ROLLUP_CONFIG_KEY` preimage.
+///
+/// A no-op for any other chain ID, so the unknown-chain oracle fallback in [`CeloBootInfo::load`]
+/// keeps the Espresso settings carried by its host-supplied config.
+const fn enforce_celo_espresso(espresso: &mut CeloEspressoConfig, chain_id: u64) {
+    match chain_id {
+        42220 => *espresso = CELO_MAINNET_ESPRESSO,
+        11142220 => *espresso = CELO_SEPOLIA_ESPRESSO,
+        _ => {}
     }
-
-    Ok(Some(oracle_config.espresso))
 }
 
 /// Re-apply the Celo Fjord max sequencer drift ([`CELO_FJORD_MAX_SEQUENCER_DRIFT`]) to a
@@ -254,6 +232,7 @@ fn enforce_celo_fjord_sequencer_drift(rollup_config: &mut RollupConfig, chain_id
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Address;
 
     #[test]
     fn fjord_drift_forced_for_celo_chain_ids() {
@@ -275,91 +254,30 @@ mod tests {
         assert_eq!(cfg.fjord_max_sequencer_drift, 1800);
     }
 
-    mod espresso_override {
-        use super::*;
-        use alloc::{boxed::Box, vec::Vec};
-        use alloy_primitives::address;
-        use async_trait::async_trait;
-        use kona_preimage::errors::PreimageOracleResult;
-
-        const CELO_MAINNET_CHAIN_ID: u64 = 42220;
-
-        /// A minimal [`PreimageOracleClient`] that returns a single canned response for the
-        /// `L2_ROLLUP_CONFIG_KEY` query. Any other key is rejected with `KeyNotFound`, which is
-        /// all `load_oracle_espresso_override` ever requests.
-        struct StubOracle {
-            /// The response served for `L2_ROLLUP_CONFIG_KEY`: `Some(bytes)` to serve a preimage,
-            /// or `None` to simulate the host serving no rollup config (`KeyNotFound`).
-            rollup_config: Option<Vec<u8>>,
+    #[test]
+    fn espresso_forced_for_celo_chain_ids() {
+        // Mainnet/Sepolia derive with the program-baked Espresso settings, ignoring any input.
+        for (chain_id, expected) in
+            [(42220u64, CELO_MAINNET_ESPRESSO), (11142220u64, CELO_SEPOLIA_ESPRESSO)]
+        {
+            let mut espresso = CeloEspressoConfig {
+                espresso_time: Some(999),
+                batch_authenticator_address: Some(Address::repeat_byte(0xbb)),
+            };
+            enforce_celo_espresso(&mut espresso, chain_id);
+            assert_eq!(espresso, expected, "chain {chain_id} must derive with the baked Espresso");
         }
+    }
 
-        #[async_trait]
-        impl PreimageOracleClient for StubOracle {
-            async fn get(&self, key: PreimageKey) -> PreimageOracleResult<Vec<u8>> {
-                let rollup_config_key = PreimageKey::new_local(L2_ROLLUP_CONFIG_KEY.to());
-                if key == rollup_config_key {
-                    self.rollup_config.clone().ok_or(PreimageOracleError::KeyNotFound)
-                } else {
-                    Err(PreimageOracleError::KeyNotFound)
-                }
-            }
-
-            async fn get_exact(
-                &self,
-                _key: PreimageKey,
-                _buf: &mut [u8],
-            ) -> PreimageOracleResult<()> {
-                Err(PreimageOracleError::KeyNotFound)
-            }
-        }
-
-        fn espresso_config_json() -> Vec<u8> {
-            let mut cfg = CeloRollupConfig::new(RollupConfig::default());
-            cfg.espresso.espresso_time = Some(1234);
-            cfg.espresso.batch_authenticator_address =
-                Some(address!("00000000000000000000000000000000000000aa"));
-            serde_json::to_vec(&cfg).expect("serialize espresso config")
-        }
-
-        #[tokio::test]
-        async fn applies_oracle_espresso_for_known_chain() {
-            let oracle = StubOracle { rollup_config: Some(espresso_config_json()) };
-            let espresso = load_oracle_espresso_override(&oracle, CELO_MAINNET_CHAIN_ID)
-                .await
-                .expect("override must load")
-                .expect("preimage present => Some");
-
-            assert_eq!(espresso.espresso_time, Some(1234));
-            assert_eq!(
-                espresso.batch_authenticator_address,
-                Some(address!("00000000000000000000000000000000000000aa"))
-            );
-        }
-
-        #[tokio::test]
-        async fn known_chain_without_espresso_keeps_default() {
-            // Host serves a rollup config, but it carries no Espresso fields: the extracted
-            // override is the disabled default, so overlaying it is a no-op.
-            let plain = serde_json::to_vec(&CeloRollupConfig::new(RollupConfig::default()))
-                .expect("serialize plain config");
-            let oracle = StubOracle { rollup_config: Some(plain) };
-            let espresso = load_oracle_espresso_override(&oracle, CELO_MAINNET_CHAIN_ID)
-                .await
-                .expect("override must load")
-                .expect("preimage present => Some");
-
-            assert_eq!(espresso, CeloEspressoConfig::default());
-        }
-
-        #[tokio::test]
-        async fn missing_preimage_yields_no_override() {
-            // Native CLI booted with `--l2-chain-id` and no rollup config: the host serves no
-            // rollup-config preimage, so the registry default Espresso (disabled) must be kept.
-            let oracle = StubOracle { rollup_config: None };
-            let result = load_oracle_espresso_override(&oracle, CELO_MAINNET_CHAIN_ID)
-                .await
-                .expect("KeyNotFound must be swallowed, not propagated");
-            assert_eq!(result, None);
-        }
+    #[test]
+    fn espresso_untouched_for_non_celo_chain() {
+        // A non-Celo chain ID keeps whatever Espresso its config carried (the oracle fallback).
+        let carried = CeloEspressoConfig {
+            espresso_time: Some(42),
+            batch_authenticator_address: Some(Address::repeat_byte(0xcc)),
+        };
+        let mut espresso = carried;
+        enforce_celo_espresso(&mut espresso, 10);
+        assert_eq!(espresso, carried);
     }
 }

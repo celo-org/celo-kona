@@ -1,6 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::{CeloSingleChainHintHandler, CeloSingleChainLocalInputs};
+use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler};
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
@@ -11,11 +11,10 @@ use hokulea_host_bin::eigenda_preimage::OnlineEigenDAPreimageProvider;
 use hokulea_proof::hint::ExtendedHintType;
 use kona_cli::cli_styles;
 use kona_host::{
-    DataFormat, DirectoryKeyValueStore, DiskKeyValueStore, MemoryKeyValueStore, OfflineHostBackend,
-    OnlineHostBackend, OnlineHostBackendCfg, PreimageServer, SharedKeyValueStore,
-    SplitKeyValueStore,
+    OfflineHostBackend, OnlineHostBackend, OnlineHostBackendCfg, PreimageServer,
+    SharedKeyValueStore,
     eth::rpc_provider,
-    single::{SingleChainHost, SingleChainHostError, SingleChainLocalInputs},
+    single::{SingleChainHost, SingleChainHostError},
 };
 use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
@@ -27,10 +26,7 @@ use kona_std_fpvm::{FileChannel, FileDescriptor};
 use reqwest::Url;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::{
-    sync::RwLock,
-    task::{self, JoinHandle},
-};
+use tokio::task::{self, JoinHandle};
 
 /// The host binary CLI application arguments.
 #[derive(Default, Parser, Serialize, Clone, Debug)]
@@ -80,13 +76,21 @@ impl CeloSingleChainHost {
         C: Channel + Send + Sync + 'static,
     {
         let kv_store = self.create_key_value_store()?;
+        // The rollup config (Celo Espresso settings included) that `CeloConfigBackend` serves under
+        // `L2_ROLLUP_CONFIG_KEY`. `None` when no rollup config is configured, in which case the
+        // request is delegated to the inner backend (yielding `KeyNotFound`), matching upstream.
+        let rollup_config_json =
+            self.read_rollup_config()?.and_then(|cfg| serde_json::to_vec(&cfg).ok()).map(Arc::new);
 
         let task_handle = if self.is_offline() {
             task::spawn(async {
                 PreimageServer::new(
                     OracleServer::new(preimage),
                     HintReader::new(hint),
-                    Arc::new(OfflineHostBackend::new(kv_store)),
+                    Arc::new(CeloConfigBackend::new(
+                        OfflineHostBackend::new(kv_store),
+                        rollup_config_json,
+                    )),
                 )
                 .start()
                 .await
@@ -94,13 +98,16 @@ impl CeloSingleChainHost {
             })
         } else {
             let providers = self.create_providers().await?;
-            let backend = OnlineHostBackend::new(
-                self.clone(),
-                kv_store.clone(),
-                providers,
-                CeloSingleChainHintHandler,
-            )
-            .with_proactive_hint(proactive_hint_type());
+            let backend = CeloConfigBackend::new(
+                OnlineHostBackend::new(
+                    self.clone(),
+                    kv_store.clone(),
+                    providers,
+                    CeloSingleChainHintHandler,
+                )
+                .with_proactive_hint(proactive_hint_type()),
+                rollup_config_json,
+            );
 
             task::spawn(async {
                 PreimageServer::new(
@@ -140,14 +147,11 @@ impl CeloSingleChainHost {
         self.kona_cfg.is_offline()
     }
 
-    /// Reads the [CeloRollupConfig] from the rollup config path, if one is configured.
+    /// Reads the [`CeloRollupConfig`] from the rollup config path, if one is configured.
     ///
     /// The file is deserialized directly as a [`CeloRollupConfig`] so the Celo Espresso settings
     /// (`espresso_time` / `batch_authenticator_address`) are preserved. Going through the upstream
     /// reader instead would yield an upstream `RollupConfig` and drop those fields.
-    ///
-    /// Returns `Ok(None)` when no rollup config path is set (matching the upstream behaviour of
-    /// serving no rollup config preimage in that case).
     pub fn read_rollup_config(&self) -> Result<Option<CeloRollupConfig>, SingleChainHostError> {
         let Some(path) = self.kona_cfg.rollup_config_path.as_ref() else {
             return Ok(None);
@@ -158,42 +162,9 @@ impl CeloSingleChainHost {
         Ok(Some(celo_rollup_config))
     }
 
-    /// Creates the key-value store for the host backend.
-    ///
-    /// Wraps the upstream [`SingleChainLocalInputs`] in a [`CeloSingleChainLocalInputs`] so the
-    /// `L2_ROLLUP_CONFIG_KEY` entry is served as a [`CeloRollupConfig`] (Espresso settings
-    /// included) rather than the upstream `RollupConfig`. The split-store wiring
-    /// mirrors the upstream `kona_host::create_key_value_store` factory (which is crate-private).
+    /// Creates the key-value store for the host backend. Delegates to the upstream factory.
     pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
-        let rollup_config = self.read_rollup_config()?;
-        let local_kv_store = CeloSingleChainLocalInputs::new(
-            SingleChainLocalInputs::new(self.kona_cfg.clone()),
-            rollup_config,
-        );
-
-        let store: SharedKeyValueStore = match self.kona_cfg.data_dir.as_deref() {
-            Some(data_dir) => {
-                let format = detect_data_format(data_dir, self.kona_cfg.data_format);
-                match format {
-                    DataFormat::Directory => {
-                        let dir_kv_store = DirectoryKeyValueStore::new(data_dir);
-                        Arc::new(RwLock::new(SplitKeyValueStore::new(local_kv_store, dir_kv_store)))
-                    }
-                    DataFormat::Rocksdb => {
-                        let disk_kv_store = DiskKeyValueStore::new(data_dir.to_path_buf());
-                        Arc::new(RwLock::new(SplitKeyValueStore::new(
-                            local_kv_store,
-                            disk_kv_store,
-                        )))
-                    }
-                }
-            }
-            None => {
-                let mem_kv_store = MemoryKeyValueStore::new();
-                Arc::new(RwLock::new(SplitKeyValueStore::new(local_kv_store, mem_kv_store)))
-            }
-        };
-        Ok(store)
+        self.kona_cfg.create_key_value_store()
     }
 
     /// Creates the providers required for the host backend.
@@ -239,29 +210,6 @@ impl CeloSingleChainHost {
             eigenda_preimage_provider,
         })
     }
-}
-
-/// The filename of the `kvformat` marker written into a data directory by the on-disk stores.
-const KV_FORMAT_FILENAME: &str = "kvformat";
-
-/// Detects the on-disk preimage [`DataFormat`] for `data_dir` from its `kvformat` marker file,
-/// falling back to `default_format` when the marker is missing or unrecognized.
-///
-/// Replicates the crate-private `kona_host` helper of the same name, needed because
-/// [`CeloSingleChainHost::create_key_value_store`] reimplements the (also crate-private) store
-/// factory in order to swap in [`CeloSingleChainLocalInputs`].
-fn detect_data_format(data_dir: &std::path::Path, default_format: DataFormat) -> DataFormat {
-    let format_path = data_dir.join(KV_FORMAT_FILENAME);
-    std::fs::read_to_string(&format_path).map_or(default_format, |contents| {
-        match contents.as_str() {
-            "directory" => DataFormat::Directory,
-            "rocksdb" => DataFormat::Rocksdb,
-            other => {
-                tracing::warn!(format = other, "Unknown kvformat marker, using CLI default");
-                default_format
-            }
-        }
-    })
 }
 
 #[cfg(feature = "eigenda")]
