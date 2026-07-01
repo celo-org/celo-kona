@@ -2,7 +2,9 @@
 
 use crate::{
     CeloContext,
-    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses},
+    constants::{
+        CELO_SYSTEM_ADDRESS, FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
+    },
     contracts::erc20,
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
@@ -26,9 +28,9 @@ use revm::{
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, evm::FrameTr,
-        handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
-        validation::validate_priority_fee_tx,
+        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, SYSTEM_ADDRESS,
+        evm::FrameTr, handler::EvmTrError, post_execution::build_result_gas,
+        pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
     interpreter::{
@@ -198,6 +200,17 @@ where
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
+
+        // `build_execution_result` runs this hook for *every* system call too (the CIP-64
+        // debit's own `call_no_commit`, `call_read_only`, ...), not just the main tx. Those
+        // sub-transactions carry a system caller and no fee currency, so `fees_in_celo` forces
+        // the early return below — the credit never re-enters. Pin that: a system-caller tx
+        // that reached the crediting path would recursively debit/credit.
+        let caller = ctx.tx().caller();
+        debug_assert!(
+            (caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS) || fees_in_celo,
+            "CIP-64 credit hook reached for a system-caller sub-transaction (should be native)"
+        );
 
         if is_deposit || fees_in_celo || is_balance_check_disabled || is_base_fee_disabled {
             return Ok(());
@@ -387,6 +400,19 @@ where
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
+        // The debit's system call runs `post_execution::output`, which `take_logs()`
+        // (a `mem::take`) the *entire* journal logs buffer into the debit's result (captured
+        // below as `logs` -> `Cip64Info::logs_pre`). Unlike `call_read_only`, the debit's
+        // `call_no_commit` path does not detach/reattach the enclosing logs — it relies on the
+        // buffer being empty here because the debit runs in pre-execution before any main-tx
+        // log is emitted (context-load reads reverted their own logs). Assert that precondition
+        // so a future reorder trips tests instead of silently stealing the enclosing tx's logs.
+        debug_assert!(
+            evm.ctx().journal_ref().logs.is_empty(),
+            "CIP-64 debit ran with non-empty journal logs; take_logs would move the enclosing \
+             tx's logs into logs_pre"
+        );
+
         // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
         // Note: load_fee_currency_context() already advanced the journal transaction_id after
         // context loading, so the accounts and storage slots it warmed now read cold here.
@@ -413,6 +439,203 @@ where
         });
         tx.effective_gas_price = Some(effective_gas_price.into_inner());
         evm.ctx().set_tx(tx);
+
+        Ok(())
+    }
+
+    /// Runs the CIP-64 ERC20 fee debit together with the caller-state validation and native
+    /// deduction as a single **rollbackable** unit.
+    ///
+    /// The debit mutates the payer's ERC20 fee-currency balance, yet a CIP-64 tx can still be
+    /// *rejected* by a later state check (nonce / EIP-3607 / insufficient native funds). To
+    /// stop a rejected tx from leaking a committed debit into the block, the debit runs
+    /// through the non-committing system-call path (its journal entries survive), bracketed
+    /// by a journal `checkpoint`:
+    /// - on success the checkpoint is committed and the debit's transient storage is cleared
+    ///   (EIP-1153), reproducing the committing `call` path's bookkeeping;
+    /// - on any rejection the checkpoint is reverted, undoing the debit — state, account/slot
+    ///   warmth, transient storage, and logs — together with the aborted validation.
+    ///
+    /// `transaction_id` is never bumped by the non-committing path, so on the success path the
+    /// debit's warmed fee-currency slots stay warm for the main transaction exactly as the
+    /// committing `call`'s `transaction_id` restore keeps them: warm/cold gas accounting is
+    /// unchanged. Because the checkpoint spans the debit, the affordability checks in
+    /// [`Self::debit_and_deduct_caller`] read post-debit state, so a fee currency that
+    /// (non-conformantly) touched the payer's native account is handled by ordinary
+    /// validation rather than a dedicated guard — on the include path celo-revm keeps the
+    /// change and converges with op-geth (both run the same `debitGasFees`); on the reject
+    /// path it is rolled back.
+    ///
+    /// `debit_erc20_fees` gates whether an ERC20 debit — and thus a checkpoint — is needed;
+    /// for native-CELO and deposit txs it is `false` and this is a plain validate-and-deduct.
+    fn cip64_rollbackable_debit_and_deduct_caller(
+        &self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+        debit_erc20_fees: bool,
+        additional_cost: U256,
+    ) -> Result<(), ERROR> {
+        // Snapshot the call-stack depth so we can assert it is balanced below.
+        // checkpoint / checkpoint_commit / checkpoint_revert is depth-balanced on the happy
+        // path, and on the error path `catch_error` -> `discard_tx` resets `depth` to 0
+        // (revm-context-16.0.1 journal/inner.rs). This runs at top level (depth 0) during
+        // pre-execution, so depth ends balanced regardless of how the debit ends. (Mirrors the
+        // same assert in `core_contracts::call_read_only`.)
+        let prev_depth = evm.ctx().journal_ref().depth;
+
+        // Only the ERC20 debit makes an irreversible pre-validation charge, so only it needs a
+        // rollback checkpoint; native / deposit paths take none.
+        let checkpoint = if debit_erc20_fees {
+            Some(evm.ctx().journal_mut().checkpoint())
+        } else {
+            None
+        };
+
+        let result = self.debit_and_deduct_caller(evm, debit_erc20_fees, additional_cost);
+
+        match &result {
+            Ok(()) => {
+                if checkpoint.is_some() {
+                    let journal = evm.ctx().journal_mut();
+                    // Keep the debit's journal entries; the enclosing transaction owns them now.
+                    journal.checkpoint_commit();
+                    // Clear the debit's transient storage (EIP-1153), matching the committing
+                    // `call` path. Nothing in the main tx has run yet, so transient storage is
+                    // empty before the debit and this clears only the debit's own writes.
+                    journal.transient_storage.clear();
+                }
+            }
+            Err(_) => {
+                if let Some(cp) = checkpoint {
+                    // Undo the debit (and any partial caller mutations): state, account/slot
+                    // warmth, transient storage, and logs are reverted back to the checkpoint.
+                    evm.ctx().journal_mut().checkpoint_revert(cp);
+                }
+            }
+        }
+
+        // The checkpoint machinery (happy path) and `discard_tx` (error path) both leave depth
+        // balanced, so assert rather than force it: a future revm change that leaves depth
+        // inflated trips tests loudly instead of being silently masked.
+        if debit_erc20_fees {
+            debug_assert_eq!(
+                evm.ctx().journal_ref().depth,
+                prev_depth,
+                "checkpoint_revert / checkpoint_commit / discard_tx should have restored depth"
+            );
+        }
+
+        result
+    }
+
+    /// The fallible body wrapped by [`Self::cip64_rollbackable_debit_and_deduct_caller`]:
+    /// runs the ERC20 debit (when `debit_erc20_fees`), validates the caller's nonce/code and
+    /// native affordability **against post-debit state**, and applies the caller mutations
+    /// (native gas deduction + nonce bump). Every early return here is a tx rejection that the
+    /// caller rolls back via the enclosing checkpoint; on `Ok` the caller commits it.
+    fn debit_and_deduct_caller(
+        &self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+        debit_erc20_fees: bool,
+        additional_cost: U256,
+    ) -> Result<(), ERROR> {
+        // CIP-64 ERC20 fee debit (rollbackable). Runs first, so the checks below validate the
+        // caller against post-debit state.
+        if debit_erc20_fees {
+            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
+        }
+
+        let ctx = evm.ctx();
+        let basefee = ctx.block().basefee() as u128;
+        let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
+        let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fees_in_celo = ctx.tx().is_fee_in_celo();
+        let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
+        let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
+        let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
+
+        let mint = if is_deposit {
+            ctx.tx().mint().unwrap_or_default()
+        } else {
+            0
+        };
+
+        let (tx, journal) = evm.ctx().tx_journal_mut();
+
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+
+        if !is_deposit {
+            // validates account nonce and code
+            validate_account_nonce_and_code(
+                &caller_account.account().info,
+                tx.nonce(),
+                is_eip3607_disabled,
+                is_nonce_check_disabled,
+            )?;
+        }
+
+        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
+
+        // If the transaction is a deposit with a `mint` value, add the mint value
+        // in wei to the caller's balance. This should be persisted to the database
+        // prior to the rest of execution.
+        let mut new_balance = caller_account.balance().saturating_add(U256::from(mint));
+
+        if fees_in_celo {
+            // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
+            // Transfer will be done inside `*_inner` functions.
+            if !is_deposit && max_balance_spending > new_balance && !is_balance_check_disabled {
+                // skip max balance check for deposit transactions.
+                // this check for deposit was skipped previously in `validate_tx_against_state` function
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(max_balance_spending),
+                    balance: Box::new(new_balance),
+                }
+                .into());
+            }
+
+            let effective_balance_spending =
+                tx.effective_balance_spending(basefee, blob_price).expect(
+                    "effective balance is always smaller than max balance so it can't overflow",
+                );
+
+            // subtracting max balance spending with value that is going to be deducted later in the call.
+            let gas_balance_spending = effective_balance_spending - tx.value();
+
+            // If the transaction is not a deposit transaction, subtract the L1 data fee from the
+            // caller's balance directly after minting the requested amount of ETH.
+            // Additionally deduct the operator fee from the caller's account.
+            //
+            // In case of deposit additional cost will be zero.
+            let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
+
+            new_balance = new_balance.saturating_sub(op_gas_balance_spending);
+        } else {
+            // Check CELO balance for value transfer (value is always in CELO)
+            assert!(
+                !is_deposit,
+                "gas for deposit txs can't be paid in erc20 tokens"
+            );
+            if tx.value() > new_balance && !is_balance_check_disabled {
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(tx.value()),
+                    balance: Box::new(new_balance),
+                }
+                .into());
+            }
+        }
+
+        if is_balance_check_disabled {
+            // Make sure the caller's balance is at least the value of the transaction.
+            // this is not consensus critical, and it is used in testing.
+            new_balance = new_balance.max(tx.value());
+        }
+
+        // make changes to the account
+        //(for cip64, the set balance won't journal if the balance is the same)
+        caller_account.set_balance(new_balance);
+        if tx.kind().is_call() {
+            caller_account.bump_nonce();
+        }
 
         Ok(())
     }
@@ -461,6 +684,99 @@ where
         };
 
         Ok(gas)
+    }
+
+    /// Builds the [`ExecutionResult`] for a finished transaction **without**
+    /// committing the journal.
+    ///
+    /// This is the body of [`Handler::execution_result`] up to — but excluding —
+    /// the `commit_tx()` / teardown at the end. Splitting it out lets
+    /// [`Self::run_system_call_no_commit`] finish a system call while leaving the
+    /// journal's revert log intact, so an enclosing `checkpoint` can roll the call
+    /// back (see [`crate::contracts::core_contracts::call_read_only`]).
+    fn build_execution_result(
+        &mut self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+        mut frame_result: FrameResult,
+        result_gas: revm::context_interface::result::ResultGas,
+    ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // Handle context errors
+        match core::mem::replace(evm.ctx().error(), Ok(())) {
+            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
+            Err(revm::context_interface::context::ContextError::Custom(e)) => {
+                return Err(ERROR::from_string(e));
+            }
+            Ok(_) => (),
+        }
+
+        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
+        // This matches the old revm 24.0 flow where it was called in the `end` function
+        // as a separate step after reward_beneficiary
+        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
+
+        // Call post_execution::output to get ExecutionResult
+        let exec_result =
+            revm::handler::post_execution::output(evm.ctx(), frame_result, result_gas)
+                .map_haltreason(OpHaltReason::Base);
+
+        // CIP64 NOTE:
+        // The ExecutionResult class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs),
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
+
+        if exec_result.is_halt() {
+            // Post-regolith, if the transaction is a deposit transaction and it halts,
+            // we bubble up to the global return handler. The mint value will be persisted
+            // and the caller nonce will be incremented there.
+            let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+            if is_deposit && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH) {
+                return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
+            }
+        }
+
+        Ok(exec_result)
+    }
+
+    /// Runs a system call like [`Handler::run_system_call`], but **without**
+    /// committing the transaction journal.
+    ///
+    /// [`commit_tx`](revm::context_interface::JournalTr::commit_tx) does a bare
+    /// `journal.clear()` that empties the shared revert log. Skipping it leaves the
+    /// call's journal entries (state changes, warmed accounts/slots, transient
+    /// storage, logs) in place so a surrounding `checkpoint` / `checkpoint_revert`
+    /// pair can undo them — which is what makes
+    /// [`call_read_only`](crate::contracts::core_contracts::call_read_only) an actual
+    /// read-only call. The non-journal teardown that `execution_result` performs
+    /// (L1-cost cache, local context, frame stack) is still done here.
+    ///
+    /// On its own this method *keeps* the call's effects, exactly like
+    /// [`Handler::run_system_call`] minus the `commit_tx`; the caller must bracket it
+    /// with `checkpoint` / `checkpoint_revert` to discard them.
+    pub(crate) fn run_system_call_no_commit(
+        &mut self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+    ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // dummy values that are not used, mirroring `Handler::run_system_call`.
+        let init_and_floor_gas = InitialAndFloorGas::new(0, 0);
+        match self
+            .execution(evm, &init_and_floor_gas)
+            .and_then(|exec_result| {
+                // System calls have no intrinsic gas; build ResultGas from frame result.
+                let gas = exec_result.gas();
+                let result_gas = build_result_gas(gas, init_and_floor_gas);
+                self.build_execution_result(evm, exec_result, result_gas)
+            }) {
+            Ok(exec_result) => {
+                // Same teardown as `execution_result`, but WITHOUT `commit_tx`: the
+                // caller's `checkpoint_revert` unwinds the journal instead of clearing it.
+                evm.ctx().chain_mut().clear_tx_l1_cost();
+                evm.ctx().local_mut().clear();
+                evm.frame_stack().clear();
+                Ok(exec_result)
+            }
+            Err(e) => self.catch_error(evm, e),
+        }
     }
 }
 
@@ -567,20 +883,11 @@ where
         let ctx = evm.ctx();
 
         let basefee = ctx.block().basefee() as u128;
-        let blob_price = ctx.block().blob_gasprice().unwrap_or_default();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let spec = *ctx.cfg().spec();
         let block_number = ctx.block().number();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
-        let is_eip3607_disabled = ctx.cfg().is_eip3607_disabled();
-        let is_nonce_check_disabled = ctx.cfg().is_nonce_check_disabled();
-
-        let mint = if is_deposit {
-            ctx.tx().mint().unwrap_or_default()
-        } else {
-            0
-        };
 
         let mut additional_cost = U256::ZERO;
 
@@ -616,15 +923,6 @@ where
             }
         }
 
-        let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
-        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
-        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
-        // rate. The GASPRICE opcode will therefore return native pricing instead of the
-        // ERC20-denominated price during simulations. This is a known limitation.
-        if !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit {
-            self.cip64_validate_erc20_and_debit_gas_fees(evm)?;
-        }
-
         // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
         // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
         // rather than `None`. Without this the receipt encoding would differ from
@@ -640,85 +938,23 @@ where
             evm.ctx().set_tx(tx);
         }
 
-        let (tx, journal) = evm.ctx().tx_journal_mut();
+        // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
+        // currency, and only when the base-fee / balance checks are enabled.
+        //
+        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
+        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
+        // rate. The GASPRICE opcode will therefore return native pricing instead of the
+        // ERC20-denominated price during simulations. This is a known limitation.
+        let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
+        let debit_erc20_fees =
+            !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit;
 
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
-        if !is_deposit {
-            // validates account nonce and code
-            validate_account_nonce_and_code(
-                &caller_account.account().info,
-                tx.nonce(),
-                is_eip3607_disabled,
-                is_nonce_check_disabled,
-            )?;
-        }
-
-        let max_balance_spending = tx.max_balance_spending()?.saturating_add(additional_cost);
-
-        // If the transaction is a deposit with a `mint` value, add the mint value
-        // in wei to the caller's balance. This should be persisted to the database
-        // prior to the rest of execution.
-        let mut new_balance = caller_account.balance().saturating_add(U256::from(mint));
-
-        if fees_in_celo {
-            // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
-            // Transfer will be done inside `*_inner` functions.
-            if !is_deposit && max_balance_spending > new_balance && !is_balance_check_disabled {
-                // skip max balance check for deposit transactions.
-                // this check for deposit was skipped previously in `validate_tx_against_state` function
-                return Err(InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(max_balance_spending),
-                    balance: Box::new(new_balance),
-                }
-                .into());
-            }
-
-            let effective_balance_spending =
-                tx.effective_balance_spending(basefee, blob_price).expect(
-                    "effective balance is always smaller than max balance so it can't overflow",
-                );
-
-            // subtracting max balance spending with value that is going to be deducted later in the call.
-            let gas_balance_spending = effective_balance_spending - tx.value();
-
-            // If the transaction is not a deposit transaction, subtract the L1 data fee from the
-            // caller's balance directly after minting the requested amount of ETH.
-            // Additionally deduct the operator fee from the caller's account.
-            //
-            // In case of deposit additional cost will be zero.
-            let op_gas_balance_spending = gas_balance_spending.saturating_add(additional_cost);
-
-            new_balance = new_balance.saturating_sub(op_gas_balance_spending);
-        } else {
-            // Check CELO balance for value transfer (value is always in CELO)
-            assert!(
-                !is_deposit,
-                "gas for deposit txs can't be paid in erc20 tokens"
-            );
-            if tx.value() > new_balance && !is_balance_check_disabled {
-                return Err(InvalidTransaction::LackOfFundForMaxFee {
-                    fee: Box::new(tx.value()),
-                    balance: Box::new(new_balance),
-                }
-                .into());
-            }
-        }
-
-        if is_balance_check_disabled {
-            // Make sure the caller's balance is at least the value of the transaction.
-            // this is not consensus critical, and it is used in testing.
-            new_balance = new_balance.max(tx.value());
-        }
-
-        // make changes to the account
-        //(for cip64, the set balance won't journal if the balance is the same)
-        caller_account.set_balance(new_balance);
-        if tx.kind().is_call() {
-            caller_account.bump_nonce();
-        }
-
-        Ok(())
+        // The ERC20 debit (if any) plus the caller-state validation and native gas deduction
+        // run as a single rollbackable unit: the debit's journal entries are bracketed by a
+        // checkpoint that is reverted if any post-debit rejection check (nonce / EIP-3607 /
+        // insufficient funds) fails, so a rejected CIP-64 tx charges no fee. The affordability
+        // checks therefore validate the caller against post-debit state.
+        self.cip64_rollbackable_debit_and_deduct_caller(evm, debit_erc20_fees, additional_cost)
     }
 
     fn last_frame_result(
@@ -832,43 +1068,10 @@ where
     fn execution_result(
         &mut self,
         evm: &mut Self::Evm,
-        mut frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: revm::context_interface::result::ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        // Handle context errors
-        match core::mem::replace(evm.ctx().error(), Ok(())) {
-            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
-            Err(revm::context_interface::context::ContextError::Custom(e)) => {
-                return Err(ERROR::from_string(e));
-            }
-            Ok(_) => (),
-        }
-
-        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
-        // This matches the old revm 24.0 flow where it was called in the `end` function
-        // as a separate step after reward_beneficiary
-        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
-
-        // Call post_execution::output to get ExecutionResult
-        let exec_result =
-            revm::handler::post_execution::output(evm.ctx(), frame_result, result_gas)
-                .map_haltreason(OpHaltReason::Base);
-
-        // CIP64 NOTE:
-        // The ExecutionResult class does not allow logs to be passed in for revert results.
-        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
-        // So, instead of modifying only the success results here (to contain those logs),
-        // both cases are handled in the receipts_builder (alloy-celo-evm)
-
-        if exec_result.is_halt() {
-            // Post-regolith, if the transaction is a deposit transaction and it halts,
-            // we bubble up to the global return handler. The mint value will be persisted
-            // and the caller nonce will be incremented there.
-            let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-            if is_deposit && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH) {
-                return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
-            }
-        }
+        let exec_result = self.build_execution_result(evm, frame_result, result_gas)?;
 
         // Commit journal, clear frame stack, clear l1_block_info
         evm.ctx().journal_mut().commit_tx();
@@ -2018,5 +2221,335 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The `_balances[account]` slot of the `FEE_CURRENCY_BYTECODE` ERC20 (Solidity
+    /// mapping in slot 0): `keccak256(abi.encode(account, uint256(0)))`.
+    fn fee_currency_balance_slot(account: Address) -> U256 {
+        let mut buf = [0u8; 64];
+        buf[12..32].copy_from_slice(account.as_slice());
+        U256::from_be_bytes(keccak256(buf).0)
+    }
+
+    // -----------------------------------------------------------------------
+    // A CIP-64 tx rejected by a state check that runs *after* the ERC20 fee debit must
+    // leak no debit into the block: the rollbackable debit is reverted with the tx.
+    //
+    // The debit runs first (early), charging the sender's fee-currency balance, and only
+    // then does `validate_against_state_and_deduct_caller` run the nonce / EIP-3607 /
+    // affordability checks. Because the debit is bracketed by a journal checkpoint
+    // (`cip64_rollbackable_debit_and_deduct_caller`), a rejection here reverts it. If the
+    // debit instead committed irreversibly (the pre-fix behavior), the block builder —
+    // which reuses one journal across the block, skips the invalid tx, and finalizes once —
+    // would seal the orphaned debit, while a validator re-executing only the *included* txs
+    // never applies it: the fee-currency balance (hence the state root) diverges — a
+    // consensus split. This test rejects a nonce-too-low CIP-64 tx and asserts nothing is
+    // debited.
+    //
+    // Driven through the bare handler (`handler.run` + a manual `finalize`), then asserting the
+    // finalized fee-currency balance. Note `handler.run` *does* discard the journal on the error
+    // path (`catch_error` -> `discard_tx`), so this test is not discriminating by bypassing that
+    // safety net. What makes it fail against a committing debit is different: `commit_tx` clears
+    // the revert log, so by the time `discard_tx` runs there is nothing left to undo and the
+    // debit leaks. The rollbackable (non-committing) debit keeps its revert-log entries, so
+    // `checkpoint_revert` unwinds it (and `discard_tx` would too) — the debit is reverted.
+    #[test]
+    fn rejected_cip64_tx_reverts_the_fee_debit() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // Advance the sender's on-chain nonce to 1 so a tx with nonce 0 is rejected as
+        // nonce-too-low — a check that runs after the debit. (The helper gives the sender
+        // 1 CELO at nonce 0; we only bump the nonce.)
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0; // on-chain nonce is 1 → NonceTooLow, after the debit
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            })
+            .build_celo();
+
+        // Mirror the builder: run the (rejected) tx through the handler, then finalize the
+        // journal (the builder reuses one journal across the block and finalizes once).
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .run(&mut evm)
+            .expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+
+        let state = evm.finalize();
+
+        // If the debit was rolled back, the slot is either absent from the post-state or
+        // carries its original value; either way the balance is unchanged.
+        let balance_slot = fee_currency_balance_slot(sender);
+        let final_balance = state
+            .get(&TEST_FEE_CURRENCY)
+            .and_then(|acct| acct.storage.get(&balance_slot))
+            .map(|slot| slot.present_value)
+            .unwrap_or(fc_balance);
+
+        assert_eq!(
+            final_balance, fc_balance,
+            "rejected CIP-64 tx leaked an ERC20 fee debit into the block \
+             (balance {final_balance} != original {fc_balance}); the rollbackable debit \
+             must be reverted when a later rejection check fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Caveat: revert-on-rejection must NOT become revert-on-execution-revert. A CIP-64 tx
+    // that is *included* but whose EVM execution reverts still owes gas — the fee stays
+    // debited (the checkpoint is committed in validation, before execution runs, so an
+    // execution-time revert cannot unwind it). This pins that boundary.
+    #[test]
+    fn included_but_reverted_cip64_tx_still_pays_the_fee() {
+        use revm::{primitives::TxKind, state::Bytecode};
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        // A contract that always reverts: PUSH1 0x00; PUSH1 0x00; REVERT.
+        let revert_stub = address!("0x00000000000000000000000000000000000000dd");
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        let bytecode = Bytecode::new_raw(bytes!("60006000fd"));
+        db.insert_account_info(
+            revert_stub,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                account_id: None,
+                code: Some(bytecode),
+            },
+        );
+
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 200_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.kind = TxKind::Call(revert_stub);
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            })
+            .build_celo();
+
+        let out = evm.replay().expect("an included tx must not be rejected");
+        assert!(
+            matches!(out.result, ExecutionResult::Revert { .. }),
+            "the main execution should revert: {:?}",
+            out.result
+        );
+
+        // The debit must have stuck despite the execution revert: the checkpoint is
+        // committed in validation, so only a *pre-inclusion rejection* reverts it.
+        let balance_slot = fee_currency_balance_slot(sender);
+        let final_balance = out
+            .state
+            .get(&TEST_FEE_CURRENCY)
+            .and_then(|acct| acct.storage.get(&balance_slot))
+            .map(|slot| slot.present_value)
+            .expect("fee-currency balance slot must be present — the debit ran");
+        assert!(
+            final_balance < fc_balance,
+            "an included-but-reverted CIP-64 tx must still pay its fee \
+             (balance {final_balance} was not reduced from {fc_balance})"
+        );
+    }
+
+    /// Runtime bytecode of a fee-currency stub whose response to *any* call transfers 1 wei of
+    /// its own native balance to `sink`, then returns success:
+    ///
+    ///   PUSH1 00 (retLen) PUSH1 00 (retOff) PUSH1 00 (argLen) PUSH1 00 (argOff)
+    ///   PUSH1 01 (value)  PUSH20 <sink> (addr) GAS CALL POP STOP
+    ///
+    /// Stands in for a non-conformant fee currency whose `debitGasFees` mutates *native* state,
+    /// not just its own ERC20 storage slot.
+    fn native_transfer_fee_currency_code(sink: Address) -> revm::state::Bytecode {
+        let mut code = vec![
+            0x60, 0x00, // PUSH1 0  -- retLength
+            0x60, 0x00, // PUSH1 0  -- retOffset
+            0x60, 0x00, // PUSH1 0  -- argsLength
+            0x60, 0x00, // PUSH1 0  -- argsOffset
+            0x60, 0x01, // PUSH1 1  -- value (1 wei)
+            0x73, //       PUSH20   -- address
+        ];
+        code.extend_from_slice(sink.as_slice());
+        code.extend_from_slice(&[
+            0x5a, // GAS  -- forward all remaining gas
+            0xf1, // CALL
+            0x50, // POP  -- discard the success flag
+            0x00, // STOP -- return success (empty output)
+        ]);
+        revm::state::Bytecode::new_raw(code.into())
+    }
+
+    // -----------------------------------------------------------------------
+    // A fee currency whose `debitGasFees` mutates *native* state (here: transfers native CELO
+    // out of itself) must have that mutation rolled back when the CIP-64 tx is rejected after
+    // the debit. The rollback checkpoint spans native balances, not only the ERC20 balance
+    // slot, so this closes the gap the removed conformance guard covered: a non-conformant
+    // currency that touches native accounts is reverted with the tx on the reject path.
+    //
+    // Positive control: the same stub on an *included* tx does land its native transfer, so a
+    // silently-skipped transfer (e.g. the inner CALL running out of gas) cannot make the
+    // reject-path assertion pass for the wrong reason.
+    #[test]
+    fn rejected_cip64_tx_reverts_native_mutation_by_fee_currency() {
+        use revm::primitives::TxKind;
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let sink = address!("0x00000000000000000000000000000000000000ee");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+        // Pre-fund the sink so the fee currency's CALL is not a (pricier) new-account write.
+        let sink_seed = U256::from(1_000u64);
+
+        // Build a DB whose fee currency transfers native CELO to `sink` on any call, holding
+        // enough native balance to do so. `sender_nonce` sets the sender's on-chain nonce.
+        let build_evm = |sender_nonce: u64, tx_nonce: u64, kind: TxKind| {
+            let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+            let code = native_transfer_fee_currency_code(sink);
+            db.insert_account_info(
+                TEST_FEE_CURRENCY,
+                AccountInfo {
+                    balance: U256::from(1_000_000u64),
+                    nonce: 0,
+                    code_hash: code.hash_slow(),
+                    account_id: None,
+                    code: Some(code),
+                },
+            );
+            db.insert_account_info(
+                sink,
+                AccountInfo {
+                    balance: sink_seed,
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                sender,
+                AccountInfo {
+                    balance: U256::from(1_000_000_000_000_000_000u128),
+                    nonce: sender_nonce,
+                    ..Default::default()
+                },
+            );
+
+            Context::celo()
+                .with_db(db)
+                .modify_tx_chained(|tx| {
+                    tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                    tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                    tx.op_tx.base.gas_limit = 200_000;
+                    tx.op_tx.base.gas_price = 100;
+                    tx.op_tx.base.gas_priority_fee = Some(10);
+                    tx.op_tx.base.caller = sender;
+                    tx.op_tx.base.nonce = tx_nonce;
+                    tx.op_tx.base.kind = kind;
+                    tx.op_tx.base.chain_id = Some(0);
+                    tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+                })
+                .modify_block_chained(|block| {
+                    block.basefee = 1;
+                    block.beneficiary = beneficiary;
+                })
+                .modify_cfg_chained(|cfg| {
+                    cfg.spec = OpSpecId::REGOLITH;
+                    cfg.chain_id = 0;
+                })
+                .build_celo()
+        };
+
+        let sink_balance = |state: &revm::state::EvmState| {
+            state
+                .get(&sink)
+                .map(|acct| acct.info.balance)
+                .unwrap_or(sink_seed)
+        };
+
+        // Positive control: a valid, included CIP-64 tx. The fee currency's native transfer
+        // during the debit (and credit) actually lands, so the sink balance grows.
+        let mut included = build_evm(0, 0, TxKind::Call(beneficiary));
+        let out = included
+            .replay()
+            .expect("a valid CIP-64 tx must be included");
+        assert!(
+            matches!(out.result, ExecutionResult::Success { .. }),
+            "control tx should succeed: {:?}",
+            out.result
+        );
+        assert!(
+            sink_balance(&out.state) > sink_seed,
+            "control: the fee currency's native transfer must land on an included tx \
+             (sink {} not increased from {sink_seed})",
+            sink_balance(&out.state)
+        );
+
+        // Reject path: on-chain nonce 1, tx nonce 0 -> NonceTooLow, which runs after the debit.
+        // The fee currency's native transfer done during the debit must be rolled back.
+        let mut rejected = build_evm(1, 0, TxKind::Call(beneficiary));
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let err = handler
+            .run(&mut rejected)
+            .expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+        let state = rejected.finalize();
+        assert_eq!(
+            sink_balance(&state),
+            sink_seed,
+            "rejected CIP-64 tx leaked a native mutation made by the fee currency's debitGasFees; \
+             the rollbackable debit must revert native balance changes, not only the ERC20 slot"
+        );
     }
 }

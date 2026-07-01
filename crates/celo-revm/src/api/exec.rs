@@ -10,7 +10,7 @@ use revm::{
         ContextTr, Database,
         result::{EVMError, ExecutionResult},
     },
-    handler::{EthFrame, EvmTr, Handler, PrecompileProvider, SystemCallTx},
+    handler::{EthFrame, EvmTr, Handler, PrecompileProvider, SYSTEM_ADDRESS, SystemCallTx},
     inspector::{InspectCommitEvm, InspectEvm, Inspector, InspectorHandler},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
@@ -146,5 +146,53 @@ where
         let mut h =
             CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.run_system_call(self)
+    }
+
+    /// Non-committing counterpart of [`SystemCallEvm::system_call_one`].
+    ///
+    /// Runs the system call through `CeloHandler::run_system_call_no_commit` so the
+    /// journal's revert log survives, letting the caller undo every state change with
+    /// a surrounding `checkpoint` / `checkpoint_revert`. Behaves identically to
+    /// `system_call_one` (same [`SYSTEM_ADDRESS`] caller and 30M default gas limit)
+    /// except it does not `commit_tx`. Used only by
+    /// [`call_read_only`](crate::contracts::core_contracts::call_read_only).
+    pub(crate) fn system_call_one_no_commit(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
+        self.inner.ctx().set_tx(
+            <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_caller(
+                SYSTEM_ADDRESS,
+                system_contract_address,
+                data,
+            ),
+        );
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
+        h.run_system_call_no_commit(self)
+    }
+
+    /// Non-committing counterpart of [`Self::transact_system_call_with_gas_limit`].
+    ///
+    /// See [`Self::system_call_one_no_commit`]; this variant uses the
+    /// [`CELO_SYSTEM_ADDRESS`] caller and a caller-supplied gas limit.
+    pub(crate) fn transact_system_call_no_commit_with_gas_limit(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+        gas_limit: u64,
+    ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
+        self.inner.ctx().set_tx(
+            <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
+                CELO_SYSTEM_ADDRESS,
+                system_contract_address,
+                data,
+                gas_limit,
+            ),
+        );
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
+        h.run_system_call_no_commit(self)
     }
 }

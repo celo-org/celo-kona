@@ -13,6 +13,20 @@
 //! - **Logs**: Extracted and cleared from journal during `ExecutionResult` creation
 //! - **Transient storage**: Explicitly cleared after each system call (EIP-1153 requirement)
 //! - **transaction_id**: Restored to keep warmed addresses from system call
+//!
+//! # Committing vs. read-only calls
+//! [`call`] uses the "keep by default" approach above: it runs the target as a system
+//! sub-transaction that ends in `commit_tx`, so its state changes stay in the journal for
+//! the enclosing transaction (used by the CIP-64 fee debit/credit).
+//!
+//! [`call_read_only`] instead runs the target through the *non-committing* system-call
+//! path (`CeloEvm::system_call_one_no_commit`) and brackets it with a journal
+//! `checkpoint` / `checkpoint_revert`, so every state change, warmed account/slot,
+//! transient-storage write, and log the target produced is rolled back. Because
+//! `commit_tx` does a bare `journal.clear()`, running a read-only target through the
+//! committing [`call`] would leave `checkpoint_revert` with nothing to undo — the target's
+//! writes would silently persist. The non-committing path is what makes the revert
+//! effective.
 
 use crate::{
     CeloContext, constants::get_addresses, evm::CeloEvm, fee_currency_context::FeeCurrencyInfo,
@@ -22,6 +36,7 @@ use alloy_primitives::{
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
+use op_revm::OpHaltReason;
 use revm::{
     Database,
     context_interface::ContextTr,
@@ -87,7 +102,15 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-/// Call a core contract function in read-only mode (checkpoint/revert to discard state changes).
+/// Call a core contract function in read-only mode, discarding **all** state changes.
+///
+/// The target runs through the non-committing system-call path
+/// (`CeloEvm::system_call_one_no_commit`) bracketed by a journal
+/// `checkpoint` / `checkpoint_revert`, so any storage writes, account/slot warming,
+/// transient-storage writes, logs, and self-destructs it performs are rolled back before
+/// this function returns. See the module docs for why the committing [`call`] path
+/// cannot provide this guarantee.
+///
 /// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn call_read_only<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -100,10 +123,70 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
+    // The system call overwrites `ctx.tx`; save it to restore afterwards.
+    let prev_tx = evm.ctx().tx().clone();
+
+    // Detach the surrounding transaction's logs before the call. Building the call's
+    // result runs `post_execution::output`, which `take_logs()` (a `mem::take`) the
+    // *entire* logs buffer; `checkpoint_revert` can only truncate logs, so it cannot
+    // restore ones taken before the checkpoint. Splitting them off here (and reattaching
+    // below) keeps the read-only call from stealing the enclosing transaction's logs.
+    // The call's own logs are captured in `call_result` and discarded.
+    let saved_logs = core::mem::take(&mut evm.ctx().journal_mut().logs);
+
+    // Snapshot the call-stack depth so we can assert it is balanced below. `checkpoint` /
+    // `checkpoint_revert` is depth-balanced on the happy path, and on the error path
+    // `catch_error` -> `discard_tx` resets `depth` to 0 (revm-context-16.0.1
+    // journal/inner.rs); these call sites always run at top level (depth 0), so depth ends
+    // balanced regardless of how the call ends. This matters here because the callers
+    // (get_currencies / get_exchange_rate / get_intrinsic_gas) swallow the error and drop
+    // the currency rather than aborting the tx, so a leaked depth would be silent — hence the
+    // assert below, which would trip if a future revm change stopped restoring depth.
+    let prev_depth = evm.ctx().journal_ref().depth;
+
+    // Snapshot the journal: `checkpoint` records the current revert-log length so
+    // `checkpoint_revert` below can replay and undo everything appended after it.
     let checkpoint = evm.ctx().journal_mut().checkpoint();
-    let result = call(evm, address, calldata, gas_limit);
+
+    // Run through the NON-committing system-call path. The regular `call` path ends in
+    // `commit_tx`, whose `journal.clear()` empties the revert log and would make the
+    // `checkpoint_revert` below a no-op — silently persisting any writes the target made.
+    // Skipping the commit keeps the revert log intact.
+    let call_result = if let Some(limit) = gas_limit {
+        evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
+    } else {
+        evm.system_call_one_no_commit(address, calldata)
+    };
+
+    // Undo the call: reverts state, account/slot warmth, transient storage, and
+    // self-destructs back to the checkpoint. Warmth is reverted here, so the surrounding
+    // transaction's warm/cold gas accounting is unaffected (no `transaction_id` dance
+    // needed — the non-committing path never bumped it).
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
-    result
+
+    // The checkpoint machinery (happy path) and `discard_tx` (error path) both leave depth
+    // balanced, so assert rather than force it: a future revm change that leaves depth
+    // inflated trips tests loudly instead of being silently masked.
+    debug_assert_eq!(
+        evm.ctx().journal_ref().depth,
+        prev_depth,
+        "checkpoint_revert / discard_tx should have restored the call-stack depth"
+    );
+
+    // After the revert the call's own logs have been taken by `post_execution::output`
+    // (a `mem::take`) and/or truncated back to the checkpoint, so the buffer must be empty
+    // here. Assert it before reattaching, so a future revm change to the take-logs /
+    // checkpoint contract fails loudly instead of silently dropping the enclosing tx's logs.
+    debug_assert!(
+        evm.ctx().journal_ref().logs.is_empty(),
+        "read-only call left logs in the journal; reattaching would drop the enclosing tx's logs"
+    );
+
+    // Reattach the surrounding transaction's logs and restore its tx env.
+    evm.ctx().journal_mut().logs = saved_logs;
+    evm.ctx().set_tx(prev_tx);
+
+    process_call_result(call_result)
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
@@ -136,6 +219,60 @@ where
     // Restore transaction_id for correct warm/cold accounting
     evm.ctx().journal_mut().transaction_id = prev_transaction_id;
 
+    process_call_result(call_result)
+}
+
+/// Like [`call`], but runs the target through the **non-committing** system-call path so the
+/// call's journal entries survive for an enclosing `checkpoint` to commit or revert.
+///
+/// The committing [`call`] ends in `commit_tx`, whose `journal.clear()` empties the revert
+/// log — making the call's state changes irreversible for the surrounding transaction. This
+/// variant skips that, leaving the call's writes, warmed accounts/slots, transient storage,
+/// and logs in the journal so a surrounding `checkpoint` / `checkpoint_revert` can undo them.
+///
+/// It restores the surrounding transaction's tx env (the system call overwrote it) but,
+/// unlike [`call`], does **not** clear transient storage or restore `transaction_id`:
+/// - `transaction_id` is never bumped without `commit_tx`, so the call's warmed slots stay
+///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them.
+/// - transient storage is left in place for the enclosing checkpoint to revert on the reject
+///   path (or for the caller to clear on the commit path — see
+///   `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`).
+///
+/// Used by the rollbackable CIP-64 fee debit.
+pub fn call_no_commit<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+    address: Address,
+    calldata: Bytes,
+    gas_limit: Option<u64>,
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    // Preserve the tx to restore afterwards (the system call overwrites it).
+    let prev_tx = evm.ctx().tx().clone();
+
+    let call_result = if let Some(limit) = gas_limit {
+        evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
+    } else {
+        evm.system_call_one_no_commit(address, calldata)
+    };
+
+    // Restore the original transaction context. Transient storage and transaction_id are
+    // intentionally left untouched (see the doc comment): the enclosing checkpoint owns
+    // the call's journal entries.
+    evm.ctx().set_tx(prev_tx);
+
+    process_call_result(call_result)
+}
+
+/// Decode a finished system-call result into (output, logs, gas_used, gas_refunded),
+/// mapping halts/reverts/errors to [`CoreContractError`]. Shared by [`call`] and
+/// [`call_read_only`].
+fn process_call_result<E: core::fmt::Display>(
+    call_result: Result<ExecutionResult<OpHaltReason>, E>,
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError> {
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o,
@@ -354,10 +491,10 @@ pub(crate) mod tests {
     use crate::{CeloBuilder, DefaultCelo};
     use alloy_primitives::{address, hex, keccak256};
     use revm::{
-        Context,
+        Context, ExecuteEvm,
         database::InMemoryDB,
         primitives::{Address, Bytes, U256},
-        state::{AccountInfo, Bytecode},
+        state::{AccountInfo, Bytecode, EvmState},
     };
 
     pub(crate) fn make_celo_test_db() -> InMemoryDB {
@@ -577,5 +714,197 @@ pub(crate) mod tests {
             "currency with unreadable config must be dropped from the context"
         );
         assert_eq!(currency_info.len(), 1, "exactly one currency should remain");
+    }
+
+    /// Runtime bytecode of a stub contract that, on every call, does
+    /// `slot0 = slot0 + 1` (an `SSTORE`) and returns the new value as a 32-byte word:
+    ///
+    ///   PUSH1 0x00; SLOAD; PUSH1 0x01; ADD; DUP1; PUSH1 0x00; SSTORE;
+    ///   PUSH1 0x00; MSTORE; PUSH1 0x20; PUSH1 0x00; RETURN
+    ///
+    /// Used to prove `call_read_only` rolls back persistent writes (and the warmth
+    /// they cause), while the committing `call` keeps them.
+    const SSTORE_STUB_BYTECODE: &[u8] = &hex!("6000546001018060005560005260206000f3");
+
+    /// Address the SSTORE stub is deployed at in the tests below.
+    const SSTORE_STUB_ADDR: Address = address!("0x00000000000000000000000000000000000000aa");
+
+    fn make_sstore_stub_db() -> InMemoryDB {
+        let bytecode = Bytecode::new_raw(SSTORE_STUB_BYTECODE.into());
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            SSTORE_STUB_ADDR,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                account_id: None,
+                code: Some(bytecode),
+            },
+        );
+        db
+    }
+
+    /// A `call_read_only` whose target performs an `SSTORE` must leave no persistent
+    /// state change: the write, and the slot/account warming it caused, are both rolled
+    /// back. Running the stub twice must yield identical output *and* identical gas —
+    /// the second call sees pristine (slot0 == 0, cold) state. If the revert were a
+    /// no-op (the latent bug this fixes), the second call would read slot0 == 1 and
+    /// return 2, and its gas would differ (warm SLOAD, dirty SSTORE).
+    #[test]
+    fn test_call_read_only_rolls_back_state_and_warmth() {
+        let ctx = Context::celo().with_db(make_sstore_stub_db());
+        let mut evm = ctx.build_celo();
+
+        let (out1, _, gas1, _) =
+            call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("first call ok");
+        assert_eq!(
+            U256::from_be_slice(out1.as_ref()),
+            U256::from(1),
+            "stub returns slot0 + 1 == 1 on a pristine slot"
+        );
+
+        let (out2, _, gas2, _) =
+            call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("second call ok");
+        assert_eq!(
+            U256::from_be_slice(out2.as_ref()),
+            U256::from(1),
+            "call_read_only must roll back the target's SSTORE (else this would be 2)"
+        );
+        assert_eq!(
+            gas1, gas2,
+            "state (SSTORE) and warmth (SLOAD) are both reverted, so gas is identical"
+        );
+    }
+
+    /// Differential check: the committing `call` *keeps* the target's `SSTORE`, while
+    /// `call_read_only` discards it. After a committing `call` persists slot0 == 1,
+    /// repeated `call_read_only`s all observe slot0 == 1 (returning 2) without ever
+    /// advancing it further — proving read-only reverts land while committed writes stick.
+    #[test]
+    fn test_call_persists_state_but_read_only_does_not() {
+        let ctx = Context::celo().with_db(make_sstore_stub_db());
+        let mut evm = ctx.build_celo();
+
+        // Committing call: slot0 0 -> 1, returns 1, and the write persists.
+        let (out, _, _, _) =
+            call(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
+        assert_eq!(U256::from_be_slice(out.as_ref()), U256::from(1));
+
+        // Read-only calls now see the persisted slot0 == 1 -> return 2, and each rolls
+        // back its own increment, so slot0 never moves past 1.
+        for _ in 0..2 {
+            let (out, _, _, _) = call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
+                .expect("read-only call ok");
+            assert_eq!(
+                U256::from_be_slice(out.as_ref()),
+                U256::from(2),
+                "read-only call reads persisted slot0 == 1 and must not advance it"
+            );
+        }
+    }
+
+    /// Runtime bytecode of a stub that emits an empty `LOG0` and returns 42, without
+    /// writing storage: PUSH1 0x00; PUSH1 0x00; LOG0; PUSH1 0x2a; PUSH1 0x00; MSTORE;
+    /// PUSH1 0x20; PUSH1 0x00; RETURN.
+    const LOG_STUB_BYTECODE: &[u8] = &hex!("60006000a0602a60005260206000f3");
+    const LOG_STUB_ADDR: Address = address!("0x00000000000000000000000000000000000000bb");
+
+    /// A `call_read_only` target's logs must not leak into the enclosing transaction, and
+    /// the enclosing transaction's already-emitted logs must survive the call. This guards
+    /// the log-isolation fix: `post_execution::output` `take_logs()` the whole buffer, so
+    /// without the save/restore the surrounding tx's logs would be silently dropped.
+    #[test]
+    fn test_call_read_only_isolates_logs() {
+        let bytecode = Bytecode::new_raw(LOG_STUB_BYTECODE.into());
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            LOG_STUB_ADDR,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                account_id: None,
+                code: Some(bytecode),
+            },
+        );
+        let ctx = Context::celo().with_db(db);
+        let mut evm = ctx.build_celo();
+
+        // Stand in for logs the surrounding transaction has already emitted.
+        let sentinel_addr = address!("0x00000000000000000000000000000000000000cc");
+        evm.ctx().journal_mut().logs.push(Log::new_unchecked(
+            sentinel_addr,
+            Vec::new(),
+            Bytes::new(),
+        ));
+
+        let (_out, call_logs, _, _) =
+            call_read_only(&mut evm, LOG_STUB_ADDR, Bytes::new(), None).expect("call ok");
+
+        // The read-only target's own log is returned to the caller...
+        assert_eq!(call_logs.len(), 1, "the target emitted one LOG0");
+        assert_eq!(call_logs[0].address, LOG_STUB_ADDR);
+
+        // ...but it is rolled back out of the shared journal, and the surrounding
+        // transaction's sentinel log is preserved (not stolen by the call's take_logs).
+        let journal_logs_len = evm.ctx().journal_ref().logs.len();
+        let first_log_addr = evm.ctx().journal_ref().logs[0].address;
+        assert_eq!(
+            journal_logs_len, 1,
+            "surrounding logs preserved and the read-only target's log reverted"
+        );
+        assert_eq!(first_log_addr, sentinel_addr);
+    }
+
+    /// The committing `call` and non-committing `call_no_commit` system-call paths must produce
+    /// the same execution outcome and the same persistent state change — they differ only in
+    /// whether the journal's revert log survives (reversibility), not in what the call does.
+    /// This pins `run_system_call_no_commit`'s hand-copied teardown against upstream
+    /// `run_system_call`: if a future revm bump changed one path's teardown or gas accounting,
+    /// the two would diverge here.
+    #[test]
+    fn call_and_call_no_commit_agree_on_outcome_and_state() {
+        // Committing path.
+        let mut evm_c = Context::celo().with_db(make_sstore_stub_db()).build_celo();
+        let (out_c, _logs_c, gas_c, refund_c) =
+            call(&mut evm_c, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
+        let state_c = evm_c.finalize();
+
+        // Non-committing path, fresh EVM over an identical DB.
+        let mut evm_n = Context::celo().with_db(make_sstore_stub_db()).build_celo();
+        let (out_n, _logs_n, gas_n, refund_n) =
+            call_no_commit(&mut evm_n, SSTORE_STUB_ADDR, Bytes::new(), None)
+                .expect("no-commit call ok");
+        let state_n = evm_n.finalize();
+
+        // Same execution outcome.
+        assert_eq!(
+            out_c, out_n,
+            "committing and non-committing paths returned different output"
+        );
+        assert_eq!(
+            (gas_c, refund_c),
+            (gas_n, refund_n),
+            "committing and non-committing paths disagree on gas accounting"
+        );
+
+        // Same persistent state change: the stub's SSTORE (slot 0 -> 1) lands on both paths.
+        let slot0 = |state: &EvmState| {
+            state
+                .get(&SSTORE_STUB_ADDR)
+                .and_then(|a| a.storage.get(&U256::ZERO))
+                .map(|s| s.present_value)
+        };
+        assert_eq!(
+            slot0(&state_c),
+            Some(U256::from(1)),
+            "committing path lost the SSTORE"
+        );
+        assert_eq!(
+            slot0(&state_c),
+            slot0(&state_n),
+            "committing and non-committing paths disagree on the persisted state"
+        );
     }
 }
