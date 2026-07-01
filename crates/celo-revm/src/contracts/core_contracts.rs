@@ -134,6 +134,16 @@ where
     // The call's own logs are captured in `call_result` and discarded.
     let saved_logs = core::mem::take(&mut evm.ctx().journal_mut().logs);
 
+    // Snapshot the call-stack depth so we can assert it is balanced below. `checkpoint` /
+    // `checkpoint_revert` is depth-balanced on the happy path, and on the error path
+    // `catch_error` -> `discard_tx` resets `depth` to 0 (revm-context-16.0.1
+    // journal/inner.rs); these call sites always run at top level (depth 0), so depth ends
+    // balanced regardless of how the call ends. This matters here because the callers
+    // (get_currencies / get_exchange_rate / get_intrinsic_gas) swallow the error and drop
+    // the currency rather than aborting the tx, so a leaked depth would be silent — hence the
+    // assert below, which would trip if a future revm change stopped restoring depth.
+    let prev_depth = evm.ctx().journal_ref().depth;
+
     // Snapshot the journal: `checkpoint` records the current revert-log length so
     // `checkpoint_revert` below can replay and undo everything appended after it.
     let checkpoint = evm.ctx().journal_mut().checkpoint();
@@ -153,6 +163,15 @@ where
     // transaction's warm/cold gas accounting is unaffected (no `transaction_id` dance
     // needed — the non-committing path never bumped it).
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+
+    // The checkpoint machinery (happy path) and `discard_tx` (error path) both leave depth
+    // balanced, so assert rather than force it: a future revm change that leaves depth
+    // inflated trips tests loudly instead of being silently masked.
+    debug_assert_eq!(
+        evm.ctx().journal_ref().depth,
+        prev_depth,
+        "checkpoint_revert / discard_tx should have restored the call-stack depth"
+    );
 
     // Reattach the surrounding transaction's logs and restore its tx env.
     evm.ctx().journal_mut().logs = saved_logs;
