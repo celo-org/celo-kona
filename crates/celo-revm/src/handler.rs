@@ -27,8 +27,8 @@ use revm::{
     },
     handler::{
         EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, evm::FrameTr,
-        handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
-        validation::validate_priority_fee_tx,
+        handler::EvmTrError, post_execution::build_result_gas,
+        pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
     interpreter::{
@@ -462,6 +462,99 @@ where
 
         Ok(gas)
     }
+
+    /// Builds the [`ExecutionResult`] for a finished transaction **without**
+    /// committing the journal.
+    ///
+    /// This is the body of [`Handler::execution_result`] up to — but excluding —
+    /// the `commit_tx()` / teardown at the end. Splitting it out lets
+    /// [`Self::run_system_call_no_commit`] finish a system call while leaving the
+    /// journal's revert log intact, so an enclosing `checkpoint` can roll the call
+    /// back (see [`crate::contracts::core_contracts::call_read_only`]).
+    fn build_execution_result(
+        &mut self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+        mut frame_result: FrameResult,
+        result_gas: revm::context_interface::result::ResultGas,
+    ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // Handle context errors
+        match core::mem::replace(evm.ctx().error(), Ok(())) {
+            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
+            Err(revm::context_interface::context::ContextError::Custom(e)) => {
+                return Err(ERROR::from_string(e));
+            }
+            Ok(_) => (),
+        }
+
+        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
+        // This matches the old revm 24.0 flow where it was called in the `end` function
+        // as a separate step after reward_beneficiary
+        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
+
+        // Call post_execution::output to get ExecutionResult
+        let exec_result =
+            revm::handler::post_execution::output(evm.ctx(), frame_result, result_gas)
+                .map_haltreason(OpHaltReason::Base);
+
+        // CIP64 NOTE:
+        // The ExecutionResult class does not allow logs to be passed in for revert results.
+        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
+        // So, instead of modifying only the success results here (to contain those logs),
+        // both cases are handled in the receipts_builder (alloy-celo-evm)
+
+        if exec_result.is_halt() {
+            // Post-regolith, if the transaction is a deposit transaction and it halts,
+            // we bubble up to the global return handler. The mint value will be persisted
+            // and the caller nonce will be incremented there.
+            let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+            if is_deposit && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH) {
+                return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
+            }
+        }
+
+        Ok(exec_result)
+    }
+
+    /// Runs a system call like [`Handler::run_system_call`], but **without**
+    /// committing the transaction journal.
+    ///
+    /// [`commit_tx`](revm::context_interface::JournalTr::commit_tx) does a bare
+    /// `journal.clear()` that empties the shared revert log. Skipping it leaves the
+    /// call's journal entries (state changes, warmed accounts/slots, transient
+    /// storage, logs) in place so a surrounding `checkpoint` / `checkpoint_revert`
+    /// pair can undo them — which is what makes
+    /// [`call_read_only`](crate::contracts::core_contracts::call_read_only) an actual
+    /// read-only call. The non-journal teardown that `execution_result` performs
+    /// (L1-cost cache, local context, frame stack) is still done here.
+    ///
+    /// On its own this method *keeps* the call's effects, exactly like
+    /// [`Handler::run_system_call`] minus the `commit_tx`; the caller must bracket it
+    /// with `checkpoint` / `checkpoint_revert` to discard them.
+    pub(crate) fn run_system_call_no_commit(
+        &mut self,
+        evm: &mut CeloEvm<DB, INSP, P>,
+    ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // dummy values that are not used, mirroring `Handler::run_system_call`.
+        let init_and_floor_gas = InitialAndFloorGas::new(0, 0);
+        match self
+            .execution(evm, &init_and_floor_gas)
+            .and_then(|exec_result| {
+                // System calls have no intrinsic gas; build ResultGas from frame result.
+                let gas = exec_result.gas();
+                let result_gas = build_result_gas(gas, init_and_floor_gas);
+                self.build_execution_result(evm, exec_result, result_gas)
+            }) {
+            Ok(exec_result) => {
+                // Same teardown as `execution_result`, but WITHOUT `commit_tx`: the
+                // caller's `checkpoint_revert` unwinds the journal instead of clearing it.
+                evm.ctx().chain_mut().clear_tx_l1_cost();
+                evm.ctx().local_mut().clear();
+                evm.frame_stack().clear();
+                Ok(exec_result)
+            }
+            Err(e) => self.catch_error(evm, e),
+        }
+    }
 }
 
 impl<ERROR, DB, INSP, P> Handler
@@ -832,43 +925,10 @@ where
     fn execution_result(
         &mut self,
         evm: &mut Self::Evm,
-        mut frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        frame_result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: revm::context_interface::result::ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        // Handle context errors
-        match core::mem::replace(evm.ctx().error(), Ok(())) {
-            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
-            Err(revm::context_interface::context::ContextError::Custom(e)) => {
-                return Err(ERROR::from_string(e));
-            }
-            Ok(_) => (),
-        }
-
-        // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
-        // This matches the old revm 24.0 flow where it was called in the `end` function
-        // as a separate step after reward_beneficiary
-        self.cip64_credit_fee_currency(evm, &mut frame_result)?;
-
-        // Call post_execution::output to get ExecutionResult
-        let exec_result =
-            revm::handler::post_execution::output(evm.ctx(), frame_result, result_gas)
-                .map_haltreason(OpHaltReason::Base);
-
-        // CIP64 NOTE:
-        // The ExecutionResult class does not allow logs to be passed in for revert results.
-        // As the cip64 debit/credit generate logs, our reverts must have those due to gas payment.
-        // So, instead of modifying only the success results here (to contain those logs),
-        // both cases are handled in the receipts_builder (alloy-celo-evm)
-
-        if exec_result.is_halt() {
-            // Post-regolith, if the transaction is a deposit transaction and it halts,
-            // we bubble up to the global return handler. The mint value will be persisted
-            // and the caller nonce will be incremented there.
-            let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
-            if is_deposit && evm.ctx().cfg().spec().is_enabled_in(OpSpecId::REGOLITH) {
-                return Err(ERROR::from(OpTransactionError::HaltedDepositPostRegolith));
-            }
-        }
+        let exec_result = self.build_execution_result(evm, frame_result, result_gas)?;
 
         // Commit journal, clear frame stack, clear l1_block_info
         evm.ctx().journal_mut().commit_tx();
