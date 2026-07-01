@@ -387,6 +387,19 @@ where
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
+        // The debit's system call runs `post_execution::output`, which `take_logs()`
+        // (a `mem::take`) the *entire* journal logs buffer into the debit's result (captured
+        // below as `logs` -> `Cip64Info::logs_pre`). Unlike `call_read_only`, the debit's
+        // `call_no_commit` path does not detach/reattach the enclosing logs — it relies on the
+        // buffer being empty here because the debit runs in pre-execution before any main-tx
+        // log is emitted (context-load reads reverted their own logs). Assert that precondition
+        // so a future reorder trips tests instead of silently stealing the enclosing tx's logs.
+        debug_assert!(
+            evm.ctx().journal_ref().logs.is_empty(),
+            "CIP-64 debit ran with non-empty journal logs; take_logs would move the enclosing \
+             tx's logs into logs_pre"
+        );
+
         // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
         // Note: load_fee_currency_context() already advanced the journal transaction_id after
         // context loading, so the accounts and storage slots it warmed now read cold here.
