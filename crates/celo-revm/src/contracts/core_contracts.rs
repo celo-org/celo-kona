@@ -222,6 +222,51 @@ where
     process_call_result(call_result)
 }
 
+/// Like [`call`], but runs the target through the **non-committing** system-call path so the
+/// call's journal entries survive for an enclosing `checkpoint` to commit or revert.
+///
+/// The committing [`call`] ends in `commit_tx`, whose `journal.clear()` empties the revert
+/// log — making the call's state changes irreversible for the surrounding transaction. This
+/// variant skips that, leaving the call's writes, warmed accounts/slots, transient storage,
+/// and logs in the journal so a surrounding `checkpoint` / `checkpoint_revert` can undo them.
+///
+/// It restores the surrounding transaction's tx env (the system call overwrote it) but,
+/// unlike [`call`], does **not** clear transient storage or restore `transaction_id`:
+/// - `transaction_id` is never bumped without `commit_tx`, so the call's warmed slots stay
+///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them.
+/// - transient storage is left in place for the enclosing checkpoint to revert on the reject
+///   path (or for the caller to clear on the commit path — see
+///   `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`).
+///
+/// Used by the rollbackable CIP-64 fee debit.
+pub fn call_no_commit<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+    address: Address,
+    calldata: Bytes,
+    gas_limit: Option<u64>,
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    // Preserve the tx to restore afterwards (the system call overwrites it).
+    let prev_tx = evm.ctx().tx().clone();
+
+    let call_result = if let Some(limit) = gas_limit {
+        evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
+    } else {
+        evm.system_call_one_no_commit(address, calldata)
+    };
+
+    // Restore the original transaction context. Transient storage and transaction_id are
+    // intentionally left untouched (see the doc comment): the enclosing checkpoint owns
+    // the call's journal entries.
+    evm.ctx().set_tx(prev_tx);
+
+    process_call_result(call_result)
+}
+
 /// Decode a finished system-call result into (output, logs, gas_used, gas_refunded),
 /// mapping halts/reverts/errors to [`CoreContractError`]. Shared by [`call`] and
 /// [`call_read_only`].
