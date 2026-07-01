@@ -173,6 +173,15 @@ where
         "checkpoint_revert / discard_tx should have restored the call-stack depth"
     );
 
+    // After the revert the call's own logs have been taken by `post_execution::output`
+    // (a `mem::take`) and/or truncated back to the checkpoint, so the buffer must be empty
+    // here. Assert it before reattaching, so a future revm change to the take-logs /
+    // checkpoint contract fails loudly instead of silently dropping the enclosing tx's logs.
+    debug_assert!(
+        evm.ctx().journal_ref().logs.is_empty(),
+        "read-only call left logs in the journal; reattaching would drop the enclosing tx's logs"
+    );
+
     // Reattach the surrounding transaction's logs and restore its tx env.
     evm.ctx().journal_mut().logs = saved_logs;
     evm.ctx().set_tx(prev_tx);
