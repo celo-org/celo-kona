@@ -184,9 +184,7 @@ pub async fn collect_authenticated_batches<CP: ChainProvider + Send>(
             cache.receipts.put(current.hash, events);
         }
 
-        if current.number == 0 ||
-            block_ref.number - current.number >= BATCH_AUTH_LOOKBACK_WINDOW
-        {
+        if current.number == 0 || block_ref.number - current.number >= BATCH_AUTH_LOOKBACK_WINDOW {
             break;
         }
 
@@ -228,8 +226,8 @@ pub struct BatchAuthCache {
     pub receipts: LruCache<B256, BTreeMap<B256, Address>>,
     /// Full [`BlockInfo`] keyed by block hash. The walk reads each block's authoritative `number`
     /// and `parent_hash` from the cached/fetched [`BlockInfo`] rather than deriving the number by
-    /// decrement, so the lookback window boundary stays correct independent of contiguous numbering
-    /// assumptions.
+    /// decrement, so the lookback window boundary stays correct independent of contiguous
+    /// numbering assumptions.
     pub headers: LruCache<B256, BlockInfo>,
 }
 
