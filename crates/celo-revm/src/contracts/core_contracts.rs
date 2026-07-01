@@ -20,7 +20,7 @@
 //! the enclosing transaction (used by the CIP-64 fee debit/credit).
 //!
 //! [`call_read_only`] instead runs the target through the *non-committing* system-call
-//! path ([`CeloEvm::system_call_one_no_commit`]) and brackets it with a journal
+//! path (`CeloEvm::system_call_one_no_commit`) and brackets it with a journal
 //! `checkpoint` / `checkpoint_revert`, so every state change, warmed account/slot,
 //! transient-storage write, and log the target produced is rolled back. Because
 //! `commit_tx` does a bare `journal.clear()`, running a read-only target through the
@@ -105,7 +105,7 @@ pub fn get_revert_message(output: Bytes) -> String {
 /// Call a core contract function in read-only mode, discarding **all** state changes.
 ///
 /// The target runs through the non-committing system-call path
-/// ([`CeloEvm::system_call_one_no_commit`]) bracketed by a journal
+/// (`CeloEvm::system_call_one_no_commit`) bracketed by a journal
 /// `checkpoint` / `checkpoint_revert`, so any storage writes, account/slot warming,
 /// transient-storage writes, logs, and self-destructs it performs are rolled back before
 /// this function returns. See the module docs for why the committing [`call`] path
