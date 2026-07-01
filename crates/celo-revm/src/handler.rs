@@ -661,6 +661,16 @@ where
         // prior to the rest of execution.
         let mut new_balance = caller_account.balance().saturating_add(U256::from(mint));
 
+        // Snapshot the payer's native account before the CIP-64 ERC20 debit so the
+        // fee-currency conformance invariant can be enforced afterward (see
+        // `cip64_validate_erc20_and_debit_gas_fees`): a conformant `debitGasFees` confines
+        // itself to its own ERC20 ledger and must not touch the payer's native balance,
+        // nonce, or code. Captured here while this handle is still valid — the debit's
+        // `&mut evm` borrow invalidates it. Only consulted on the ERC20 debit path below.
+        let pre_debit_native_balance = caller_account.account().info.balance;
+        let pre_debit_native_nonce = caller_account.account().info.nonce;
+        let pre_debit_native_code_hash = caller_account.account().info.code_hash;
+
         if fees_in_celo {
             // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
             // Transfer will be done inside `*_inner` functions.
@@ -744,6 +754,29 @@ where
             .load_account_with_code_mut(caller_addr)
             .expect("caller already resident; re-load is a journal cache hit")
             .data;
+
+        // Enforce the fee-currency conformance invariant: the ERC20 debit must not have
+        // altered the payer's native account. A fee currency whose `debitGasFees` drains or
+        // tops up the payer's CELO, bumps its nonce, or deploys code to it violates the
+        // invariant the admission ordering relies on; such currencies are unsupported and
+        // must not be registered. Rather than seal a divergent state, reject the tx loudly.
+        // This runs before the caller mutations below, so it isolates the *debit's* effect,
+        // and is inert for conformant currencies (identical pre/post state) — it can only
+        // fire on a mis-registered currency, as a defense-in-depth backstop.
+        if debit_erc20_fees {
+            let post = &caller_account.account().info;
+            if post.balance != pre_debit_native_balance
+                || post.nonce != pre_debit_native_nonce
+                || post.code_hash != pre_debit_native_code_hash
+            {
+                return Err(InvalidTransaction::from(
+                    "CIP-64 fee currency modified the payer's native account during \
+                     debitGasFees; non-conformant fee currencies are unsupported",
+                )
+                .into());
+            }
+        }
+
         // When the ERC20 debit ran, gas was charged in the ERC20, not CELO, so there is no
         // native deduction to apply.
         if !debit_erc20_fees {
