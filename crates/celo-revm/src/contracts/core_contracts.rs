@@ -491,10 +491,10 @@ pub(crate) mod tests {
     use crate::{CeloBuilder, DefaultCelo};
     use alloy_primitives::{address, hex, keccak256};
     use revm::{
-        Context,
+        Context, ExecuteEvm,
         database::InMemoryDB,
         primitives::{Address, Bytes, U256},
-        state::{AccountInfo, Bytecode},
+        state::{AccountInfo, Bytecode, EvmState},
     };
 
     pub(crate) fn make_celo_test_db() -> InMemoryDB {
@@ -855,5 +855,56 @@ pub(crate) mod tests {
             "surrounding logs preserved and the read-only target's log reverted"
         );
         assert_eq!(first_log_addr, sentinel_addr);
+    }
+
+    /// The committing `call` and non-committing `call_no_commit` system-call paths must produce
+    /// the same execution outcome and the same persistent state change — they differ only in
+    /// whether the journal's revert log survives (reversibility), not in what the call does.
+    /// This pins `run_system_call_no_commit`'s hand-copied teardown against upstream
+    /// `run_system_call`: if a future revm bump changed one path's teardown or gas accounting,
+    /// the two would diverge here.
+    #[test]
+    fn call_and_call_no_commit_agree_on_outcome_and_state() {
+        // Committing path.
+        let mut evm_c = Context::celo().with_db(make_sstore_stub_db()).build_celo();
+        let (out_c, _logs_c, gas_c, refund_c) =
+            call(&mut evm_c, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
+        let state_c = evm_c.finalize();
+
+        // Non-committing path, fresh EVM over an identical DB.
+        let mut evm_n = Context::celo().with_db(make_sstore_stub_db()).build_celo();
+        let (out_n, _logs_n, gas_n, refund_n) =
+            call_no_commit(&mut evm_n, SSTORE_STUB_ADDR, Bytes::new(), None)
+                .expect("no-commit call ok");
+        let state_n = evm_n.finalize();
+
+        // Same execution outcome.
+        assert_eq!(
+            out_c, out_n,
+            "committing and non-committing paths returned different output"
+        );
+        assert_eq!(
+            (gas_c, refund_c),
+            (gas_n, refund_n),
+            "committing and non-committing paths disagree on gas accounting"
+        );
+
+        // Same persistent state change: the stub's SSTORE (slot 0 -> 1) lands on both paths.
+        let slot0 = |state: &EvmState| {
+            state
+                .get(&SSTORE_STUB_ADDR)
+                .and_then(|a| a.storage.get(&U256::ZERO))
+                .map(|s| s.present_value)
+        };
+        assert_eq!(
+            slot0(&state_c),
+            Some(U256::from(1)),
+            "committing path lost the SSTORE"
+        );
+        assert_eq!(
+            slot0(&state_c),
+            slot0(&state_n),
+            "committing and non-committing paths disagree on the persisted state"
+        );
     }
 }
