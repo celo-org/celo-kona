@@ -7,6 +7,7 @@ use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
+use alloy_transport::{RpcError, TransportErrorKind};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
 #[cfg(feature = "eigenda")]
@@ -18,7 +19,13 @@ use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use tracing::warn;
+use tracing::{info, warn};
+
+/// Returns `true` if the RPC error indicates the node does not support the requested method
+/// (JSON-RPC error code -32601: Method not found).
+const fn is_rpc_method_not_found(e: &RpcError<TransportErrorKind>) -> bool {
+    matches!(e, RpcError::ErrorResp(p) if p.code == -32601)
+}
 
 /// The [HintHandler] for the [CeloSingleChainHost].
 #[derive(Debug, Clone, Copy)]
@@ -340,7 +347,7 @@ impl CeloSingleChainHintHandler {
                 let payload_attributes: OpPayloadAttributes =
                     serde_json::from_slice(&hint.data[32..])?;
 
-                let Ok(execute_payload_response) = providers
+                let execute_payload_response = match providers
                     .l2
                     .client()
                     .request::<(B256, OpPayloadAttributes), ExecutionWitness>(
@@ -348,10 +355,17 @@ impl CeloSingleChainHintHandler {
                         (parent_block_hash, payload_attributes),
                     )
                     .await
-                else {
-                    // Allow this hint to fail silently, as not all execution clients support
-                    // the `debug_executePayload` method.
-                    return Ok(());
+                {
+                    Ok(response) => response,
+                    Err(e) => {
+                        info!(
+                            target: "single_hint_handler",
+                            err = %e,
+                            method_not_found = is_rpc_method_not_found(&e),
+                            "debug_executePayload unavailable, skipping witness preimage collection"
+                        );
+                        return Ok(());
+                    }
                 };
 
                 let preimages = execute_payload_response

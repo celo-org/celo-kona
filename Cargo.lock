@@ -2226,6 +2226,7 @@ dependencies = [
  "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types",
+ "alloy-transport",
  "anyhow",
  "async-trait",
  "celo-alloy-network",
