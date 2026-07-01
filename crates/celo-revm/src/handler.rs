@@ -2,7 +2,9 @@
 
 use crate::{
     CeloContext,
-    constants::{FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses},
+    constants::{
+        CELO_SYSTEM_ADDRESS, FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
+    },
     contracts::erc20,
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
@@ -26,8 +28,8 @@ use revm::{
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, evm::FrameTr,
-        handler::EvmTrError, post_execution::build_result_gas,
+        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, SYSTEM_ADDRESS,
+        evm::FrameTr, handler::EvmTrError, post_execution::build_result_gas,
         pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
@@ -198,6 +200,17 @@ where
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
+
+        // `build_execution_result` runs this hook for *every* system call too (the CIP-64
+        // debit's own `call_no_commit`, `call_read_only`, ...), not just the main tx. Those
+        // sub-transactions carry a system caller and no fee currency, so `fees_in_celo` forces
+        // the early return below — the credit never re-enters. Pin that: a system-caller tx
+        // that reached the crediting path would recursively debit/credit.
+        let caller = ctx.tx().caller();
+        debug_assert!(
+            (caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS) || fees_in_celo,
+            "CIP-64 credit hook reached for a system-caller sub-transaction (should be native)"
+        );
 
         if is_deposit || fees_in_celo || is_balance_check_disabled || is_base_fee_disabled {
             return Ok(());
