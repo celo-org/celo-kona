@@ -77,6 +77,30 @@ release level='patch' *args='':
 release-execute level='patch':
   cargo release {{level}} --execute
 
+# Reproduce the `FPP e2e` CI proof job locally (.github/workflows/proof.yaml):
+# extracts the checked-in witness and replays Celo Sepolia (Isthmus) block
+# #12177762 through the host + client offline. Run inside `nix develop` (needs
+# the Rust toolchain); the first run builds `celo-host --features eigenda`.
+# The fixture values mirror the "Set run environment" step in proof.yaml.
+reproduce-proof-ci verbosity='':
+  #!/usr/bin/env bash
+  set -o errexit -o nounset -o pipefail
+
+  WITNESS=bin/client/testdata/isthmus-celo-sepolia-12177762-witness.tar.zst
+  echo "Extracting witness data to ./data ..."
+  # --exclude '._*' skips the macOS AppleDouble metadata files the tar carries
+  # (otherwise a stray ./._data lands, untracked, at the repo root).
+  tar --zstd --exclude '._*' -xf "$WITNESS" -C .
+
+  just -f bin/client/justfile run-client-native-offline \
+    12177762 \
+    0x5783aab680c0aabfae6d633a465d02da922247c8e8adf8c9a18f6caa9da3b40a \
+    0xf23a74d78b68d441fde3c2be42df34844bdd13f7c47db912946b2ba120f2cd79 \
+    0x594061d8101caba769b5047325840b806aaa1ab26c655a3ba0c3c878a09318b4 \
+    0xf56e3e0b057a7b841b06598b37b2bc99fd119224fa4328913a085d4c49efe344 \
+    11142220 \
+    "{{verbosity}}"
+
 # Download resources/g1.point if it doesn't exist.
 download-srs:
   #!/usr/bin/env bash
