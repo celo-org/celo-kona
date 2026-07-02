@@ -161,7 +161,7 @@ impl NativeU256 {
         Native(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
-    pub fn saturating_add(self, other: Self) -> Self {
+    pub const fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
     }
 
@@ -188,7 +188,7 @@ impl FcU256 {
         Fc(u128::try_from(self.0).unwrap_or(u128::MAX))
     }
 
-    pub fn saturating_add(self, other: Self) -> Self {
+    pub const fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
     }
 

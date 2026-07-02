@@ -24,6 +24,16 @@ pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
     pub fee_currency_context: FeeCurrencyContext,
 }
 
+// `inner` wraps revm's `OpEvm`, which is not `Debug`, so only the Celo-added
+// state is printed.
+impl<DB: Database, INSP, P> core::fmt::Debug for CeloEvm<DB, INSP, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloEvm")
+            .field("fee_currency_context", &self.fee_currency_context)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<DB, INSP> CeloEvm<DB, INSP>
 where
     DB: Database,
@@ -54,7 +64,7 @@ where
     DB: Database,
 {
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector(self, inspector: INSP) -> CeloEvm<DB, INSP, P> {
+    pub fn with_inspector(self, inspector: INSP) -> Self {
         Self {
             inner: OpEvm(self.inner.0.with_inspector(inspector)),
             fee_currency_context: self.fee_currency_context,
