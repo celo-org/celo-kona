@@ -9,7 +9,7 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
-use celo_alloy_rpc_types_engine::CeloPayloadAttributes;
+use celo_alloy_rpc_types_engine::OpPayloadAttributes;
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::{cfg::SingleChainProvidersWithEigenDA, handler::fetch_eigenda_hint};
 #[cfg(feature = "eigenda")]
@@ -342,13 +342,13 @@ impl CeloSingleChainHintHandler {
                 ensure!(hint.data.len() >= 32, "Invalid hint data length");
 
                 let parent_block_hash = B256::from_slice(&hint.data.as_ref()[..32]);
-                let payload_attributes: CeloPayloadAttributes =
+                let payload_attributes: OpPayloadAttributes =
                     serde_json::from_slice(&hint.data[32..])?;
 
                 let Ok(execute_payload_response) = providers
                     .l2
                     .client()
-                    .request::<(B256, CeloPayloadAttributes), ExecutionWitness>(
+                    .request::<(B256, OpPayloadAttributes), ExecutionWitness>(
                         "debug_executePayload",
                         (parent_block_hash, payload_attributes),
                     )

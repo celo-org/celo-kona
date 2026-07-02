@@ -26,6 +26,11 @@ ignore = [
     # Exposure here is narrow: encoding amplification needs an attacker who can influence the
     # records reth-dns-discovery puts into outgoing messages, not just respond to queries.
     "RUSTSEC-2026-0119",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained.
+    # Build-time only: pulled in by alloy-sol-macro (the sol! proc-macro), so it never ships in
+    # the runtime binary. Unmaintained (not a vulnerability) and no safe upgrade exists; removing
+    # it requires alloy-sol-macro to drop the dep upstream.
+    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
