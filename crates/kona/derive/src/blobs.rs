@@ -773,7 +773,8 @@ mod tests {
         // No auth event for the blob batch commitment.
         source.chain_provider.insert_receipts(block_info.hash, Vec::new());
 
-        // Even passing the real batcher signer as the fallback arg must not rescue it post-Espresso.
+        // Even passing the real batcher signer as the fallback arg must not rescue it
+        // post-Espresso.
         source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
         assert!(source.data.is_empty());
     }
