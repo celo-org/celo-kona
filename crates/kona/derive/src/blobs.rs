@@ -664,13 +664,13 @@ mod tests {
     /// accepted via the vanilla sender path, and all of its blob versioned hashes are requested
     /// from the blob provider and filled. The Espresso event lookback is bypassed entirely (no
     /// receipts are inserted). Mirrors the "authenticated blob tx accepted" Go sub-test, but on the
-    /// pre-fork sender path: one blob placeholder per versioned hash is produced.
+    /// pre-Espresso sender path: one blob placeholder per versioned hash is produced.
     #[tokio::test]
-    async fn test_pre_fork_4844_blob_path() {
+    async fn test_pre_espresso_4844_blob_path() {
         let mut source = default_source();
         let block_info = BlockInfo::default();
         // `batcher_address` (struct field) gates the `to` of the tx; the batcher arg gates the
-        // recovered signer on the pre-fork sender path.
+        // recovered signer on the pre-Espresso sender path.
         source.batcher_address = BLOB_TX_SENDER;
         // The fixture's recovered signer is the batcher passed to `load_blobs`.
         assert_eq!(valid_blob_txs()[0].recover_signer().unwrap(), BLOB_TX_BATCHER);
@@ -690,7 +690,7 @@ mod tests {
     /// Direct analogue of the Go "authenticated blob tx accepted" sub-test (commitment =
     /// `ComputeBlobBatchHash(blobHashes)`, auth caller = batcher).
     #[tokio::test]
-    async fn test_post_fork_4844_blob_event_path() {
+    async fn test_post_espresso_4844_blob_event_path() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let mut source = CeloBlobSource::new(
             TestChainProvider::default(),
@@ -727,7 +727,7 @@ mod tests {
     /// different caller than the batch tx sender, is rejected (caller-binding). Mirrors the Go
     /// "authenticated tx rejected when sender differs from auth caller" sub-test, on the blob path.
     #[tokio::test]
-    async fn test_post_fork_4844_blob_caller_mismatch_rejected() {
+    async fn test_post_espresso_4844_blob_caller_mismatch_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let other_caller = address!("00000000000000000000000000000000000000bb");
         let mut source = CeloBlobSource::new(
@@ -757,10 +757,10 @@ mod tests {
     }
 
     /// Post-Espresso: a 4844 blob tx from the batcher with no authenticating event is rejected —
-    /// the sender-based fallback is gone once the fork is active. Mirrors the Go "fallback batcher
+    /// the sender-based fallback is gone once Espresso is active. Mirrors the Go "fallback batcher
     /// without auth event rejected" sub-test, on the blob path.
     #[tokio::test]
-    async fn test_post_fork_4844_blob_no_event_rejected() {
+    async fn test_post_espresso_4844_blob_no_event_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let mut source = CeloBlobSource::new(
             TestChainProvider::default(),
@@ -773,7 +773,7 @@ mod tests {
         // No auth event for the blob batch commitment.
         source.chain_provider.insert_receipts(block_info.hash, Vec::new());
 
-        // Even passing the real batcher signer as the fallback arg must not rescue it post-fork.
+        // Even passing the real batcher signer as the fallback arg must not rescue it post-Espresso.
         source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
         assert!(source.data.is_empty());
     }
