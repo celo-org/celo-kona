@@ -3,7 +3,7 @@
 //! TODO: When Celo network which we want to use for CI is included in [superchain-registry], we can
 //! remove `CeloBootInfo`.
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, address};
 use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS};
 use kona_genesis::RollupConfig;
@@ -190,10 +190,14 @@ const CELO_SEPOLIA_ESPRESSO: CeloEspressoConfig =
     CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
 
 /// Celo Espresso batch-authentication settings for Celo Chaos.
-// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
-// scheduled for Celo Chaos. `None` keeps vanilla OP Stack sender-based batch authorization.
-const CELO_CHAOS_ESPRESSO: CeloEspressoConfig =
-    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
+///
+/// Espresso is scheduled on Chaos at L2 timestamp `1782910800`; from that fork batches are
+/// authorized by `BatchInfoAuthenticated` events emitted by the configured `BatchAuthenticator`
+/// contract instead of by transaction sender.
+const CELO_CHAOS_ESPRESSO: CeloEspressoConfig = CeloEspressoConfig {
+    espresso_time: Some(1782910800),
+    batch_authenticator_address: Some(address!("b4B5343d9635b05cA4FbdB09BB4929E21A1A8B37")),
+};
 
 /// Pin the Espresso batch-authentication settings for the known Celo chain IDs (Mainnet, Sepolia,
 /// Chaos) to the program-baked values [`CELO_MAINNET_ESPRESSO`] / [`CELO_SEPOLIA_ESPRESSO`] /
