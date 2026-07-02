@@ -288,8 +288,10 @@ pub fn is_batch_authorized(
         };
         return tx.recover_signer().map(|sender| sender == caller).unwrap_or(false);
     }
-    // Pre-Espresso (or Espresso not yet active): vanilla OP Stack sender verification.
-    tx.recover_signer().map(|sender| sender == batcher_address).unwrap_or(false)
+    // Pre-Espresso (or Espresso not yet active): vanilla OP Stack sender verification. Kept
+    // byte-identical to upstream kona's `BlobSource::extract_blob_data`, which substitutes
+    // `Address::ZERO` on signature-recovery failure (`unwrap_or_default`) rather than rejecting.
+    tx.recover_signer().unwrap_or_default() == batcher_address
 }
 
 #[cfg(test)]
