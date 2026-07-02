@@ -265,7 +265,8 @@ mod tests {
 
     #[test]
     fn espresso_forced_for_celo_chain_ids() {
-        // Mainnet/Sepolia/Chaos derive with the program-baked Espresso settings, ignoring any input.
+        // Mainnet/Sepolia/Chaos derive with the program-baked Espresso settings, ignoring any
+        // input.
         for (chain_id, expected) in [
             (42220u64, CELO_MAINNET_ESPRESSO),
             (11142220u64, CELO_SEPOLIA_ESPRESSO),
