@@ -5,3 +5,6 @@ pub use cfg::{CeloSingleChainHost, CeloSingleChainProviders};
 
 mod handler;
 pub use handler::CeloSingleChainHintHandler;
+
+mod backend;
+pub use backend::CeloConfigBackend;

@@ -1,6 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::CeloSingleChainHintHandler;
+use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler};
 use alloy_provider::RootProvider;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
@@ -76,13 +76,21 @@ impl CeloSingleChainHost {
         C: Channel + Send + Sync + 'static,
     {
         let kv_store = self.create_key_value_store()?;
+        // The rollup config (Celo Espresso settings included) that `CeloConfigBackend` serves under
+        // `L2_ROLLUP_CONFIG_KEY`. `None` when no rollup config is configured, in which case the
+        // request is delegated to the inner backend (yielding `KeyNotFound`), matching upstream.
+        let rollup_config_json =
+            self.read_rollup_config()?.and_then(|cfg| serde_json::to_vec(&cfg).ok()).map(Arc::new);
 
         let task_handle = if self.is_offline() {
             task::spawn(async {
                 PreimageServer::new(
                     OracleServer::new(preimage),
                     HintReader::new(hint),
-                    Arc::new(OfflineHostBackend::new(kv_store)),
+                    Arc::new(CeloConfigBackend::new(
+                        OfflineHostBackend::new(kv_store),
+                        rollup_config_json,
+                    )),
                 )
                 .start()
                 .await
@@ -90,13 +98,16 @@ impl CeloSingleChainHost {
             })
         } else {
             let providers = self.create_providers().await?;
-            let backend = OnlineHostBackend::new(
-                self.clone(),
-                kv_store.clone(),
-                providers,
-                CeloSingleChainHintHandler,
-            )
-            .with_proactive_hint(proactive_hint_type());
+            let backend = CeloConfigBackend::new(
+                OnlineHostBackend::new(
+                    self.clone(),
+                    kv_store.clone(),
+                    providers,
+                    CeloSingleChainHintHandler,
+                )
+                .with_proactive_hint(proactive_hint_type()),
+                rollup_config_json,
+            );
 
             task::spawn(async {
                 PreimageServer::new(
@@ -136,14 +147,22 @@ impl CeloSingleChainHost {
         self.kona_cfg.is_offline()
     }
 
-    /// Reads the [CeloRollupConfig] from the file system and returns it as a string.
-    pub fn read_rollup_config(&self) -> Result<CeloRollupConfig, SingleChainHostError> {
-        let rollup_config = self.kona_cfg.read_rollup_config()?;
-        let celo_rollup_config = CeloRollupConfig(rollup_config);
-        Ok(celo_rollup_config)
+    /// Reads the [`CeloRollupConfig`] from the rollup config path, if one is configured.
+    ///
+    /// The file is deserialized directly as a [`CeloRollupConfig`] so the Celo Espresso settings
+    /// (`espresso_time` / `batch_authenticator_address`) are preserved. Going through the upstream
+    /// reader instead would yield an upstream `RollupConfig` and drop those fields.
+    pub fn read_rollup_config(&self) -> Result<Option<CeloRollupConfig>, SingleChainHostError> {
+        let Some(path) = self.kona_cfg.rollup_config_path.as_ref() else {
+            return Ok(None);
+        };
+        let ser_config = std::fs::read_to_string(path)?;
+        let celo_rollup_config =
+            serde_json::from_str(&ser_config).map_err(SingleChainHostError::ParseError)?;
+        Ok(Some(celo_rollup_config))
     }
 
-    /// Creates the key-value store for the host backend.
+    /// Creates the key-value store for the host backend. Delegates to the upstream factory.
     pub fn create_key_value_store(&self) -> Result<SharedKeyValueStore, SingleChainHostError> {
         self.kona_cfg.create_key_value_store()
     }

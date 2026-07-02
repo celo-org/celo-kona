@@ -76,6 +76,7 @@ celo-alloy-rpc-types = { version = "1.0.0", path = "crates/celo-alloy/rpc-types"
 celo-alloy-network = { version = "1.0.0", path = "crates/celo-alloy/network", default-features = false }
 alloy-celo-evm = { version = "1.0.0", path = "crates/alloy-celo-evm", default-features = false }
 celo-executor = { version = "1.0.0", path = "crates/kona/executor", default-features = false }
+celo-derive = { version = "1.0.0", path = "crates/kona/derive", default-features = false }
 celo-driver = { version = "1.0.0", path = "crates/kona/driver", default-features = false }
 celo-proof = { version = "1.0.0", path = "crates/kona/proof", default-features = false }
 celo-protocol = { version = "1.0.0", path = "crates/kona/protocol", default-features = false }
@@ -207,14 +208,17 @@ reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", ta
 reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.3.1" }
 
 # Hokulea
-# celo-org/hokulea seolaoh/v2.3.1-on-upstream (commit 6217bcf): the celo
-# op-reth/v2.3.1 adaptations rebased onto Layr-Labs/hokulea master, so the fork
-# tracks upstream again. hokulea-proof's KZG batch-verifier backend is selected
-# via feature: `sp1-bn` swaps the arkworks verifier for one built on the sp1
-# `bn` precompile, cutting KZG batch verification ~74% on the zkVM proving path.
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false, features = ["sp1-bn"] }
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "6217bcf7ce26e72b478d402ab8f010b7cb2d0364", default-features = false }
+# celo-org/hokulea — seolaoh/v2.3.1-on-upstream (the celo op-reth/v2.3.1
+# adaptations rebased onto Layr-Labs/hokulea master) plus the EigenDADataSource
+# generalization over DataAvailabilityProvider (commit 77d209d, celo-org/hokulea#2),
+# which lets the eigenda path wrap celo-kona's CeloEthereumDataSource (Espresso
+# batch auth). hokulea-proof's KZG batch-verifier backend is selected via feature:
+# `sp1-bn` swaps the arkworks verifier for one built on the sp1 `bn` precompile,
+# cutting KZG batch verification ~74% on the zkVM proving path. Bump to the merged
+# commit once celo-org/hokulea#2 lands.
+hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false }
+hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false, features = ["sp1-bn"] }
+hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "a57a866dd35b06e1e0565b226641c658001272bb", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
@@ -234,6 +238,7 @@ anyhow = { version = "1.0.101", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 derive_more = { version = "2.1.1", default-features = false }
 lazy_static = { version = "1.5.0", default-features = false }
+lru = { version = "0.16.4", default-features = false }
 
 bytes = { version = "1.11.0", default-features = false }
 eyre = "0.6.12"

@@ -1,0 +1,837 @@
+//! Celo Blob Data Source with Espresso event-based batch authentication.
+//!
+//! Duplicated from kona's `BlobSource` (celo-kona wraps upstream kona instead of patching it)
+//! with the batch-authentication branch from celo-org/optimism#449 folded in. Pre-Espresso
+//! behaviour is byte-identical to upstream; post-Espresso, batches are authorized by
+//! `BatchInfoAuthenticated` events instead of by transaction sender.
+
+use crate::{
+    batch_auth::{
+        BatchAuthCache, BatchAuthConfig, collect_authenticated_batches, compute_blob_batch_hash,
+        compute_calldata_batch_hash, is_batch_authorized,
+    },
+    blob_data::CeloBlobData,
+};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloy_consensus::{Transaction, TxEip4844Variant, TxEnvelope, TxType};
+use alloy_primitives::{Address, B256, Bytes};
+use async_trait::async_trait;
+use kona_derive::{
+    BlobProvider, ChainProvider, DataAvailabilityProvider, PipelineError, PipelineErrorKind,
+    PipelineResult, ResetError,
+};
+use kona_protocol::BlockInfo;
+
+/// A data iterator that reads from a blob, with optional Espresso event-based authentication.
+#[derive(Debug, Clone)]
+pub struct CeloBlobSource<F, B>
+where
+    F: ChainProvider + Send,
+    B: BlobProvider + Send,
+{
+    /// Chain provider.
+    pub chain_provider: F,
+    /// Fetches blobs.
+    pub blob_fetcher: B,
+    /// The address of the batcher contract.
+    pub batcher_address: Address,
+    /// Data.
+    pub data: Vec<CeloBlobData>,
+    /// Whether the source is open.
+    pub open: bool,
+    /// Espresso batch-authentication configuration. When `Some` and active for the L1 origin time
+    /// of the block being scanned, event-based batch authentication is used. Otherwise (no config,
+    /// or fork not yet active) the source falls back to vanilla OP Stack sender verification.
+    pub(crate) batch_auth_config: Option<BatchAuthConfig>,
+    /// LRU caches for batch auth lookback window traversal (receipts + headers). Present iff
+    /// [`Self::batch_auth_config`] is set.
+    pub(crate) auth_cache: Option<BatchAuthCache>,
+}
+
+impl<F, B> CeloBlobSource<F, B>
+where
+    F: ChainProvider + Send,
+    B: BlobProvider + Send,
+{
+    /// Creates a new blob source.
+    pub fn new(
+        chain_provider: F,
+        blob_fetcher: B,
+        batcher_address: Address,
+        batch_auth_config: Option<BatchAuthConfig>,
+    ) -> Self {
+        let auth_cache = batch_auth_config.map(|_| BatchAuthCache::new());
+        Self {
+            chain_provider,
+            blob_fetcher,
+            batcher_address,
+            data: Vec::new(),
+            open: false,
+            batch_auth_config,
+            auth_cache,
+        }
+    }
+
+    /// Extracts blob data and indexed blob hashes from the given transactions.
+    ///
+    /// When the Espresso fork is active at `l1_origin_time`, each transaction is authorized via
+    /// the `authenticated_hashes` map (commitment → authenticating `caller`); otherwise vanilla
+    /// OP Stack sender verification against `batcher_address` is used. The gating decision is made
+    /// per-transaction by [`is_batch_authorized`] from [`Self::batch_auth_config`] +
+    /// `l1_origin_time`.
+    fn extract_blob_data(
+        &self,
+        txs: Vec<TxEnvelope>,
+        batcher_address: Address,
+        authenticated_hashes: Option<&BTreeMap<B256, Address>>,
+        l1_origin_time: u64,
+    ) -> (Vec<CeloBlobData>, Vec<B256>) {
+        let empty_set = BTreeMap::new();
+        let auth_hashes = authenticated_hashes.unwrap_or(&empty_set);
+        let mut data = Vec::new();
+        let mut hashes = Vec::new();
+        for tx in txs {
+            let (tx_kind, calldata, blob_hashes) = match &tx {
+                TxEnvelope::Legacy(tx) => (tx.tx().to(), tx.tx().input.clone(), None),
+                TxEnvelope::Eip2930(tx) => (tx.tx().to(), tx.tx().input.clone(), None),
+                TxEnvelope::Eip1559(tx) => (tx.tx().to(), tx.tx().input.clone(), None),
+                TxEnvelope::Eip4844(blob_tx_wrapper) => match blob_tx_wrapper.tx() {
+                    TxEip4844Variant::TxEip4844(tx) => {
+                        (tx.to(), tx.input.clone(), Some(tx.blob_versioned_hashes.clone()))
+                    }
+                    TxEip4844Variant::TxEip4844WithSidecar(tx) => {
+                        let tx = tx.tx();
+                        (tx.to(), tx.input.clone(), Some(tx.blob_versioned_hashes.clone()))
+                    }
+                },
+                _ => continue,
+            };
+            let Some(to) = tx_kind else { continue };
+
+            if to != self.batcher_address {
+                continue;
+            }
+
+            // Compute the batch hash and check authorization.
+            // For blob txs: hash is keccak256(concat(blob_versioned_hashes))
+            // For calldata txs: hash is keccak256(calldata)
+            let batch_hash = blob_hashes.as_ref().map_or_else(
+                || compute_calldata_batch_hash(&calldata),
+                |bh| compute_blob_batch_hash(bh),
+            );
+
+            if !is_batch_authorized(
+                &tx,
+                batch_hash,
+                self.batch_auth_config.as_ref(),
+                auth_hashes,
+                batcher_address,
+                l1_origin_time,
+            ) {
+                continue;
+            }
+            if tx.tx_type() != TxType::Eip4844 {
+                let blob_data =
+                    CeloBlobData { data: None, calldata: Some(calldata.to_vec().into()) };
+                data.push(blob_data);
+                continue;
+            }
+            if !calldata.is_empty() {
+                let hash = match &tx {
+                    TxEnvelope::Legacy(tx) => Some(tx.hash()),
+                    TxEnvelope::Eip2930(tx) => Some(tx.hash()),
+                    TxEnvelope::Eip1559(tx) => Some(tx.hash()),
+                    TxEnvelope::Eip4844(blob_tx_wrapper) => Some(blob_tx_wrapper.hash()),
+                    _ => None,
+                };
+                tracing::warn!(target: "blob_source", "Blob tx has calldata, which will be ignored: {hash:?}");
+            }
+            let blob_hashes = if let Some(b) = blob_hashes {
+                b
+            } else {
+                continue;
+            };
+            for hash in blob_hashes {
+                hashes.push(hash);
+                data.push(CeloBlobData::default());
+            }
+        }
+        (data, hashes)
+    }
+
+    /// Loads blob data into the source if it is not open.
+    async fn load_blobs(
+        &mut self,
+        block_ref: &BlockInfo,
+        batcher_address: Address,
+    ) -> Result<(), PipelineErrorKind> {
+        if self.open {
+            return Ok(());
+        }
+
+        let info = self
+            .chain_provider
+            .block_info_and_transactions_by_hash(block_ref.hash)
+            .await
+            .map_err(Into::into)?;
+
+        // Only scan for authenticating events when Espresso is active. Pre-Espresso (or Espresso
+        // not yet active) the lookback walk is bypassed entirely so derivation is
+        // byte-identical to upstream OP Stack (the BatchAuthenticator events are still
+        // emitted on L1 but ignored).
+        let espresso_active =
+            self.batch_auth_config.is_some_and(|c| c.is_active(block_ref.timestamp));
+        let authenticated_hashes: Option<BTreeMap<B256, Address>> = if espresso_active {
+            let config = self.batch_auth_config.expect("config present when espresso active");
+            let cache = self.auth_cache.as_mut().expect("cache present when config present");
+            Some(
+                collect_authenticated_batches(
+                    &mut self.chain_provider,
+                    block_ref,
+                    config.authenticator_address,
+                    cache,
+                )
+                .await
+                .map_err(Into::<PipelineErrorKind>::into)?,
+            )
+        } else {
+            None
+        };
+
+        let (mut data, blob_hashes) = self.extract_blob_data(
+            info.1,
+            batcher_address,
+            authenticated_hashes.as_ref(),
+            block_ref.timestamp,
+        );
+
+        // If there are no hashes, set the calldata and return.
+        if blob_hashes.is_empty() {
+            self.open = true;
+            self.data = data;
+            return Ok(());
+        }
+
+        // Convert via Into<PipelineErrorKind> which routes:
+        //   BlobNotFound  -> PipelineErrorKind::Reset   (missed/orphaned slot)
+        //   Backend       -> PipelineErrorKind::Temporary (transient, retry)
+        //   others        -> PipelineErrorKind::Critical
+        let blobs = self
+            .blob_fetcher
+            .get_and_validate_blobs(block_ref, &blob_hashes)
+            .await
+            .map_err(Into::<PipelineErrorKind>::into)
+            .inspect_err(|kind| match kind {
+                PipelineErrorKind::Reset(_) => {
+                    tracing::warn!(
+                        target: "blob_source",
+                        block_hash = %block_ref.hash,
+                        block_number = block_ref.number,
+                        timestamp = block_ref.timestamp,
+                        "Blobs permanently unavailable (missed/orphaned beacon slot); \
+                         triggering pipeline reset"
+                    );
+                }
+                _ => {
+                    tracing::warn!(
+                        target: "blob_source",
+                        block_hash = %block_ref.hash,
+                        block_number = block_ref.number,
+                        timestamp = block_ref.timestamp,
+                        "Failed to fetch blobs: {kind}"
+                    );
+                }
+            })?;
+
+        // Fill the blob pointers.
+        let mut filled_blobs = 0;
+        for blob in &mut data {
+            let should_increment = blob.fill(&blobs, filled_blobs)?;
+            if should_increment {
+                filled_blobs += 1;
+            }
+        }
+
+        // Post-loop over-fill check: if the provider returned more blobs than were
+        // requested, the pipeline state is inconsistent. Reset so the pipeline retries
+        // from a clean state.
+        if filled_blobs < blobs.len() {
+            return Err(
+                ResetError::BlobsOverFill { filled: filled_blobs, returned: blobs.len() }.reset()
+            );
+        }
+
+        self.open = true;
+        self.data = data;
+        Ok(())
+    }
+
+    /// Extracts the next data from the source.
+    // The error type is kona's `PipelineErrorKind`, which is large; this mirrors kona's own
+    // `BlobSource::next_data` and cannot be boxed without diverging from the upstream signature.
+    #[allow(clippy::result_large_err)]
+    fn next_data(&mut self) -> PipelineResult<CeloBlobData> {
+        if self.data.is_empty() {
+            return Err(PipelineError::Eof.temp());
+        }
+
+        Ok(self.data.remove(0))
+    }
+}
+
+#[async_trait]
+impl<F, B> DataAvailabilityProvider for CeloBlobSource<F, B>
+where
+    F: ChainProvider + Sync + Send,
+    B: BlobProvider + Sync + Send,
+{
+    type Item = Bytes;
+
+    async fn next(
+        &mut self,
+        block_ref: &BlockInfo,
+        batcher_address: Address,
+    ) -> PipelineResult<Self::Item> {
+        self.load_blobs(block_ref, batcher_address).await?;
+
+        let next_data = self.next_data()?;
+        if let Some(c) = next_data.calldata {
+            return Ok(c);
+        }
+
+        // Decode the blob data to raw bytes.
+        // Otherwise, ignore blob and recurse next.
+        match next_data.decode() {
+            Ok(d) => Ok(d),
+            Err(_) => {
+                tracing::warn!(target: "blob_source", "Failed to decode blob data, skipping");
+                self.next(block_ref, batcher_address).await
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+        self.open = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::batch_auth::BATCH_INFO_AUTHENTICATED_TOPIC;
+    use alloc::{vec, vec::Vec};
+    use alloy_consensus::{
+        Blob, Eip658Value, Receipt, Signed, TxLegacy, transaction::SignerRecoverable,
+    };
+    use alloy_primitives::{
+        Address, B256, Log, LogData, Signature, TxKind, address, b256, keccak256,
+    };
+    use alloy_rlp::Decodable;
+    use kona_derive::test_utils::{TestBlobProvider, TestChainProvider};
+
+    fn test_legacy_tx(to: Address) -> TxEnvelope {
+        let sig = Signature::test_signature();
+        TxEnvelope::Legacy(Signed::new_unchecked(
+            TxLegacy { to: TxKind::Call(to), ..Default::default() },
+            sig,
+            Default::default(),
+        ))
+    }
+
+    fn default_source() -> CeloBlobSource<TestChainProvider, TestBlobProvider> {
+        CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            Default::default(),
+            None,
+        )
+    }
+
+    /// A single valid EIP-4844 batcher transaction (carrying 5 blob versioned hashes), decoded
+    /// from a real Sepolia raw tx. Copied from kona's `BlobSource` tests.
+    ///
+    /// <https://sepolia.etherscan.io/getRawTx?tx=0x9a22ccb0029bc8b0ddd073be1a1d923b7ae2b2ea52100bae0db4424f9107e9c0>
+    fn valid_blob_txs() -> Vec<TxEnvelope> {
+        let raw_tx = alloy_primitives::hex::decode("0x03f9011d83aa36a7820fa28477359400852e90edd0008252089411e9ca82a3a762b4b5bd264d4173a242e7a770648080c08504a817c800f8a5a0012ec3d6f66766bedb002a190126b3549fce0047de0d4c25cffce0dc1c57921aa00152d8e24762ff22b1cfd9f8c0683786a7ca63ba49973818b3d1e9512cd2cec4a0013b98c6c83e066d5b14af2b85199e3d4fc7d1e778dd53130d180f5077e2d1c7a001148b495d6e859114e670ca54fb6e2657f0cbae5b08063605093a4b3dc9f8f1a0011ac212f13c5dff2b2c6b600a79635103d6f580a4221079951181b25c7e654901a0c8de4cced43169f9aa3d36506363b2d2c44f6c49fc1fd91ea114c86f3757077ea01e11fdd0d1934eda0492606ee0bb80a7bf8f35cc5f86ec60fe5031ba48bfd544").unwrap();
+        let eip4844 = TxEnvelope::decode(&mut raw_tx.as_slice()).unwrap();
+        vec![eip4844]
+    }
+
+    /// The batcher/sender pair encoded in [`valid_blob_txs`].
+    const BLOB_TX_BATCHER: Address = address!("A83C816D4f9b2783761a22BA6FADB0eB0606D7B2");
+    const BLOB_TX_SENDER: Address = address!("11E9CA82A3a762b4B5bd264d4173a242e7a77064");
+
+    /// The 5 blob versioned hashes carried by [`valid_blob_txs`].
+    fn blob_tx_hashes() -> [B256; 5] {
+        [
+            b256!("012ec3d6f66766bedb002a190126b3549fce0047de0d4c25cffce0dc1c57921a"),
+            b256!("0152d8e24762ff22b1cfd9f8c0683786a7ca63ba49973818b3d1e9512cd2cec4"),
+            b256!("013b98c6c83e066d5b14af2b85199e3d4fc7d1e778dd53130d180f5077e2d1c7"),
+            b256!("01148b495d6e859114e670ca54fb6e2657f0cbae5b08063605093a4b3dc9f8f1"),
+            b256!("011ac212f13c5dff2b2c6b600a79635103d6f580a4221079951181b25c7e6549"),
+        ]
+    }
+
+    /// A chain provider whose `block_info_and_transactions_by_hash` returns an error mapping to
+    /// [`PipelineErrorKind::Reset`] (matching what `AlloyChainProvider` emits for a 404). Copied
+    /// from kona's `BlobSource` tests to exercise the reset-propagation path.
+    #[derive(Debug, Clone)]
+    struct BlockNotFoundChainProvider;
+
+    #[derive(Debug)]
+    struct BlockNotFoundError;
+
+    impl core::fmt::Display for BlockNotFoundError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "block not found")
+        }
+    }
+
+    impl From<BlockNotFoundError> for PipelineErrorKind {
+        fn from(_: BlockNotFoundError) -> Self {
+            ResetError::BlockNotFound(B256::default().into()).reset()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChainProvider for BlockNotFoundChainProvider {
+        type Error = BlockNotFoundError;
+
+        async fn header_by_hash(
+            &mut self,
+            _: B256,
+        ) -> Result<alloy_consensus::Header, Self::Error> {
+            Err(BlockNotFoundError)
+        }
+
+        async fn block_info_by_number(&mut self, _: u64) -> Result<BlockInfo, Self::Error> {
+            Err(BlockNotFoundError)
+        }
+
+        async fn receipts_by_hash(&mut self, _: B256) -> Result<Vec<Receipt>, Self::Error> {
+            Err(BlockNotFoundError)
+        }
+
+        async fn block_info_and_transactions_by_hash(
+            &mut self,
+            _: B256,
+        ) -> Result<(BlockInfo, Vec<TxEnvelope>), Self::Error> {
+            Err(BlockNotFoundError)
+        }
+    }
+
+    /// A `BatchAuthConfig` active from genesis (`espresso_time = 0`).
+    fn auth_config(authenticator_address: Address) -> BatchAuthConfig {
+        BatchAuthConfig { authenticator_address, espresso_time: 0 }
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let mut source = default_source();
+        source.open = true;
+        source.data.push(CeloBlobData::default());
+        source.clear();
+        assert!(source.data.is_empty());
+        assert!(!source.open);
+    }
+
+    // --- Tests ported (adapted to the 4-arg constructor) from kona's `BlobSource`, exercising
+    // the load/next plumbing that is unchanged from upstream. ---
+
+    #[tokio::test]
+    async fn test_load_blobs_open() {
+        let mut source = default_source();
+        source.open = true;
+        assert!(source.load_blobs(&BlockInfo::default(), Address::ZERO).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_chain_provider_err() {
+        let mut source = default_source();
+        assert!(matches!(
+            source.load_blobs(&BlockInfo::default(), Address::ZERO).await,
+            Err(PipelineErrorKind::Temporary(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_chain_provider_empty_txs() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.chain_provider.insert_block_with_transactions(0, block_info, Vec::new());
+        assert!(!source.open);
+        assert!(source.load_blobs(&BlockInfo::default(), Address::ZERO).await.is_ok());
+        assert!(source.data.is_empty());
+        assert!(source.open);
+    }
+
+    #[tokio::test]
+    async fn test_open_empty_data_eof() {
+        let mut source = default_source();
+        source.open = true;
+        let err = source.next(&BlockInfo::default(), Address::ZERO).await.unwrap_err();
+        assert!(matches!(err, PipelineErrorKind::Temporary(PipelineError::Eof)));
+    }
+
+    #[tokio::test]
+    async fn test_open_calldata() {
+        let mut source = default_source();
+        source.open = true;
+        source.data.push(CeloBlobData { data: None, calldata: Some(Bytes::default()) });
+        let data = source.next(&BlockInfo::default(), Address::ZERO).await.unwrap();
+        assert_eq!(data, Bytes::default());
+    }
+
+    #[tokio::test]
+    async fn test_pre_espresso_sender_path() {
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let mut source = default_source();
+        source.batcher_address = batch_inbox;
+        let tx = test_legacy_tx(batch_inbox);
+        let block_info = BlockInfo::default();
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
+        // Pre-Espresso: a calldata-carrying tx from the batcher is accepted.
+        source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
+        assert_eq!(source.data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_post_espresso_event_path() {
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let tx = test_legacy_tx(batch_inbox);
+        let sender = tx.recover_signer().unwrap();
+        let data = match &tx {
+            TxEnvelope::Legacy(t) => t.tx().input.clone(),
+            _ => unreachable!(),
+        };
+        let commitment = keccak256(&data);
+
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            batch_inbox,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        // The commitment is the unindexed data word; the authenticating `caller` (= the batch tx
+        // sender) is the indexed topic.
+        let log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, sender.into_word()],
+                commitment.as_slice().to_vec().into(),
+            ),
+        };
+        let receipt =
+            Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+
+        // Post-Espresso: commitment authenticated and tx sender matches authenticating caller.
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        assert_eq!(source.data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_post_espresso_caller_mismatch_rejected() {
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let tx = test_legacy_tx(batch_inbox);
+        let data = match &tx {
+            TxEnvelope::Legacy(t) => t.tx().input.clone(),
+            _ => unreachable!(),
+        };
+        let commitment = keccak256(&data);
+
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            batch_inbox,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        // The commitment is authenticated, but by a different caller than the batch tx sender.
+        let other_caller = address!("00000000000000000000000000000000000000bb");
+        let log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, other_caller.into_word()],
+                commitment.as_slice().to_vec().into(),
+            ),
+        };
+        let receipt =
+            Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+
+        // Post-Espresso: commitment authenticated but tx sender != authenticating caller: rejected.
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        assert!(source.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_post_espresso_no_event_rejected() {
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let tx = test_legacy_tx(batch_inbox);
+
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            batch_inbox,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
+        source.chain_provider.insert_receipts(block_info.hash, Vec::new());
+
+        source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
+        assert!(source.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_configured_but_not_active_uses_sender_path() {
+        // Espresso configured but not yet active at the scanned block's timestamp: must use the
+        // vanilla sender path (byte-identical to upstream OP Stack).
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            batch_inbox,
+            Some(BatchAuthConfig { authenticator_address: auth_addr, espresso_time: 1_000 }),
+        );
+        let tx = test_legacy_tx(batch_inbox);
+        let block_info = BlockInfo::default(); // timestamp 0 < espresso_time 1000
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
+
+        // Sender matches: accepted via the pre-Espresso path.
+        source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
+        assert_eq!(source.data.len(), 1);
+    }
+
+    // --- Tests ported (adapted to the 4-arg constructor) from kona's `BlobSource`, exercising the
+    // blob-fetch and reset/EOF routing that is unchanged from upstream. ---
+
+    #[tokio::test]
+    async fn test_blob_source_pipeline_error() {
+        let mut source = default_source();
+        let err = source.next(&BlockInfo::default(), Address::ZERO).await.unwrap_err();
+        assert!(matches!(err, PipelineErrorKind::Temporary(PipelineError::Provider(_))));
+    }
+
+    #[tokio::test]
+    async fn test_open_blob_data_decode_missing_data() {
+        let mut source = default_source();
+        source.open = true;
+        source.data.push(CeloBlobData { data: Some(Bytes::from(&[1; 32])), calldata: None });
+        let err = source.next(&BlockInfo::default(), Address::ZERO).await.unwrap_err();
+        assert!(matches!(err, PipelineErrorKind::Temporary(PipelineError::Eof)));
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_chain_provider_4844_txs_blob_fetch_error() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.batcher_address = BLOB_TX_SENDER;
+        source.blob_fetcher.should_error = true;
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        assert!(matches!(
+            source.load_blobs(&BlockInfo::default(), BLOB_TX_BATCHER).await,
+            Err(PipelineErrorKind::Critical(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_chain_provider_4844_txs_succeeds() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.batcher_address = BLOB_TX_SENDER;
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        for hash in blob_tx_hashes() {
+            source.blob_fetcher.insert_blob(hash, Blob::with_last_byte(1u8));
+        }
+        source.load_blobs(&BlockInfo::default(), BLOB_TX_BATCHER).await.unwrap();
+        assert!(source.open);
+        assert!(!source.data.is_empty());
+    }
+
+    // --- EIP-4844 (blob) transaction flows through the Espresso auth gate ---
+
+    /// Pre-Espresso: a 4844 blob tx whose recovered signer matches the configured batcher is
+    /// accepted via the vanilla sender path, and all of its blob versioned hashes are requested
+    /// from the blob provider and filled. The Espresso event lookback is bypassed entirely (no
+    /// receipts are inserted). Mirrors the "authenticated blob tx accepted" Go sub-test, but on the
+    /// pre-Espresso sender path: one blob placeholder per versioned hash is produced.
+    #[tokio::test]
+    async fn test_pre_espresso_4844_blob_path() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        // `batcher_address` (struct field) gates the `to` of the tx; the batcher arg gates the
+        // recovered signer on the pre-Espresso sender path.
+        source.batcher_address = BLOB_TX_SENDER;
+        // The fixture's recovered signer is the batcher passed to `load_blobs`.
+        assert_eq!(valid_blob_txs()[0].recover_signer().unwrap(), BLOB_TX_BATCHER);
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        for hash in blob_tx_hashes() {
+            source.blob_fetcher.insert_blob(hash, Blob::with_last_byte(1u8));
+        }
+
+        source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
+        assert!(source.open);
+        // One blob placeholder per versioned hash carried by the tx.
+        assert_eq!(source.data.len(), blob_tx_hashes().len());
+    }
+
+    /// Post-Espresso: a 4844 blob tx whose blob batch commitment was authenticated by an event
+    /// emitted by the batch tx's own sender is accepted; its blob versioned hashes are filled.
+    /// Direct analogue of the Go "authenticated blob tx accepted" sub-test (commitment =
+    /// `ComputeBlobBatchHash(blobHashes)`, auth caller = batcher).
+    #[tokio::test]
+    async fn test_post_espresso_4844_blob_event_path() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER, // batcher_address gates the tx `to`
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        // The blob batch commitment is keccak256(concat(blob_versioned_hashes)); authenticated by
+        // the batch tx's recovered signer.
+        let commitment = compute_blob_batch_hash(&blob_tx_hashes());
+        let log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, BLOB_TX_BATCHER.into_word()],
+                commitment.as_slice().to_vec().into(),
+            ),
+        };
+        let receipt =
+            Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+        for hash in blob_tx_hashes() {
+            source.blob_fetcher.insert_blob(hash, Blob::with_last_byte(1u8));
+        }
+
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        assert!(source.open);
+        // The authenticated blob tx is accepted: one blob placeholder per versioned hash.
+        assert_eq!(source.data.len(), blob_tx_hashes().len());
+    }
+
+    /// Post-Espresso: a 4844 blob tx whose blob batch commitment is authenticated, but by a
+    /// different caller than the batch tx sender, is rejected (caller-binding). Mirrors the Go
+    /// "authenticated tx rejected when sender differs from auth caller" sub-test, on the blob path.
+    #[tokio::test]
+    async fn test_post_espresso_4844_blob_caller_mismatch_rejected() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let other_caller = address!("00000000000000000000000000000000000000bb");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        let commitment = compute_blob_batch_hash(&blob_tx_hashes());
+        // Commitment authenticated, but by `other_caller`, not the batch tx sender BLOB_TX_BATCHER.
+        let log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, other_caller.into_word()],
+                commitment.as_slice().to_vec().into(),
+            ),
+        };
+        let receipt =
+            Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        // Rejected: no blob hashes requested, so the source has no data.
+        assert!(source.data.is_empty());
+    }
+
+    /// Post-Espresso: a 4844 blob tx from the batcher with no authenticating event is rejected —
+    /// the sender-based fallback is gone once Espresso is active. Mirrors the Go "fallback batcher
+    /// without auth event rejected" sub-test, on the blob path.
+    #[tokio::test]
+    async fn test_post_espresso_4844_blob_no_event_rejected() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo::default();
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        // No auth event for the blob batch commitment.
+        source.chain_provider.insert_receipts(block_info.hash, Vec::new());
+
+        // Even passing the real batcher signer as the fallback arg must not rescue it
+        // post-Espresso.
+        source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
+        assert!(source.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_not_found_triggers_reset() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.batcher_address = BLOB_TX_SENDER;
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        source.blob_fetcher.should_return_not_found = true;
+        let err = source.load_blobs(&BlockInfo::default(), BLOB_TX_BATCHER).await.unwrap_err();
+        assert!(matches!(err, PipelineErrorKind::Reset(_)), "expected Reset, got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_missed_beacon_slot_triggers_pipeline_reset() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.batcher_address = BLOB_TX_SENDER;
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        source.blob_fetcher.should_return_not_found = true;
+        let err = source.next(&BlockInfo::default(), BLOB_TX_BATCHER).await.unwrap_err();
+        assert!(matches!(err, PipelineErrorKind::Reset(_)), "expected Reset, got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_block_not_found_triggers_reset() {
+        let mut source = CeloBlobSource::new(
+            BlockNotFoundChainProvider,
+            TestBlobProvider::default(),
+            Address::ZERO,
+            None,
+        );
+        let err = source.load_blobs(&BlockInfo::default(), Address::ZERO).await.unwrap_err();
+        assert!(
+            matches!(err, PipelineErrorKind::Reset(_)),
+            "expected Reset when block_info_and_transactions_by_hash returns BlockNotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_overfill_triggers_reset() {
+        let mut source = default_source();
+        let block_info = BlockInfo::default();
+        source.batcher_address = BLOB_TX_SENDER;
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        // Insert blobs for all the real hashes so fill does not under-fill first.
+        for hash in blob_tx_hashes() {
+            source.blob_fetcher.insert_blob(hash, Blob::with_last_byte(1u8));
+        }
+        // Instruct the mock provider to return one extra blob beyond what was requested.
+        source.blob_fetcher.should_return_extra_blob = true;
+        let err = source.load_blobs(&BlockInfo::default(), BLOB_TX_BATCHER).await.unwrap_err();
+        assert!(
+            matches!(err, PipelineErrorKind::Reset(_)),
+            "expected Reset for blob over-fill, got {err:?}"
+        );
+    }
+}

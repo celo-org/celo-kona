@@ -3,7 +3,8 @@
 //! TODO: When Celo network which we want to use for CI is included in [superchain-registry], we can
 //! remove `CeloBootInfo`.
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, address};
+use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS};
 use kona_genesis::RollupConfig;
 use kona_preimage::{PreimageKey, PreimageOracleClient};
@@ -24,6 +25,13 @@ use tracing::warn;
 pub struct CeloBootInfo {
     /// The boot information for OP.
     pub op_boot_info: BootInfo,
+    /// Celo-specific Espresso batch-authentication settings.
+    ///
+    /// Sourced from the [`CeloRollupConfig`] (registry entry or the rollup config deserialized
+    /// from the preimage oracle). The OP [`BootInfo`] carries only the upstream `RollupConfig`,
+    /// which has no place for these fields, so they are tracked alongside it here.
+    #[serde(default)]
+    pub espresso: CeloEspressoConfig,
 }
 
 impl CeloBootInfo {
@@ -78,8 +86,10 @@ impl CeloBootInfo {
 
         // Attempt to load the rollup config from the chain ID. If there is no config for the chain,
         // fall back to loading the config from the preimage oracle.
-        let mut rollup_config = if let Some(config) = ROLLUP_CONFIGS.get(&chain_id) {
-            config.0.clone()
+        let mut celo_rollup_config: CeloRollupConfig = if let Some(config) =
+            ROLLUP_CONFIGS.get(&chain_id)
+        {
+            config.clone()
         } else {
             warn!(
                 target: "boot_loader",
@@ -92,6 +102,20 @@ impl CeloBootInfo {
                 .map_err(OracleProviderError::Preimage)?;
             serde_json::from_slice(&ser_cfg).map_err(OracleProviderError::Serde)?
         };
+        // Pin the Espresso settings for the known Celo chains to the program-baked values, so a
+        // proof always derives with the Espresso params bound by its verification key rather than
+        // any host-supplied value.
+        enforce_celo_espresso(&mut celo_rollup_config.espresso, chain_id);
+        // Reject internally inconsistent Espresso settings up front, so a misconfiguration fails
+        // fast here instead of corrupting derivation. This covers `espresso_time` set without a
+        // `BatchAuthenticator` address (would stall at the fork boundary) and `espresso_time`
+        // scheduled before `ecotone_time` (would route post-espresso blocks to the pre-ecotone
+        // calldata source and silently bypass event-based authorization).
+        celo_rollup_config.validate_espresso().map_err(|e| {
+            OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e))
+        })?;
+        let espresso = celo_rollup_config.espresso;
+        let mut rollup_config = celo_rollup_config.op_rollup_config;
 
         // Celo chains run with a non-default Fjord max sequencer drift (2892). The embedded
         // registry stamps it onto every Celo rollup config, but a config arriving via the
@@ -148,7 +172,51 @@ impl CeloBootInfo {
                 rollup_config,
                 l1_config,
             },
+            espresso,
         })
+    }
+}
+
+/// Celo Espresso batch-authentication settings for Celo Mainnet.
+// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
+// scheduled for Celo Mainnet. `None` keeps vanilla OP Stack sender-based batch authorization.
+const CELO_MAINNET_ESPRESSO: CeloEspressoConfig =
+    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
+
+/// Celo Espresso batch-authentication settings for Celo Sepolia.
+// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
+// scheduled for Celo Sepolia. `None` keeps vanilla OP Stack sender-based batch authorization.
+const CELO_SEPOLIA_ESPRESSO: CeloEspressoConfig =
+    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
+
+/// Celo Espresso batch-authentication settings for Celo Chaos.
+///
+/// Espresso is scheduled on Chaos at L2 timestamp `1782910800`; from that fork batches are
+/// authorized by `BatchInfoAuthenticated` events emitted by the configured `BatchAuthenticator`
+/// contract instead of by transaction sender.
+const CELO_CHAOS_ESPRESSO: CeloEspressoConfig = CeloEspressoConfig {
+    espresso_time: Some(1782910800),
+    batch_authenticator_address: Some(address!("b4B5343d9635b05cA4FbdB09BB4929E21A1A8B37")),
+};
+
+/// Pin the Espresso batch-authentication settings for the known Celo chain IDs (Mainnet, Sepolia,
+/// Chaos) to the program-baked values [`CELO_MAINNET_ESPRESSO`] / [`CELO_SEPOLIA_ESPRESSO`] /
+/// [`CELO_CHAOS_ESPRESSO`].
+///
+/// Espresso settings are consensus-critical — `espresso_time` switches batch authorization from
+/// sender-based to `BatchAuthenticator` event-based — so for the known chains they are baked into
+/// the program and bound by the proof's verification key, rather than sourced from the
+/// unauthenticated `L2_ROLLUP_CONFIG_KEY` preimage. This is the same known-chain set special-cased
+/// by [`enforce_celo_fjord_sequencer_drift`] and the BPO override.
+///
+/// A no-op for any other chain ID, so the unknown-chain oracle fallback in [`CeloBootInfo::load`]
+/// keeps the Espresso settings carried by its host-supplied config.
+const fn enforce_celo_espresso(espresso: &mut CeloEspressoConfig, chain_id: u64) {
+    match chain_id {
+        42220 => *espresso = CELO_MAINNET_ESPRESSO,
+        11142220 => *espresso = CELO_SEPOLIA_ESPRESSO,
+        11162320 => *espresso = CELO_CHAOS_ESPRESSO,
+        _ => {}
     }
 }
 
@@ -177,6 +245,7 @@ fn enforce_celo_fjord_sequencer_drift(rollup_config: &mut RollupConfig, chain_id
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Address;
 
     #[test]
     fn fjord_drift_forced_for_celo_chain_ids() {
@@ -196,5 +265,35 @@ mod tests {
         let mut cfg = RollupConfig { fjord_max_sequencer_drift: 1800, ..Default::default() };
         enforce_celo_fjord_sequencer_drift(&mut cfg, 10);
         assert_eq!(cfg.fjord_max_sequencer_drift, 1800);
+    }
+
+    #[test]
+    fn espresso_forced_for_celo_chain_ids() {
+        // Mainnet/Sepolia/Chaos derive with the program-baked Espresso settings, ignoring any
+        // input.
+        for (chain_id, expected) in [
+            (42220u64, CELO_MAINNET_ESPRESSO),
+            (11142220u64, CELO_SEPOLIA_ESPRESSO),
+            (11162320u64, CELO_CHAOS_ESPRESSO),
+        ] {
+            let mut espresso = CeloEspressoConfig {
+                espresso_time: Some(999),
+                batch_authenticator_address: Some(Address::repeat_byte(0xbb)),
+            };
+            enforce_celo_espresso(&mut espresso, chain_id);
+            assert_eq!(espresso, expected, "chain {chain_id} must derive with the baked Espresso");
+        }
+    }
+
+    #[test]
+    fn espresso_untouched_for_non_celo_chain() {
+        // A non-Celo chain ID keeps whatever Espresso its config carried (the oracle fallback).
+        let carried = CeloEspressoConfig {
+            espresso_time: Some(42),
+            batch_authenticator_address: Some(Address::repeat_byte(0xcc)),
+        };
+        let mut espresso = carried;
+        enforce_celo_espresso(&mut espresso, 10);
+        assert_eq!(espresso, carried);
     }
 }

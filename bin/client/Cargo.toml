@@ -16,6 +16,7 @@ workspace = true
 alloy-celo-evm.workspace = true
 celo-proof.workspace = true
 celo-driver.workspace = true
+celo-derive.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 celo-protocol.workspace = true
 
@@ -43,6 +44,8 @@ hokulea-proof = { workspace = true, optional = true }
 # General
 cfg-if.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 kona-preimage = { workspace = true, features = ["std"] }
