@@ -189,13 +189,21 @@ const CELO_MAINNET_ESPRESSO: CeloEspressoConfig =
 const CELO_SEPOLIA_ESPRESSO: CeloEspressoConfig =
     CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
 
-/// Pin the Espresso batch-authentication settings for the known Celo chain IDs (Mainnet, Sepolia)
-/// to the program-baked values [`CELO_MAINNET_ESPRESSO`] / [`CELO_SEPOLIA_ESPRESSO`].
+/// Celo Espresso batch-authentication settings for Celo Chaos.
+// TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
+// scheduled for Celo Chaos. `None` keeps vanilla OP Stack sender-based batch authorization.
+const CELO_CHAOS_ESPRESSO: CeloEspressoConfig =
+    CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None };
+
+/// Pin the Espresso batch-authentication settings for the known Celo chain IDs (Mainnet, Sepolia,
+/// Chaos) to the program-baked values [`CELO_MAINNET_ESPRESSO`] / [`CELO_SEPOLIA_ESPRESSO`] /
+/// [`CELO_CHAOS_ESPRESSO`].
 ///
 /// Espresso settings are consensus-critical — `espresso_time` switches batch authorization from
 /// sender-based to `BatchAuthenticator` event-based — so for the known chains they are baked into
 /// the program and bound by the proof's verification key, rather than sourced from the
-/// unauthenticated `L2_ROLLUP_CONFIG_KEY` preimage.
+/// unauthenticated `L2_ROLLUP_CONFIG_KEY` preimage. This is the same known-chain set special-cased
+/// by [`enforce_celo_fjord_sequencer_drift`] and the BPO override.
 ///
 /// A no-op for any other chain ID, so the unknown-chain oracle fallback in [`CeloBootInfo::load`]
 /// keeps the Espresso settings carried by its host-supplied config.
@@ -203,6 +211,7 @@ const fn enforce_celo_espresso(espresso: &mut CeloEspressoConfig, chain_id: u64)
     match chain_id {
         42220 => *espresso = CELO_MAINNET_ESPRESSO,
         11142220 => *espresso = CELO_SEPOLIA_ESPRESSO,
+        11162320 => *espresso = CELO_CHAOS_ESPRESSO,
         _ => {}
     }
 }
@@ -256,10 +265,12 @@ mod tests {
 
     #[test]
     fn espresso_forced_for_celo_chain_ids() {
-        // Mainnet/Sepolia derive with the program-baked Espresso settings, ignoring any input.
-        for (chain_id, expected) in
-            [(42220u64, CELO_MAINNET_ESPRESSO), (11142220u64, CELO_SEPOLIA_ESPRESSO)]
-        {
+        // Mainnet/Sepolia/Chaos derive with the program-baked Espresso settings, ignoring any input.
+        for (chain_id, expected) in [
+            (42220u64, CELO_MAINNET_ESPRESSO),
+            (11142220u64, CELO_SEPOLIA_ESPRESSO),
+            (11162320u64, CELO_CHAOS_ESPRESSO),
+        ] {
             let mut espresso = CeloEspressoConfig {
                 espresso_time: Some(999),
                 batch_authenticator_address: Some(Address::repeat_byte(0xbb)),
