@@ -280,14 +280,9 @@ where
         &self,
         block: &'_ SealedBlock<N::Block>,
     ) -> Result<OpBlockExecutionCtx, Self::Error> {
-        Ok(OpBlockExecutionCtx {
-            parent_hash: block.header().parent_hash(),
-            parent_beacon_block_root: block.header().parent_beacon_block_root(),
-            extra_data: block.header().extra_data().clone(),
-            // SDM is unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
-            // so post-exec verification never runs.
-            post_exec_mode: PostExecMode::default(),
-        })
+        // SDM is unscheduled on Celo (`RollupConfig::is_sdm_active` returns false),
+        // so post-exec verification never runs.
+        Ok(self.context_for_block_with_post_exec_mode(block, None))
     }
 
     fn context_for_next_block(
@@ -295,12 +290,11 @@ where
         parent: &SealedHeader<N::BlockHeader>,
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<OpBlockExecutionCtx, Self::Error> {
-        Ok(OpBlockExecutionCtx {
-            parent_hash: parent.hash(),
-            parent_beacon_block_root: attributes.parent_beacon_block_root,
-            extra_data: attributes.extra_data,
-            post_exec_mode: PostExecMode::default(),
-        })
+        Ok(self.context_for_next_block_with_post_exec_mode(
+            parent,
+            attributes,
+            PostExecMode::default(),
+        ))
     }
 
     /// Builds a block builder for the next block, i.e. the **sequencing** path: reth routes the
