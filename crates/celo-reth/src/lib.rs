@@ -426,6 +426,9 @@ where
         FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
+    // Verbatim copy of `OpEvmConfig::evm_env_for_payload` (op-reth v2.3.1) with zero Celo
+    // divergence — upstream keeps it inline in the trait impl, so there is no free function
+    // to delegate to. Re-diff against upstream when bumping op-reth.
     fn evm_env_for_payload(&self, payload: &OpExecData) -> Result<EvmEnvFor<Self>, Self::Error> {
         use alloy_primitives::U256;
         use revm::{
