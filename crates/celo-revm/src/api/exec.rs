@@ -109,16 +109,14 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.inner.ctx().set_tx(
+        self.run_system_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_caller(
                 caller,
                 system_contract_address,
                 data,
             ),
-        );
-        let mut h =
-            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run_system_call(self)
+            true,
+        )
     }
 }
 
@@ -128,6 +126,28 @@ where
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
+    /// Set `tx` as the current system transaction and run it through a fresh
+    /// [`CeloHandler`], either committing the journal (`commit == true`, via
+    /// [`Handler::run_system_call`]) or leaving the revert log intact for an enclosing
+    /// `checkpoint` / `checkpoint_revert` (`commit == false`, via
+    /// [`CeloHandler::run_system_call_no_commit`]). Shared by the committing and
+    /// non-committing system-call entry points below, which differ only in the tx they build
+    /// and this flag.
+    fn run_system_tx(
+        &mut self,
+        tx: <CeloContext<DB> as ContextTr>::Tx,
+        commit: bool,
+    ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
+        self.inner.ctx().set_tx(tx);
+        let mut h =
+            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
+        if commit {
+            h.run_system_call(self)
+        } else {
+            h.run_system_call_no_commit(self)
+        }
+    }
+
     /// Execute a system call with a custom gas limit
     pub fn transact_system_call_with_gas_limit(
         &mut self,
@@ -135,17 +155,15 @@ where
         data: Bytes,
         gas_limit: u64,
     ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
-        self.inner.ctx().set_tx(
+        self.run_system_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
                 CELO_SYSTEM_ADDRESS,
                 system_contract_address,
                 data,
                 gas_limit,
             ),
-        );
-        let mut h =
-            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run_system_call(self)
+            true,
+        )
     }
 
     /// Non-committing counterpart of [`SystemCallEvm::system_call_one`].
@@ -161,16 +179,14 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
-        self.inner.ctx().set_tx(
+        self.run_system_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_caller(
                 SYSTEM_ADDRESS,
                 system_contract_address,
                 data,
             ),
-        );
-        let mut h =
-            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run_system_call_no_commit(self)
+            false,
+        )
     }
 
     /// Non-committing counterpart of [`Self::transact_system_call_with_gas_limit`].
@@ -183,16 +199,14 @@ where
         data: Bytes,
         gas_limit: u64,
     ) -> Result<ExecutionResult<OpHaltReason>, CeloError<CeloContext<DB>>> {
-        self.inner.ctx().set_tx(
+        self.run_system_tx(
             <CeloContext<DB> as ContextTr>::Tx::new_system_tx_with_gas_limit(
                 CELO_SYSTEM_ADDRESS,
                 system_contract_address,
                 data,
                 gas_limit,
             ),
-        );
-        let mut h =
-            CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run_system_call_no_commit(self)
+            false,
+        )
     }
 }
