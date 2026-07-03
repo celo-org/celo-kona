@@ -201,20 +201,24 @@ where
         let is_balance_check_disabled = ctx.cfg().is_balance_check_disabled();
         let is_base_fee_disabled = ctx.cfg().is_base_fee_check_disabled();
 
-        // `build_execution_result` runs this hook for *every* system call too (the CIP-64
-        // debit's own `call_no_commit`, `call_read_only`, ...), not just the main tx. Those
-        // sub-transactions carry a system caller and no fee currency, so `fees_in_celo` forces
-        // the early return below — the credit never re-enters. Pin that: a system-caller tx
-        // that reached the crediting path would recursively debit/credit.
-        let caller = ctx.tx().caller();
-        debug_assert!(
-            (caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS) || fees_in_celo,
-            "CIP-64 credit hook reached for a system-caller sub-transaction (should be native)"
-        );
-
         if is_deposit || fees_in_celo || is_balance_check_disabled || is_base_fee_disabled {
             return Ok(());
         }
+
+        // `build_execution_result` runs this hook for *every* system call too (the CIP-64
+        // debit's own `call_no_commit`, `call_read_only`, ...), not just the main tx. Those
+        // sub-transactions carry a system caller and no fee currency, so the `fees_in_celo`
+        // arm of the early return above already excluded them — the credit never re-enters.
+        // Pin that: reaching here with a system caller and a real fee currency would
+        // recursively debit/credit. The assert lives *below* the early return so it can't fire
+        // on an RPC simulation: `eth_call`/`eth_estimateGas` default an omitted `from` to the
+        // zero address (== `CELO_SYSTEM_ADDRESS`) and disable the base-fee/balance checks, so
+        // those requests return above before ever reaching this invariant.
+        let caller = ctx.tx().caller();
+        debug_assert!(
+            caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS,
+            "CIP-64 credit hook reached for a system-caller sub-transaction (should be native)"
+        );
 
         // Extract all values first to avoid borrowing conflicts
         let basefee = ctx.block().basefee();
@@ -227,7 +231,6 @@ where
         if fee_recipient == Address::ZERO {
             fee_recipient = fee_handler;
         }
-        let caller = ctx.tx().caller();
 
         let base_fee_in_erc20: Fc = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = Fc::new(
