@@ -29,8 +29,8 @@ use revm::{
     },
     handler::{
         EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, SYSTEM_ADDRESS,
-        evm::FrameTr, handler::EvmTrError, post_execution::build_result_gas,
-        pre_execution::validate_account_nonce_and_code, validation::validate_priority_fee_tx,
+        evm::FrameTr, handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
+        validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
     interpreter::{
@@ -83,6 +83,10 @@ fn is_legacy_chain_id_exception(
 pub struct CeloHandler<EVM, ERROR, FRAME> {
     pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
     pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
+    /// When set, [`Self::execution_result`] skips `commit_tx` so the transaction's journal
+    /// entries survive for an enclosing `checkpoint` / `checkpoint_revert` to commit or revert.
+    /// Set only by [`Self::run_system_call_no_commit`]; every other entry point commits.
+    no_commit: bool,
 }
 
 // The wrapped revm handlers are not `Debug`, so the fields are elided.
@@ -97,6 +101,7 @@ impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
         Self {
             mainnet: MainnetHandler::default(),
             op: op_revm::handler::OpHandler::new(),
+            no_commit: false,
         }
     }
 }
@@ -711,17 +716,16 @@ where
     /// Builds the [`ExecutionResult`] for a finished transaction **without**
     /// committing the journal.
     ///
-    /// This is the body of [`Handler::execution_result`] up to — but excluding —
-    /// the `commit_tx()` / teardown at the end. Splitting it out lets
-    /// [`Self::run_system_call_no_commit`] finish a system call while leaving the
-    /// journal's revert log intact, so an enclosing `checkpoint` can roll the call
-    /// back (see [`crate::contracts::core_contracts::call_read_only`]).
+    /// This is the body of [`Self::execution_result`] up to — but excluding — the
+    /// `commit_tx()` / teardown at the end (it runs the CIP-64 credit hook and
+    /// `post_execution::output`). `execution_result` calls it and then does the teardown,
+    /// gating `commit_tx` on the `no_commit` flag, so both the committing path and
+    /// [`Self::run_system_call_no_commit`] share this body; the latter leaves the journal's
+    /// revert log intact so an enclosing `checkpoint` can roll the call back (see
+    /// [`crate::contracts::core_contracts::call_read_only`]).
     ///
-    /// MAINTENANCE: hand-copied from upstream `run_system_call` / `execution_result`
-    /// (revm-handler 18.1.0). Re-diff against the trait defaults on every revm bump; the
-    /// `call_and_call_no_commit_agree_on_outcome_and_state` test guards the silent
-    /// divergences, and a changed `build_result_gas` / `execution_result` signature breaks
-    /// the build outright.
+    /// MAINTENANCE: the `call_and_call_no_commit_agree_on_outcome_and_state` test guards that
+    /// the committing and no-commit paths stay in lockstep across revm bumps.
     fn build_execution_result(
         &mut self,
         evm: &mut CeloEvm<DB, INSP, P>,
@@ -775,21 +779,25 @@ where
     /// storage, logs) in place so a surrounding `checkpoint` / `checkpoint_revert`
     /// pair can undo them — which is what makes
     /// [`call_read_only`](crate::contracts::core_contracts::call_read_only) an actual
-    /// read-only call. The non-journal teardown that `execution_result` performs
-    /// (L1-cost cache, local context, frame stack) is still done here.
+    /// read-only call.
     ///
-    /// On its own this method *keeps* the call's effects, exactly like
-    /// [`Handler::run_system_call`] minus the `commit_tx`; the caller must bracket it
-    /// with `checkpoint` / `checkpoint_revert` to discard them.
+    /// This is the trait-default [`Handler::run_system_call`] with two Celo tweaks: the
+    /// `no_commit` flag makes [`Self::execution_result`] skip `commit_tx` (the rest of its
+    /// teardown — L1-cost cache, local context, frame stack — still runs), and the enclosing
+    /// transaction's logs are detached around the call. Delegating rather than hand-copying the
+    /// trait body removes the per-revm-bump re-diff burden the old inlined copy carried.
     ///
-    /// MAINTENANCE: this is a hand-copy of [`Handler::run_system_call`] (revm-handler 18.1.0)
-    /// with `execution_result` swapped for [`Self::build_execution_result`] (no `commit_tx`),
-    /// the teardown inlined, and the log detach/reattach added. Re-diff it against the trait
-    /// default on every revm bump.
+    /// On its own this method *keeps* the call's effects; the caller must bracket it with
+    /// `checkpoint` / `checkpoint_revert` to discard them.
     pub(crate) fn run_system_call_no_commit(
         &mut self,
         evm: &mut CeloEvm<DB, INSP, P>,
     ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // Skip `commit_tx` in `execution_result` so the call's journal entries survive for the
+        // enclosing `checkpoint` to own. Handlers are constructed fresh per system call
+        // (`run_system_tx`), so this flag never leaks into a committing call.
+        self.no_commit = true;
+
         // Detach the enclosing transaction's logs for the duration of the call. Building the
         // result runs `post_execution::output`, which `take_logs()` (a `mem::take`) the *whole*
         // journal logs buffer into this call's `ExecutionResult`; without setting the enclosing
@@ -801,35 +809,15 @@ where
         // restored below.
         let saved_logs = core::mem::take(&mut evm.ctx().journal_mut().logs);
 
-        // dummy values that are not used, mirroring `Handler::run_system_call`.
-        let init_and_floor_gas = InitialAndFloorGas::new(0, 0);
-        let result = match self
-            .execution(evm, &init_and_floor_gas)
-            .and_then(|exec_result| {
-                // System calls have no intrinsic gas; build ResultGas from frame result.
-                let gas = exec_result.gas();
-                let result_gas = build_result_gas(gas, init_and_floor_gas);
-                self.build_execution_result(evm, exec_result, result_gas)
-            }) {
-            Ok(exec_result) => {
-                // Same teardown as `execution_result`, but WITHOUT `commit_tx`: the
-                // caller's `checkpoint_revert` unwinds the journal instead of clearing it.
-                evm.ctx().chain_mut().clear_tx_l1_cost();
-                evm.ctx().local_mut().clear();
-                evm.frame_stack().clear();
-                // On success `post_execution::output` took the call's logs into the result, so
-                // the buffer is empty; assert before restoring so a future revm change to the
-                // take-logs contract fails loudly instead of silently dropping the enclosing
-                // tx's logs.
-                debug_assert!(
-                    evm.ctx().journal_ref().logs.is_empty(),
-                    "system call left logs in the journal; restoring would drop the enclosing \
-                     tx's logs"
-                );
-                Ok(exec_result)
-            }
-            Err(e) => self.catch_error(evm, e),
-        };
+        let result = self.run_system_call(evm);
+
+        // On success `post_execution::output` took the call's logs into the result, so the
+        // buffer is empty; assert before restoring so a future revm change to the take-logs
+        // contract fails loudly instead of silently dropping the enclosing tx's logs.
+        debug_assert!(
+            result.is_err() || evm.ctx().journal_ref().logs.is_empty(),
+            "system call left logs in the journal; restoring would drop the enclosing tx's logs"
+        );
 
         // Reattach the enclosing transaction's logs, discarding anything this call left in the
         // buffer (captured in the result on success; unwanted on the error path). Any enclosing
@@ -1133,8 +1121,16 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         let exec_result = self.build_execution_result(evm, frame_result, result_gas)?;
 
-        // Commit journal, clear frame stack, clear l1_block_info
-        evm.ctx().journal_mut().commit_tx();
+        // Commit journal, clear frame stack, clear l1_block_info.
+        //
+        // `commit_tx` is skipped in `no_commit` mode: it does a bare `journal.clear()` that
+        // empties the shared revert log, which would make a surrounding `checkpoint_revert` a
+        // no-op. Leaving the entries in place is exactly what lets `run_system_call_no_commit`'s
+        // callers roll the call back (see `core_contracts::call_read_only`). The rest of the
+        // teardown (L1-cost cache, local context, frame stack) runs either way.
+        if !self.no_commit {
+            evm.ctx().journal_mut().commit_tx();
+        }
         evm.ctx().chain_mut().clear_tx_l1_cost();
         evm.ctx().local_mut().clear();
         evm.frame_stack().clear();
