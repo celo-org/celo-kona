@@ -5,7 +5,7 @@
 
 use alloy_primitives::{B256, address};
 use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
-use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS};
+use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS, is_celo_chain};
 use kona_genesis::RollupConfig;
 use kona_preimage::{PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -148,8 +148,7 @@ impl CeloBootInfo {
         // blob schedules and timestamps that op-node ignored at the time.
         // bpo3+ are intentionally omitted: Jovian is expected to activate on all Celo chains
         // before bpo3 is scheduled on any L1 network.
-        if matches!(chain_id, 42220 | 11142220 | 11162320) {
-            // Celo Mainnet, Celo Sepolia, and Celo Chaos
+        if is_celo_chain(chain_id) {
             let l2_claim_block_timestamp = rollup_config.genesis.l2_time +
                 (l2_claim_block - rollup_config.genesis.l2.number) * rollup_config.block_time;
             if !rollup_config.is_jovian_active(l2_claim_block_timestamp) {
@@ -229,8 +228,7 @@ const fn enforce_celo_espresso(espresso: &mut CeloEspressoConfig, chain_id: u64)
 /// without this override a Celo proof would accept/reject batches differently from op-node for
 /// drift in (1800, 2892], breaking node-vs-proof determinism.
 fn enforce_celo_fjord_sequencer_drift(rollup_config: &mut RollupConfig, chain_id: u64) {
-    // Celo Mainnet, Celo Sepolia, and Celo Chaos (same set special-cased for BPO above).
-    if matches!(chain_id, 42220 | 11142220 | 11162320) &&
+    if is_celo_chain(chain_id) &&
         rollup_config.fjord_max_sequencer_drift != CELO_FJORD_MAX_SEQUENCER_DRIFT
     {
         warn!(
