@@ -495,7 +495,7 @@ where
 
         match &result {
             Ok(()) => {
-                if checkpoint.is_some() {
+                if let Some(cp) = checkpoint {
                     let journal = evm.ctx().journal_mut();
                     // Keep the debit's journal entries; the enclosing transaction owns them now.
                     journal.checkpoint_commit();
@@ -503,6 +503,16 @@ where
                     // `call` path. Nothing in the main tx has run yet, so transient storage is
                     // empty before the debit and this clears only the debit's own writes.
                     journal.transient_storage.clear();
+                    // Drop any self-destructs the debit recorded, matching the committing `call`
+                    // path's `commit_tx` (which clears `selfdestructed_addresses`).
+                    // `checkpoint_commit` only decrements depth, so without this a fee currency
+                    // whose `debitGasFees` SELFDESTRUCTs a contract would leave the list
+                    // populated for the main tx — a spurious EIP-7708 burn log (and receipt
+                    // divergence) once a spec that emits them is enabled. Truncating back to the
+                    // checkpoint's index (empty before the debit) reproduces `commit_tx`'s clear.
+                    journal
+                        .selfdestructed_addresses
+                        .truncate(cp.selfdestructed_i);
                 }
             }
             Err(_) => {
