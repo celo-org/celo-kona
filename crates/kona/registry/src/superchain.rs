@@ -17,10 +17,7 @@ pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 /// drift, pre-Jovian BPO gating) off this set, so a new Celo network must be
 /// added here to derive correctly via the preimage-oracle fallback.
 pub const fn is_celo_chain(chain_id: u64) -> bool {
-    matches!(
-        chain_id,
-        CELO_MAINNET_CHAIN_ID | CELO_SEPOLIA_CHAIN_ID | CELO_CHAOS_CHAIN_ID
-    )
+    matches!(chain_id, CELO_MAINNET_CHAIN_ID | CELO_SEPOLIA_CHAIN_ID | CELO_CHAOS_CHAIN_ID)
 }
 
 /// Fjord max sequencer drift for every Celo chain (Mainnet, Sepolia, Chaos).

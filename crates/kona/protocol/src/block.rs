@@ -288,5 +288,4 @@ mod tests {
         let deserialized: CeloL2BlockInfo = serde_json::from_str(json).unwrap();
         assert_eq!(deserialized, l2_block_info);
     }
-
 }

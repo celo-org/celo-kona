@@ -116,7 +116,6 @@ impl ExchangeRate {
         assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
         Fc::new(mul_div_saturating(native_amount.into_inner(), self.numerator, self.denominator))
     }
-
 }
 
 /// Compute `(amount * mul) / div` at u256 precision, saturating to `u128::MAX`
@@ -205,10 +204,7 @@ const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated bef
 /// the pool and the execution layer agree on which txs use the native fee path.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
     non_native_fee_currency(
-        inner
-            .transaction()
-            .as_cip64()
-            .and_then(|signed| signed.tx().fee_currency),
+        inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency),
     )
 }
 

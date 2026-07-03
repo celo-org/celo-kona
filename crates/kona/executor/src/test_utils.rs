@@ -120,7 +120,8 @@ pub async fn fetch_block_replay_inputs<P: Provider>(
         async { provider.get_block_by_number((block_number - 1).into()).await },
     )
     .map_err(|e| format!("Failed to fetch executing/parent block for {block_number}: {e}"))?;
-    let executing_block = executing_block.ok_or_else(|| format!("Block {block_number} not found"))?;
+    let executing_block =
+        executing_block.ok_or_else(|| format!("Block {block_number} not found"))?;
     let parent_block =
         parent_block.ok_or_else(|| format!("Parent block {} not found", block_number - 1))?;
 

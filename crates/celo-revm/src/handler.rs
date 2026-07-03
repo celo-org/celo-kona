@@ -28,8 +28,8 @@ use revm::{
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS,
-        evm::FrameTr, handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
+        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS, evm::FrameTr,
+        handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
         validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
