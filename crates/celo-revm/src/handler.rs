@@ -7,7 +7,7 @@ use crate::{
     },
     contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
-    fee_currency_context::FeeCurrencyContext,
+    fee_currency_context::{FeeCurrencyContext, non_native_fee_currency},
     transaction::{CeloTxTr, Cip64Info},
     units::{Fc, FcU256, NativeU256},
 };
@@ -677,7 +677,7 @@ where
 
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
-        if fee_currency.is_some_and(|fc| fc != Address::ZERO) {
+        if non_native_fee_currency(fee_currency).is_some() {
             let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)

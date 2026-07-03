@@ -28,6 +28,7 @@ use celo_alloy_rpc_types::{
 use celo_revm::{
     CeloTransaction,
     contracts::core_contracts::getExchangeRateCall,
+    non_native_fee_currency,
     units::{Fc, FcU256, Native, NativeU256},
 };
 use op_alloy_rpc_types::OpTransactionRequest;
@@ -817,7 +818,7 @@ impl CeloFeeApi {
         &self,
         request: &mut CeloTransactionRequest,
     ) -> Result<(), jsonrpsee_types::ErrorObjectOwned> {
-        let fc = match request.fee_currency.filter(|fc| *fc != Address::ZERO) {
+        let fc = match non_native_fee_currency(request.fee_currency) {
             Some(fc) => fc,
             None => return Ok(()),
         };
@@ -941,7 +942,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             // an absent parameter. Normalize here so zero doesn't trigger an
             // exchange-rate lookup (which would fail — zero is never registered
             // in the FeeCurrencyDirectory) and error out to the caller.
-            match fee_currency.filter(|fc| *fc != Address::ZERO) {
+            match non_native_fee_currency(fee_currency) {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_price), rate)
@@ -957,7 +958,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
         .register_async_method("eth_maxPriorityFeePerGas", |params, ctx, _| async move {
             let fee_currency: Option<Address> = params.sequence().optional_next()?;
             let base_tip = (ctx.priority_fee)().await?;
-            match fee_currency.filter(|fc| *fc != Address::ZERO) {
+            match non_native_fee_currency(fee_currency) {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_tip), rate)
@@ -1063,7 +1064,7 @@ pub(crate) fn cip64_native_tip(
 pub(crate) fn fee_history_cip64_conversion_currency(
     fee_currency: Option<Address>,
 ) -> Option<Address> {
-    fee_currency.filter(|fc| *fc != Address::ZERO)
+    non_native_fee_currency(fee_currency)
 }
 
 /// Compute the native-equivalent tip for a CIP-64 tx in `eth_feeHistory`.

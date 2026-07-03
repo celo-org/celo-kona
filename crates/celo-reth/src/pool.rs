@@ -13,7 +13,10 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::CeloPooledTransaction;
-use celo_revm::units::{Fc, Native, NativeU256};
+use celo_revm::{
+    non_native_fee_currency,
+    units::{Fc, Native, NativeU256},
+};
 use op_revm::OpSpecId;
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
@@ -201,11 +204,12 @@ const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated bef
 /// handler already treats it as native during execution. Normalizing here ensures
 /// the pool and the execution layer agree on which txs use the native fee path.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
-    inner
-        .transaction()
-        .as_cip64()
-        .and_then(|signed| signed.tx().fee_currency)
-        .filter(|addr| *addr != Address::ZERO)
+    non_native_fee_currency(
+        inner
+            .transaction()
+            .as_cip64()
+            .and_then(|signed| signed.tx().fee_currency),
+    )
 }
 
 impl CeloPoolTx {
