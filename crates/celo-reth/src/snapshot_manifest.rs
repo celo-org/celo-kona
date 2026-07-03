@@ -140,17 +140,27 @@ fn reconcile_stage_checkpoints(source_datadir: &Path, block_arg: Option<u64>) ->
         .wrap_err("failed to open source db read-write for stage-checkpoint reconciliation")?;
     let tx = db.tx_mut()?;
 
+    let finish_tip = tx
+        .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
+        .map(|checkpoint| checkpoint.block_number);
+
     let block = match block_arg {
-        Some(block) => block,
-        None => tx
-            .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
-            .map(|checkpoint| checkpoint.block_number)
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Could not infer --block from source DB (Finish checkpoint missing); \
-                     pass --block manually"
-                )
-            })?,
+        // Reject an explicit --block above the source `Finish` tip: stamping the migrated-chain
+        // stages complete beyond the data the source datadir actually contains (a typo'd or future
+        // height) would let a retry publish a snapshot that skips required index/trie work.
+        Some(block) => match finish_tip {
+            Some(tip) if block > tip => eyre::bail!(
+                "--block {block} is above the source Finish checkpoint {tip}; refusing to \
+                 reconcile stage checkpoints beyond the data the source datadir contains"
+            ),
+            _ => block,
+        },
+        None => finish_tip.ok_or_else(|| {
+            eyre::eyre!(
+                "Could not infer --block from source DB (Finish checkpoint missing); \
+                 pass --block manually"
+            )
+        })?,
     };
 
     let mut advanced = 0usize;
