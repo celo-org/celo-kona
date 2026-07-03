@@ -474,12 +474,13 @@ where
         debit_erc20_fees: bool,
         additional_cost: U256,
     ) -> Result<(), ERROR> {
-        // Snapshot the call-stack depth so we can assert it is balanced below.
-        // checkpoint / checkpoint_commit / checkpoint_revert is depth-balanced on the happy
-        // path, and on the error path `catch_error` -> `discard_tx` resets `depth` to 0
-        // (revm-context-16.0.1 journal/inner.rs). This runs at top level (depth 0) during
-        // pre-execution, so depth ends balanced regardless of how the debit ends. (Mirrors the
-        // same assert in `core_contracts::call_read_only`.)
+        // Snapshot the call-stack depth so we can assert it is balanced below. The `checkpoint`
+        // (+1) below is paired with exactly one of `checkpoint_commit` / `checkpoint_revert`
+        // (-1) on the Ok / Err arms, so depth ends balanced however the debit ends. The balance
+        // comes from our own checkpoint bookkeeping, not from `discard_tx`: op-revm's
+        // `catch_error` override does no journal work for these non-deposit txs
+        // (optimism@3bccc60 op-revm/src/handler.rs). (Mirrors the same assert in
+        // `core_contracts::call_read_only`.)
         let prev_depth = evm.ctx().journal_ref().depth;
 
         // Only the ERC20 debit makes an irreversible pre-validation charge, so only it needs a
@@ -513,14 +514,15 @@ where
             }
         }
 
-        // The checkpoint machinery (happy path) and `discard_tx` (error path) both leave depth
-        // balanced, so assert rather than force it: a future revm change that leaves depth
-        // inflated trips tests loudly instead of being silently masked.
+        // The `checkpoint_commit` / `checkpoint_revert` above leaves depth balanced, so assert
+        // rather than force it: a future revm change — or a fatal error that leaks a frame-level
+        // checkpoint — that leaves depth inflated trips tests loudly instead of being silently
+        // masked.
         if debit_erc20_fees {
             debug_assert_eq!(
                 evm.ctx().journal_ref().depth,
                 prev_depth,
-                "checkpoint_revert / checkpoint_commit / discard_tx should have restored depth"
+                "checkpoint_commit / checkpoint_revert should have restored depth"
             );
         }
 
@@ -2247,12 +2249,13 @@ mod tests {
     // debited.
     //
     // Driven through the bare handler (`handler.run` + a manual `finalize`), then asserting the
-    // finalized fee-currency balance. Note `handler.run` *does* discard the journal on the error
-    // path (`catch_error` -> `discard_tx`), so this test is not discriminating by bypassing that
-    // safety net. What makes it fail against a committing debit is different: `commit_tx` clears
-    // the revert log, so by the time `discard_tx` runs there is nothing left to undo and the
-    // debit leaks. The rollbackable (non-committing) debit keeps its revert-log entries, so
-    // `checkpoint_revert` unwinds it (and `discard_tx` would too) — the debit is reverted.
+    // finalized fee-currency balance. On the rejection path op-revm's `catch_error` override
+    // does no journal work for these non-deposit txs — it neither commits nor discards — so what
+    // reaches `finalize` is whatever the debit left in the journal. Against a committing debit,
+    // `commit_tx` already folded the charge into state and cleared the revert log, so the
+    // rejected tx leaks the debit. The rollbackable (non-committing) debit keeps its revert-log
+    // entries and `checkpoint_revert` unwinds them on the Err arm of
+    // `cip64_rollbackable_debit_and_deduct_caller`, so nothing is debited.
     #[test]
     fn rejected_cip64_tx_reverts_the_fee_debit() {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
