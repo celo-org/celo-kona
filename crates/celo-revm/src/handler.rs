@@ -21,7 +21,7 @@ use op_revm::{
 };
 use revm::{
     Database, Inspector,
-    context::{LocalContextTr, result::InvalidTransaction},
+    context::{LocalContextTr, journal::JournalInner, result::InvalidTransaction},
     context_interface::{
         Block, Cfg, ContextSetters, ContextTr, JournalTr, Transaction,
         journaled_state::account::JournaledAccountTr,
@@ -496,20 +496,38 @@ where
                 let journal = evm.ctx().journal_mut();
                 // Keep the debit's journal entries; the enclosing transaction owns them now.
                 journal.checkpoint_commit();
+
+                // Reproduce the committing `call` path's `commit_tx` per-tx cleanup for the two
+                // fields `checkpoint_commit` does not touch (it only folds state/warmth into the
+                // parent and decrements depth). Destructure the whole `JournalInner` — no `..` —
+                // so that a future revm field addition fails to compile *here*, forcing a
+                // decision on whether the debit must clean it up, exactly as upstream `commit_tx`
+                // destructures for the same reason. This site already silently missed
+                // `selfdestructed_addresses` once (commit 0edc56ca).
+                let JournalInner {
+                    transient_storage,
+                    selfdestructed_addresses,
+                    // Folded into the parent by `checkpoint_commit` or owned by the enclosing tx;
+                    // nothing to reset per-debit.
+                    state: _,
+                    logs: _,
+                    depth: _,
+                    journal: _,
+                    transaction_id: _,
+                    cfg: _,
+                    warm_addresses: _,
+                } = &mut journal.inner;
                 // Clear the debit's transient storage (EIP-1153), matching the committing
                 // `call` path. Nothing in the main tx has run yet, so transient storage is
                 // empty before the debit and this clears only the debit's own writes.
-                journal.transient_storage.clear();
-                // Drop any self-destructs the debit recorded, matching the committing `call`
-                // path's `commit_tx` (which clears `selfdestructed_addresses`).
-                // `checkpoint_commit` only decrements depth, so without this a fee currency
-                // whose `debitGasFees` SELFDESTRUCTs a contract would leave the list
-                // populated for the main tx — a spurious EIP-7708 burn log (and receipt
-                // divergence) once a spec that emits them is enabled. Truncating back to the
-                // checkpoint's index (empty before the debit) reproduces `commit_tx`'s clear.
-                journal
-                    .selfdestructed_addresses
-                    .truncate(checkpoint.selfdestructed_i);
+                transient_storage.clear();
+                // Drop any self-destructs the debit recorded, matching `commit_tx`'s
+                // `selfdestructed_addresses.clear()`. Without this a fee currency whose
+                // `debitGasFees` SELFDESTRUCTs a contract would leave the list populated for
+                // the main tx — a spurious EIP-7708 burn log (and receipt divergence) once a
+                // spec that emits them is enabled. Truncating back to the checkpoint's index
+                // (empty before the debit) reproduces `commit_tx`'s clear.
+                selfdestructed_addresses.truncate(checkpoint.selfdestructed_i);
             }
             Err(_) => {
                 // Undo the debit (and any partial caller mutations): state, account/slot
