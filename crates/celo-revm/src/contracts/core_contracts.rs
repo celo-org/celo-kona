@@ -126,14 +126,6 @@ where
     // The system call overwrites `ctx.tx`; save it to restore afterwards.
     let prev_tx = evm.ctx().tx().clone();
 
-    // Detach the surrounding transaction's logs before the call. Building the call's
-    // result runs `post_execution::output`, which `take_logs()` (a `mem::take`) the
-    // *entire* logs buffer; `checkpoint_revert` can only truncate logs, so it cannot
-    // restore ones taken before the checkpoint. Splitting them off here (and reattaching
-    // below) keeps the read-only call from stealing the enclosing transaction's logs.
-    // The call's own logs are captured in `call_result` and discarded.
-    let saved_logs = core::mem::take(&mut evm.ctx().journal_mut().logs);
-
     // Snapshot the call-stack depth so we can assert it is balanced below. The explicit
     // `checkpoint` (+1) / `checkpoint_revert` (-1) pair below runs unconditionally, so depth
     // ends balanced however the call ends — on the happy path and when the system call returns
@@ -177,17 +169,10 @@ where
         "checkpoint_revert should have restored the call-stack depth"
     );
 
-    // After the revert the call's own logs have been taken by `post_execution::output`
-    // (a `mem::take`) and/or truncated back to the checkpoint, so the buffer must be empty
-    // here. Assert it before reattaching, so a future revm change to the take-logs /
-    // checkpoint contract fails loudly instead of silently dropping the enclosing tx's logs.
-    debug_assert!(
-        evm.ctx().journal_ref().logs.is_empty(),
-        "read-only call left logs in the journal; reattaching would drop the enclosing tx's logs"
-    );
-
-    // Reattach the surrounding transaction's logs and restore its tx env.
-    evm.ctx().journal_mut().logs = saved_logs;
+    // Restore the surrounding transaction's tx env (the system call overwrote it). Log
+    // isolation is handled inside `run_system_call_no_commit`, which detaches the enclosing
+    // logs around the call so the target's `take_logs` cannot steal them; nothing to reattach
+    // here.
     evm.ctx().set_tx(prev_tx);
 
     process_call_result(call_result)

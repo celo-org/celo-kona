@@ -400,18 +400,11 @@ where
 
         let max_allowed_gas_cost = self.cip64_max_allowed_gas_cost(evm, fee_currency)?;
 
-        // The debit's system call runs `post_execution::output`, which `take_logs()`
-        // (a `mem::take`) the *entire* journal logs buffer into the debit's result (captured
-        // below as `logs` -> `Cip64Info::logs_pre`). Unlike `call_read_only`, the debit's
-        // `call_no_commit` path does not detach/reattach the enclosing logs — it relies on the
-        // buffer being empty here because the debit runs in pre-execution before any main-tx
-        // log is emitted (context-load reads reverted their own logs). Assert that precondition
-        // so a future reorder trips tests instead of silently stealing the enclosing tx's logs.
-        debug_assert!(
-            evm.ctx().journal_ref().logs.is_empty(),
-            "CIP-64 debit ran with non-empty journal logs; take_logs would move the enclosing \
-             tx's logs into logs_pre"
-        );
+        // The debit's system call records its own logs as `Cip64Info::logs_pre` (via
+        // `post_execution::output`'s `take_logs`, captured below). `run_system_call_no_commit`
+        // detaches and restores the enclosing transaction's logs around the call, so the debit's
+        // `take_logs` sees only its own logs regardless of what the enclosing tx has emitted —
+        // no ordering precondition on this call site is required.
 
         // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
         // Note: load_fee_currency_context() already advanced the journal transaction_id after
@@ -769,9 +762,20 @@ where
         &mut self,
         evm: &mut CeloEvm<DB, INSP, P>,
     ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
+        // Detach the enclosing transaction's logs for the duration of the call. Building the
+        // result runs `post_execution::output`, which `take_logs()` (a `mem::take`) the *whole*
+        // journal logs buffer into this call's `ExecutionResult`; without setting the enclosing
+        // buffer aside first, it would sweep up the enclosing tx's already-emitted logs. Because
+        // `checkpoint_revert` can only truncate logs — never restore ones taken before it — this
+        // isolation must live here, unconditionally for every no-commit caller, rather than in
+        // each caller. The call's own logs still flow into its `ExecutionResult` (which the
+        // CIP-64 debit records as `logs_pre`); only the enclosing buffer is set aside and
+        // restored below.
+        let saved_logs = core::mem::take(&mut evm.ctx().journal_mut().logs);
+
         // dummy values that are not used, mirroring `Handler::run_system_call`.
         let init_and_floor_gas = InitialAndFloorGas::new(0, 0);
-        match self
+        let result = match self
             .execution(evm, &init_and_floor_gas)
             .and_then(|exec_result| {
                 // System calls have no intrinsic gas; build ResultGas from frame result.
@@ -785,10 +789,26 @@ where
                 evm.ctx().chain_mut().clear_tx_l1_cost();
                 evm.ctx().local_mut().clear();
                 evm.frame_stack().clear();
+                // On success `post_execution::output` took the call's logs into the result, so
+                // the buffer is empty; assert before restoring so a future revm change to the
+                // take-logs contract fails loudly instead of silently dropping the enclosing
+                // tx's logs.
+                debug_assert!(
+                    evm.ctx().journal_ref().logs.is_empty(),
+                    "system call left logs in the journal; restoring would drop the enclosing \
+                     tx's logs"
+                );
                 Ok(exec_result)
             }
             Err(e) => self.catch_error(evm, e),
-        }
+        };
+
+        // Reattach the enclosing transaction's logs, discarding anything this call left in the
+        // buffer (captured in the result on success; unwanted on the error path). Any enclosing
+        // `checkpoint_revert` then operates on the enclosing logs alone.
+        evm.ctx().journal_mut().logs = saved_logs;
+
+        result
     }
 }
 
