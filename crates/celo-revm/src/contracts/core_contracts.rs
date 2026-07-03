@@ -19,8 +19,7 @@
 //! sub-transaction that ends in `commit_tx`, so its state changes stay in the journal for
 //! the enclosing transaction (used by the CIP-64 fee debit/credit).
 //!
-//! [`call_read_only`] instead runs the target through the *non-committing* system-call
-//! path (`CeloEvm::system_call_one_no_commit`) and brackets it with a journal
+//! [`call_read_only`] instead brackets the *non-committing* [`call_no_commit`] with a journal
 //! `checkpoint` / `checkpoint_revert`, so every state change, warmed account/slot,
 //! transient-storage write, and log the target produced is rolled back. Because
 //! `commit_tx` does a bare `journal.clear()`, running a read-only target through the
@@ -104,12 +103,11 @@ pub fn get_revert_message(output: Bytes) -> String {
 
 /// Call a core contract function in read-only mode, discarding **all** state changes.
 ///
-/// The target runs through the non-committing system-call path
-/// (`CeloEvm::system_call_one_no_commit`) bracketed by a journal
-/// `checkpoint` / `checkpoint_revert`, so any storage writes, account/slot warming,
-/// transient-storage writes, logs, and self-destructs it performs are rolled back before
-/// this function returns. See the module docs for why the committing [`call`] path
-/// cannot provide this guarantee.
+/// Brackets the non-committing [`call_no_commit`] with a journal `checkpoint` /
+/// `checkpoint_revert`, so any storage writes, account/slot warming, transient-storage
+/// writes, logs, and self-destructs the target performs are rolled back before this function
+/// returns. See the module docs for why the committing [`call`] path cannot provide this
+/// guarantee.
 ///
 /// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn call_read_only<DB, INSP, P>(
@@ -123,9 +121,6 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
-    // The system call overwrites `ctx.tx`; save it to restore afterwards.
-    let prev_tx = evm.ctx().tx().clone();
-
     // Snapshot the call-stack depth so we can assert it is balanced below. The explicit
     // `checkpoint` (+1) / `checkpoint_revert` (-1) pair below runs unconditionally, so depth
     // ends balanced however the call ends — on the happy path and when the system call returns
@@ -143,20 +138,18 @@ where
     // `checkpoint_revert` below can replay and undo everything appended after it.
     let checkpoint = evm.ctx().journal_mut().checkpoint();
 
-    // Run through the NON-committing system-call path. The regular `call` path ends in
-    // `commit_tx`, whose `journal.clear()` empties the revert log and would make the
-    // `checkpoint_revert` below a no-op — silently persisting any writes the target made.
-    // Skipping the commit keeps the revert log intact.
-    let call_result = if let Some(limit) = gas_limit {
-        evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
-    } else {
-        evm.system_call_one_no_commit(address, calldata)
-    };
+    // Run the target through the shared non-committing path. Unlike the committing [`call`]
+    // (which ends in `commit_tx`, whose `journal.clear()` empties the revert log and would make
+    // the `checkpoint_revert` below a no-op), [`call_no_commit`] leaves the revert log intact —
+    // and also restores `ctx.tx` and decodes the result. It leaves its journal entries for the
+    // enclosing checkpoint to own, which is exactly what we revert next.
+    let result = call_no_commit(evm, address, calldata, gas_limit);
 
-    // Undo the call: reverts state, account/slot warmth, transient storage, and
+    // Undo the call: reverts state, account/slot warmth, transient storage, logs, and
     // self-destructs back to the checkpoint. Warmth is reverted here, so the surrounding
     // transaction's warm/cold gas accounting is unaffected (no `transaction_id` dance
-    // needed — the non-committing path never bumped it).
+    // needed — the non-committing path never bumped it). `checkpoint_revert` touches only
+    // journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
     // The explicit `checkpoint` / `checkpoint_revert` pair leaves depth balanced, so assert
@@ -169,13 +162,7 @@ where
         "checkpoint_revert should have restored the call-stack depth"
     );
 
-    // Restore the surrounding transaction's tx env (the system call overwrote it). Log
-    // isolation is handled inside `run_system_call_no_commit`, which detaches the enclosing
-    // logs around the call so the target's `take_logs` cannot steal them; nothing to reattach
-    // here.
-    evm.ctx().set_tx(prev_tx);
-
-    process_call_result(call_result)
+    result
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
