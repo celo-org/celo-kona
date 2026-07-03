@@ -6,17 +6,14 @@ mod metrics;
 
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_network::Ethereum;
-use alloy_primitives::{B256, Bytes, Sealable};
-use alloy_provider::{
-    Provider, ProviderBuilder, RootProvider, network::primitives::BlockTransactions,
-};
+use alloy_primitives::{B256, Bytes};
+use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_pubsub::Subscription;
 use alloy_rlp::Decodable;
-use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
-use celo_executor::CeloStatelessL2Builder;
+use celo_executor::{CeloStatelessL2Builder, test_utils::fetch_block_replay_inputs};
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
@@ -24,7 +21,6 @@ use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use metrics::Metrics;
-use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
@@ -374,62 +370,10 @@ async fn verify_block(
     // Create trie for this task
     let trie = Trie::new(provider);
 
-    // Fetch parent block
-    let parent_block = provider
-        .get_block_by_number((block_number - 1).into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get parent block {}: {}", block_number - 1, e))?
-        .ok_or_else(|| anyhow::anyhow!("Parent block {} not found", block_number - 1))?;
-    let parent_header = parent_block.header.inner.seal_slow();
-
-    // Fetch executing block
-    let executing_block = provider
-        .get_block_by_number(block_number.into())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get executing block {block_number}: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("Executing block {block_number} not found"))?;
-
-    let encoded_executing_transactions = match executing_block.transactions {
-        BlockTransactions::Hashes(transactions) => {
-            let mut encoded_transactions = Vec::with_capacity(transactions.len());
-            for tx_hash in transactions {
-                let tx = provider
-                    .client()
-                    .request::<&[B256; 1], Bytes>("debug_getRawTransaction", &[tx_hash])
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get raw transaction {tx_hash}: {e}"))?;
-                encoded_transactions.push(tx);
-            }
-            encoded_transactions
-        }
-        _ => panic!("Only BlockTransactions::Hashes are supported."),
-    };
-
-    let executing_header = executing_block.header.clone();
-
-    let payload_attrs = OpPayloadAttributes {
-        payload_attributes: PayloadAttributes {
-            timestamp: executing_header.timestamp,
-            parent_beacon_block_root: executing_header.parent_beacon_block_root,
-            prev_randao: executing_header.mix_hash,
-            withdrawals: Default::default(),
-            suggested_fee_recipient: executing_header.beneficiary,
-            slot_number: None,
-        },
-        gas_limit: Some(executing_header.gas_limit),
-        transactions: Some(encoded_executing_transactions),
-        no_tx_pool: None,
-        eip_1559_params: rollup_config
-            .is_holocene_active(executing_header.timestamp)
-            .then(|| executing_header.extra_data[1..9].try_into())
-            .transpose()
-            .map_err(|_| anyhow::anyhow!("Invalid header format for Holocene"))?,
-        min_base_fee: rollup_config
-            .is_jovian_active(executing_header.timestamp)
-            .then(|| executing_header.extra_data[9..17].try_into().map(u64::from_be_bytes))
-            .transpose()
-            .map_err(|_| anyhow::anyhow!("Invalid header format for Jovian"))?,
-    };
+    let (parent_header, executing_header, payload_attrs) =
+        fetch_block_replay_inputs(provider, rollup_config, block_number)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
     let mut executor = CeloStatelessL2Builder::new(
         rollup_config,
@@ -443,10 +387,10 @@ async fn verify_block(
         .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
 
     // Verify the result
-    if outcome.header.inner() != &executing_header.inner {
+    if outcome.header.inner() != &executing_header {
         tracing::warn!(
             block_number = block_number,
-            expected_header = ?executing_header.inner,
+            expected_header = ?executing_header,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
@@ -473,20 +417,23 @@ async fn verify_block_range(
     let mut handles = JoinSet::new();
     let mut next_block = start_block;
 
+    let spawn_verify = |handles: &mut JoinSet<Result<u64>>, block_number: u64| {
+        let rollup_config = rollup_config.clone();
+        let provider = provider.clone();
+        let metrics = metrics.clone();
+        let tracker = tracker.clone();
+        handles.spawn(async move {
+            verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await
+        });
+    };
+
     // Spawn initial batch
     for _ in 0..concurrency {
         if cancel_token.is_cancelled() {
             break;
         }
-        // let provider = provider.clone();
         if next_block <= end_block {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            spawn_verify(&mut handles, next_block);
             next_block += 1;
         }
     }
@@ -495,13 +442,7 @@ async fn verify_block_range(
     while handles.join_next().await.is_some() {
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
-            let rollup_config = rollup_config.clone();
-            let provider = provider.clone();
-            let metrics = metrics.clone();
-            let tracker = tracker.clone();
-            handles.spawn(async move {
-                verify_block(next_block, provider.as_ref(), &rollup_config, metrics, tracker).await
-            });
+            spawn_verify(&mut handles, next_block);
             next_block += 1;
         }
     }
