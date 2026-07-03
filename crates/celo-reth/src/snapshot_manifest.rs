@@ -19,7 +19,7 @@
 //! stage is at head, but tx-lookup claims it has done nothing.
 //!
 //! Since the snapshot's data (and the shipped RocksDB tx-lookup index) is already complete through
-//! the snapshot block, advancing any lagging [`MIGRATED_CHAIN_STAGES`] checkpoint to that block is
+//! the snapshot block, advancing any lagging `MIGRATED_CHAIN_STAGES` checkpoint to that block is
 //! correct and makes the published snapshot bootable. This mirrors the reasoning in
 //! [`crate::celo_migrate_v2`], which likewise refuses to reset these stages to `0` on a migrated
 //! datadir.
