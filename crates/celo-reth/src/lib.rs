@@ -63,6 +63,9 @@ pub mod state_import;
 #[cfg(feature = "std")]
 pub mod celo_migrate_v2;
 
+#[cfg(feature = "std")]
+pub mod snapshot_manifest;
+
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
 

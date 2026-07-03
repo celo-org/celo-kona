@@ -11,6 +11,7 @@ use celo_reth::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
     },
+    snapshot_manifest::CeloSnapshotManifestCommand,
     state_import::ImportCeloStateCommand,
 };
 use clap::{CommandFactory, FromArgMatches, Parser};
@@ -18,7 +19,7 @@ use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::{
     db,
-    download::{DownloadCommand, manifest_cmd::SnapshotManifestCommand},
+    download::DownloadCommand,
     p2p, prune, re_execute, stage,
 };
 use reth_cli_runner::CliRunner;
@@ -137,7 +138,7 @@ enum CeloCommand {
     /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
     /// Defaults `--chain-id` to Celo Mainnet (42220).
     #[command(name = SNAPSHOT_MANIFEST)]
-    SnapshotManifest(Box<SnapshotManifestCommand>),
+    SnapshotManifest(Box<CeloSnapshotManifestCommand>),
     /// Celo-aware v1 → v2 storage migration (skips the upstream stage-reset that would
     /// force a pipeline rebuild over the dummy pre-migration blocks).
     #[command(name = CELO_MIGRATE_V2)]
@@ -427,8 +428,8 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
         // Download is chain-agnostic file shuttling; CeloNode satisfies the `N` type bound
         // without requiring Celo-aware decoding (archives are tarballs over MDBX + static files).
         CeloCommand::Download(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
-        // Snapshot manifest generation is synchronous: it tars static files and reads the
-        // `Finish` stage checkpoint from MDBX read-only. No runtime needed.
+        // Snapshot manifest generation is synchronous: it reconciles lagging migrated-chain
+        // stage checkpoints (MDBX read-write), then tars static files. No runtime needed.
         CeloCommand::SnapshotManifest(cmd) => cmd.execute(),
         CeloCommand::CeloMigrateV2(cmd) => {
             let runtime = runner.runtime();
