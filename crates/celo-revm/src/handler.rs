@@ -5,7 +5,7 @@ use crate::{
     constants::{
         CELO_SYSTEM_ADDRESS, FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
-    contracts::erc20,
+    contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
@@ -481,13 +481,9 @@ where
             return self.debit_and_deduct_caller(evm, false, additional_cost);
         }
 
-        // Snapshot the call-stack depth so we can assert it is balanced below. The `checkpoint`
-        // (+1) below is paired with exactly one of `checkpoint_commit` / `checkpoint_revert`
-        // (-1) on the Ok / Err arms, so depth ends balanced however the debit ends. The balance
-        // comes from our own checkpoint bookkeeping, not from `discard_tx`: op-revm's
-        // `catch_error` override does no journal work for these non-deposit txs
-        // (optimism@3bccc60 op-revm/src/handler.rs). (Mirrors the same assert in
-        // `core_contracts::call_read_only`.)
+        // Snapshot the call-stack depth so we can assert the checkpoint bracket below balances
+        // it (via `checkpoint_commit` on Ok / `checkpoint_revert` on Err); see
+        // [`debug_assert_call_depth_unchanged`] for the full rationale.
         let prev_depth = evm.ctx().journal_ref().depth;
 
         // The ERC20 debit makes an irreversible pre-validation charge, so bracket it in a
@@ -542,14 +538,8 @@ where
         }
 
         // The `checkpoint_commit` / `checkpoint_revert` above leaves depth balanced, so assert
-        // rather than force it: a future revm change — or a fatal error that leaks a frame-level
-        // checkpoint — that leaves depth inflated trips tests loudly instead of being silently
-        // masked.
-        debug_assert_eq!(
-            evm.ctx().journal_ref().depth,
-            prev_depth,
-            "checkpoint_commit / checkpoint_revert should have restored depth"
-        );
+        // rather than force it.
+        debug_assert_call_depth_unchanged(evm, prev_depth);
 
         result
     }

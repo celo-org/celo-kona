@@ -101,6 +101,35 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
+/// `debug_assert` that the journal's call-stack depth is back to `depth_before` — the depth
+/// captured immediately before opening a non-committing checkpoint bracket ([`call_read_only`]
+/// here, and the CIP-64 rollbackable debit in the handler).
+///
+/// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
+/// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
+/// call ends — the happy path and a system-call error alike. The balance comes from our own
+/// checkpoint bookkeeping, not from `discard_tx`: op-revm's `catch_error` override does no
+/// journal work for these non-deposit system txs (optimism@3bccc60 op-revm/src/handler.rs).
+/// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
+/// `get_intrinsic_gas`) swallow the error and drop the currency rather than aborting the tx, so
+/// a leaked depth would be silent. The one path this guards is a *fatal* error inside the call
+/// that unwinds past a frame-level checkpoint without reverting it (e.g. a DB error), which
+/// would leave depth inflated; the assert then trips tests loudly instead of being masked.
+pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+    depth_before: usize,
+) where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    debug_assert_eq!(
+        evm.ctx().journal_ref().depth,
+        depth_before,
+        "the checkpoint bracket should have restored the call-stack depth"
+    );
+}
+
 /// Call a core contract function in read-only mode, discarding **all** state changes.
 ///
 /// Brackets the non-committing [`call_no_commit`] with a journal `checkpoint` /
@@ -121,17 +150,8 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
-    // Snapshot the call-stack depth so we can assert it is balanced below. The explicit
-    // `checkpoint` (+1) / `checkpoint_revert` (-1) pair below runs unconditionally, so depth
-    // ends balanced however the call ends — on the happy path and when the system call returns
-    // an error. The balance comes from our own checkpoint/revert, not from `discard_tx`:
-    // op-revm's `catch_error` override does no journal work for these non-deposit system txs
-    // (optimism@3bccc60 op-revm/src/handler.rs). This matters because the callers
-    // (get_currencies / get_exchange_rate / get_intrinsic_gas) swallow the error and drop the
-    // currency rather than aborting the tx, so a leaked depth would be silent — hence the
-    // assert below. The one path it guards is a *fatal* error inside the call that unwinds past
-    // a frame-level checkpoint without reverting it (e.g. a DB error), which would leave depth
-    // inflated; the assert then trips tests loudly.
+    // Snapshot the call-stack depth so we can assert the checkpoint bracket below balances it;
+    // see [`debug_assert_call_depth_unchanged`] for the full rationale.
     let prev_depth = evm.ctx().journal_ref().depth;
 
     // Snapshot the journal: `checkpoint` records the current revert-log length so
@@ -153,14 +173,8 @@ where
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
     // The explicit `checkpoint` / `checkpoint_revert` pair leaves depth balanced, so assert
-    // rather than force it: a future revm change — or a fatal error that leaks a frame-level
-    // checkpoint — that leaves depth inflated trips tests loudly instead of being silently
-    // masked.
-    debug_assert_eq!(
-        evm.ctx().journal_ref().depth,
-        prev_depth,
-        "checkpoint_revert should have restored the call-stack depth"
-    );
+    // rather than force it.
+    debug_assert_call_depth_unchanged(evm, prev_depth);
 
     result
 }
