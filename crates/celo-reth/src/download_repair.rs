@@ -51,16 +51,19 @@
 //! already at the tip) and on non-migrated chains (celo-sepolia is a fresh L2).
 
 use clap::ArgMatches;
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::EnvironmentArgs;
+use reth_config::Config;
 use reth_db::init_db;
 use reth_db_api::{
     database::Database,
     tables,
     transaction::{DbTx, DbTxMut},
 };
+use reth_prune_types::PruneModes;
 use reth_stages_types::{StageCheckpoint, StageId};
+use std::path::Path;
 use tracing::{info, warn};
 
 use crate::{
@@ -100,34 +103,17 @@ pub enum PostDownloadAction {
     Skip,
 }
 
-/// Decide the post-`download` action from the download's parsed arguments, rejecting a flag
-/// combination that cannot produce a bootable migrated-mainnet datadir.
+/// Decide the post-`download` action from the download's parsed arguments.
 ///
-/// - `--list` / `--list-snapshots` lists snapshots and downloads nothing, so return
-///   [`PostDownloadAction::Skip`]: even the read-only-looking reconciliation opens the datadir with
-///   `init_db`, which would give a listing command write side effects (and fail on an unwritable
-///   datadir).
-/// - `--archive --without-rocksdb` on migrated mainnet resets the RocksDB index stages, but the
-///   archive preset does not prune history — so `IndexAccountHistory` / `IndexStorageHistory` have
-///   no prune-mode self-advance past the header-only gap and the pre-migration history is never
-///   downloaded. Reject it rather than produce a node that can't start or is missing history.
-/// - Otherwise return [`PostDownloadAction::Reconcile`].
-pub fn post_download_action(matches: &ArgMatches, chain_id: u64) -> Result<PostDownloadAction> {
-    if matches.get_flag("list") {
-        return Ok(PostDownloadAction::Skip);
-    }
-    if migration_block_for(chain_id).is_some() &&
-        matches.get_flag("archive") &&
-        matches.get_flag("without_rocksdb")
-    {
-        eyre::bail!(
-            "`--archive --without-rocksdb` is not supported on migrated Celo mainnet: the archive \
-             preset does not prune history, so the reset RocksDB index stages cannot self-advance \
-             past the header-only pre-migration gap and the pre-migration history is not \
-             downloaded. Use `--archive` (with rocksdb_indices) or a `--full`/`--minimal` preset."
-        );
-    }
-    Ok(PostDownloadAction::Reconcile)
+/// `--list` / `--list-snapshots` lists snapshots and downloads nothing, so return
+/// [`PostDownloadAction::Skip`]: even the read-only-looking reconciliation opens the datadir with
+/// `init_db`, which would give a listing command write side effects (and fail on an unwritable
+/// datadir). Every other invocation returns [`PostDownloadAction::Reconcile`]; whether the
+/// resulting datadir is actually bootable is decided authoritatively from the resolved reth.toml
+/// prune shape inside [`reconcile_migrated_index_checkpoints`], not from the raw download flags
+/// here.
+pub fn post_download_action(matches: &ArgMatches) -> PostDownloadAction {
+    if matches.get_flag("list") { PostDownloadAction::Skip } else { PostDownloadAction::Reconcile }
 }
 
 /// Reconcile the `TransactionLookup` checkpoint a `rocksdb_indices`-less `celo-reth download` reset
@@ -163,6 +149,14 @@ pub fn reconcile_migrated_index_checkpoints(
 
     let db = init_db(db_path, env.db.database_args())?;
     let tx = db.tx_mut()?;
+
+    // Authoritative bootability guard: refuse a download whose resolved reth.toml prune shape
+    // leaves a reset history index stage unable to self-advance past the header-only
+    // pre-migration gap.
+    if let Some(prune) = read_prune_segments(&data_dir.config())? {
+        assert_bootable_migrated_shape(&tx, &prune, migration_block)?;
+    }
+
     let reconciled = advance_stage_checkpoints_tx(&tx, migration_block)?;
     tx.commit()?;
 
@@ -172,6 +166,77 @@ pub fn reconcile_migrated_index_checkpoints(
         reconciled,
         "TransactionLookup checkpoint reconciliation complete",
     );
+    Ok(())
+}
+
+/// Reads the prune segments reth resolved and wrote to `<datadir>/reth.toml` during the download.
+///
+/// Returns `None` when reth.toml is absent so the caller skips the bootability guard rather than
+/// guess a shape — a missing config is not evidence that history is unpruned, and reth's own
+/// download always writes one, so this only happens on an unexpected/partial datadir.
+fn read_prune_segments(config_path: &Path) -> Result<Option<PruneModes>> {
+    if !config_path.exists() {
+        warn!(
+            target: "reth::cli",
+            ?config_path,
+            "reth.toml not found after download; skipping prune-shape bootability check",
+        );
+        return Ok(None);
+    }
+    let config = Config::from_path(config_path)
+        .wrap_err("failed to read reth.toml for the prune-shape bootability check")?;
+    Ok(Some(config.prune.segments))
+}
+
+/// Refuse a downloaded datadir whose resolved prune shape cannot boot on migrated Celo mainnet.
+///
+/// A `rocksdb_indices`-less download resets `IndexAccountHistory` / `IndexStorageHistory` to block
+/// `0`. Those stages can only skip the header-only pre-migration gap by self-advancing to their
+/// prune boundary, which requires history pruning to be configured. An archive-shaped selection
+/// (`--archive`, the TUI archive preset, or `--with-state-history` without `--with-rocksdb`) leaves
+/// history unpruned in reth.toml, so a reset history stage would rebuild from block `1` with no
+/// prune boundary to fall back to `PlainState` — and the pre-migration history was never
+/// downloaded. That datadir cannot boot, so it is refused here from the resolved reth.toml shape
+/// rather than the raw download flags (which also miss the TUI-preset and `--with-state-history`
+/// paths).
+///
+/// Only fires for a completed post-migration snapshot (`Finish` at or above the migration block). A
+/// history stage already at or above the migration block had its RocksDB index downloaded and is
+/// fine (archive-with-rocksdb), so it is left alone.
+fn assert_bootable_migrated_shape<Tx>(
+    tx: &Tx,
+    prune: &PruneModes,
+    migration_block: u64,
+) -> Result<()>
+where
+    Tx: DbTx,
+{
+    let tip =
+        tx.get::<tables::StageCheckpoints>(StageId::Finish.to_string())?.map(|c| c.block_number);
+    if !matches!(tip, Some(tip) if tip >= migration_block) {
+        return Ok(());
+    }
+
+    for (stage, prune_mode, segment) in [
+        (StageId::IndexAccountHistory, prune.account_history, "account_history"),
+        (StageId::IndexStorageHistory, prune.storage_history, "storage_history"),
+    ] {
+        let current = tx
+            .get::<tables::StageCheckpoints>(stage.to_string())?
+            .map(|c| c.block_number)
+            .unwrap_or(0);
+        if prune_mode.is_none() && current < migration_block {
+            eyre::bail!(
+                "downloaded datadir is not bootable on migrated Celo mainnet: {stage} was reset to \
+                 block {current} (RocksDB history index not downloaded) but reth.toml leaves \
+                 `{segment}` unpruned (archive shape), so the stage cannot self-advance past the \
+                 header-only pre-migration gap at block {migration_block} and the pre-migration \
+                 history was never downloaded. Re-run with RocksDB indices (`--archive` without \
+                 `--without-rocksdb`, or `--with-rocksdb`) for an archive node, or a \
+                 `--full`/`--minimal` preset for a pruned node."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -238,6 +303,7 @@ mod tests {
     use super::*;
     use reth_cli::chainspec::ChainSpecParser;
     use reth_provider::{DatabaseProviderFactory, test_utils::create_test_provider_factory};
+    use reth_prune_types::PruneMode;
 
     /// Only `TransactionLookup` is advanced. The two history stages reth also resets must be
     /// absent: advancing them would skip the prune-checkpoint write that keeps historical reads
@@ -285,29 +351,89 @@ mod tests {
     #[test]
     fn post_download_action_skips_list() {
         let matches = download_matches(&["--chain", "celo", "--list"]);
-        assert_eq!(
-            post_download_action(&matches, CELO_MAINNET_CHAIN_ID).unwrap(),
-            PostDownloadAction::Skip,
-        );
+        assert_eq!(post_download_action(&matches), PostDownloadAction::Skip);
     }
 
-    /// `--archive --without-rocksdb` cannot produce a bootable migrated-mainnet node and must be
-    /// rejected — but is fine on a non-migrated chain (genesis-contiguous history rebuild).
+    /// Any non-`--list` download reconciles; bootability is decided later from the reth.toml prune
+    /// shape (`assert_bootable_migrated_shape`), not from these flags.
     #[test]
-    fn post_download_action_rejects_archive_without_rocksdb_on_mainnet() {
-        let matches = download_matches(&["--chain", "celo", "--archive", "--without-rocksdb"]);
-        assert!(post_download_action(&matches, CELO_MAINNET_CHAIN_ID).is_err());
-        assert_eq!(post_download_action(&matches, 999).unwrap(), PostDownloadAction::Reconcile);
+    fn post_download_action_reconciles_non_list() {
+        for args in [
+            ["--chain", "celo", "--full"].as_slice(),
+            ["--chain", "celo", "--minimal"].as_slice(),
+            ["--chain", "celo", "--archive", "--without-rocksdb"].as_slice(),
+        ] {
+            let matches = download_matches(args);
+            assert_eq!(post_download_action(&matches), PostDownloadAction::Reconcile);
+        }
     }
 
-    /// A plain `--full` download reconciles.
+    /// Writes `Finish` at `tip` plus the two history-index stage checkpoints, then runs the
+    /// bootability guard with the supplied reth.toml prune modes.
+    fn check_shape(
+        tip: u64,
+        index_account: u64,
+        index_storage: u64,
+        account_history: Option<PruneMode>,
+        storage_history: Option<PruneMode>,
+    ) -> Result<()> {
+        let factory = create_test_provider_factory();
+        let provider_rw = factory.database_provider_rw().unwrap();
+        let tx = provider_rw.tx_ref();
+        tx.put::<tables::StageCheckpoints>(StageId::Finish.to_string(), StageCheckpoint::new(tip))
+            .unwrap();
+        tx.put::<tables::StageCheckpoints>(
+            StageId::IndexAccountHistory.to_string(),
+            StageCheckpoint::new(index_account),
+        )
+        .unwrap();
+        tx.put::<tables::StageCheckpoints>(
+            StageId::IndexStorageHistory.to_string(),
+            StageCheckpoint::new(index_storage),
+        )
+        .unwrap();
+        let prune = PruneModes { account_history, storage_history, ..Default::default() };
+        assert_bootable_migrated_shape(tx, &prune, CEL2_MIGRATION_BLOCK_NUMBER)
+    }
+
+    /// Archive-shaped rocksdb-less download (history unpruned in reth.toml, history index reset to
+    /// 0): not bootable on migrated mainnet — must be rejected.
     #[test]
-    fn post_download_action_reconciles_full() {
-        let matches = download_matches(&["--chain", "celo", "--full"]);
-        assert_eq!(
-            post_download_action(&matches, CELO_MAINNET_CHAIN_ID).unwrap(),
-            PostDownloadAction::Reconcile,
-        );
+    fn rejects_unpruned_history_index_reset_to_zero() {
+        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
+        assert!(check_shape(tip, 0, 0, None, None).is_err());
+    }
+
+    /// Pruned rocksdb-less download (`--full`/`--minimal`: history pruned, history index reset to
+    /// 0): the reset stages self-advance via their prune boundary — bootable, must be accepted.
+    #[test]
+    fn accepts_pruned_history_index_reset_to_zero() {
+        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
+        let distance = Some(PruneMode::Distance(10_064));
+        assert!(check_shape(tip, 0, 0, distance, distance).is_ok());
+    }
+
+    /// Archive download WITH rocksdb (history unpruned but the index was downloaded, so the history
+    /// stages sit at the tip): bootable, must be accepted.
+    #[test]
+    fn accepts_unpruned_history_index_at_tip() {
+        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
+        assert!(check_shape(tip, tip, tip, None, None).is_ok());
+    }
+
+    /// One unpruned history stage reset to 0 is enough to reject, even if the other is pruned.
+    #[test]
+    fn rejects_when_only_storage_history_unpruned_and_reset() {
+        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
+        assert!(check_shape(tip, 0, 0, Some(PruneMode::Distance(10_064)), None).is_err());
+    }
+
+    /// Below the migration block the datadir is not a completed post-migration snapshot; the guard
+    /// must not fire (the advance step already refuses to touch it).
+    #[test]
+    fn shape_check_skips_when_tip_below_migration() {
+        let tip = CEL2_MIGRATION_BLOCK_NUMBER - 1;
+        assert!(check_shape(tip, 0, 0, None, None).is_ok());
     }
 
     /// A `--full`-shaped datadir (index stages reset to 0, everything else at the tip): only

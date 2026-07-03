@@ -27,7 +27,7 @@
 use clap::Parser;
 use eyre::{Result, WrapErr};
 use reth_cli_commands::download::manifest::generate_manifest;
-use reth_db::{Database, mdbx::DatabaseArguments, open_db, tables};
+use reth_db::{Database, mdbx::DatabaseArguments, open_db, open_db_read_only, tables};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_stages_types::{StageCheckpoint, StageId};
 use std::path::{Path, PathBuf};
@@ -56,8 +56,9 @@ const MIGRATED_CHAIN_STAGES: [StageId; 6] = [
 pub struct CeloSnapshotManifestCommand {
     /// Source datadir containing static files.
     ///
-    /// Must be a *static* datadir (a ZFS clone or copy of a stopped node) — the reconciliation
-    /// step opens the MDBX read-write, so it must not be a live/running node's datadir.
+    /// Must be a *static* datadir (a ZFS clone or copy of a stopped node), never a live/running
+    /// node's datadir: on Celo mainnet the reconciliation step opens the MDBX read-write to
+    /// advance lagging stage checkpoints (every other chain is opened read-only).
     #[arg(long, short = 'd')]
     source_datadir: PathBuf,
 
@@ -89,8 +90,9 @@ pub struct CeloSnapshotManifestCommand {
 impl CeloSnapshotManifestCommand {
     /// Reconciles lagging stage checkpoints, packages the archives, and writes the manifest.
     pub fn execute(self) -> Result<()> {
-        // Open the source DB read-write, resolve the snapshot block, and advance any lagging
-        // migrated-chain stage checkpoint up to it (the Celo fix). Returns the resolved block.
+        // Resolve the snapshot block and, on Celo mainnet, advance any lagging migrated-chain stage
+        // checkpoint up to it (the Celo fix). Opens the source MDBX read-write on mainnet,
+        // read-only elsewhere. Returns the resolved block.
         let block = reconcile_stage_checkpoints(&self.source_datadir, self.block, self.chain_id)?;
 
         let blocks_per_file = match self.blocks_per_file {
@@ -131,9 +133,15 @@ impl CeloSnapshotManifestCommand {
     }
 }
 
-/// Opens the source MDBX read-write, resolves the snapshot block (explicit `--block` or the
-/// `Finish` stage checkpoint), and advances any [`MIGRATED_CHAIN_STAGES`] checkpoint that is behind
-/// the block up to it. Stages already at or beyond the block are left untouched.
+/// Resolves the snapshot block (explicit `--block` or the `Finish` stage checkpoint) and, on Celo
+/// mainnet, advances any [`MIGRATED_CHAIN_STAGES`] checkpoint that is behind the block up to it.
+///
+/// Only migrated Celo mainnet has the header-only pre-migration gap that makes a lagging index/trie
+/// stage checkpoint correct to advance, so only there is the source MDBX opened **read-write**. On
+/// every other chain a lagging checkpoint means real work is genuinely missing — advancing it would
+/// publish a snapshot that skips rebuilding required indexes/trie on restore — so the block is only
+/// *read*: the DB is opened **read-only** and left untouched, letting the publisher run against a
+/// read-only/static source.
 fn reconcile_stage_checkpoints(
     source_datadir: &Path,
     block_arg: Option<u64>,
@@ -142,63 +150,43 @@ fn reconcile_stage_checkpoints(
     let db_dir = source_datadir.join("db");
     let db_dir = if db_dir.exists() { db_dir } else { source_datadir.to_path_buf() };
 
-    let db = open_db(&db_dir, DatabaseArguments::default())
-        .wrap_err("failed to open source db read-write for stage-checkpoint reconciliation")?;
-    let tx = db.tx_mut()?;
-
-    let finish_tip = tx
-        .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
-        .map(|checkpoint| checkpoint.block_number);
-
-    let block = match block_arg {
-        // Reject an explicit --block above the source `Finish` tip: stamping the migrated-chain
-        // stages complete beyond the data the source datadir actually contains (a typo'd or future
-        // height) would let a retry publish a snapshot that skips required index/trie work.
-        Some(block) => match finish_tip {
-            Some(tip) if block > tip => eyre::bail!(
-                "--block {block} is above the source Finish checkpoint {tip}; refusing to \
-                 reconcile stage checkpoints beyond the data the source datadir contains"
-            ),
-            _ => block,
-        },
-        None => finish_tip.ok_or_else(|| {
-            eyre::eyre!(
-                "Could not infer --block from source DB (Finish checkpoint missing); \
-                 pass --block manually"
-            )
-        })?,
-    };
-
-    let mut advanced = 0usize;
-    // Only migrated Celo mainnet has the header-only pre-migration gap that makes a lagging
-    // index/trie stage checkpoint correct to advance. On a genesis-contiguous chain a lagging
-    // checkpoint means real work is genuinely missing, so advancing it would publish a snapshot
-    // that skips rebuilding required indexes/trie on restore.
-    if chain_id == CELO_MAINNET_CHAIN_ID {
-        for stage in MIGRATED_CHAIN_STAGES {
-            let key = stage.to_string();
-            let current = tx
-                .get::<tables::StageCheckpoints>(key.clone())?
-                .map(|checkpoint| checkpoint.block_number)
-                .unwrap_or(0);
-            if current < block {
-                tx.put::<tables::StageCheckpoints>(key, StageCheckpoint::new(block))?;
-                info!(
-                    target: "reth::cli",
-                    stage = %stage,
-                    from = current,
-                    to = block,
-                    "Advanced lagging stage checkpoint for snapshot publication"
-                );
-                advanced += 1;
-            }
-        }
-    } else {
+    if chain_id != CELO_MAINNET_CHAIN_ID {
+        let db = open_db_read_only(&db_dir, DatabaseArguments::default())
+            .wrap_err("failed to open source db read-only for snapshot block resolution")?;
+        let tx = db.tx()?;
+        let block = resolve_snapshot_block(&tx, block_arg)?;
         info!(
             target: "reth::cli",
             chain_id,
+            block,
             "Non-migrated chain; skipping migrated-chain stage-checkpoint reconciliation",
         );
+        return Ok(block);
+    }
+
+    let db = open_db(&db_dir, DatabaseArguments::default())
+        .wrap_err("failed to open source db read-write for stage-checkpoint reconciliation")?;
+    let tx = db.tx_mut()?;
+    let block = resolve_snapshot_block(&tx, block_arg)?;
+
+    let mut advanced = 0usize;
+    for stage in MIGRATED_CHAIN_STAGES {
+        let key = stage.to_string();
+        let current = tx
+            .get::<tables::StageCheckpoints>(key.clone())?
+            .map(|checkpoint| checkpoint.block_number)
+            .unwrap_or(0);
+        if current < block {
+            tx.put::<tables::StageCheckpoints>(key, StageCheckpoint::new(block))?;
+            info!(
+                target: "reth::cli",
+                stage = %stage,
+                from = current,
+                to = block,
+                "Advanced lagging stage checkpoint for snapshot publication"
+            );
+            advanced += 1;
+        }
     }
     tx.commit()?;
 
@@ -209,6 +197,33 @@ fn reconcile_stage_checkpoints(
         "Reconciled stage checkpoints for snapshot publication"
     );
     Ok(block)
+}
+
+/// Resolves the snapshot block: an explicit `--block` (validated to be at or below the source
+/// `Finish` tip) or, when omitted, the `Finish` stage checkpoint itself. Read-only.
+fn resolve_snapshot_block<Tx: DbTx>(tx: &Tx, block_arg: Option<u64>) -> Result<u64> {
+    let finish_tip = tx
+        .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
+        .map(|checkpoint| checkpoint.block_number);
+
+    match block_arg {
+        // Reject an explicit --block above the source `Finish` tip: stamping the migrated-chain
+        // stages complete beyond the data the source datadir actually contains (a typo'd or future
+        // height) would let a retry publish a snapshot that skips required index/trie work.
+        Some(block) => match finish_tip {
+            Some(tip) if block > tip => eyre::bail!(
+                "--block {block} is above the source Finish checkpoint {tip}; refusing to \
+                 reconcile stage checkpoints beyond the data the source datadir contains"
+            ),
+            _ => Ok(block),
+        },
+        None => finish_tip.ok_or_else(|| {
+            eyre::eyre!(
+                "Could not infer --block from source DB (Finish checkpoint missing); \
+                 pass --block manually"
+            )
+        }),
+    }
 }
 
 /// Infers the static-file block span from header static-file ranges in the source datadir.
@@ -270,6 +285,7 @@ fn parse_headers_range(file_name: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reth_provider::{DatabaseProviderFactory, test_utils::create_test_provider_factory};
 
     #[test]
     fn parse_headers_range_works_with_suffixes() {
@@ -284,5 +300,50 @@ mod tests {
     #[test]
     fn migrated_chain_stages_include_transaction_lookup() {
         assert!(MIGRATED_CHAIN_STAGES.contains(&StageId::TransactionLookup));
+    }
+
+    /// Writes a `Finish` checkpoint at `tip` into a fresh test datadir, then asserts what the block
+    /// resolver (shared by the read-only and read-write paths) returns for the given `--block` arg.
+    fn assert_resolves(finish_tip: Option<u64>, block_arg: Option<u64>, expected: Option<u64>) {
+        let factory = create_test_provider_factory();
+        let provider_rw = factory.database_provider_rw().unwrap();
+        let tx = provider_rw.tx_ref();
+        if let Some(tip) = finish_tip {
+            tx.put::<tables::StageCheckpoints>(
+                StageId::Finish.to_string(),
+                StageCheckpoint::new(tip),
+            )
+            .unwrap();
+        }
+        match expected {
+            Some(block) => assert_eq!(resolve_snapshot_block(tx, block_arg).unwrap(), block),
+            None => assert!(resolve_snapshot_block(tx, block_arg).is_err()),
+        }
+    }
+
+    /// No `--block`: the snapshot block is inferred from the source `Finish` checkpoint.
+    #[test]
+    fn resolve_snapshot_block_infers_from_finish() {
+        assert_resolves(Some(31_100_000), None, Some(31_100_000));
+    }
+
+    /// An explicit `--block` at or below the `Finish` tip is accepted verbatim.
+    #[test]
+    fn resolve_snapshot_block_accepts_block_at_or_below_tip() {
+        assert_resolves(Some(100), Some(100), Some(100));
+        assert_resolves(Some(100), Some(50), Some(50));
+    }
+
+    /// An explicit `--block` above the `Finish` tip is rejected (would publish a snapshot claiming
+    /// index/trie work beyond the data the source datadir actually contains).
+    #[test]
+    fn resolve_snapshot_block_rejects_block_above_tip() {
+        assert_resolves(Some(100), Some(101), None);
+    }
+
+    /// Without a `Finish` checkpoint and without `--block`, resolution fails with a clear ask.
+    #[test]
+    fn resolve_snapshot_block_errors_without_finish_or_block() {
+        assert_resolves(None, None, None);
     }
 }

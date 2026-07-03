@@ -440,9 +440,9 @@ fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<(
             let download_matches =
                 matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present");
             let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(download_matches)?;
-            // Decide (and validate) the post-download step from the parsed args before the async
-            // download runs, so the borrowed `ArgMatches` isn't captured by the `'static` future.
-            let action = post_download_action(download_matches, env.chain.chain_id())?;
+            // Decide the post-download step from the parsed args before the async download runs, so
+            // the borrowed `ArgMatches` isn't captured by the `'static` future.
+            let action = post_download_action(download_matches);
             runner.run_until_ctrl_c(async move {
                 cmd.execute::<CeloNode>().await?;
                 match action {
