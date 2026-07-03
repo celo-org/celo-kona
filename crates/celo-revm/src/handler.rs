@@ -699,6 +699,12 @@ where
     /// [`Self::run_system_call_no_commit`] finish a system call while leaving the
     /// journal's revert log intact, so an enclosing `checkpoint` can roll the call
     /// back (see [`crate::contracts::core_contracts::call_read_only`]).
+    ///
+    /// MAINTENANCE: hand-copied from upstream `run_system_call` / `execution_result`
+    /// (revm-handler 18.1.0). Re-diff against the trait defaults on every revm bump; the
+    /// `call_and_call_no_commit_agree_on_outcome_and_state` test guards the silent
+    /// divergences, and a changed `build_result_gas` / `execution_result` signature breaks
+    /// the build outright.
     fn build_execution_result(
         &mut self,
         evm: &mut CeloEvm<DB, INSP, P>,
@@ -758,6 +764,11 @@ where
     /// On its own this method *keeps* the call's effects, exactly like
     /// [`Handler::run_system_call`] minus the `commit_tx`; the caller must bracket it
     /// with `checkpoint` / `checkpoint_revert` to discard them.
+    ///
+    /// MAINTENANCE: this is a hand-copy of [`Handler::run_system_call`] (revm-handler 18.1.0)
+    /// with `execution_result` swapped for [`Self::build_execution_result`] (no `commit_tx`),
+    /// the teardown inlined, and the log detach/reattach added. Re-diff it against the trait
+    /// default on every revm bump.
     pub(crate) fn run_system_call_no_commit(
         &mut self,
         evm: &mut CeloEvm<DB, INSP, P>,
