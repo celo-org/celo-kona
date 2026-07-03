@@ -5,6 +5,7 @@ use celo_reth::{
     CeloEvmConfig,
     celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
+    download_repair::CeloRepairDownloadCommand,
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{
         DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
@@ -60,6 +61,7 @@ const RE_EXECUTE: &str = "re-execute";
 const DOWNLOAD: &str = "download";
 const SNAPSHOT_MANIFEST: &str = "snapshot-manifest";
 const CELO_MIGRATE_V2: &str = "celo-migrate-v2";
+const REPAIR_DOWNLOAD_CHECKPOINTS: &str = "repair-download-checkpoints";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
@@ -73,6 +75,7 @@ const CELO_SUBCOMMANDS: &[&str] = &[
     DOWNLOAD,
     SNAPSHOT_MANIFEST,
     CELO_MIGRATE_V2,
+    REPAIR_DOWNLOAD_CHECKPOINTS,
 ];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
@@ -145,6 +148,11 @@ enum CeloCommand {
     /// force a pipeline rebuild over the dummy pre-migration blocks).
     #[command(name = CELO_MIGRATE_V2)]
     CeloMigrateV2(Box<CeloMigrateV2Command>),
+    /// Repair the index-stage checkpoints a `rocksdb_indices`-less snapshot download leaves at
+    /// block 0, so a migrated Celo chain can rebuild them over real blocks and start (see
+    /// `download_repair`).
+    #[command(name = REPAIR_DOWNLOAD_CHECKPOINTS)]
+    RepairDownloadCheckpoints(Box<CeloRepairDownloadCommand>),
 }
 
 impl CeloCommand {
@@ -159,6 +167,7 @@ impl CeloCommand {
             Self::Download(command) => command.chain_spec(),
             Self::SnapshotManifest(_) => None,
             Self::CeloMigrateV2(_) => None,
+            Self::RepairDownloadCheckpoints(_) => None,
         }
     }
 }
@@ -438,6 +447,7 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
             let runtime = runner.runtime();
             runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
         }
+        CeloCommand::RepairDownloadCheckpoints(cmd) => cmd.execute(),
     }
 }
 
