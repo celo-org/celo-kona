@@ -470,6 +470,12 @@ where
         debit_erc20_fees: bool,
         additional_cost: U256,
     ) -> Result<(), ERROR> {
+        // Native / deposit txs make no irreversible pre-validation charge, so they need no
+        // rollback checkpoint — this is a plain validate-and-deduct with no bracketing.
+        if !debit_erc20_fees {
+            return self.debit_and_deduct_caller(evm, false, additional_cost);
+        }
+
         // Snapshot the call-stack depth so we can assert it is balanced below. The `checkpoint`
         // (+1) below is paired with exactly one of `checkpoint_commit` / `checkpoint_revert`
         // (-1) on the Ok / Err arms, so depth ends balanced however the debit ends. The balance
@@ -479,44 +485,36 @@ where
         // `core_contracts::call_read_only`.)
         let prev_depth = evm.ctx().journal_ref().depth;
 
-        // Only the ERC20 debit makes an irreversible pre-validation charge, so only it needs a
-        // rollback checkpoint; native / deposit paths take none.
-        let checkpoint = if debit_erc20_fees {
-            Some(evm.ctx().journal_mut().checkpoint())
-        } else {
-            None
-        };
+        // The ERC20 debit makes an irreversible pre-validation charge, so bracket it in a
+        // checkpoint that commits it into the tx (include) or reverts it whole (reject).
+        let checkpoint = evm.ctx().journal_mut().checkpoint();
 
-        let result = self.debit_and_deduct_caller(evm, debit_erc20_fees, additional_cost);
+        let result = self.debit_and_deduct_caller(evm, true, additional_cost);
 
         match &result {
             Ok(()) => {
-                if let Some(cp) = checkpoint {
-                    let journal = evm.ctx().journal_mut();
-                    // Keep the debit's journal entries; the enclosing transaction owns them now.
-                    journal.checkpoint_commit();
-                    // Clear the debit's transient storage (EIP-1153), matching the committing
-                    // `call` path. Nothing in the main tx has run yet, so transient storage is
-                    // empty before the debit and this clears only the debit's own writes.
-                    journal.transient_storage.clear();
-                    // Drop any self-destructs the debit recorded, matching the committing `call`
-                    // path's `commit_tx` (which clears `selfdestructed_addresses`).
-                    // `checkpoint_commit` only decrements depth, so without this a fee currency
-                    // whose `debitGasFees` SELFDESTRUCTs a contract would leave the list
-                    // populated for the main tx — a spurious EIP-7708 burn log (and receipt
-                    // divergence) once a spec that emits them is enabled. Truncating back to the
-                    // checkpoint's index (empty before the debit) reproduces `commit_tx`'s clear.
-                    journal
-                        .selfdestructed_addresses
-                        .truncate(cp.selfdestructed_i);
-                }
+                let journal = evm.ctx().journal_mut();
+                // Keep the debit's journal entries; the enclosing transaction owns them now.
+                journal.checkpoint_commit();
+                // Clear the debit's transient storage (EIP-1153), matching the committing
+                // `call` path. Nothing in the main tx has run yet, so transient storage is
+                // empty before the debit and this clears only the debit's own writes.
+                journal.transient_storage.clear();
+                // Drop any self-destructs the debit recorded, matching the committing `call`
+                // path's `commit_tx` (which clears `selfdestructed_addresses`).
+                // `checkpoint_commit` only decrements depth, so without this a fee currency
+                // whose `debitGasFees` SELFDESTRUCTs a contract would leave the list
+                // populated for the main tx — a spurious EIP-7708 burn log (and receipt
+                // divergence) once a spec that emits them is enabled. Truncating back to the
+                // checkpoint's index (empty before the debit) reproduces `commit_tx`'s clear.
+                journal
+                    .selfdestructed_addresses
+                    .truncate(checkpoint.selfdestructed_i);
             }
             Err(_) => {
-                if let Some(cp) = checkpoint {
-                    // Undo the debit (and any partial caller mutations): state, account/slot
-                    // warmth, transient storage, and logs are reverted back to the checkpoint.
-                    evm.ctx().journal_mut().checkpoint_revert(cp);
-                }
+                // Undo the debit (and any partial caller mutations): state, account/slot
+                // warmth, transient storage, and logs are reverted back to the checkpoint.
+                evm.ctx().journal_mut().checkpoint_revert(checkpoint);
             }
         }
 
@@ -524,13 +522,11 @@ where
         // rather than force it: a future revm change — or a fatal error that leaks a frame-level
         // checkpoint — that leaves depth inflated trips tests loudly instead of being silently
         // masked.
-        if debit_erc20_fees {
-            debug_assert_eq!(
-                evm.ctx().journal_ref().depth,
-                prev_depth,
-                "checkpoint_commit / checkpoint_revert should have restored depth"
-            );
-        }
+        debug_assert_eq!(
+            evm.ctx().journal_ref().depth,
+            prev_depth,
+            "checkpoint_commit / checkpoint_revert should have restored depth"
+        );
 
         result
     }
