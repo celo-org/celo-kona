@@ -1903,7 +1903,50 @@ mod tests {
         TEST_FEE_CURRENCY, make_celo_test_db_with_fee_currency,
     };
     use alloy_primitives::address;
-    use revm::ExecuteEvm;
+    use revm::{ExecuteEvm, inspector::NoOpInspector, primitives::TxKind};
+
+    /// Build a `CeloEvm` primed to run a single CIP-64 transaction paying in
+    /// [`TEST_FEE_CURRENCY`], over a caller-supplied `db` so tests can pre-seed the sender's
+    /// nonce, a stub target contract, or a non-conformant fee currency. Everything else — the
+    /// tx caller/fees/kind/nonce/gas, the block basefee/beneficiary, and the REGOLITH chain-0
+    /// cfg — is wired the same way for every CIP-64 handler test. [`run_cip64_tx`] is a thin
+    /// replay wrapper over this.
+    #[allow(clippy::too_many_arguments)]
+    fn build_cip64_evm(
+        db: InMemoryDB,
+        sender: Address,
+        beneficiary: Address,
+        nonce: u64,
+        kind: TxKind,
+        gas_limit: u64,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
+        basefee: u64,
+    ) -> CeloEvm<InMemoryDB, NoOpInspector> {
+        Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = gas_limit;
+                tx.op_tx.base.gas_price = max_fee_per_gas;
+                tx.op_tx.base.gas_priority_fee = Some(max_priority_fee_per_gas);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = nonce;
+                tx.op_tx.base.kind = kind;
+                tx.op_tx.base.chain_id = Some(0); // test chain uses chain_id 0
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = basefee;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0; // match test chain
+            })
+            .build_celo()
+    }
 
     /// Run a CIP-64 transaction through the full handler pipeline and return the
     /// execution result.
@@ -1920,29 +1963,18 @@ mod tests {
         EVMError<<InMemoryDB as revm::Database>::Error, OpTransactionError>,
     > {
         let db = make_celo_test_db_with_fee_currency(sender, fc_balance);
-        let ctx = Context::celo()
-            .with_db(db)
-            .modify_tx_chained(|tx| {
-                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
-                tx.fee_currency = Some(TEST_FEE_CURRENCY);
-                tx.op_tx.base.gas_limit = gas_limit;
-                tx.op_tx.base.gas_price = max_fee_per_gas;
-                tx.op_tx.base.gas_priority_fee = Some(max_priority_fee_per_gas);
-                tx.op_tx.base.caller = sender;
-                tx.op_tx.base.nonce = 0;
-                tx.op_tx.base.chain_id = Some(0); // test chain uses chain_id 0
-                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
-            })
-            .modify_block_chained(|block| {
-                block.basefee = basefee;
-                block.beneficiary = beneficiary;
-            })
-            .modify_cfg_chained(|cfg| {
-                cfg.spec = OpSpecId::REGOLITH;
-                cfg.chain_id = 0; // match test chain
-            });
-
-        let mut evm = ctx.build_celo();
+        // Default kind matches `TxEnv`'s own default (`Call(Address::ZERO)`).
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            basefee,
+        );
         evm.replay().map(|r| r.result)
     }
 
@@ -2319,28 +2351,19 @@ mod tests {
             },
         );
 
-        let mut evm = Context::celo()
-            .with_db(db)
-            .modify_tx_chained(|tx| {
-                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
-                tx.fee_currency = Some(TEST_FEE_CURRENCY);
-                tx.op_tx.base.gas_limit = 100_000;
-                tx.op_tx.base.gas_price = 100;
-                tx.op_tx.base.gas_priority_fee = Some(10);
-                tx.op_tx.base.caller = sender;
-                tx.op_tx.base.nonce = 0; // on-chain nonce is 1 → NonceTooLow, after the debit
-                tx.op_tx.base.chain_id = Some(0);
-                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
-            })
-            .modify_block_chained(|block| {
-                block.basefee = 1;
-                block.beneficiary = beneficiary;
-            })
-            .modify_cfg_chained(|cfg| {
-                cfg.spec = OpSpecId::REGOLITH;
-                cfg.chain_id = 0;
-            })
-            .build_celo();
+        // tx nonce 0 vs the on-chain nonce 1 seeded above → NonceTooLow, a check that runs
+        // after the debit.
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            100_000,
+            100,
+            10,
+            1,
+        );
 
         // Mirror the builder: run the (rejected) tx through the handler, then finalize the
         // journal (the builder reuses one journal across the block and finalizes once).
@@ -2381,7 +2404,7 @@ mod tests {
     // execution-time revert cannot unwind it). This pins that boundary.
     #[test]
     fn included_but_reverted_cip64_tx_still_pays_the_fee() {
-        use revm::{primitives::TxKind, state::Bytecode};
+        use revm::state::Bytecode;
 
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -2402,29 +2425,17 @@ mod tests {
             },
         );
 
-        let mut evm = Context::celo()
-            .with_db(db)
-            .modify_tx_chained(|tx| {
-                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
-                tx.fee_currency = Some(TEST_FEE_CURRENCY);
-                tx.op_tx.base.gas_limit = 200_000;
-                tx.op_tx.base.gas_price = 100;
-                tx.op_tx.base.gas_priority_fee = Some(10);
-                tx.op_tx.base.caller = sender;
-                tx.op_tx.base.nonce = 0;
-                tx.op_tx.base.kind = TxKind::Call(revert_stub);
-                tx.op_tx.base.chain_id = Some(0);
-                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
-            })
-            .modify_block_chained(|block| {
-                block.basefee = 1;
-                block.beneficiary = beneficiary;
-            })
-            .modify_cfg_chained(|cfg| {
-                cfg.spec = OpSpecId::REGOLITH;
-                cfg.chain_id = 0;
-            })
-            .build_celo();
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(revert_stub),
+            200_000,
+            100,
+            10,
+            1,
+        );
 
         let out = evm.replay().expect("an included tx must not be rejected");
         assert!(
@@ -2488,8 +2499,6 @@ mod tests {
     // reject-path assertion pass for the wrong reason.
     #[test]
     fn rejected_cip64_tx_reverts_native_mutation_by_fee_currency() {
-        use revm::primitives::TxKind;
-
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let sink = address!("0x00000000000000000000000000000000000000ee");
@@ -2528,29 +2537,7 @@ mod tests {
                 },
             );
 
-            Context::celo()
-                .with_db(db)
-                .modify_tx_chained(|tx| {
-                    tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
-                    tx.fee_currency = Some(TEST_FEE_CURRENCY);
-                    tx.op_tx.base.gas_limit = 200_000;
-                    tx.op_tx.base.gas_price = 100;
-                    tx.op_tx.base.gas_priority_fee = Some(10);
-                    tx.op_tx.base.caller = sender;
-                    tx.op_tx.base.nonce = tx_nonce;
-                    tx.op_tx.base.kind = kind;
-                    tx.op_tx.base.chain_id = Some(0);
-                    tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
-                })
-                .modify_block_chained(|block| {
-                    block.basefee = 1;
-                    block.beneficiary = beneficiary;
-                })
-                .modify_cfg_chained(|cfg| {
-                    cfg.spec = OpSpecId::REGOLITH;
-                    cfg.chain_id = 0;
-                })
-                .build_celo()
+            build_cip64_evm(db, sender, beneficiary, tx_nonce, kind, 200_000, 100, 10, 1)
         };
 
         let sink_balance = |state: &revm::state::EvmState| {
