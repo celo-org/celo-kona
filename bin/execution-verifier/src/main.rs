@@ -439,7 +439,14 @@ async fn verify_block_range(
     }
 
     // Process results and spawn new tasks continuously
-    while handles.join_next().await.is_some() {
+    while let Some(joined) = handles.join_next().await {
+        match joined {
+            Ok(Ok(_)) => {}
+            // A failed fetch/execution would otherwise vanish silently while the
+            // persisted watermark stalls; surface it and keep verifying.
+            Ok(Err(e)) => tracing::error!("Block verification task failed: {e:#}"),
+            Err(e) => tracing::error!("Block verification task panicked: {e}"),
+        }
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
             spawn_verify(&mut handles, next_block);
