@@ -5,7 +5,9 @@ use celo_reth::{
     CeloEvmConfig,
     celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
-    download_repair::reconcile_migrated_index_checkpoints,
+    download_repair::{
+        PostDownloadAction, post_download_action, reconcile_migrated_index_checkpoints,
+    },
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{
         DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
@@ -435,12 +437,18 @@ fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<(
         // `rocksdb_indices`-less preset (`--full`/`--minimal`) reset to 0, so a migrated Celo chain
         // rebuilds them from the migration block instead of crash-looping on the header-only gap.
         CeloCommand::Download(cmd) => {
-            let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(
-                matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present"),
-            )?;
+            let download_matches =
+                matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present");
+            let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(download_matches)?;
+            // Decide (and validate) the post-download step from the parsed args before the async
+            // download runs, so the borrowed `ArgMatches` isn't captured by the `'static` future.
+            let action = post_download_action(download_matches, env.chain.chain_id())?;
             runner.run_until_ctrl_c(async move {
                 cmd.execute::<CeloNode>().await?;
-                reconcile_migrated_index_checkpoints(env)
+                match action {
+                    PostDownloadAction::Reconcile => reconcile_migrated_index_checkpoints(env),
+                    PostDownloadAction::Skip => Ok(()),
+                }
             })
         }
         // Snapshot manifest generation is synchronous: it reconciles lagging migrated-chain

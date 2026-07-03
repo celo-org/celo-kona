@@ -50,6 +50,7 @@
 //! It is a safe no-op when the index was downloaded (`--archive`/`--with-rocksdb`, checkpoint
 //! already at the tip) and on non-migrated chains (celo-sepolia is a fresh L2).
 
+use clap::ArgMatches;
 use eyre::Result;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::EnvironmentArgs;
@@ -86,6 +87,47 @@ const STAGES_TO_ADVANCE: [StageId; 1] = [StageId::TransactionLookup];
 /// (genesis-contiguous), so it needs no reconciliation.
 fn migration_block_for(chain_id: u64) -> Option<u64> {
     (chain_id == CELO_MAINNET_CHAIN_ID).then_some(CEL2_MIGRATION_BLOCK_NUMBER)
+}
+
+/// What to run after a successful `celo-reth download`, decided from its parsed arguments by
+/// [`post_download_action`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum PostDownloadAction {
+    /// Run [`reconcile_migrated_index_checkpoints`].
+    Reconcile,
+    /// Do nothing: the invocation downloaded nothing (a read-only `--list`), so the datadir must
+    /// not be opened or created.
+    Skip,
+}
+
+/// Decide the post-`download` action from the download's parsed arguments, rejecting a flag
+/// combination that cannot produce a bootable migrated-mainnet datadir.
+///
+/// - `--list` / `--list-snapshots` lists snapshots and downloads nothing, so return
+///   [`PostDownloadAction::Skip`]: even the read-only-looking reconciliation opens the datadir with
+///   `init_db`, which would give a listing command write side effects (and fail on an unwritable
+///   datadir).
+/// - `--archive --without-rocksdb` on migrated mainnet resets the RocksDB index stages, but the
+///   archive preset does not prune history — so `IndexAccountHistory` / `IndexStorageHistory` have
+///   no prune-mode self-advance past the header-only gap and the pre-migration history is never
+///   downloaded. Reject it rather than produce a node that can't start or is missing history.
+/// - Otherwise return [`PostDownloadAction::Reconcile`].
+pub fn post_download_action(matches: &ArgMatches, chain_id: u64) -> Result<PostDownloadAction> {
+    if matches.get_flag("list") {
+        return Ok(PostDownloadAction::Skip);
+    }
+    if migration_block_for(chain_id).is_some() &&
+        matches.get_flag("archive") &&
+        matches.get_flag("without_rocksdb")
+    {
+        eyre::bail!(
+            "`--archive --without-rocksdb` is not supported on migrated Celo mainnet: the archive \
+             preset does not prune history, so the reset RocksDB index stages cannot self-advance \
+             past the header-only pre-migration gap and the pre-migration history is not \
+             downloaded. Use `--archive` (with rocksdb_indices) or a `--full`/`--minimal` preset."
+        );
+    }
+    Ok(PostDownloadAction::Reconcile)
 }
 
 /// Reconcile the `TransactionLookup` checkpoint a `rocksdb_indices`-less `celo-reth download` reset
@@ -228,6 +270,44 @@ mod tests {
         // celo-sepolia is a fresh L2 (genesis-contiguous) and needs no reconciliation.
         let sepolia = CeloChainSpecParser::parse("celo-sepolia").unwrap();
         assert_eq!(migration_block_for(sepolia.chain_id()), None);
+    }
+
+    /// Parse real `celo-reth download` arguments so a wrong flag id would panic in `get_flag`.
+    fn download_matches(args: &[&str]) -> clap::ArgMatches {
+        use clap::CommandFactory;
+        reth_cli_commands::download::DownloadCommand::<CeloChainSpecParser>::command()
+            .no_binary_name(true)
+            .try_get_matches_from(args)
+            .unwrap()
+    }
+
+    /// `--list` downloads nothing, so the post-download step must skip (no datadir side effects).
+    #[test]
+    fn post_download_action_skips_list() {
+        let matches = download_matches(&["--chain", "celo", "--list"]);
+        assert_eq!(
+            post_download_action(&matches, CELO_MAINNET_CHAIN_ID).unwrap(),
+            PostDownloadAction::Skip,
+        );
+    }
+
+    /// `--archive --without-rocksdb` cannot produce a bootable migrated-mainnet node and must be
+    /// rejected — but is fine on a non-migrated chain (genesis-contiguous history rebuild).
+    #[test]
+    fn post_download_action_rejects_archive_without_rocksdb_on_mainnet() {
+        let matches = download_matches(&["--chain", "celo", "--archive", "--without-rocksdb"]);
+        assert!(post_download_action(&matches, CELO_MAINNET_CHAIN_ID).is_err());
+        assert_eq!(post_download_action(&matches, 999).unwrap(), PostDownloadAction::Reconcile);
+    }
+
+    /// A plain `--full` download reconciles.
+    #[test]
+    fn post_download_action_reconciles_full() {
+        let matches = download_matches(&["--chain", "celo", "--full"]);
+        assert_eq!(
+            post_download_action(&matches, CELO_MAINNET_CHAIN_ID).unwrap(),
+            PostDownloadAction::Reconcile,
+        );
     }
 
     /// A `--full`-shaped datadir (index stages reset to 0, everything else at the tip): only

@@ -33,6 +33,8 @@ use reth_stages_types::{StageCheckpoint, StageId};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+use crate::state_import::CELO_MAINNET_CHAIN_ID;
+
 /// Pipeline stages that consume transaction bodies (or trie state derived from them) and therefore
 /// cannot be rebuilt over Celo's header-only pre-migration placeholder blocks. If any is shipped
 /// behind the snapshot block, a from-snapshot pipeline run rebuilds it from block 1 and fails with
@@ -89,7 +91,7 @@ impl CeloSnapshotManifestCommand {
     pub fn execute(self) -> Result<()> {
         // Open the source DB read-write, resolve the snapshot block, and advance any lagging
         // migrated-chain stage checkpoint up to it (the Celo fix). Returns the resolved block.
-        let block = reconcile_stage_checkpoints(&self.source_datadir, self.block)?;
+        let block = reconcile_stage_checkpoints(&self.source_datadir, self.block, self.chain_id)?;
 
         let blocks_per_file = match self.blocks_per_file {
             Some(blocks_per_file) => blocks_per_file,
@@ -132,7 +134,11 @@ impl CeloSnapshotManifestCommand {
 /// Opens the source MDBX read-write, resolves the snapshot block (explicit `--block` or the
 /// `Finish` stage checkpoint), and advances any [`MIGRATED_CHAIN_STAGES`] checkpoint that is behind
 /// the block up to it. Stages already at or beyond the block are left untouched.
-fn reconcile_stage_checkpoints(source_datadir: &Path, block_arg: Option<u64>) -> Result<u64> {
+fn reconcile_stage_checkpoints(
+    source_datadir: &Path,
+    block_arg: Option<u64>,
+    chain_id: u64,
+) -> Result<u64> {
     let db_dir = source_datadir.join("db");
     let db_dir = if db_dir.exists() { db_dir } else { source_datadir.to_path_buf() };
 
@@ -164,23 +170,35 @@ fn reconcile_stage_checkpoints(source_datadir: &Path, block_arg: Option<u64>) ->
     };
 
     let mut advanced = 0usize;
-    for stage in MIGRATED_CHAIN_STAGES {
-        let key = stage.to_string();
-        let current = tx
-            .get::<tables::StageCheckpoints>(key.clone())?
-            .map(|checkpoint| checkpoint.block_number)
-            .unwrap_or(0);
-        if current < block {
-            tx.put::<tables::StageCheckpoints>(key, StageCheckpoint::new(block))?;
-            info!(
-                target: "reth::cli",
-                stage = %stage,
-                from = current,
-                to = block,
-                "Advanced lagging stage checkpoint for snapshot publication"
-            );
-            advanced += 1;
+    // Only migrated Celo mainnet has the header-only pre-migration gap that makes a lagging
+    // index/trie stage checkpoint correct to advance. On a genesis-contiguous chain a lagging
+    // checkpoint means real work is genuinely missing, so advancing it would publish a snapshot
+    // that skips rebuilding required indexes/trie on restore.
+    if chain_id == CELO_MAINNET_CHAIN_ID {
+        for stage in MIGRATED_CHAIN_STAGES {
+            let key = stage.to_string();
+            let current = tx
+                .get::<tables::StageCheckpoints>(key.clone())?
+                .map(|checkpoint| checkpoint.block_number)
+                .unwrap_or(0);
+            if current < block {
+                tx.put::<tables::StageCheckpoints>(key, StageCheckpoint::new(block))?;
+                info!(
+                    target: "reth::cli",
+                    stage = %stage,
+                    from = current,
+                    to = block,
+                    "Advanced lagging stage checkpoint for snapshot publication"
+                );
+                advanced += 1;
+            }
         }
+    } else {
+        info!(
+            target: "reth::cli",
+            chain_id,
+            "Non-migrated chain; skipping migrated-chain stage-checkpoint reconciliation",
+        );
     }
     tx.commit()?;
 
