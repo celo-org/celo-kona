@@ -61,7 +61,7 @@ use reth_db_api::{
     tables,
     transaction::{DbTx, DbTxMut},
 };
-use reth_prune_types::PruneModes;
+use reth_prune_types::{PruneMode, PruneModes};
 use reth_stages_types::{StageCheckpoint, StageId};
 use std::path::Path;
 use tracing::{info, warn};
@@ -191,18 +191,21 @@ fn read_prune_segments(config_path: &Path) -> Result<Option<PruneModes>> {
 /// Refuse a downloaded datadir whose resolved prune shape cannot boot on migrated Celo mainnet.
 ///
 /// A `rocksdb_indices`-less download resets `IndexAccountHistory` / `IndexStorageHistory` to block
-/// `0`. Those stages can only skip the header-only pre-migration gap by self-advancing to their
-/// prune boundary, which requires history pruning to be configured. An archive-shaped selection
-/// (`--archive`, the TUI archive preset, or `--with-state-history` without `--with-rocksdb`) leaves
-/// history unpruned in reth.toml, so a reset history stage would rebuild from block `1` with no
-/// prune boundary to fall back to `PlainState` — and the pre-migration history was never
-/// downloaded. That datadir cannot boot, so it is refused here from the resolved reth.toml shape
-/// rather than the raw download flags (which also miss the TUI-preset and `--with-state-history`
-/// paths).
+/// `0`. Those stages skip the header-only pre-migration gap only by self-advancing to their prune
+/// boundary — the oldest block whose history reth still retains ([`retained_history_floor`]). When
+/// that floor is at or after the migration block the reset stage rebuilds over real blocks only and
+/// is fine; when it is *before* the migration block the stage must index the header-only dummy
+/// blocks (no bodies, no changesets) and startup dies with `BlockBodyIndicesNotFound`.
+///
+/// So this rejects both an unpruned/archive shape (`--archive`, the TUI archive preset, or
+/// `--with-state-history` without `--with-rocksdb`), which retains from genesis, and a
+/// `--with-state-history-since`/`-distance` that reaches back into the dummy range —
+/// authoritatively from the resolved reth.toml prune mode rather than the raw download flags. A
+/// pruned `--full`/`--minimal` boundary stays past the gap and is accepted.
 ///
 /// Only fires for a completed post-migration snapshot (`Finish` at or above the migration block). A
 /// history stage already at or above the migration block had its RocksDB index downloaded and is
-/// fine (archive-with-rocksdb), so it is left alone.
+/// left alone (archive-with-rocksdb).
 fn assert_bootable_migrated_shape<Tx>(
     tx: &Tx,
     prune: &PruneModes,
@@ -213,9 +216,9 @@ where
 {
     let tip =
         tx.get::<tables::StageCheckpoints>(StageId::Finish.to_string())?.map(|c| c.block_number);
-    if !matches!(tip, Some(tip) if tip >= migration_block) {
+    let Some(tip) = tip.filter(|&tip| tip >= migration_block) else {
         return Ok(());
-    }
+    };
 
     for (stage, prune_mode, segment) in [
         (StageId::IndexAccountHistory, prune.account_history, "account_history"),
@@ -225,19 +228,36 @@ where
             .get::<tables::StageCheckpoints>(stage.to_string())?
             .map(|c| c.block_number)
             .unwrap_or(0);
-        if prune_mode.is_none() && current < migration_block {
+        let floor = retained_history_floor(prune_mode, tip);
+        if current < migration_block && floor < migration_block {
             eyre::bail!(
                 "downloaded datadir is not bootable on migrated Celo mainnet: {stage} was reset to \
-                 block {current} (RocksDB history index not downloaded) but reth.toml leaves \
-                 `{segment}` unpruned (archive shape), so the stage cannot self-advance past the \
-                 header-only pre-migration gap at block {migration_block} and the pre-migration \
-                 history was never downloaded. Re-run with RocksDB indices (`--archive` without \
-                 `--without-rocksdb`, or `--with-rocksdb`) for an archive node, or a \
-                 `--full`/`--minimal` preset for a pruned node."
+                 block {current} (RocksDB history index not downloaded) and reth.toml retains \
+                 `{segment}` history from block {floor}, before the migration block \
+                 {migration_block}, so the stage must index the header-only pre-migration gap and \
+                 startup hits `BlockBodyIndicesNotFound`. Re-run with RocksDB indices (`--archive` \
+                 without `--without-rocksdb`, or `--with-rocksdb`) for an archive node, or a \
+                 `--full`/`--minimal` preset (history retained only past the migration block)."
             );
         }
     }
     Ok(())
+}
+
+/// The oldest block whose account/storage history reth retains under `mode` at `tip` — the block a
+/// reset `IndexAccountHistory` / `IndexStorageHistory` stage must rebuild down to.
+///
+/// `None` (archive/unpruned) retains from genesis (`0`); `Distance(d)` keeps the last `d` blocks,
+/// so the floor is `tip - d`; `Before(n)` retains from `n`; `Full` prunes all history, so the floor
+/// is the tip. On migrated Celo mainnet a floor below the migration block means the stage would
+/// index the header-only pre-migration placeholders.
+const fn retained_history_floor(mode: Option<PruneMode>, tip: u64) -> u64 {
+    match mode {
+        None => 0,
+        Some(PruneMode::Full) => tip,
+        Some(PruneMode::Distance(distance)) => tip.saturating_sub(distance),
+        Some(PruneMode::Before(block)) => block,
+    }
 }
 
 /// Advance any [`STAGES_TO_ADVANCE`] checkpoint that sits below `migration_block` up to it, inside
@@ -303,7 +323,6 @@ mod tests {
     use super::*;
     use reth_cli::chainspec::ChainSpecParser;
     use reth_provider::{DatabaseProviderFactory, test_utils::create_test_provider_factory};
-    use reth_prune_types::PruneMode;
 
     /// Only `TransactionLookup` is advanced. The two history stages reth also resets must be
     /// absent: advancing them would skip the prune-checkpoint write that keeps historical reads
@@ -396,21 +415,24 @@ mod tests {
         assert_bootable_migrated_shape(tx, &prune, CEL2_MIGRATION_BLOCK_NUMBER)
     }
 
+    /// A realistic Celo mainnet snapshot tip (~71M): tens of millions of blocks past the migration
+    /// block, so a normal `--full`/`--minimal` history distance stays well clear of the gap.
+    const POST_MIGRATION_TIP: u64 = CEL2_MIGRATION_BLOCK_NUMBER + 40_000_000;
+
     /// Archive-shaped rocksdb-less download (history unpruned in reth.toml, history index reset to
-    /// 0): not bootable on migrated mainnet — must be rejected.
+    /// 0): retains from genesis, so it must be rejected.
     #[test]
     fn rejects_unpruned_history_index_reset_to_zero() {
-        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
-        assert!(check_shape(tip, 0, 0, None, None).is_err());
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, None, None).is_err());
     }
 
-    /// Pruned rocksdb-less download (`--full`/`--minimal`: history pruned, history index reset to
-    /// 0): the reset stages self-advance via their prune boundary — bootable, must be accepted.
+    /// Pruned rocksdb-less download (`--full`/`--minimal`: history kept only for the last
+    /// `Distance` blocks, index reset to 0): the retained floor stays past the migration block,
+    /// so the reset stages self-advance over real blocks — bootable, must be accepted.
     #[test]
     fn accepts_pruned_history_index_reset_to_zero() {
-        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
         let distance = Some(PruneMode::Distance(10_064));
-        assert!(check_shape(tip, 0, 0, distance, distance).is_ok());
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, distance, distance).is_ok());
     }
 
     /// Archive download WITH rocksdb (history unpruned but the index was downloaded, so the history
@@ -421,11 +443,36 @@ mod tests {
         assert!(check_shape(tip, tip, tip, None, None).is_ok());
     }
 
-    /// One unpruned history stage reset to 0 is enough to reject, even if the other is pruned.
+    /// One history stage whose retained floor crosses the gap is enough to reject, even if the
+    /// other is safely pruned.
     #[test]
-    fn rejects_when_only_storage_history_unpruned_and_reset() {
-        let tip = CEL2_MIGRATION_BLOCK_NUMBER + 1_000;
-        assert!(check_shape(tip, 0, 0, Some(PruneMode::Distance(10_064)), None).is_err());
+    fn rejects_when_only_storage_history_reaches_before_migration() {
+        let safe = Some(PruneMode::Distance(10_064));
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, safe, None).is_err());
+    }
+
+    /// `--with-state-history-since 1` resolves to `Before(1)`: the reset history stages would index
+    /// from block 1 across the header-only gap — must be rejected even though the mode is `Some`.
+    #[test]
+    fn rejects_before_since_inside_dummy_range() {
+        let since_one = Some(PruneMode::Before(1));
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, since_one, since_one).is_err());
+    }
+
+    /// A `--with-state-history-distance` larger than `tip - migration` pulls the retained floor
+    /// back into the dummy range — must be rejected even though the mode is `Some`.
+    #[test]
+    fn rejects_distance_reaching_before_migration() {
+        let too_far = Some(PruneMode::Distance(45_000_000));
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, too_far, too_far).is_err());
+    }
+
+    /// `--with-state-history-since <migration>` resolves to `Before(migration)`: the retained floor
+    /// sits exactly at the migration block, so no pre-migration block is indexed — accepted.
+    #[test]
+    fn accepts_before_since_at_migration() {
+        let at_migration = Some(PruneMode::Before(CEL2_MIGRATION_BLOCK_NUMBER));
+        assert!(check_shape(POST_MIGRATION_TIP, 0, 0, at_migration, at_migration).is_ok());
     }
 
     /// Below the migration block the datadir is not a completed post-migration snapshot; the guard

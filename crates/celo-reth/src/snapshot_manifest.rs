@@ -27,7 +27,7 @@
 use clap::Parser;
 use eyre::{Result, WrapErr};
 use reth_cli_commands::download::manifest::generate_manifest;
-use reth_db::{Database, mdbx::DatabaseArguments, open_db, open_db_read_only, tables};
+use reth_db::{Database, mdbx::DatabaseArguments, open_db, tables};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_stages_types::{StageCheckpoint, StageId};
 use std::path::{Path, PathBuf};
@@ -56,9 +56,11 @@ const MIGRATED_CHAIN_STAGES: [StageId; 6] = [
 pub struct CeloSnapshotManifestCommand {
     /// Source datadir containing static files.
     ///
-    /// Must be a *static* datadir (a ZFS clone or copy of a stopped node), never a live/running
-    /// node's datadir: on Celo mainnet the reconciliation step opens the MDBX read-write to
-    /// advance lagging stage checkpoints (every other chain is opened read-only).
+    /// On Celo mainnet the reconciliation step opens this datadir's MDBX read-write to advance
+    /// lagging stage checkpoints, so it must be a *static* datadir (a ZFS clone or copy of a
+    /// stopped node), never a live/running node's. Other chains are never opened as MDBX — the
+    /// snapshot block is inferred from the header static files — so a read-only/static source
+    /// works there.
     #[arg(long, short = 'd')]
     source_datadir: PathBuf,
 
@@ -91,8 +93,8 @@ impl CeloSnapshotManifestCommand {
     /// Reconciles lagging stage checkpoints, packages the archives, and writes the manifest.
     pub fn execute(self) -> Result<()> {
         // Resolve the snapshot block and, on Celo mainnet, advance any lagging migrated-chain stage
-        // checkpoint up to it (the Celo fix). Opens the source MDBX read-write on mainnet,
-        // read-only elsewhere. Returns the resolved block.
+        // checkpoint up to it (the Celo fix). Opens the source MDBX read-write on mainnet; other
+        // chains infer the block from header static files without opening MDBX. Returns the block.
         let block = reconcile_stage_checkpoints(&self.source_datadir, self.block, self.chain_id)?;
 
         let blocks_per_file = match self.blocks_per_file {
@@ -133,28 +135,23 @@ impl CeloSnapshotManifestCommand {
     }
 }
 
-/// Resolves the snapshot block (explicit `--block` or the `Finish` stage checkpoint) and, on Celo
-/// mainnet, advances any [`MIGRATED_CHAIN_STAGES`] checkpoint that is behind the block up to it.
+/// Resolves the snapshot block and, on Celo mainnet, advances any [`MIGRATED_CHAIN_STAGES`]
+/// checkpoint that is behind the block up to it.
 ///
 /// Only migrated Celo mainnet has the header-only pre-migration gap that makes a lagging index/trie
-/// stage checkpoint correct to advance, so only there is the source MDBX opened **read-write**. On
-/// every other chain a lagging checkpoint means real work is genuinely missing — advancing it would
-/// publish a snapshot that skips rebuilding required indexes/trie on restore — so the block is only
-/// *read*: the DB is opened **read-only** and left untouched, letting the publisher run against a
-/// read-only/static source.
+/// stage checkpoint correct to advance, so only there is the source MDBX opened (read-write) at
+/// all, with the block resolved from its `Finish` checkpoint. On every other chain a lagging
+/// checkpoint means real work is genuinely missing — advancing it would publish a snapshot that
+/// skips rebuilding required indexes/trie on restore — so the block is resolved from `--block` or
+/// the highest header static-file range without opening MDBX, letting the publisher run against a
+/// read-only/static source (matching upstream's header-tip fallback).
 fn reconcile_stage_checkpoints(
     source_datadir: &Path,
     block_arg: Option<u64>,
     chain_id: u64,
 ) -> Result<u64> {
-    let db_dir = source_datadir.join("db");
-    let db_dir = if db_dir.exists() { db_dir } else { source_datadir.to_path_buf() };
-
     if chain_id != CELO_MAINNET_CHAIN_ID {
-        let db = open_db_read_only(&db_dir, DatabaseArguments::default())
-            .wrap_err("failed to open source db read-only for snapshot block resolution")?;
-        let tx = db.tx()?;
-        let block = resolve_snapshot_block(&tx, block_arg)?;
+        let block = resolve_block_against_tip(block_arg, max_header_block(source_datadir))?;
         info!(
             target: "reth::cli",
             chain_id,
@@ -164,10 +161,15 @@ fn reconcile_stage_checkpoints(
         return Ok(block);
     }
 
+    let db_dir = source_datadir.join("db");
+    let db_dir = if db_dir.exists() { db_dir } else { source_datadir.to_path_buf() };
     let db = open_db(&db_dir, DatabaseArguments::default())
         .wrap_err("failed to open source db read-write for stage-checkpoint reconciliation")?;
     let tx = db.tx_mut()?;
-    let block = resolve_snapshot_block(&tx, block_arg)?;
+    let finish_tip = tx
+        .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
+        .map(|checkpoint| checkpoint.block_number);
+    let block = resolve_block_against_tip(block_arg, finish_tip)?;
 
     let mut advanced = 0usize;
     for stage in MIGRATED_CHAIN_STAGES {
@@ -199,31 +201,36 @@ fn reconcile_stage_checkpoints(
     Ok(block)
 }
 
-/// Resolves the snapshot block: an explicit `--block` (validated to be at or below the source
-/// `Finish` tip) or, when omitted, the `Finish` stage checkpoint itself. Read-only.
-fn resolve_snapshot_block<Tx: DbTx>(tx: &Tx, block_arg: Option<u64>) -> Result<u64> {
-    let finish_tip = tx
-        .get::<tables::StageCheckpoints>(StageId::Finish.to_string())?
-        .map(|checkpoint| checkpoint.block_number);
-
+/// Resolves the snapshot block: an explicit `--block` (validated to be at or below the source `tip`
+/// when it is known) or, when omitted, the `tip` itself. Pure; `tip` is the source `Finish`
+/// checkpoint on Celo mainnet, or the highest header static-file block on other chains.
+fn resolve_block_against_tip(block_arg: Option<u64>, tip: Option<u64>) -> Result<u64> {
     match block_arg {
-        // Reject an explicit --block above the source `Finish` tip: stamping the migrated-chain
-        // stages complete beyond the data the source datadir actually contains (a typo'd or future
-        // height) would let a retry publish a snapshot that skips required index/trie work.
-        Some(block) => match finish_tip {
+        // Reject an explicit --block above the source tip: stamping the migrated-chain stages
+        // complete beyond the data the source datadir actually contains (a typo'd or future height)
+        // would let a retry publish a snapshot that skips required index/trie work.
+        Some(block) => match tip {
             Some(tip) if block > tip => eyre::bail!(
-                "--block {block} is above the source Finish checkpoint {tip}; refusing to \
-                 reconcile stage checkpoints beyond the data the source datadir contains"
+                "--block {block} is above the source tip {tip}; refusing to publish a snapshot \
+                 beyond the data the source datadir contains"
             ),
             _ => Ok(block),
         },
-        None => finish_tip.ok_or_else(|| {
+        None => tip.ok_or_else(|| {
             eyre::eyre!(
-                "Could not infer --block from source DB (Finish checkpoint missing); \
-                 pass --block manually"
+                "Could not infer the snapshot block from the source datadir (no Finish checkpoint \
+                 or header static-file range found); pass --block manually"
             )
         }),
     }
+}
+
+/// Highest header block available as a static file in the source datadir, if any.
+///
+/// Used as the snapshot-tip fallback for non-mainnet sources, which are never opened as MDBX, so a
+/// read-only/static source (or one without a `Finish` checkpoint) still resolves a block.
+fn max_header_block(source_datadir: &Path) -> Option<u64> {
+    header_ranges(source_datadir).ok()?.into_iter().map(|(_, end)| end).max()
 }
 
 /// Infers the static-file block span from header static-file ranges in the source datadir.
@@ -285,7 +292,6 @@ fn parse_headers_range(file_name: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_provider::{DatabaseProviderFactory, test_utils::create_test_provider_factory};
 
     #[test]
     fn parse_headers_range_works_with_suffixes() {
@@ -302,48 +308,81 @@ mod tests {
         assert!(MIGRATED_CHAIN_STAGES.contains(&StageId::TransactionLookup));
     }
 
-    /// Writes a `Finish` checkpoint at `tip` into a fresh test datadir, then asserts what the block
-    /// resolver (shared by the read-only and read-write paths) returns for the given `--block` arg.
-    fn assert_resolves(finish_tip: Option<u64>, block_arg: Option<u64>, expected: Option<u64>) {
-        let factory = create_test_provider_factory();
-        let provider_rw = factory.database_provider_rw().unwrap();
-        let tx = provider_rw.tx_ref();
-        if let Some(tip) = finish_tip {
-            tx.put::<tables::StageCheckpoints>(
-                StageId::Finish.to_string(),
-                StageCheckpoint::new(tip),
-            )
-            .unwrap();
-        }
+    /// Asserts what the shared block resolver returns for a given source tip and `--block` arg.
+    fn assert_resolves(tip: Option<u64>, block_arg: Option<u64>, expected: Option<u64>) {
         match expected {
-            Some(block) => assert_eq!(resolve_snapshot_block(tx, block_arg).unwrap(), block),
-            None => assert!(resolve_snapshot_block(tx, block_arg).is_err()),
+            Some(block) => assert_eq!(resolve_block_against_tip(block_arg, tip).unwrap(), block),
+            None => assert!(resolve_block_against_tip(block_arg, tip).is_err()),
         }
     }
 
-    /// No `--block`: the snapshot block is inferred from the source `Finish` checkpoint.
+    /// No `--block`: the snapshot block is inferred from the source tip.
     #[test]
-    fn resolve_snapshot_block_infers_from_finish() {
+    fn resolve_block_infers_from_tip() {
         assert_resolves(Some(31_100_000), None, Some(31_100_000));
     }
 
-    /// An explicit `--block` at or below the `Finish` tip is accepted verbatim.
+    /// An explicit `--block` at or below the source tip is accepted verbatim.
     #[test]
-    fn resolve_snapshot_block_accepts_block_at_or_below_tip() {
+    fn resolve_block_accepts_block_at_or_below_tip() {
         assert_resolves(Some(100), Some(100), Some(100));
         assert_resolves(Some(100), Some(50), Some(50));
     }
 
-    /// An explicit `--block` above the `Finish` tip is rejected (would publish a snapshot claiming
+    /// An explicit `--block` above the source tip is rejected (would publish a snapshot claiming
     /// index/trie work beyond the data the source datadir actually contains).
     #[test]
-    fn resolve_snapshot_block_rejects_block_above_tip() {
+    fn resolve_block_rejects_block_above_tip() {
         assert_resolves(Some(100), Some(101), None);
     }
 
-    /// Without a `Finish` checkpoint and without `--block`, resolution fails with a clear ask.
+    /// An explicit `--block` is honored even when the tip is unknown (no MDBX and no header files).
     #[test]
-    fn resolve_snapshot_block_errors_without_finish_or_block() {
+    fn resolve_block_honors_explicit_block_without_tip() {
+        assert_resolves(None, Some(42), Some(42));
+    }
+
+    /// Without a tip and without `--block`, resolution fails with a clear ask.
+    #[test]
+    fn resolve_block_errors_without_tip_or_block() {
         assert_resolves(None, None, None);
+    }
+
+    /// Creates `static_files/<names>` under a fresh temp dir and returns the (kept-alive) handle.
+    fn datadir_with_headers(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let static_files = dir.path().join("static_files");
+        std::fs::create_dir_all(&static_files).unwrap();
+        for name in names {
+            std::fs::write(static_files.join(name), b"").unwrap();
+        }
+        dir
+    }
+
+    /// `max_header_block` returns the highest header static-file end, ignoring non-header files.
+    #[test]
+    fn max_header_block_reads_highest_header_range() {
+        let dir = datadir_with_headers(&[
+            "static_file_headers_0_499999",
+            "static_file_headers_500000_999999.jar",
+            "static_file_transactions_0_499999",
+        ]);
+        assert_eq!(max_header_block(dir.path()), Some(999_999));
+
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(max_header_block(empty.path()), None);
+    }
+
+    /// A non-mainnet source with header static files but no MDBX still resolves its block from the
+    /// header tip — never opening (let alone write-opening) the source ([8]).
+    #[test]
+    fn non_mainnet_infers_block_from_headers_without_mdbx() {
+        let dir = datadir_with_headers(&["static_file_headers_0_499999"]);
+        assert_eq!(reconcile_stage_checkpoints(dir.path(), None, 12_345).unwrap(), 499_999);
+        assert_eq!(
+            reconcile_stage_checkpoints(dir.path(), Some(400_000), 12_345).unwrap(),
+            400_000
+        );
+        assert!(reconcile_stage_checkpoints(dir.path(), Some(500_000), 12_345).is_err());
     }
 }
