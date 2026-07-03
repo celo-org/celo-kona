@@ -23,7 +23,7 @@ use revm::{
     Database, Inspector,
     context::{LocalContextTr, journal::JournalInner, result::InvalidTransaction},
     context_interface::{
-        Block, Cfg, ContextSetters, ContextTr, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, Transaction,
         journaled_state::account::JournaledAccountTr,
         result::{ExecutionResult, FromStringError},
     },
@@ -304,12 +304,10 @@ where
         .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
 
         // Collect logs from the system call to be included in the final receipt
-        let mut tx = evm.ctx().tx().clone();
-        let info = tx.cip64_tx_info.as_mut().unwrap();
+        let info = evm.ctx().tx.cip64_tx_info.as_mut().unwrap();
         info.credit_gas_used = credit_gas_used;
         info.credit_gas_refunded = credit_gas_refunded;
         info.logs_post = logs;
-        evm.ctx().set_tx(tx);
         self.log_and_warn_gas_cost(evm, fee_currency)?;
         Ok(())
     }
@@ -320,7 +318,16 @@ where
         evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
-        let cip64_info = evm.ctx().tx().cip64_tx_info.clone().unwrap();
+        let (debit_gas_used, debit_gas_refunded, credit_gas_used, credit_gas_refunded) = {
+            let ctx = evm.ctx();
+            let info = ctx.tx().cip64_tx_info.as_ref().unwrap();
+            (
+                info.debit_gas_used,
+                info.debit_gas_refunded,
+                info.credit_gas_used,
+                info.credit_gas_refunded,
+            )
+        };
 
         let intrinsic_gas_cost = evm
             .fee_currency_context
@@ -336,18 +343,16 @@ where
             credit(gas_used={}, gas_refunded={}), \
             intrinsic_gas={}",
             fee_currency,
-            cip64_info.debit_gas_used,
-            cip64_info.debit_gas_refunded,
-            cip64_info.credit_gas_used,
-            cip64_info.credit_gas_refunded,
+            debit_gas_used,
+            debit_gas_refunded,
+            credit_gas_used,
+            credit_gas_refunded,
             intrinsic_gas_cost
         );
 
         // Compare raw gas (before refunds) against intrinsic gas limit
-        let total_raw_gas = cip64_info.debit_gas_used
-            + cip64_info.debit_gas_refunded
-            + cip64_info.credit_gas_used
-            + cip64_info.credit_gas_refunded;
+        let total_raw_gas =
+            debit_gas_used + debit_gas_refunded + credit_gas_used + credit_gas_refunded;
         if total_raw_gas > intrinsic_gas_cost {
             if total_raw_gas > intrinsic_gas_cost * 2 {
                 warn!(
@@ -433,7 +438,7 @@ where
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
         // types; we narrow back to `u128` at this boundary rather than widening them.
-        let mut tx = evm.ctx().tx().clone();
+        let tx = &mut evm.ctx().tx;
         tx.cip64_tx_info = Some(Cip64Info {
             debit_gas_used,
             debit_gas_refunded,
@@ -444,7 +449,6 @@ where
             base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
         });
         tx.effective_gas_price = Some(effective_gas_price.into_inner());
-        evm.ctx().set_tx(tx);
 
         Ok(())
     }
@@ -968,15 +972,11 @@ where
         // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
         // rather than `None`. Without this the receipt encoding would differ from
         // the historical behavior and break receipt roots.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo {
-            let mut tx = evm.ctx().tx().clone();
-            tx.cip64_tx_info = Some(Cip64Info {
+        if evm.ctx().tx().is_cip64() && fees_in_celo {
+            evm.ctx().tx.cip64_tx_info = Some(Cip64Info {
                 base_fee_in_erc20: Some(basefee),
                 ..Default::default()
             });
-            evm.ctx().set_tx(tx);
         }
 
         // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
