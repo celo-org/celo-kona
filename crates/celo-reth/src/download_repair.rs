@@ -1,5 +1,4 @@
-//! Post-download index-stage checkpoint repair for migrated Celo chains
-//! (`celo-reth repair-download-checkpoints`).
+//! Migration-boundary index-stage checkpoint reconciliation for `celo-reth download`.
 //!
 //! # Why
 //!
@@ -19,14 +18,16 @@
 //! indices, and dies with `ProviderError::BlockBodyIndicesNotFound(1)` ("block meta not found for
 //! block #1"), crash-looping the node.
 //!
-//! # Fix
+//! # What this does
 //!
-//! For a migrated chain, the correct rebuild start is the **migration block** (the L2 "genesis",
-//! `chain.genesis().number`), not block `0`. This command advances any of the three reset stages
-//! that sit below the migration block up to it, so the pipeline rebuilds the index over real
-//! blocks (`migration_block + 1 ..= tip`) and skips the header-only gap entirely. The rebuilt
-//! index is complete: the pre-migration dummy blocks carry no transactions, so there is nothing to
-//! index there.
+//! [`reconcile_migrated_index_checkpoints`] runs transparently right after a successful
+//! `celo-reth download` (wired in `bin/celo_reth.rs`), so the normal reth workflow is unchanged.
+//! For a migrated chain the correct rebuild start is the **migration block** (the L2 "genesis",
+//! `chain.genesis().number`), not block `0`, so it advances any of the three reset stages that sit
+//! below the migration block up to it. The pipeline then rebuilds the index over real blocks
+//! (`migration_block + 1 ..= tip`) and skips the header-only gap entirely. The rebuilt index is
+//! complete: the pre-migration dummy blocks carry no transactions, so there is nothing to index
+//! there.
 //!
 //! This deliberately targets **only** the three stages reth resets, and sets them to the migration
 //! block rather than the tip: unlike the snapshot *publisher*
@@ -36,20 +37,18 @@
 //! the node without a transaction-lookup index. This mirrors the migrated-chain reasoning in
 //! [`crate::celo_migrate_v2`], which likewise refuses to reset these stages to `0`.
 //!
-//! # Usage
+//! # Workflow
 //!
-//! Run once after `celo-reth download`, before starting the node:
+//! The normal reth workflow is unchanged — no extra step:
 //!
 //! ```text
 //! celo-reth download --datadir=/celo --chain=celo --full   # (no rocksdb_indices)
-//! celo-reth repair-download-checkpoints --datadir=/celo --chain=celo
 //! celo-reth node --datadir=/celo --chain=celo --full ...
 //! ```
 //!
 //! It is a safe no-op when the index was downloaded (`--archive`/`--with-rocksdb`, checkpoints
 //! already at the tip) and on non-migrated chains (`chain.genesis().number == 0`).
 
-use clap::Parser;
 use eyre::Result;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::EnvironmentArgs;
@@ -76,60 +75,52 @@ use crate::chainspec::CeloChainSpecParser;
 const RESET_INDEX_STAGES: [StageId; 3] =
     [StageId::TransactionLookup, StageId::IndexAccountHistory, StageId::IndexStorageHistory];
 
-/// Repair the index-stage checkpoints of a datadir produced by a `rocksdb_indices`-less
-/// `celo-reth download` so a migrated Celo chain can rebuild them without hitting the header-only
-/// pre-migration gap.
-#[derive(Debug, Parser)]
-pub struct CeloRepairDownloadCommand {
-    /// Datadir, chain, and database arguments (same flags as `celo-reth download`).
-    #[command(flatten)]
+/// Reconcile the index-stage checkpoints a `rocksdb_indices`-less `celo-reth download` reset to
+/// block `0`, advancing them to the migration block for migrated Celo chains so the node rebuilds
+/// them over real blocks instead of crashing on the header-only pre-migration gap.
+///
+/// `env` is the same [`EnvironmentArgs`] the download ran with. Synchronous (MDBX only), so it runs
+/// directly after the async download completes.
+pub fn reconcile_migrated_index_checkpoints(
     env: EnvironmentArgs<CeloChainSpecParser>,
-}
-
-impl CeloRepairDownloadCommand {
-    /// Open the downloaded datadir's MDBX read-write and advance the reset index-stage checkpoints
-    /// to the migration block for migrated chains. Synchronous: it only touches MDBX, so no async
-    /// runtime is required.
-    pub fn execute(self) -> Result<()> {
-        // The migration block is the L2 datadir's genesis block number: `import-celo-state` writes
-        // the migration header there and seeds every stage checkpoint to it (see
-        // `state_import.rs`). A normal genesis-contiguous chain has genesis `0` and needs no
-        // repair.
-        let migration_block = self.env.chain.genesis().number.unwrap_or_default();
-        if migration_block == 0 {
-            info!(
-                target: "reth::cli",
-                chain = %self.env.chain.chain(),
-                "Chain genesis is block 0 (not a migrated chain); no index-stage checkpoint repair needed",
-            );
-            return Ok(());
-        }
-
-        // Resolve the datadir exactly as reth's download did (chain-aware), then open the MDBX
-        // directly. `init_db` is a raw open (no `EnvironmentArgs::init` consistency check), so it
-        // cannot trip the destructive "unwind to 0" the reset checkpoints could otherwise provoke.
-        let data_dir = self.env.datadir.clone().resolve_datadir(self.env.chain.chain());
-        let db_path = data_dir.db();
+) -> Result<()> {
+    // The migration block is the L2 datadir's genesis block number: `import-celo-state` writes the
+    // migration header there and seeds every stage checkpoint to it (see `state_import.rs`). A
+    // normal genesis-contiguous chain has genesis `0` and needs no reconciliation.
+    let migration_block = env.chain.genesis().number.unwrap_or_default();
+    if migration_block == 0 {
         info!(
             target: "reth::cli",
-            ?db_path,
-            migration_block,
-            "Repairing downloaded datadir index-stage checkpoints",
+            chain = %env.chain.chain(),
+            "Chain genesis is block 0 (not a migrated chain); no index-stage checkpoint reconciliation needed",
         );
-
-        let db = init_db(db_path, self.env.db.database_args())?;
-        let tx = db.tx_mut()?;
-        let repaired = repair_index_checkpoints_tx(&tx, migration_block)?;
-        tx.commit()?;
-
-        info!(
-            target: "reth::cli",
-            migration_block,
-            repaired,
-            "Index-stage checkpoint repair complete",
-        );
-        Ok(())
+        return Ok(());
     }
+
+    // Resolve the datadir exactly as the download did (chain-aware), then open the MDBX directly.
+    // `init_db` is a raw open (no `EnvironmentArgs::init` consistency check), so it cannot trip the
+    // destructive "unwind to 0" the reset checkpoints could otherwise provoke.
+    let data_dir = env.datadir.clone().resolve_datadir(env.chain.chain());
+    let db_path = data_dir.db();
+    info!(
+        target: "reth::cli",
+        ?db_path,
+        migration_block,
+        "Reconciling downloaded index-stage checkpoints for migrated chain",
+    );
+
+    let db = init_db(db_path, env.db.database_args())?;
+    let tx = db.tx_mut()?;
+    let reconciled = repair_index_checkpoints_tx(&tx, migration_block)?;
+    tx.commit()?;
+
+    info!(
+        target: "reth::cli",
+        migration_block,
+        reconciled,
+        "Index-stage checkpoint reconciliation complete",
+    );
+    Ok(())
 }
 
 /// Advance any [`RESET_INDEX_STAGES`] checkpoint that sits below `migration_block` up to it, inside

@@ -5,7 +5,7 @@ use celo_reth::{
     CeloEvmConfig,
     celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
-    download_repair::CeloRepairDownloadCommand,
+    download_repair::reconcile_migrated_index_checkpoints,
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{
         DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
@@ -17,10 +17,12 @@ use celo_reth::{
     snapshot_manifest::CeloSnapshotManifestCommand,
     state_import::ImportCeloStateCommand,
 };
-use clap::{CommandFactory, FromArgMatches, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
-use reth_cli_commands::{db, download::DownloadCommand, p2p, prune, re_execute, stage};
+use reth_cli_commands::{
+    common::EnvironmentArgs, db, download::DownloadCommand, p2p, prune, re_execute, stage,
+};
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
@@ -58,7 +60,6 @@ const RE_EXECUTE: &str = "re-execute";
 const DOWNLOAD: &str = "download";
 const SNAPSHOT_MANIFEST: &str = "snapshot-manifest";
 const CELO_MIGRATE_V2: &str = "celo-migrate-v2";
-const REPAIR_DOWNLOAD_CHECKPOINTS: &str = "repair-download-checkpoints";
 
 /// All Celo-intercepted subcommand names. Each one is dispatched in `run_celo_subcommand`
 /// against `CeloNode` instead of letting op-reth's `Cli` route it to `OpNode`.
@@ -72,7 +73,6 @@ const CELO_SUBCOMMANDS: &[&str] = &[
     DOWNLOAD,
     SNAPSHOT_MANIFEST,
     CELO_MIGRATE_V2,
-    REPAIR_DOWNLOAD_CHECKPOINTS,
 ];
 
 // TODO: `proofs unwind` is intentionally NOT intercepted: its upstream `execute<N>` binds
@@ -145,11 +145,6 @@ enum CeloCommand {
     /// force a pipeline rebuild over the dummy pre-migration blocks).
     #[command(name = CELO_MIGRATE_V2)]
     CeloMigrateV2(Box<CeloMigrateV2Command>),
-    /// Repair the index-stage checkpoints a `rocksdb_indices`-less snapshot download leaves at
-    /// block 0, so a migrated Celo chain can rebuild them over real blocks and start (see
-    /// `download_repair`).
-    #[command(name = REPAIR_DOWNLOAD_CHECKPOINTS)]
-    RepairDownloadCheckpoints(Box<CeloRepairDownloadCommand>),
 }
 
 impl CeloCommand {
@@ -164,7 +159,6 @@ impl CeloCommand {
             Self::Download(command) => command.chain_spec(),
             Self::SnapshotManifest(_) => None,
             Self::CeloMigrateV2(_) => None,
-            Self::RepairDownloadCheckpoints(_) => None,
         }
     }
 }
@@ -262,11 +256,12 @@ fn main() {
     // the subcommand slot (where we surface clap's own help/version/error output instead of a
     // confusing "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    let parsed =
-        celo_cli_command().try_get_matches_from(&argv).and_then(|m| CeloCli::from_arg_matches(&m));
+    let parsed = celo_cli_command()
+        .try_get_matches_from(&argv)
+        .and_then(|m| CeloCli::from_arg_matches(&m).map(|cli| (cli, m)));
     match parsed {
-        Ok(cli) => {
-            if let Err(err) = run_celo_subcommand(cli) {
+        Ok((cli, matches)) => {
+            if let Err(err) = run_celo_subcommand(cli, &matches) {
                 eprintln!("Error: {err:?}");
                 std::process::exit(1);
             }
@@ -401,7 +396,7 @@ fn is_celo_subcommand_invocation(argv: &[OsString]) -> bool {
 /// Mirrors upstream `CliApp::run`: scope log dir to the chain name, init tracing (OTLP layers
 /// then file/stdout), install the global Prometheus recorder so `--metrics` exporters in
 /// subcommands have something to record, then dispatch the command.
-fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
+fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<()> {
     if let Some(chain_spec) = cli.command.chain_spec() {
         cli.logs.log_file_directory =
             cli.logs.log_file_directory.join(chain_spec.chain().to_string());
@@ -436,7 +431,18 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
         }
         // Download is chain-agnostic file shuttling; CeloNode satisfies the `N` type bound
         // without requiring Celo-aware decoding (archives are tarballs over MDBX + static files).
-        CeloCommand::Download(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
+        // After it completes, transparently reconcile the index-stage checkpoints a
+        // `rocksdb_indices`-less preset (`--full`/`--minimal`) reset to 0, so a migrated Celo chain
+        // rebuilds them from the migration block instead of crash-looping on the header-only gap.
+        CeloCommand::Download(cmd) => {
+            let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(
+                matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present"),
+            )?;
+            runner.run_until_ctrl_c(async move {
+                cmd.execute::<CeloNode>().await?;
+                reconcile_migrated_index_checkpoints(env)
+            })
+        }
         // Snapshot manifest generation is synchronous: it reconciles lagging migrated-chain
         // stage checkpoints (MDBX read-write), then tars static files. No runtime needed.
         CeloCommand::SnapshotManifest(cmd) => cmd.execute(),
@@ -444,7 +450,6 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
             let runtime = runner.runtime();
             runner.run_blocking_until_ctrl_c(cmd.execute(runtime))
         }
-        CeloCommand::RepairDownloadCheckpoints(cmd) => cmd.execute(),
     }
 }
 
