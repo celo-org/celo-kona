@@ -28,7 +28,7 @@ use revm::{
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, SYSTEM_ADDRESS,
+        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS,
         evm::FrameTr, handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
         validation::validate_priority_fee_tx,
     },
@@ -81,7 +81,6 @@ fn is_legacy_chain_id_exception(
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
-    pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
     pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
     /// When set, [`Self::execution_result`] skips `commit_tx` so the transaction's journal
     /// entries survive for an enclosing `checkpoint` / `checkpoint_revert` to commit or revert.
@@ -99,7 +98,6 @@ impl<EVM, ERROR, FRAME> core::fmt::Debug for CeloHandler<EVM, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
-            mainnet: MainnetHandler::default(),
             op: op_revm::handler::OpHandler::new(),
             no_commit: false,
         }
@@ -889,13 +887,13 @@ where
                 };
                 validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
                 // CIP-64-specific validation (chain-ID + priority fee) is complete.
-                // Fall through to `self.mainnet.validate_env(evm)` for generic
+                // Fall through to `self.op.mainnet.validate_env(evm)` for generic
                 // checks (block gas limit, EIP-7825 gas cap, EIP-3860 initcode
                 // size). CIP-64 maps to `Custom` in revm, so its gas-price
                 // match arm is a no-op and chain-ID is re-checked harmlessly.
             }
             _ => {
-                // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
+                // Ethereum's tx types will be handled in the "self.op.mainnet.validate_env(evm)" call below
                 // where not only those transactions are validated, but also the block specifics.
             }
         }
@@ -909,13 +907,13 @@ where
             // preserving the original value to restore afterward
             let original_tx_chain_id_check = evm.ctx().cfg().tx_chain_id_check;
             evm.ctx().modify_cfg(|cfg| cfg.tx_chain_id_check = false);
-            let result = self.mainnet.validate_env(evm);
+            let result = self.op.mainnet.validate_env(evm);
             evm.ctx()
                 .modify_cfg(|cfg| cfg.tx_chain_id_check = original_tx_chain_id_check);
             return result;
         }
 
-        self.mainnet.validate_env(evm)
+        self.op.mainnet.validate_env(evm)
     }
 
     fn validate_against_state_and_deduct_caller(
@@ -1017,7 +1015,7 @@ where
         // use the native reimbursement path here.
         let fees_in_celo = evm.ctx().tx().is_fee_in_celo();
         if fees_in_celo {
-            self.mainnet.reimburse_caller(evm, exec_result)?;
+            self.op.mainnet.reimburse_caller(evm, exec_result)?;
         }
 
         let context = evm.ctx();
@@ -1055,7 +1053,7 @@ where
             return Ok(());
         }
 
-        self.mainnet.reward_beneficiary(evm, frame_result)?;
+        self.op.mainnet.reward_beneficiary(evm, frame_result)?;
         let basefee = evm.ctx().block().basefee() as u128;
 
         // If the transaction is not a deposit transaction, fees are paid out
@@ -1073,7 +1071,7 @@ where
 
         // EIP-8037 reservoir TODO (inert until an Amsterdam-equivalent OpSpecId
         // activates; `gas().used()` is reservoir-free before that): the caller refund
-        // (`reimburse_caller`) and the coinbase tip (`self.mainnet.reward_beneficiary`
+        // (`reimburse_caller`) and the coinbase tip (`self.op.mainnet.reward_beneficiary`
         // above) delegate to the mainnet handler and inherit its reservoir handling, but
         // the celo-specific base-fee and operator-fee distribution below meters on raw
         // `frame_result.gas().used()`. Once the reservoir can be non-zero, `used()` must
