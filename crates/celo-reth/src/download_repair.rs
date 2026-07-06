@@ -152,10 +152,11 @@ pub fn reconcile_migrated_index_checkpoints(
 
     // Authoritative bootability guard: refuse a download whose resolved reth.toml prune shape
     // leaves a reset history index stage unable to self-advance past the header-only
-    // pre-migration gap.
-    if let Some(prune) = read_prune_segments(&data_dir.config())? {
-        assert_bootable_migrated_shape(&tx, &prune, migration_block)?;
-    }
+    // pre-migration gap. A missing reth.toml is refused too (see `read_prune_segments`): the
+    // reconciliation still advances `TransactionLookup` and commits below, so we must not skip the
+    // guard and mutate a datadir whose bootability we could not verify.
+    let prune = read_prune_segments(&data_dir.config())?;
+    assert_bootable_migrated_shape(&tx, &prune, migration_block)?;
 
     let reconciled = advance_stage_checkpoints_tx(&tx, migration_block)?;
     tx.commit()?;
@@ -171,21 +172,22 @@ pub fn reconcile_migrated_index_checkpoints(
 
 /// Reads the prune segments reth resolved and wrote to `<datadir>/reth.toml` during the download.
 ///
-/// Returns `None` when reth.toml is absent so the caller skips the bootability guard rather than
-/// guess a shape — a missing config is not evidence that history is unpruned, and reth's own
-/// download always writes one, so this only happens on an unexpected/partial datadir.
-fn read_prune_segments(config_path: &Path) -> Result<Option<PruneModes>> {
+/// Errors when reth.toml is absent. reth's own download always writes one, so its absence means an
+/// incomplete/unexpected datadir — and since [`reconcile_migrated_index_checkpoints`] still
+/// advances `TransactionLookup` and commits, continuing here would skip
+/// [`assert_bootable_migrated_shape`] while still mutating the datadir. Refuse loudly instead of
+/// silently reconciling a shape we cannot verify.
+fn read_prune_segments(config_path: &Path) -> Result<PruneModes> {
     if !config_path.exists() {
-        warn!(
-            target: "reth::cli",
-            ?config_path,
-            "reth.toml not found after download; skipping prune-shape bootability check",
+        eyre::bail!(
+            "reth.toml not found at {config_path:?} after download; cannot verify the prune-shape \
+             bootability of the migrated-chain datadir. reth writes it during a normal download, so \
+             its absence means an incomplete/unexpected datadir — refusing to reconcile checkpoints."
         );
-        return Ok(None);
     }
     let config = Config::from_path(config_path)
         .wrap_err("failed to read reth.toml for the prune-shape bootability check")?;
-    Ok(Some(config.prune.segments))
+    Ok(config.prune.segments)
 }
 
 /// Refuse a downloaded datadir whose resolved prune shape cannot boot on migrated Celo mainnet.
