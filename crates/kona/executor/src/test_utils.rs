@@ -8,6 +8,7 @@ use alloy_provider::{Provider, network::primitives::BlockTransactions};
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_registry::ROLLUP_CONFIGS;
+use futures_util::stream::{StreamExt, TryStreamExt};
 use kona_executor::test_utils::{
     ExecutorTestFixture, ExecutorTestFixtureCreator, LoadedExecutorTestFixture, load_test_fixture,
 };
@@ -107,9 +108,6 @@ pub fn payload_attributes_from_header(
 /// [`CeloStatelessL2Builder`]: the sealed parent header, the executing block's
 /// consensus header, and the payload attributes reconstructed via
 /// [`payload_attributes_from_header`].
-///
-/// The parent/executing block fetches and the per-transaction
-/// `debug_getRawTransaction` calls all run concurrently.
 pub async fn fetch_block_replay_inputs<P: Provider>(
     provider: &P,
     rollup_config: &CeloRollupConfig,
@@ -128,17 +126,22 @@ pub async fn fetch_block_replay_inputs<P: Provider>(
     let BlockTransactions::Hashes(tx_hashes) = executing_block.transactions else {
         return Err("Only BlockTransactions::Hashes are supported.".to_string());
     };
-    let encoded_transactions =
-        futures_util::future::try_join_all(tx_hashes.into_iter().map(|tx_hash| {
-            let client = provider.client();
-            async move {
-                client
-                    .request::<[B256; 1], Bytes>("debug_getRawTransaction", [tx_hash])
-                    .await
-                    .map_err(|e| format!("Failed to get raw transaction {tx_hash}: {e}"))
-            }
-        }))
-        .await?;
+    // Bound the per-block `debug_getRawTransaction` fan-out: the execution verifier already
+    // replays many blocks concurrently, so an unbounded `try_join_all` here would cause
+    // many simultaneous RPC calls.
+    const RAW_TX_FETCH_CONCURRENCY: usize = 2;
+    let encoded_transactions = futures_util::stream::iter(tx_hashes.into_iter().map(|tx_hash| {
+        let client = provider.client();
+        async move {
+            client
+                .request::<[B256; 1], Bytes>("debug_getRawTransaction", [tx_hash])
+                .await
+                .map_err(|e| format!("Failed to get raw transaction {tx_hash}: {e}"))
+        }
+    }))
+    .buffered(RAW_TX_FETCH_CONCURRENCY)
+    .try_collect::<Vec<_>>()
+    .await?;
 
     let executing_header = executing_block.header.inner;
     let parent_header = parent_block.header.inner.seal_slow();
