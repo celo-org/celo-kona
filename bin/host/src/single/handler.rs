@@ -72,13 +72,20 @@ fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
 }
 
 /// Retry only the transient EigenDA proxy-request failures. hokulea surfaces these as opaque
-/// `anyhow` strings (no typed error to match on): the proxy send error and non-teapot `5xx`
-/// both carry this message, whereas deterministic errors (commitment parse, payload decode, KV
-/// write) do not. Matching the message keeps deterministic failures from re-hitting the proxy
-/// for the full backoff budget. Coupled to hokulea's wording (pinned revision).
+/// `anyhow` strings (no typed error to match on), so match the transient ones by message:
+/// - the request send error and non-teapot `5xx` ("failed to fetch eigenda encoded payload…");
+/// - a reset/timeout while reading the success-response body ("should be able to get encoded
+///   payload from http response…").
+///
+/// Deterministic errors (commitment parse, 418-body decode, bad status handling, KV write)
+/// carry other messages and stay terminal, so they don't re-hit the proxy for the whole backoff
+/// budget. Coupled to hokulea's wording (pinned revision); tracked for a typed-error fix in
+/// celo-blockchain-planning#1430.
 #[cfg(feature = "eigenda")]
 fn is_retryable_eigenda_err(err: &anyhow::Error) -> bool {
-    err.to_string().contains("failed to fetch eigenda encoded payload")
+    let msg = err.to_string();
+    msg.contains("failed to fetch eigenda encoded payload") ||
+        msg.contains("should be able to get encoded payload from http response")
 }
 
 /// Logs a hint-fetch retry with the delay before the next attempt.
