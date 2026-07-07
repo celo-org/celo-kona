@@ -61,7 +61,7 @@ where
 
 /// Call debitGasFees to deduct gas fees from the fee currency.
 ///
-/// Runs through the **non-committing** [`core_contracts::call_no_commit`] path so the
+/// Runs through the **non-committing** `core_contracts::call_no_commit` path so the
 /// debit's journal entries survive for the caller's rollback checkpoint (a CIP-64 tx can
 /// still be rejected by a post-debit state check — see
 /// `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`). Its state changes remain in

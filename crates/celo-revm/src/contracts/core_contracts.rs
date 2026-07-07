@@ -19,7 +19,7 @@
 //! sub-transaction that ends in `commit_tx`, so its state changes stay in the journal for
 //! the enclosing transaction (used by the CIP-64 fee debit/credit).
 //!
-//! [`call_read_only`] instead brackets the *non-committing* [`call_no_commit`] with a journal
+//! [`call_read_only`] instead brackets the *non-committing* `call_no_commit` with a journal
 //! `checkpoint` / `checkpoint_revert`, so every state change, warmed account/slot,
 //! transient-storage write, and log the target produced is rolled back. Because
 //! `commit_tx` does a bare `journal.clear()`, running a read-only target through the
@@ -132,7 +132,7 @@ pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
 
 /// Call a core contract function in read-only mode, discarding **all** state changes.
 ///
-/// Brackets the non-committing [`call_no_commit`] with a journal `checkpoint` /
+/// Brackets the non-committing `call_no_commit` with a journal `checkpoint` /
 /// `checkpoint_revert`, so any storage writes, account/slot warming, transient-storage
 /// writes, logs, and self-destructs the target performs are rolled back before this function
 /// returns. See the module docs for why the committing [`call`] path cannot provide this
@@ -265,7 +265,7 @@ where
 ///   `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`).
 ///
 /// Used by the rollbackable CIP-64 fee debit.
-pub fn call_no_commit<DB, INSP, P>(
+pub(crate) fn call_no_commit<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
