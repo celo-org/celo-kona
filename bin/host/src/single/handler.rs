@@ -10,6 +10,7 @@ use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use alloy_transport::{RpcError, TransportErrorKind};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
+use backon::{ExponentialBuilder, Retryable};
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
@@ -19,12 +20,35 @@ use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Returns `true` if the RPC error indicates the node does not support the requested method
 /// (JSON-RPC error code -32601: Method not found).
 const fn is_rpc_method_not_found(e: &RpcError<TransportErrorKind>) -> bool {
     matches!(e, RpcError::ErrorResp(p) if p.code == -32601)
+}
+
+/// Backoff schedule for retrying a hint fetch when its underlying RPC call fails transiently.
+///
+/// kona's preimage server (`OnlineHostBackend::get_preimage`) retries a failed `fetch_hint`
+/// immediately with no delay, so a flaky RPC endpoint makes it busy-spin on the endpoint and
+/// flood the logs with `Failed to prefetch hint`. Retrying here with exponential backoff turns
+/// that into a bounded, quiet retry that recovers on its own: 100 ms, doubling each attempt,
+/// capped at 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
+fn hint_retry_policy() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_factor(2.0)
+        .with_max_delay(Duration::from_secs(120))
+        .with_max_times(20)
+}
+
+/// Only transport-level failures (dropped connections, timeouts, 5xx, 429s) are retried.
+/// Deterministic errors — malformed hints, output-root mismatches — are surfaced immediately,
+/// since retrying them would never succeed and would just burn the whole backoff budget.
+fn is_retryable_hint_err(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<RpcError<TransportErrorKind>>().is_some()
 }
 
 /// The [HintHandler] for the [CeloSingleChainHost].
@@ -43,18 +67,32 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        match hint.ty {
-            ExtendedHintType::Original(ty) => {
-                Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
+        (|| async {
+            match &hint.ty {
+                ExtendedHintType::Original(ty) => {
+                    Self::fetch_original_hint(
+                        Hint { ty: *ty, data: hint.data.clone() },
+                        cfg,
+                        providers,
+                        kv.clone(),
+                    )
+                    .await
+                }
+                ExtendedHintType::EigenDACert => {
+                    let eigenda_provider = providers
+                        .eigenda_preimage_provider
+                        .as_ref()
+                        .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
+                    fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()).await
+                }
             }
-            ExtendedHintType::EigenDACert => {
-                let eigenda_provider = providers
-                    .eigenda_preimage_provider
-                    .as_ref()
-                    .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
-                fetch_eigenda_hint(hint.data, eigenda_provider, kv).await
-            }
-        }
+        })
+        .retry(hint_retry_policy())
+        .when(is_retryable_hint_err)
+        .notify(|err: &anyhow::Error, dur: Duration| {
+            warn!(target: "single_hint_handler", %err, backoff = ?dur, "transient RPC failure fetching hint; retrying");
+        })
+        .await
     }
 }
 
@@ -69,7 +107,20 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        Self::fetch_original_hint(hint, cfg, providers, kv).await
+        (|| {
+            Self::fetch_original_hint(
+                Hint { ty: hint.ty, data: hint.data.clone() },
+                cfg,
+                providers,
+                kv.clone(),
+            )
+        })
+        .retry(hint_retry_policy())
+        .when(is_retryable_hint_err)
+        .notify(|err: &anyhow::Error, dur: Duration| {
+            warn!(target: "single_hint_handler", %err, backoff = ?dur, "transient RPC failure fetching hint; retrying");
+        })
+        .await
     }
 }
 

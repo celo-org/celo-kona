@@ -54,6 +54,7 @@ hokulea-host-bin = { workspace = true, optional = true }
 
 # General
 anyhow.workspace = true
+backon = "1"
 tracing.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
