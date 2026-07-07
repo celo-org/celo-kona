@@ -20,6 +20,7 @@ pub const CELO_EIP_1559_BASE_FEE_FLOOR: u64 = 25_000_000_000;
 
 pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
 pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
+pub const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
 
 pub struct CeloAddresses {
     pub celo_token: Address,
@@ -47,6 +48,18 @@ lazy_static! {
                 celo_token: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
                 fee_handler: address!("0xcD437749E43A154C07F3553504c68fBfD56B8778"),
                 fee_currency_directory: address!("0x9212Fb72ae65367A7c887eC4Ad9bE310BAC611BF"),
+            },
+        );
+
+        // Values read from the chaos L2's Celo Registry (0x…ce10): celo_token and fee_handler
+        // match Mainnet/Sepolia, and fee_currency_directory matches Mainnet. Listed explicitly
+        // so the chain is a table hit rather than relying on the Mainnet fallback.
+        m.insert(
+            CELO_CHAOS_CHAIN_ID,
+            CeloAddresses {
+                celo_token: address!("0x471EcE3750Da237f93B8E339c536989b8978a438"),
+                fee_handler: address!("0xcD437749E43A154C07F3553504c68fBfD56B8778"),
+                fee_currency_directory: address!("0x15F344b9E6c3Cb6F0376A36A64928b13F62C6276"),
             },
         );
 
