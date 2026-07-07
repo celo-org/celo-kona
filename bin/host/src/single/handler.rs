@@ -44,13 +44,41 @@ fn hint_retry_policy() -> ExponentialBuilder {
         .with_max_times(20)
 }
 
-/// Retry only genuine transport failures on the L1/L2 RPC path. A dropped connection, timeout,
-/// `5xx` or `429` all surface as [`RpcError::Transport`]. A deterministic JSON-RPC failure is a
-/// different [`RpcError`] variant — [`RpcError::ErrorResp`] (e.g. `-32601` method-not-found),
-/// (de)serialization, or unsupported-feature — and must NOT be retried: it would never recover
-/// and would just burn the whole backoff budget before surfacing the same terminal error.
+/// Retry only genuinely transient failures on the L1/L2 RPC path, classified by error kind
+/// rather than the outer variant:
+/// - transport infra failures — dropped connection/timeout (`Custom`), `BackendGone`, missing batch
+///   response — are retried;
+/// - HTTP responses are retried only for `429` and `5xx`; deterministic `4xx` (auth, not-found,
+///   bad-request) are terminal;
+/// - a JSON-RPC `ErrorResp` is retried only when it is itself a rate-limit (some providers return
+///   `429`/request-limit that way), via alloy's own `is_retry_err`;
+/// - everything else (method-not-found, (de)serialize, unsupported-feature, `NonRetryable`) is
+///   terminal, so it surfaces immediately instead of burning the whole backoff budget.
 fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
-    matches!(err.downcast_ref::<RpcError<TransportErrorKind>>(), Some(RpcError::Transport(_)))
+    let Some(rpc_err) = err.downcast_ref::<RpcError<TransportErrorKind>>() else {
+        return false;
+    };
+    match rpc_err {
+        RpcError::Transport(kind) => match kind {
+            TransportErrorKind::MissingBatchResponse(_) |
+            TransportErrorKind::BackendGone |
+            TransportErrorKind::Custom(_) => true,
+            TransportErrorKind::HttpError(http) => http.is_rate_limit_err() || http.status >= 500,
+            _ => false,
+        },
+        RpcError::ErrorResp(payload) => payload.is_retry_err(),
+        _ => false,
+    }
+}
+
+/// Retry only the transient EigenDA proxy-request failures. hokulea surfaces these as opaque
+/// `anyhow` strings (no typed error to match on): the proxy send error and non-teapot `5xx`
+/// both carry this message, whereas deterministic errors (commitment parse, payload decode, KV
+/// write) do not. Matching the message keeps deterministic failures from re-hitting the proxy
+/// for the full backoff budget. Coupled to hokulea's wording (pinned revision).
+#[cfg(feature = "eigenda")]
+fn is_retryable_eigenda_err(err: &anyhow::Error) -> bool {
+    err.to_string().contains("failed to fetch eigenda encoded payload")
 }
 
 /// Logs a hint-fetch retry with the delay before the next attempt.
@@ -97,11 +125,12 @@ impl HintHandler for CeloSingleChainHintHandler {
                     .eigenda_preimage_provider
                     .as_ref()
                     .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
-                // EigenDA proxy errors are opaque `anyhow` strings (not typed `RpcError`s), and
-                // hokulea itself relies on the host retrying proxy `5xx`/timeouts, so back off on
-                // any error here rather than falling through to kona's immediate spin loop.
+                // Back off transient EigenDA proxy-request failures (see is_retryable_eigenda_err)
+                // rather than falling through to kona's immediate spin loop; deterministic errors
+                // surface immediately.
                 (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
                     .retry(hint_retry_policy())
+                    .when(is_retryable_eigenda_err)
                     .notify(notify_hint_retry)
                     .await
             }
