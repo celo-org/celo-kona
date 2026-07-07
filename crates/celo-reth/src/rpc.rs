@@ -1049,24 +1049,6 @@ pub(crate) fn cip64_native_tip(
     native_tip.saturating_to_u128()
 }
 
-/// Returns the fee-currency address that `eth_feeHistory` should use to convert
-/// a CIP-64 tx's tip from FC units to native CELO — or `None` if the tx should
-/// go through the native `effective_tip_per_gas` path.
-///
-/// A CIP-64 tx with `fee_currency` absent or `Some(Address::ZERO)` pays fees
-/// in native CELO (see `is_fee_in_celo`), so its fee fields are already
-/// native-denominated and no exchange-rate conversion is needed. Returning
-/// `None` here routes it through the same tip computation used for non-CIP-64
-/// txs, avoiding a pointless directory lookup that would otherwise fail on
-/// `Address::ZERO` and cause the tx to underreport as tip = 0 in reward
-/// percentiles.
-#[inline]
-pub(crate) fn fee_history_cip64_conversion_currency(
-    fee_currency: Option<Address>,
-) -> Option<Address> {
-    non_native_fee_currency(fee_currency)
-}
-
 /// Compute the native-equivalent tip for a CIP-64 tx in `eth_feeHistory`.
 ///
 /// When the rate is `None` (exchange rate lookup failed — e.g. the fee currency
@@ -1214,7 +1196,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                     // would fail, and `cip64_fee_history_tip` would return 0,
                     // underreporting tips in reward percentiles.
                     let cip64_fc = if tx.ty() == cip64_ty {
-                        fee_history_cip64_conversion_currency(tx.fee_currency())
+                        non_native_fee_currency(tx.fee_currency())
                     } else {
                         None
                     };
@@ -1582,17 +1564,6 @@ mod tests {
             json["effectiveGasPrice"], "0x1dcdb320",
             "effectiveGasPrice must use the FC base fee, not native"
         );
-    }
-
-    #[test]
-    fn fee_history_cip64_conversion_currency_skips_native_sentinels() {
-        // No feeCurrency → native CELO → no conversion.
-        assert_eq!(fee_history_cip64_conversion_currency(None), None);
-        // Zero address is the native sentinel → must not look up a rate.
-        assert_eq!(fee_history_cip64_conversion_currency(Some(Address::ZERO)), None);
-        // Real ERC20 fee currency → returned for conversion.
-        let fc = Address::with_last_byte(0xAA);
-        assert_eq!(fee_history_cip64_conversion_currency(Some(fc)), Some(fc));
     }
 
     #[test]
