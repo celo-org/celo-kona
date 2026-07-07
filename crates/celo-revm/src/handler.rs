@@ -727,14 +727,8 @@ where
         mut frame_result: FrameResult,
         result_gas: revm::context_interface::result::ResultGas,
     ) -> Result<ExecutionResult<OpHaltReason>, ERROR> {
-        // Handle context errors
-        match core::mem::replace(evm.ctx().error(), Ok(())) {
-            Err(revm::context_interface::context::ContextError::Db(e)) => return Err(e.into()),
-            Err(revm::context_interface::context::ContextError::Custom(e)) => {
-                return Err(ERROR::from_string(e));
-            }
-            Ok(_) => (),
-        }
+        // Surface any DB / custom context error recorded during execution.
+        revm::context_interface::context::take_error::<ERROR, _>(evm.ctx().error())?;
 
         // CIP-64: Credit fee currency AFTER reward_beneficiary but BEFORE finalizing result
         // This matches the old revm 24.0 flow where it was called in the `end` function
