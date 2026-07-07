@@ -919,4 +919,128 @@ pub(crate) mod tests {
             "committing and non-committing paths disagree on the persisted state"
         );
     }
+
+    /// A [`Database`](revm::Database) that returns an error on **every** storage read for one
+    /// target address, delegating everything else to an inner [`InMemoryDB`]. Stands in for a
+    /// backing-store read failure inside a bracketed non-committing call — e.g. an `SLOAD` in a
+    /// nested `debitGasFees` frame.
+    struct StorageFailingDb {
+        inner: InMemoryDB,
+        fail_addr: Address,
+    }
+
+    /// Error type for [`StorageFailingDb`]. `InMemoryDB`'s own error is `Infallible`, which
+    /// cannot be constructed, so we need a real error type to inject.
+    #[derive(Debug)]
+    struct InjectedDbError;
+
+    impl core::fmt::Display for InjectedDbError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("injected storage-read failure")
+        }
+    }
+    impl core::error::Error for InjectedDbError {}
+    impl revm::database_interface::DBErrorMarker for InjectedDbError {}
+
+    impl revm::Database for StorageFailingDb {
+        type Error = InjectedDbError;
+
+        // The inner error is `Infallible`, so `unwrap` on the delegated calls never panics.
+        fn basic(
+            &mut self,
+            address: Address,
+        ) -> Result<Option<revm::state::AccountInfo>, Self::Error> {
+            Ok(self.inner.basic(address).unwrap())
+        }
+
+        fn code_by_hash(
+            &mut self,
+            code_hash: alloy_primitives::B256,
+        ) -> Result<Bytecode, Self::Error> {
+            Ok(self.inner.code_by_hash(code_hash).unwrap())
+        }
+
+        fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+            if address == self.fail_addr {
+                return Err(InjectedDbError);
+            }
+            Ok(self.inner.storage(address, index).unwrap())
+        }
+
+        fn block_hash(&mut self, number: u64) -> Result<alloy_primitives::B256, Self::Error> {
+            Ok(self.inner.block_hash(number).unwrap())
+        }
+    }
+
+    /// Rollback correctness leans on op-revm's `catch_error` doing **no** journal work for these
+    /// non-deposit system txs (optimism@3bccc60): on a fatal error inside a bracketed
+    /// non-committing call, the journal must be left intact so `checkpoint_revert` undoes exactly
+    /// the call — and nothing recorded before the bracket. If a future revm bump aligned
+    /// `catch_error` with the mainnet default (`journal.discard_tx()`), the enclosing tx's
+    /// journal would be wiped mid-tx and pre-bracket state would silently vanish. On the
+    /// error-swallowing `call_read_only` path that is a state divergence, not a crash, so it is
+    /// pinned only by comments today.
+    ///
+    /// This pins it: a committing `call` persists slot0, then a bracketed `call_read_only` whose
+    /// target's `SLOAD` hits an injected DB error must return `Err` **and** leave the persisted
+    /// slot0 untouched.
+    #[test]
+    fn fatal_error_in_bracketed_call_preserves_pre_bracket_journal() {
+        // A second copy of the SSTORE stub, deployed at an address whose storage reads fail.
+        const FAIL_STUB_ADDR: Address = address!("0x00000000000000000000000000000000000000ff");
+
+        let mut inner = make_sstore_stub_db();
+        let bytecode = Bytecode::new_raw(SSTORE_STUB_BYTECODE.into());
+        inner.insert_account_info(
+            FAIL_STUB_ADDR,
+            AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                account_id: None,
+                code: Some(bytecode),
+            },
+        );
+
+        let db = StorageFailingDb {
+            inner,
+            fail_addr: FAIL_STUB_ADDR,
+        };
+        let mut evm = Context::celo().with_db(db).build_celo();
+
+        // Pre-bracket: a committing `call` persists slot0 == 1 in the journal — a real
+        // pre-bracket entry that `discard_tx` would wipe but `checkpoint_revert` must not.
+        let (out, _, _, _) =
+            call(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
+        assert_eq!(U256::from_be_slice(out.as_ref()), U256::from(1));
+
+        // Bracketed non-committing call whose target's first op is `SLOAD`, which the injected DB
+        // fails — a fatal (non-revert) error inside the checkpoint bracket.
+        let result = call_read_only(&mut evm, FAIL_STUB_ADDR, Bytes::new(), None);
+        let err =
+            result.expect_err("a fatal DB error inside the bracketed call must surface as Err");
+        // Guard against a vacuous pass: the Err must be the injected storage failure (i.e. the
+        // stub's `SLOAD` really hit the failing DB), not an unrelated revert/halt.
+        assert!(
+            err.to_string().contains("injected storage-read failure"),
+            "expected the injected DB error to surface, got: {err}"
+        );
+
+        // The pre-bracket slot0 must survive: `checkpoint_revert` only unwinds entries recorded
+        // after the checkpoint, and `catch_error` did no journal work. Had the journal been wiped
+        // on error, slot0 would be gone here.
+        let slot0 = evm
+            .ctx()
+            .journal_ref()
+            .state
+            .get(&SSTORE_STUB_ADDR)
+            .and_then(|a| a.storage.get(&U256::ZERO))
+            .map(|s| s.present_value);
+        assert_eq!(
+            slot0,
+            Some(U256::from(1)),
+            "a failed bracketed call wiped the pre-bracket committed state — catch_error must \
+             not perform journal work (e.g. discard_tx)"
+        );
+    }
 }
