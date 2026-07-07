@@ -54,10 +54,7 @@ fn hint_retry_policy() -> ExponentialBuilder {
 ///   `429`/request-limit that way), via alloy's own `is_retry_err`;
 /// - everything else (method-not-found, (de)serialize, unsupported-feature, `NonRetryable`) is
 ///   terminal, so it surfaces immediately instead of burning the whole backoff budget.
-fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
-    let Some(rpc_err) = err.downcast_ref::<RpcError<TransportErrorKind>>() else {
-        return false;
-    };
+fn is_retryable_rpc(rpc_err: &RpcError<TransportErrorKind>) -> bool {
     match rpc_err {
         RpcError::Transport(kind) => match kind {
             TransportErrorKind::MissingBatchResponse(_) |
@@ -69,6 +66,10 @@ fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
         RpcError::ErrorResp(payload) => payload.is_retry_err(),
         _ => false,
     }
+}
+
+fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<RpcError<TransportErrorKind>>().is_some_and(is_retryable_rpc)
 }
 
 /// Retry only the transient EigenDA proxy-request failures. hokulea surfaces these as opaque
@@ -332,9 +333,14 @@ impl CeloSingleChainHintHandler {
                 // code hash preimage without the geth hashdb scheme prefix.
                 let code = match code {
                     Ok(code) => code,
-                    // Preserve the transport error (via `context`, not a stringified `anyhow!`)
-                    // so a transient failure here stays downcastable and is retried rather than
-                    // escaping to kona's immediate retry loop.
+                    // A transient failure on the primary lookup must back off — propagate it
+                    // (still downcastable) instead of masking it with the fallback, whose
+                    // deterministic miss would otherwise surface as terminal and spin in kona. A
+                    // normal "wrong hashdb scheme" miss is a non-retryable `ErrorResp`, so it still
+                    // falls through to the fallback.
+                    Err(e) if is_retryable_rpc(&e) => return Err(anyhow::Error::new(e)),
+                    // Preserve the fallback's transport error (via `context`, not a stringified
+                    // `anyhow!`) so a transient failure there stays downcastable and is retried.
                     Err(_) => providers
                         .l2
                         .client()
