@@ -8,7 +8,7 @@ use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use alloy_transport::{RpcError, TransportErrorKind};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
 #[cfg(feature = "eigenda")]
@@ -44,11 +44,18 @@ fn hint_retry_policy() -> ExponentialBuilder {
         .with_max_times(20)
 }
 
-/// Only transport-level failures (dropped connections, timeouts, 5xx, 429s) are retried.
-/// Deterministic errors — malformed hints, output-root mismatches — are surfaced immediately,
-/// since retrying them would never succeed and would just burn the whole backoff budget.
-fn is_retryable_hint_err(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<RpcError<TransportErrorKind>>().is_some()
+/// Retry only genuine transport failures on the L1/L2 RPC path. A dropped connection, timeout,
+/// `5xx` or `429` all surface as [`RpcError::Transport`]. A deterministic JSON-RPC failure is a
+/// different [`RpcError`] variant — [`RpcError::ErrorResp`] (e.g. `-32601` method-not-found),
+/// (de)serialization, or unsupported-feature — and must NOT be retried: it would never recover
+/// and would just burn the whole backoff budget before surfacing the same terminal error.
+fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
+    matches!(err.downcast_ref::<RpcError<TransportErrorKind>>(), Some(RpcError::Transport(_)))
+}
+
+/// Logs a hint-fetch retry with the delay before the next attempt.
+fn notify_hint_retry(err: &anyhow::Error, backoff: Duration) {
+    warn!(target: "single_hint_handler", %err, ?backoff, "transient failure fetching hint; retrying");
 }
 
 /// The [HintHandler] for the [CeloSingleChainHost].
@@ -67,32 +74,38 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        (|| async {
-            match &hint.ty {
-                ExtendedHintType::Original(ty) => {
+        match &hint.ty {
+            ExtendedHintType::Original(ty) => {
+                let ty = *ty;
+                // L1/L2 RPC path: retry only genuine transport failures, not deterministic
+                // JSON-RPC errors.
+                (|| {
                     Self::fetch_original_hint(
-                        Hint { ty: *ty, data: hint.data.clone() },
+                        Hint { ty, data: hint.data.clone() },
                         cfg,
                         providers,
                         kv.clone(),
                     )
-                    .await
-                }
-                ExtendedHintType::EigenDACert => {
-                    let eigenda_provider = providers
-                        .eigenda_preimage_provider
-                        .as_ref()
-                        .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
-                    fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()).await
-                }
+                })
+                .retry(hint_retry_policy())
+                .when(is_retryable_transport_err)
+                .notify(notify_hint_retry)
+                .await
             }
-        })
-        .retry(hint_retry_policy())
-        .when(is_retryable_hint_err)
-        .notify(|err: &anyhow::Error, dur: Duration| {
-            warn!(target: "single_hint_handler", %err, backoff = ?dur, "transient RPC failure fetching hint; retrying");
-        })
-        .await
+            ExtendedHintType::EigenDACert => {
+                let eigenda_provider = providers
+                    .eigenda_preimage_provider
+                    .as_ref()
+                    .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
+                // EigenDA proxy errors are opaque `anyhow` strings (not typed `RpcError`s), and
+                // hokulea itself relies on the host retrying proxy `5xx`/timeouts, so back off on
+                // any error here rather than falling through to kona's immediate spin loop.
+                (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
+                    .retry(hint_retry_policy())
+                    .notify(notify_hint_retry)
+                    .await
+            }
+        }
     }
 }
 
@@ -116,10 +129,8 @@ impl HintHandler for CeloSingleChainHintHandler {
             )
         })
         .retry(hint_retry_policy())
-        .when(is_retryable_hint_err)
-        .notify(|err: &anyhow::Error, dur: Duration| {
-            warn!(target: "single_hint_handler", %err, backoff = ?dur, "transient RPC failure fetching hint; retrying");
-        })
+        .when(is_retryable_transport_err)
+        .notify(notify_hint_retry)
         .await
     }
 }
@@ -285,12 +296,15 @@ impl CeloSingleChainHintHandler {
                 // code hash preimage without the geth hashdb scheme prefix.
                 let code = match code {
                     Ok(code) => code,
+                    // Preserve the transport error (via `context`, not a stringified `anyhow!`)
+                    // so a transient failure here stays downcastable and is retried rather than
+                    // escaping to kona's immediate retry loop.
                     Err(_) => providers
                         .l2
                         .client()
                         .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
                         .await
-                        .map_err(|e| anyhow!("Error fetching code hash preimage: {e}"))?,
+                        .context("Error fetching code hash preimage")?,
                 };
 
                 let mut kv_lock = kv.write().await;
