@@ -60,7 +60,13 @@ where
 }
 
 /// Call debitGasFees to deduct gas fees from the fee currency.
-/// State changes remain in the EVM's journal for the main transaction to see.
+///
+/// Runs through the **non-committing** `core_contracts::call_no_commit` path so the
+/// debit's journal entries survive for the caller's rollback checkpoint (a CIP-64 tx can
+/// still be rejected by a post-debit state check — see
+/// `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`). Its state changes remain in
+/// the EVM's journal for the main transaction to see, exactly as the committing path left
+/// them.
 /// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
 pub fn debit_gas_fees<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -80,7 +86,7 @@ where
 
     // debitGasFees returns void, so we just need to check that the call succeeded
     let (_, logs, gas_used, gas_refunded) =
-        core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
+        core_contracts::call_no_commit(evm, fee_currency_address, calldata, Some(gas_limit))?;
     Ok((logs, gas_used, gas_refunded))
 }
 
