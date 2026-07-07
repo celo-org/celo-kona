@@ -7,6 +7,7 @@ use celo_reth::{
     chainspec::CeloChainSpecParser,
     download_repair::{
         PostDownloadAction, post_download_action, reconcile_migrated_index_checkpoints,
+        url_download_requested,
     },
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{
@@ -183,6 +184,9 @@ fn celo_cli_command() -> clap::Command {
                     DEFAULT_MANIFEST_URL_SEPOLIA,
                 )
             })
+            // `--url` (legacy single-archive) is rejected at runtime; hide it so the modular
+            // manifest flags are the only advertised download path.
+            .mut_arg("url", |a| a.hide(true))
         })
 }
 
@@ -439,6 +443,13 @@ fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<(
         CeloCommand::Download(cmd) => {
             let download_matches =
                 matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present");
+            if url_download_requested(download_matches) {
+                eyre::bail!(
+                    "celo-reth does not support `download --url` (legacy single-archive): it bypasses \
+                     the modular finalizer and the migrated-chain checkpoint reconciliation. Use \
+                     --manifest-url or --manifest-path.",
+                );
+            }
             let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(download_matches)?;
             // Decide the post-download step from the parsed args before the async download runs, so
             // the borrowed `ArgMatches` isn't captured by the `'static` future.

@@ -116,6 +116,18 @@ pub fn post_download_action(matches: &ArgMatches) -> PostDownloadAction {
     if matches.get_flag("list") { PostDownloadAction::Skip } else { PostDownloadAction::Reconcile }
 }
 
+/// Whether `download` was invoked in upstream's legacy single-archive `--url` (`-u`) mode.
+///
+/// celo-reth rejects that mode: it extracts an archive straight into the datadir and returns before
+/// the modular finalizer, so it never writes `reth.toml` or runs the migrated-chain checkpoint
+/// reconciliation the Celo mainnet bootstrap relies on. Celo publishes only modular (manifest)
+/// snapshots, so the download command arm bails and points users at `--manifest-url` /
+/// `--manifest-path`. `--url` has no default value, so `value_source` is `Some` only when a user
+/// actually passed it.
+pub fn url_download_requested(matches: &ArgMatches) -> bool {
+    matches.value_source("url").is_some()
+}
+
 /// Reconcile the `TransactionLookup` checkpoint a `rocksdb_indices`-less `celo-reth download` reset
 /// to block `0`, advancing it to the migration block for a migrated Celo chain so the node rebuilds
 /// it over real blocks instead of crashing on the header-only pre-migration gap.
@@ -386,6 +398,32 @@ mod tests {
         ] {
             let matches = download_matches(args);
             assert_eq!(post_download_action(&matches), PostDownloadAction::Reconcile);
+        }
+    }
+
+    /// The unsupported legacy single-archive mode must be detected via both `--url` and its `-u`
+    /// short so the download arm can reject it before mutating the datadir.
+    #[test]
+    fn detects_url_single_archive_mode() {
+        for args in [
+            ["--chain", "celo", "--url", "file:///tmp/snap.tar.zst"].as_slice(),
+            ["--chain", "celo", "-u", "https://example.com/snap.tar.zst"].as_slice(),
+        ] {
+            let matches = download_matches(args);
+            assert!(url_download_requested(&matches), "{args:?} must be detected as --url mode");
+        }
+    }
+
+    /// Manifest-mode downloads (the only supported path) are never flagged as `--url`.
+    #[test]
+    fn manifest_downloads_are_not_url_mode() {
+        for args in [
+            ["--chain", "celo", "--minimal"].as_slice(),
+            ["--chain", "celo", "--full"].as_slice(),
+            ["--chain", "celo", "--list"].as_slice(),
+        ] {
+            let matches = download_matches(args);
+            assert!(!url_download_requested(&matches), "{args:?} must not be --url mode");
         }
     }
 
