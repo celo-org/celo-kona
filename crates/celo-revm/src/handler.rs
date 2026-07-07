@@ -316,21 +316,15 @@ where
         evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
-        let (debit_gas_used, debit_gas_refunded, credit_gas_used, credit_gas_refunded) = {
-            let ctx = evm.ctx();
-            let info = ctx.tx().cip64_tx_info.as_ref().unwrap();
-            (
-                info.debit_gas_used,
-                info.debit_gas_refunded,
-                info.credit_gas_used,
-                info.credit_gas_refunded,
-            )
-        };
-
+        // Compute the intrinsic gas cost first so the `evm.ctx()` borrow below can live to the
+        // end of the function without conflicting with the `fee_currency_context` access here.
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| InvalidTransaction::from(e.to_string()))?;
+
+        let ctx = evm.ctx();
+        let info = ctx.tx().cip64_tx_info.as_ref().unwrap();
 
         // Log the gas summary for debugging and verification
         // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
@@ -341,16 +335,18 @@ where
             credit(gas_used={}, gas_refunded={}), \
             intrinsic_gas={}",
             fee_currency,
-            debit_gas_used,
-            debit_gas_refunded,
-            credit_gas_used,
-            credit_gas_refunded,
+            info.debit_gas_used,
+            info.debit_gas_refunded,
+            info.credit_gas_used,
+            info.credit_gas_refunded,
             intrinsic_gas_cost
         );
 
         // Compare raw gas (before refunds) against intrinsic gas limit
-        let total_raw_gas =
-            debit_gas_used + debit_gas_refunded + credit_gas_used + credit_gas_refunded;
+        let total_raw_gas = info.debit_gas_used
+            + info.debit_gas_refunded
+            + info.credit_gas_used
+            + info.credit_gas_refunded;
         if total_raw_gas > intrinsic_gas_cost {
             if total_raw_gas > intrinsic_gas_cost * 2 {
                 warn!(
