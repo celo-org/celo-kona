@@ -5,6 +5,10 @@ use celo_reth::{
     CeloEvmConfig,
     celo_migrate_v2::CeloMigrateV2Command,
     chainspec::CeloChainSpecParser,
+    download_repair::{
+        PostDownloadAction, post_download_action, reconcile_migrated_index_checkpoints,
+        url_download_requested,
+    },
     node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
     payload::{
         DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
@@ -13,15 +17,14 @@ use celo_reth::{
         celo_admin_module, celo_fee_history_module, celo_gas_price_module, celo_tx_module,
         make_celo_fee_api,
     },
+    snapshot_manifest::CeloSnapshotManifestCommand,
     state_import::ImportCeloStateCommand,
 };
-use clap::{CommandFactory, FromArgMatches, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::{
-    db,
-    download::{DownloadCommand, manifest_cmd::SnapshotManifestCommand},
-    p2p, prune, re_execute, stage,
+    common::EnvironmentArgs, db, download::DownloadCommand, p2p, prune, re_execute, stage,
 };
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
@@ -140,7 +143,7 @@ enum CeloCommand {
     /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
     /// Defaults `--chain-id` to Celo Mainnet (42220).
     #[command(name = SNAPSHOT_MANIFEST)]
-    SnapshotManifest(Box<SnapshotManifestCommand>),
+    SnapshotManifest(Box<CeloSnapshotManifestCommand>),
     /// Celo-aware v1 → v2 storage migration (skips the upstream stage-reset that would
     /// force a pipeline rebuild over the dummy pre-migration blocks).
     #[command(name = CELO_MIGRATE_V2)]
@@ -181,6 +184,9 @@ fn celo_cli_command() -> clap::Command {
                     DEFAULT_MANIFEST_URL_SEPOLIA,
                 )
             })
+            // `--url` (legacy single-archive) is rejected at runtime; hide it so the modular
+            // manifest flags are the only advertised download path.
+            .mut_arg("url", |a| a.hide(true))
         })
 }
 
@@ -256,11 +262,12 @@ fn main() {
     // the subcommand slot (where we surface clap's own help/version/error output instead of a
     // confusing "unrecognized subcommand" from op-reth).
     let argv: Vec<OsString> = std::env::args_os().collect();
-    let parsed =
-        celo_cli_command().try_get_matches_from(&argv).and_then(|m| CeloCli::from_arg_matches(&m));
+    let parsed = celo_cli_command()
+        .try_get_matches_from(&argv)
+        .and_then(|m| CeloCli::from_arg_matches(&m).map(|cli| (cli, m)));
     match parsed {
-        Ok(cli) => {
-            if let Err(err) = run_celo_subcommand(cli) {
+        Ok((cli, matches)) => {
+            if let Err(err) = run_celo_subcommand(cli, &matches) {
                 eprintln!("Error: {err:?}");
                 std::process::exit(1);
             }
@@ -395,7 +402,7 @@ fn is_celo_subcommand_invocation(argv: &[OsString]) -> bool {
 /// Mirrors upstream `CliApp::run`: scope log dir to the chain name, init tracing (OTLP layers
 /// then file/stdout), install the global Prometheus recorder so `--metrics` exporters in
 /// subcommands have something to record, then dispatch the command.
-fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
+fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<()> {
     if let Some(chain_spec) = cli.command.chain_spec() {
         cli.logs.log_file_directory =
             cli.logs.log_file_directory.join(chain_spec.chain().to_string());
@@ -430,9 +437,33 @@ fn run_celo_subcommand(mut cli: CeloCli) -> eyre::Result<()> {
         }
         // Download is chain-agnostic file shuttling; CeloNode satisfies the `N` type bound
         // without requiring Celo-aware decoding (archives are tarballs over MDBX + static files).
-        CeloCommand::Download(cmd) => runner.run_until_ctrl_c(cmd.execute::<CeloNode>()),
-        // Snapshot manifest generation is synchronous: it tars static files and reads the
-        // `Finish` stage checkpoint from MDBX read-only. No runtime needed.
+        // After it completes, transparently reconcile the index-stage checkpoints a
+        // `rocksdb_indices`-less preset (`--full`/`--minimal`) reset to 0, so a migrated Celo chain
+        // rebuilds them from the migration block instead of crash-looping on the header-only gap.
+        CeloCommand::Download(cmd) => {
+            let download_matches =
+                matches.subcommand_matches(DOWNLOAD).expect("download subcommand matches present");
+            if url_download_requested(download_matches) {
+                eyre::bail!(
+                    "celo-reth does not support `download --url` (legacy single-archive): it bypasses \
+                     the modular finalizer and the migrated-chain checkpoint reconciliation. Use \
+                     --manifest-url or --manifest-path.",
+                );
+            }
+            let env = EnvironmentArgs::<CeloChainSpecParser>::from_arg_matches(download_matches)?;
+            // Decide the post-download step from the parsed args before the async download runs, so
+            // the borrowed `ArgMatches` isn't captured by the `'static` future.
+            let action = post_download_action(download_matches);
+            runner.run_until_ctrl_c(async move {
+                cmd.execute::<CeloNode>().await?;
+                match action {
+                    PostDownloadAction::Reconcile => reconcile_migrated_index_checkpoints(env),
+                    PostDownloadAction::Skip => Ok(()),
+                }
+            })
+        }
+        // Snapshot manifest generation is synchronous: it reconciles lagging migrated-chain
+        // stage checkpoints (MDBX read-write), then tars static files. No runtime needed.
         CeloCommand::SnapshotManifest(cmd) => cmd.execute(),
         CeloCommand::CeloMigrateV2(cmd) => {
             let runtime = runner.runtime();
