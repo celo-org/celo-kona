@@ -536,14 +536,15 @@ where
                 selfdestructed_addresses.truncate(checkpoint.selfdestructed_i);
             }
             Err(_) => {
-                // Undo the debit (and any partial caller mutations): state, account/slot
-                // warmth, transient storage, and logs are reverted back to the checkpoint.
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+                // Fatal (non-revert) errors can unwind past a frame checkpoint without reverting it,
+                // leaving depth inflated; force it back like call_read_only's error arm.
+                evm.ctx().journal_mut().depth = prev_depth;
             }
         }
 
-        // The `checkpoint_commit` / `checkpoint_revert` above leaves depth balanced, so assert
-        // rather than force it.
+        // Both arms leave depth balanced — `checkpoint_commit` on Ok, `checkpoint_revert` plus
+        // the force-restore above on Err — so assert rather than force it here.
         debug_assert_call_depth_unchanged(evm, prev_depth);
 
         result
