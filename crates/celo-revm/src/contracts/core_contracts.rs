@@ -172,8 +172,13 @@ where
     // journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
-    // The explicit `checkpoint` / `checkpoint_revert` pair leaves depth balanced, so assert
-    // rather than force it.
+    // A *fatal* (non-revert) error inside the call can leave `depth` inflated (the window
+    // `debug_assert_call_depth_unchanged` documents). The read-only callers swallow the error
+    // and continue, so force depth back to the snapshot on the error arm; the happy path is
+    // already balanced, so the assert still guards it.
+    if result.is_err() {
+        evm.ctx().journal_mut().depth = prev_depth;
+    }
     debug_assert_call_depth_unchanged(evm, prev_depth);
 
     result
