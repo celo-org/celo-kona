@@ -60,6 +60,11 @@ pub async fn run_test_fixture(fixture_path: PathBuf) {
 /// The `extra_data` layout is fork-dependent: Holocene packs the EIP-1559 params
 /// into bytes `1..9` (after the version byte), Jovian appends the min base fee in
 /// bytes `9..17`. Errors on `extra_data` too short for the active forks.
+///
+/// Fork of the inline payload-attrs reconstruction in kona's
+/// `ExecutorTestFixtureCreator::create_static_fixture` (op-reth v2.3.1); upstream keeps it
+/// inline with no free helper to wrap, and the only divergence is that upstream's panics on
+/// malformed `extra_data` become `Err`s here. Re-diff against upstream when bumping op-reth.
 pub fn payload_attributes_from_header(
     rollup_config: &CeloRollupConfig,
     header: &Header,
