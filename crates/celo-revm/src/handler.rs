@@ -215,13 +215,18 @@ where
         // sub-transactions carry a system caller and no fee currency, so the `fees_in_celo`
         // arm of the early return above already excluded them — the credit never re-enters.
         // Pin that: reaching here with a system caller and a real fee currency would
-        // recursively debit/credit. The assert lives *below* the early return so it can't fire
-        // on an RPC simulation: `eth_call`/`eth_estimateGas` default an omitted `from` to the
-        // zero address (== `CELO_SYSTEM_ADDRESS`) and disable the base-fee/balance checks, so
-        // those requests return above before ever reaching this invariant.
+        // recursively debit/credit.
+        //
+        // Gate the assert on EIP-3607 being enforced. RPC entry points disable EIP-3607 and
+        // default an omitted `from` to the zero address (== `CELO_SYSTEM_ADDRESS`); most also
+        // disable the base-fee/balance checks and so return above, but `eth_simulateV1` with
+        // `validation: true` keeps those checks on and can legitimately reach this hook with a
+        // system caller — it must not panic a debug node. EIP-3607 is only enforced during block
+        // execution, where a system-caller CIP-64 credit really is the bug this guards.
         let caller = ctx.tx().caller();
         debug_assert!(
-            caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS,
+            ctx.cfg().is_eip3607_disabled()
+                || (caller != SYSTEM_ADDRESS && caller != CELO_SYSTEM_ADDRESS),
             "CIP-64 credit hook reached for a system-caller sub-transaction (should be native)"
         );
 
