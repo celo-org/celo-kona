@@ -114,10 +114,19 @@ pub async fn fetch_block_replay_inputs<P: Provider>(
     block_number: u64,
 ) -> Result<(Sealed<Header>, Header, OpPayloadAttributes), String> {
     let (executing_block, parent_block) = tokio::try_join!(
-        async { provider.get_block_by_number(block_number.into()).await },
-        async { provider.get_block_by_number((block_number - 1).into()).await },
-    )
-    .map_err(|e| format!("Failed to fetch executing/parent block for {block_number}: {e}"))?;
+        async {
+            provider
+                .get_block_by_number(block_number.into())
+                .await
+                .map_err(|e| format!("Failed to fetch executing block {block_number}: {e}"))
+        },
+        async {
+            provider
+                .get_block_by_number((block_number - 1).into())
+                .await
+                .map_err(|e| format!("Failed to fetch parent block {}: {e}", block_number - 1))
+        },
+    )?;
     let executing_block =
         executing_block.ok_or_else(|| format!("Block {block_number} not found"))?;
     let parent_block =
