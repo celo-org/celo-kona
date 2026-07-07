@@ -806,6 +806,9 @@ where
 
         let result = self.run_system_call(evm);
 
+        // Reset `no_commit` so it can never leak into a committing call.
+        self.no_commit = false;
+
         // On success `post_execution::output` took the call's logs into the result, so the
         // buffer is empty; assert before restoring so a future revm change to the take-logs
         // contract fails loudly instead of silently dropping the enclosing tx's logs.
