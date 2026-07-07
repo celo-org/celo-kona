@@ -197,22 +197,53 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
-    // Preserve the tx and transaction_id to restore afterwards
+    call_inner(evm, address, calldata, gas_limit, true)
+}
+
+/// Shared body of [`call`] (`commit == true`) and [`call_no_commit`] (`commit == false`).
+///
+/// Runs the target as a system sub-transaction and restores the surrounding tx env either
+/// way. `commit` selects both the entry point (committing vs. non-committing system call) and
+/// the teardown: the committing path additionally clears transient storage and restores
+/// `transaction_id` (matching upstream `commit_tx`'s per-tx cleanup), while the non-committing
+/// path leaves both for the enclosing checkpoint to own. Keeping the two paths in one function
+/// removes a divergence point in consensus-relevant code.
+fn call_inner<DB, INSP, P>(
+    evm: &mut CeloEvm<DB, INSP, P>,
+    address: Address,
+    calldata: Bytes,
+    gas_limit: Option<u64>,
+    commit: bool,
+) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+where
+    DB: Database,
+    INSP: Inspector<CeloContext<DB>>,
+    P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+{
+    // Preserve the tx to restore afterwards (the system call overwrites it) and the
+    // transaction_id the committing teardown restores below.
     let prev_tx = evm.ctx().tx().clone();
     let prev_transaction_id = evm.ctx().journal_ref().transaction_id;
 
-    let call_result = if let Some(limit) = gas_limit {
-        evm.transact_system_call_with_gas_limit(address, calldata, limit)
-    } else {
-        evm.system_call_one(address, calldata)
+    let call_result = match (commit, gas_limit) {
+        (true, Some(limit)) => evm.transact_system_call_with_gas_limit(address, calldata, limit),
+        (true, None) => evm.system_call_one(address, calldata),
+        (false, Some(limit)) => {
+            evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
+        }
+        (false, None) => evm.system_call_one_no_commit(address, calldata),
     };
 
-    // Restore the original transaction context
+    // Restore the original transaction context.
     evm.ctx().set_tx(prev_tx);
-    // Clear transient storage (EIP-1153)
-    evm.ctx().journal_mut().transient_storage.clear();
-    // Restore transaction_id for correct warm/cold accounting
-    evm.ctx().journal_mut().transaction_id = prev_transaction_id;
+
+    if commit {
+        // Committing teardown, matching upstream `commit_tx`'s per-tx cleanup.
+        // Clear transient storage (EIP-1153).
+        evm.ctx().journal_mut().transient_storage.clear();
+        // Restore transaction_id for correct warm/cold accounting.
+        evm.ctx().journal_mut().transaction_id = prev_transaction_id;
+    }
 
     process_call_result(call_result)
 }
@@ -245,21 +276,7 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
-    // Preserve the tx to restore afterwards (the system call overwrites it).
-    let prev_tx = evm.ctx().tx().clone();
-
-    let call_result = if let Some(limit) = gas_limit {
-        evm.transact_system_call_no_commit_with_gas_limit(address, calldata, limit)
-    } else {
-        evm.system_call_one_no_commit(address, calldata)
-    };
-
-    // Restore the original transaction context. Transient storage and transaction_id are
-    // intentionally left untouched (see the doc comment): the enclosing checkpoint owns
-    // the call's journal entries.
-    evm.ctx().set_tx(prev_tx);
-
-    process_call_result(call_result)
+    call_inner(evm, address, calldata, gas_limit, false)
 }
 
 /// Decode a finished system-call result into (output, logs, gas_used, gas_refunded),
