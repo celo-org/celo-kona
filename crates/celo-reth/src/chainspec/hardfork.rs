@@ -1,5 +1,7 @@
+use alloy_celo_evm::block::Upgrade18Overrides;
 use alloy_hardforks::Hardfork;
-use reth_chainspec::Hardforks;
+use alloy_primitives::{Address, U256};
+use reth_chainspec::{EthChainSpec, Hardforks};
 
 /// Celo-specific hardfork variants not part of the OP Stack hardfork set.
 ///
@@ -39,4 +41,37 @@ impl Hardfork for CeloHardfork {
 /// hardfork list, or `None` when the fork is not scheduled.
 pub fn upgrade18_time(spec: &impl Hardforks) -> Option<u64> {
     spec.fork(CeloHardfork::Upgrade18).as_timestamp()
+}
+
+/// Reads Upgrade 18 activation-artifact param overrides from the genesis `config`
+/// extra fields:
+///
+/// - `upgrade18LiquidityControllerOwner`, `upgrade18CeloTokenL1`, `upgrade18CeloGasBridgeL1` —
+///   `0x…` addresses;
+/// - `upgrade18NativeAssetLiquidityAmount` — a number, `0x…` quantity, or decimal string (wei).
+///
+/// Overrides beat the artifact's per-network constants; on chains the artifact doesn't
+/// know (dev/e2e) all four are required once the fork is scheduled. Absent fields stay
+/// `None`.
+pub fn upgrade18_overrides(spec: &impl EthChainSpec) -> Upgrade18Overrides {
+    let fields = &spec.genesis().config.extra_fields;
+    let address = |key: &str| -> Option<Address> {
+        fields.get_deserialized::<Address>(key).and_then(Result::ok)
+    };
+    let amount = |key: &str| -> Option<U256> {
+        let value = fields.get(key)?;
+        if let Some(n) = value.as_u64() {
+            return Some(U256::from(n));
+        }
+        let s = value.as_str()?;
+        s.strip_prefix("0x")
+            .map_or_else(|| U256::from_str_radix(s, 10), |hex| U256::from_str_radix(hex, 16))
+            .ok()
+    };
+    Upgrade18Overrides {
+        liquidity_controller_owner: address("upgrade18LiquidityControllerOwner"),
+        celo_token_l1: address("upgrade18CeloTokenL1"),
+        celo_gas_bridge_l1: address("upgrade18CeloGasBridgeL1"),
+        native_asset_liquidity_amount: amount("upgrade18NativeAssetLiquidityAmount"),
+    }
 }
