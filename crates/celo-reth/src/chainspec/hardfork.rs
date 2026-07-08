@@ -1,19 +1,28 @@
 use alloy_hardforks::Hardfork;
+use reth_chainspec::Hardforks;
 
 /// Celo-specific hardfork variants not part of the OP Stack hardfork set.
 ///
-/// Both forks shift the ForkID hash op-geth peers expect:
+/// All variants shift the ForkID hash op-geth peers expect:
 /// * `Gingerbread` — pre-bedrock Celo L1 EVM upgrade at block `21_616_000` on mainnet.
 /// * `Cel2` — L2 cutover at the timestamp captured in the genesis (mainnet `1_742_957_258`).
+/// * `Upgrade18` — CGT v2 migration (provisional name, see below).
 ///
-/// They contribute to ForkID via [`reth_chainspec::ChainHardforks`]; runtime EVM
-/// activation logic does not branch on them yet.
+/// They contribute to ForkID via [`reth_chainspec::ChainHardforks`]. `Gingerbread` and
+/// `Cel2` have no runtime EVM activation logic; `Upgrade18`'s timestamp additionally
+/// gates the CGT v2 predeploy irregular state transition — it is extracted with
+/// [`upgrade18_time`] and handed to `alloy-celo-evm`'s `CeloBlockExecutorFactory`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum CeloHardfork {
     /// Pre-bedrock Celo L1 EVM upgrade.
     Gingerbread,
     /// Celo L2 cutover.
     Cel2,
+    /// OP Upgrade 18: the CGT v1 → v2 migration (predeploy install + reserve seed via
+    /// irregular state transition). The name is provisional — the final activation
+    /// trigger is an open decision (celo-blockchain-planning#1407) — but must stay keyed
+    /// identically to `CeloRollupConfig::upgrade18_time` on the celo-kona side.
+    Upgrade18,
 }
 
 impl Hardfork for CeloHardfork {
@@ -21,6 +30,13 @@ impl Hardfork for CeloHardfork {
         match self {
             Self::Gingerbread => "Gingerbread",
             Self::Cel2 => "Cel2",
+            Self::Upgrade18 => "Upgrade18",
         }
     }
+}
+
+/// Extracts the provisional Upgrade 18 (CGT v2) activation timestamp from a chain spec's
+/// hardfork list, or `None` when the fork is not scheduled.
+pub fn upgrade18_time(spec: &impl Hardforks) -> Option<u64> {
+    spec.fork(CeloHardfork::Upgrade18).as_timestamp()
 }

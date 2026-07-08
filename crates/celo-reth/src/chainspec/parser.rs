@@ -75,8 +75,9 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<OpChainSpec>> {
 
     let gingerbread_block = read_u64(&genesis, "gingerbreadBlock");
     let cel2_time = read_u64(&genesis, "cel2Time");
+    let upgrade18_time = read_u64(&genesis, "upgrade18Time");
     let mut spec: OpChainSpec = genesis.into();
-    patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time);
+    patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time, upgrade18_time);
     reseal_pre_gingerbread_genesis(&mut spec, gingerbread_block);
     Ok(Arc::new(spec))
 }
@@ -163,25 +164,30 @@ fn decompress_genesis(compressed: &[u8]) -> eyre::Result<Genesis> {
     Ok(serde_json::from_slice(&buf)?)
 }
 
-/// Inserts `Gingerbread` and `Cel2` into the chain hardfork list at the given
-/// activation values. `ChainHardforks::insert` orders by [`ForkCondition`]'s
-/// `Ord` impl, so positions are derived from the values themselves —
-/// block-based forks slot among the other block forks, timestamp-based forks
-/// among the time forks.
+/// Inserts `Gingerbread`, `Cel2`, and `Upgrade18` into the chain hardfork list
+/// at the given activation values. `ChainHardforks::insert` orders by
+/// [`ForkCondition`]'s `Ord` impl, so positions are derived from the values
+/// themselves — block-based forks slot among the other block forks,
+/// timestamp-based forks among the time forks.
 ///
-/// Both values are optional. If the genesis omits one, the corresponding fork
+/// All values are optional. If the genesis omits one, the corresponding fork
 /// is left out entirely (matches op-geth's behaviour for chains that never had
-/// that fork — e.g. a hand-rolled celo dev genesis without `cel2Time`).
+/// that fork — e.g. a hand-rolled celo dev genesis without `cel2Time`, or any
+/// chain while Upgrade 18 is not yet scheduled).
 fn patch_celo_hardforks(
     forks: &mut ChainHardforks,
     gingerbread_block: Option<u64>,
     cel2_time: Option<u64>,
+    upgrade18_time: Option<u64>,
 ) {
     if let Some(block) = gingerbread_block {
         forks.insert(CeloHardfork::Gingerbread, ForkCondition::Block(block));
     }
     if let Some(time) = cel2_time {
         forks.insert(CeloHardfork::Cel2, ForkCondition::Timestamp(time));
+    }
+    if let Some(time) = upgrade18_time {
+        forks.insert(CeloHardfork::Upgrade18, ForkCondition::Timestamp(time));
     }
 }
 
@@ -228,6 +234,25 @@ mod tests {
             fork_condition(&spec, OpHardfork::Jovian),
             ForkCondition::Timestamp(1_774_958_788),
         );
+        // Upgrade 18 (CGT v2) is not scheduled yet on any embedded chain. When it is,
+        // this assertion must move to a concrete timestamp.
+        assert_eq!(fork_condition(&spec, CeloHardfork::Upgrade18), ForkCondition::Never);
+        assert_eq!(crate::chainspec::upgrade18_time(spec.as_ref()), None);
+    }
+
+    /// `upgrade18_time` follows the same TOML → extra_fields → hardfork-list plumbing as
+    /// the other forks and is surfaced through the `upgrade18_time` helper.
+    #[test]
+    fn patches_upgrade18_when_scheduled() {
+        let mut forks = ChainHardforks::default();
+        patch_celo_hardforks(&mut forks, None, Some(1_742_957_258), Some(1_900_000_000));
+        assert_eq!(forks.fork(CeloHardfork::Cel2), ForkCondition::Timestamp(1_742_957_258));
+        assert_eq!(forks.fork(CeloHardfork::Upgrade18), ForkCondition::Timestamp(1_900_000_000),);
+
+        // Unscheduled leaves the fork out entirely.
+        let mut forks = ChainHardforks::default();
+        patch_celo_hardforks(&mut forks, None, None, None);
+        assert_eq!(forks.fork(CeloHardfork::Upgrade18), ForkCondition::Never);
     }
 
     /// op-geth peers on celo mainnet send this genesis hash in their `eth/Status`
