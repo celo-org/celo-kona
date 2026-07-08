@@ -8,63 +8,46 @@
 //! module runs inside the shared block executor it covers the node (celo-reth) and the
 //! fault-proof client (celo-kona) with a single implementation.
 //!
-//! The state diff is *deliberately data*: [`UPGRADE18_STATE_DIFF`] must be generated from
-//! the frozen `celo-org/optimism` `celo-contracts/v6.0.0` contracts by running
-//! `L2Genesis.s.sol`'s `set*` routines (`setL1Block`, `setLiquidityController`,
-//! `setNativeAssetLiquidity`, `setCeloGasBridgeL2`, …) and dumping the resulting allocs,
-//! so that the post-fork state of the touched accounts is byte-identical to a fresh
-//! v6.0.0 genesis. It covers (see the CGT v2 migration plan):
+//! # The activation artifact
 //!
-//! | Address    | Contract                | Change |
-//! |------------|-------------------------|--------|
-//! | `0x42…0015`| `L1BlockCGT`            | new impl code + impl slot + gas-token config |
-//! | `0x42…0016`| `L2ToL1MessagePasserCGT`| new impl code + impl slot |
-//! | `0x42…0011`| `CeloSequencerFeeVault` | new impl code + impl slot |
-//! | `0x42…0029`| `NativeAssetLiquidity`  | impl on the existing empty proxy shell + **CELO balance seed** |
-//! | `0x42…002A`| `LiquidityController`   | impl on the existing empty proxy shell + initializer/minter storage |
-//! | `0x42…1023`| `CeloGasBridgeL2`       | fresh proxy install (no code on-chain today) + initializer storage |
+//! The injected state comes from a pinned artifact, `res/predeploys.json`, generated in
+//! celo-org/optimism at the frozen `celo-contracts/v6.0.0` tag by simulating the real
+//! `L2Genesis.s.sol` init calls — so the post-fork state of the touched accounts is
+//! byte-identical to a fresh v6.0.0 genesis. It is compiled into the generated (no-std)
+//! `upgrade18_data` module covering six predeploys:
+//! `L1BlockCGT` (`0x42…0015`), `L2ToL1MessagePasserCGT` (`0x42…0016`),
+//! `CeloSequencerFeeVault` (`0x42…0011`), `NativeAssetLiquidity` (`0x42…0029`, carries
+//! the CELO reserve seed), `LiquidityController` (`0x42…002A`), and `CeloGasBridgeL2`
+//! (`0x42…1023`).
 //!
-//! The `0x42…0029` balance seed is the migration's single deliberate "mint native CELO"
-//! step: it backs every CELO deposited through the legacy `OptimismPortal` escrow on L1
-//! (research issue celo-blockchain-planning#1405 decides the exact amount and accounting
-//! invariant). Balances are applied as *increments* so any dust force-sent to a predeploy
-//! before the fork is preserved rather than burned.
+//! # Parameters
+//!
+//! Four artifact values are `param:` placeholders ([`Upgrade18Param`]). Two are known
+//! per network and ship in the artifact (`LiquidityControllerOwner` = Celo governance,
+//! `CeloTokenL1`); two are only known at migration time and must arrive via
+//! [`Upgrade18Overrides`] or a regenerated artifact (`CeloGasBridgeL1` from the L1
+//! deploy, `NativeAssetLiquidityAmount` — the reserve seed, research issue
+//! celo-blockchain-planning#1405). Resolution order: override, then per-network
+//! constant. **A scheduled fork with an unresolvable parameter fails block execution**
+//! at the boundary — the chain halts loudly instead of silently skipping the migration
+//! or seeding a zero reserve.
+//!
+//! The reserve seed is the migration's single deliberate "mint native CELO" step; it
+//! backs the CELO held by the legacy `OptimismPortal` escrow on L1. Balances are applied
+//! as *increments*, so dust force-sent to a predeploy before the fork is preserved
+//! rather than burned.
 
-use alloy_evm::Database;
-use alloy_primitives::{Bytes, U256, address};
+use super::upgrade18_data::{
+    PROXY_SHELL_BYTECODE, PROXY_SHELL_CODE_HASH, RAW_PREDEPLOYS, SlotValue,
+};
+use alloc::vec::Vec;
+use alloy_evm::{Database, block::BlockExecutionError};
+use alloy_primitives::{B256, Bytes, U256, address};
 use revm::{
     DatabaseCommit,
     primitives::{Address, AddressMap},
     state::{Account, Bytecode, EvmStorageSlot},
 };
-
-/// Target state diff for one account touched by the Upgrade 18 transition.
-///
-/// Entries are generated from the frozen `celo-contracts/v6.0.0` `L2Genesis.s.sol` alloc
-/// dump — do not hand-edit values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PredeployStateDiff {
-    /// The account to write.
-    pub address: Address,
-    /// Runtime bytecode to install; `None` leaves the existing code untouched.
-    pub code: Option<&'static [u8]>,
-    /// Storage slots to write as `(slot, value)`. Slots not listed keep their current
-    /// value.
-    pub storage: &'static [(U256, U256)],
-    /// Native CELO *added* to the account's balance. Non-zero only for the
-    /// `NativeAssetLiquidity` reserve seed.
-    pub balance_increment: U256,
-    /// Nonce to set; `None` leaves the existing nonce untouched.
-    pub nonce: Option<u64>,
-}
-
-/// The Upgrade 18 predeploy state diff.
-///
-/// TODO(celo-blockchain-planning#1409, #1405): populate from the pinned
-/// `celo-contracts/v6.0.0` `L2Genesis.s.sol` alloc dump once the artifacts bundle exists
-/// and the `NativeAssetLiquidity` seed amount is decided. Until then the transition is a
-/// structural no-op (gating still evaluates, no state is written).
-pub const UPGRADE18_STATE_DIFF: &[PredeployStateDiff] = &[];
 
 /// The `CeloGasBridgeL2` predeploy proxy. Serves as the transition's completion marker:
 /// it is the one touched address guaranteed to have **no code** before the fork (verified
@@ -72,12 +55,142 @@ pub const UPGRADE18_STATE_DIFF: &[PredeployStateDiff] = &[];
 /// not CREATE/CREATE2-reachable, so nobody can deploy to it) and code after.
 pub const CELO_GAS_BRIDGE_L2: Address = address!("0x4200000000000000000000000000000000001023");
 
-/// Returns `true` iff Upgrade 18 is scheduled and active at `timestamp`.
-pub(crate) const fn is_upgrade18_active(upgrade18_time: Option<u64>, timestamp: u64) -> bool {
-    match upgrade18_time {
-        Some(activation) => timestamp >= activation,
-        None => false,
+/// A `param:` placeholder in the activation artifact — a value that is not identical on
+/// every network. See the module docs for resolution semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upgrade18Param {
+    /// `LiquidityController.initialize` owner (Celo governance). Known per network.
+    LiquidityControllerOwner,
+    /// The CELO ERC-20 on L1 (`CeloGasBridgeL2`'s remote token). Known per network.
+    CeloTokenL1,
+    /// The `CeloGasBridgeL1` proxy on L1 (`CeloGasBridgeL2.otherBridge`). Only known
+    /// once the v2 L1 contracts are deployed.
+    CeloGasBridgeL1,
+    /// The native CELO seeded into `NativeAssetLiquidity` — the reserve backing all
+    /// bridged CELO. Decided at migration time (celo-blockchain-planning#1405).
+    NativeAssetLiquidityAmount,
+}
+
+impl Upgrade18Param {
+    /// Human-readable artifact key.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::LiquidityControllerOwner => "liquidityControllerOwner",
+            Self::CeloTokenL1 => "celoTokenL1",
+            Self::CeloGasBridgeL1 => "celoGasBridgeL1",
+            Self::NativeAssetLiquidityAmount => "nativeAssetLiquidityAmount",
+        }
     }
+}
+
+/// Caller-supplied values for the artifact's `param:` placeholders. An override always
+/// wins over the artifact's per-network constant; migration-time parameters
+/// ([`Upgrade18Param::CeloGasBridgeL1`], [`Upgrade18Param::NativeAssetLiquidityAmount`])
+/// have no constant and *must* be supplied here until a finalized artifact ships them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Upgrade18Overrides {
+    /// Overrides [`Upgrade18Param::LiquidityControllerOwner`].
+    pub liquidity_controller_owner: Option<Address>,
+    /// Overrides [`Upgrade18Param::CeloTokenL1`].
+    pub celo_token_l1: Option<Address>,
+    /// Overrides [`Upgrade18Param::CeloGasBridgeL1`].
+    pub celo_gas_bridge_l1: Option<Address>,
+    /// Overrides [`Upgrade18Param::NativeAssetLiquidityAmount`].
+    pub native_asset_liquidity_amount: Option<U256>,
+}
+
+impl Upgrade18Overrides {
+    fn get(&self, param: Upgrade18Param) -> Option<U256> {
+        let as_word = |addr: &Option<Address>| addr.map(|a| a.into_word().into());
+        match param {
+            Upgrade18Param::LiquidityControllerOwner => as_word(&self.liquidity_controller_owner),
+            Upgrade18Param::CeloTokenL1 => as_word(&self.celo_token_l1),
+            Upgrade18Param::CeloGasBridgeL1 => as_word(&self.celo_gas_bridge_l1),
+            Upgrade18Param::NativeAssetLiquidityAmount => self.native_asset_liquidity_amount,
+        }
+    }
+}
+
+/// The Upgrade 18 transition cannot run: a scheduled activation reached its boundary
+/// block with an unresolvable artifact parameter. Fails block execution (chain halt)
+/// rather than skipping the migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Upgrade18ParamMissing {
+    /// The unresolvable placeholder.
+    pub param: Upgrade18Param,
+    /// The chain the resolution ran for.
+    pub chain_id: u64,
+}
+
+impl core::fmt::Display for Upgrade18ParamMissing {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "Upgrade 18 (CGT v2) is scheduled but artifact param `{}` is unresolved for \
+             chain {} — supply it via Upgrade18Overrides or a regenerated predeploys \
+             artifact before the activation timestamp",
+            self.param.name(),
+            self.chain_id
+        )
+    }
+}
+
+impl core::error::Error for Upgrade18ParamMissing {}
+
+/// One account's fully-resolved state diff, ready to commit.
+#[derive(Debug, Clone)]
+struct ResolvedAccountDiff {
+    address: Address,
+    /// Runtime bytecode + its keccak hash (from the artifact); `None` keeps existing
+    /// code.
+    code: Option<(&'static [u8], B256)>,
+    storage: Vec<(U256, U256)>,
+    /// Native CELO *added* to the balance (the reserve seed).
+    balance_increment: U256,
+}
+
+/// Resolves the activation artifact against `chain_id` + `overrides` into concrete
+/// account diffs: for each predeploy, the implementation code planted at its
+/// deterministic address plus the proxy account's shell code, storage, and balance.
+fn resolve_state_diff(
+    chain_id: u64,
+    overrides: &Upgrade18Overrides,
+) -> Result<Vec<ResolvedAccountDiff>, Upgrade18ParamMissing> {
+    let resolve = |param: Upgrade18Param| {
+        overrides
+            .get(param)
+            .or_else(|| super::upgrade18_data::known_param(chain_id, param))
+            .ok_or(Upgrade18ParamMissing { param, chain_id })
+    };
+
+    let mut diffs = Vec::with_capacity(RAW_PREDEPLOYS.len() * 2);
+    for predeploy in RAW_PREDEPLOYS {
+        diffs.push(ResolvedAccountDiff {
+            address: predeploy.impl_address,
+            code: Some((predeploy.impl_code, predeploy.impl_code_hash)),
+            storage: Vec::new(),
+            balance_increment: U256::ZERO,
+        });
+
+        let mut storage = Vec::with_capacity(predeploy.storage.len());
+        for (slot, value) in predeploy.storage {
+            let value = match value {
+                SlotValue::Literal(word) => *word,
+                SlotValue::Param(param) => resolve(*param)?,
+            };
+            storage.push((*slot, value));
+        }
+        diffs.push(ResolvedAccountDiff {
+            address: predeploy.proxy,
+            code: Some((PROXY_SHELL_BYTECODE, PROXY_SHELL_CODE_HASH)),
+            storage,
+            balance_increment: match predeploy.balance {
+                Some(param) => resolve(param)?,
+                None => U256::ZERO,
+            },
+        });
+    }
+    Ok(diffs)
 }
 
 /// Applies the CGT v2 predeploy state diff iff the executed block is the first
@@ -97,65 +210,53 @@ pub(crate) const fn is_upgrade18_active(upgrade18_time: Option<u64>, timestamp: 
 /// no code in the pre-state. This is exactly-once and gap-proof by construction, and it
 /// is a pure function of the block's (config, timestamp, pre-state), so replaying any
 /// block — node import, payload building, or the kona proof — reaches the same decision.
-/// The cost is one account read per post-activation block.
+/// The cost is one account read per post-activation block. Because the marker check runs
+/// *before* parameter resolution, already-migrated chains never need the parameters.
 pub(crate) fn ensure_cgt_v2_predeploys<DB>(
     upgrade18_time: Option<u64>,
+    overrides: &Upgrade18Overrides,
+    chain_id: u64,
     timestamp: u64,
     db: &mut DB,
-) -> Result<(), DB::Error>
+) -> Result<(), BlockExecutionError>
 where
     DB: Database + DatabaseCommit,
 {
-    ensure_with_diff(upgrade18_time, timestamp, db, UPGRADE18_STATE_DIFF)
-}
-
-fn ensure_with_diff<DB>(
-    upgrade18_time: Option<u64>,
-    timestamp: u64,
-    db: &mut DB,
-    diff: &[PredeployStateDiff],
-) -> Result<(), DB::Error>
-where
-    DB: Database + DatabaseCommit,
-{
-    if !is_upgrade18_active(upgrade18_time, timestamp) || diff.is_empty() {
+    let active = upgrade18_time.is_some_and(|activation| timestamp >= activation);
+    if !active {
         return Ok(());
     }
-    let already_applied =
-        db.basic(CELO_GAS_BRIDGE_L2)?.is_some_and(|account| !account.is_empty_code_hash());
+    let already_applied = db
+        .basic(CELO_GAS_BRIDGE_L2)
+        .map_err(BlockExecutionError::other)?
+        .is_some_and(|account| !account.is_empty_code_hash());
     if already_applied {
         return Ok(());
     }
-    apply_state_diff(db, diff)
+
+    let diffs = resolve_state_diff(chain_id, overrides).map_err(BlockExecutionError::other)?;
+    apply_state_diff(db, &diffs).map_err(BlockExecutionError::other)
 }
 
 /// Commits the given account diffs directly to `db`, bypassing the EVM.
-fn apply_state_diff<DB>(db: &mut DB, diffs: &[PredeployStateDiff]) -> Result<(), DB::Error>
+fn apply_state_diff<DB>(db: &mut DB, diffs: &[ResolvedAccountDiff]) -> Result<(), DB::Error>
 where
     DB: Database + DatabaseCommit,
 {
-    if diffs.is_empty() {
-        return Ok(());
-    }
-
     let mut changes: AddressMap<Account> = AddressMap::default();
     for diff in diffs {
         // Start from the live account: proxies like 0x42…0015 already exist and keep
         // their untouched slots; fresh installs like 0x42…1023 start from the default.
         let mut info = db.basic(diff.address)?.unwrap_or_default();
 
-        if let Some(code) = diff.code {
-            let bytecode = Bytecode::new_raw(Bytes::from_static(code));
-            info.code_hash = bytecode.hash_slow();
-            info.code = Some(bytecode);
-        }
-        if let Some(nonce) = diff.nonce {
-            info.nonce = nonce;
+        if let Some((code, code_hash)) = diff.code {
+            info.code_hash = code_hash;
+            info.code = Some(Bytecode::new_raw(Bytes::from_static(code)));
         }
         info.balance = info.balance.saturating_add(diff.balance_increment);
 
         let mut account: Account = info.into();
-        for (slot, value) in diff.storage {
+        for (slot, value) in &diff.storage {
             let original = db.storage(diff.address, *slot)?;
             account
                 .storage
@@ -171,123 +272,228 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use alloy_primitives::{address, keccak256};
+    use super::{super::upgrade18_data::RawPredeploy, *};
+    use alloy_primitives::keccak256;
+    use celo_revm::constants::{CELO_MAINNET_CHAIN_ID, CELO_SEPOLIA_CHAIN_ID};
     use revm::database::{CacheDB, EmptyDB};
 
-    #[test]
-    fn activation_boundary_semantics() {
-        assert!(!is_upgrade18_active(None, 0));
-        assert!(!is_upgrade18_active(None, u64::MAX));
-        assert!(!is_upgrade18_active(Some(100), 99));
-        assert!(is_upgrade18_active(Some(100), 100));
-        assert!(is_upgrade18_active(Some(100), 101));
+    /// EIP-1967 implementation slot.
+    const IMPL_SLOT: U256 = U256::from_be_bytes(
+        alloy_primitives::b256!("360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+            .0,
+    );
+
+    fn full_overrides() -> Upgrade18Overrides {
+        Upgrade18Overrides {
+            liquidity_controller_owner: Some(address!("00000000000000000000000000000000000000aa")),
+            celo_token_l1: Some(address!("00000000000000000000000000000000000000bb")),
+            celo_gas_bridge_l1: Some(address!("00000000000000000000000000000000000000cc")),
+            native_asset_liquidity_amount: Some(U256::from(1_000_000u64)),
+        }
     }
 
-    /// Every non-empty state diff must install code at the [`CELO_GAS_BRIDGE_L2`] marker,
-    /// otherwise the transition would re-apply (and re-mint the reserve seed) on every
-    /// post-activation block. Guards the generated table, not the current placeholder.
+    /// The embedded artifact is internally consistent: every bytecode matches its pinned
+    /// keccak hash, the completion marker is the `CeloGasBridgeL2` proxy, and every
+    /// proxy's EIP-1967 impl slot points at its own implementation address.
     #[test]
-    fn state_diff_installs_the_completion_marker() {
-        if UPGRADE18_STATE_DIFF.is_empty() {
-            return;
-        }
+    fn artifact_integrity() {
+        assert_eq!(keccak256(PROXY_SHELL_BYTECODE), PROXY_SHELL_CODE_HASH);
         assert!(
-            UPGRADE18_STATE_DIFF
+            RAW_PREDEPLOYS.iter().any(|p: &RawPredeploy| p.proxy == CELO_GAS_BRIDGE_L2),
+            "the completion marker must be one of the touched proxies"
+        );
+        for p in RAW_PREDEPLOYS {
+            assert_eq!(keccak256(p.impl_code), p.impl_code_hash, "{}: impl code hash", p.name);
+            let impl_slot_value = p
+                .storage
                 .iter()
-                .any(|d| d.address == CELO_GAS_BRIDGE_L2 && d.code.is_some_and(|c| !c.is_empty())),
-            "UPGRADE18_STATE_DIFF must install code at CELO_GAS_BRIDGE_L2 (0x42..1023); \
-             without it the exactly-once marker never trips",
+                .find_map(|(slot, value)| (*slot == IMPL_SLOT).then_some(value))
+                .unwrap_or_else(|| panic!("{}: missing EIP-1967 impl slot write", p.name));
+            match impl_slot_value {
+                SlotValue::Literal(word) => {
+                    assert_eq!(
+                        Address::from_word((*word).into()),
+                        p.impl_address,
+                        "{}: impl slot must point at impl_address",
+                        p.name
+                    );
+                }
+                SlotValue::Param(_) => panic!("{}: impl slot must be literal", p.name),
+            }
+        }
+    }
+
+    /// Known networks resolve the governance/token params from the artifact but still
+    /// require the two migration-time params.
+    #[test]
+    fn resolution_semantics() {
+        for chain_id in [CELO_MAINNET_CHAIN_ID, CELO_SEPOLIA_CHAIN_ID] {
+            // Without migration-time params: must fail on one of them.
+            let err = resolve_state_diff(chain_id, &Upgrade18Overrides::default()).unwrap_err();
+            assert!(
+                matches!(
+                    err.param,
+                    Upgrade18Param::CeloGasBridgeL1 | Upgrade18Param::NativeAssetLiquidityAmount
+                ),
+                "unexpected missing param: {err}"
+            );
+
+            // With just the migration-time params supplied: resolves.
+            let overrides = Upgrade18Overrides {
+                celo_gas_bridge_l1: Some(address!("00000000000000000000000000000000000000cc")),
+                native_asset_liquidity_amount: Some(U256::from(7)),
+                ..Default::default()
+            };
+            let diffs = resolve_state_diff(chain_id, &overrides).unwrap();
+            assert_eq!(diffs.len(), RAW_PREDEPLOYS.len() * 2);
+        }
+
+        // Unknown network (e.g. a dev chain): every param must be overridden.
+        assert!(resolve_state_diff(1337, &Upgrade18Overrides::default()).is_err());
+        let diffs = resolve_state_diff(1337, &full_overrides()).unwrap();
+
+        // The reserve seed lands on NativeAssetLiquidity (0x42..0029) and nowhere else.
+        let reserve = address!("4200000000000000000000000000000000000029");
+        for diff in &diffs {
+            let expected =
+                if diff.address == reserve { U256::from(1_000_000u64) } else { U256::ZERO };
+            assert_eq!(diff.balance_increment, expected, "balance at {}", diff.address);
+        }
+    }
+
+    /// Mainnet's known params resolve to the values shipped in the artifact.
+    #[test]
+    fn mainnet_known_params_match_artifact() {
+        let owner = super::super::upgrade18_data::known_param(
+            CELO_MAINNET_CHAIN_ID,
+            Upgrade18Param::LiquidityControllerOwner,
+        )
+        .unwrap();
+        assert_eq!(
+            Address::from_word(owner.into()),
+            address!("d533ca259b330c7a88f74e000a3faea2d63b7972"),
+            "mainnet LiquidityController owner = Celo governance"
+        );
+        let token = super::super::upgrade18_data::known_param(
+            CELO_MAINNET_CHAIN_ID,
+            Upgrade18Param::CeloTokenL1,
+        )
+        .unwrap();
+        assert_eq!(
+            Address::from_word(token.into()),
+            address!("057898f3C43F129a17517B9056D23851F124b19f"),
+            "mainnet L1 CELO ERC-20"
         );
     }
 
     /// The transition applies exactly once: 1-second blocks mean consecutive blocks can
     /// both satisfy a naive time-window check, and the reserve seed must not mint twice.
+    /// After the migration is in state, the params are no longer needed at all.
     #[test]
     fn transition_applies_exactly_once_across_consecutive_blocks() {
-        const CODE: &[u8] = &[0x60, 0x00, 0x60, 0x00, 0xfd];
-        let seed = U256::from(1_000_000u64);
         let reserve = address!("4200000000000000000000000000000000000029");
-        let diff = [
-            PredeployStateDiff {
-                address: CELO_GAS_BRIDGE_L2,
-                code: Some(CODE),
-                storage: &[],
-                balance_increment: U256::ZERO,
-                nonce: None,
-            },
-            PredeployStateDiff {
-                address: reserve,
-                code: None,
-                storage: &[],
-                balance_increment: seed,
-                nonce: None,
-            },
-        ];
-
-        let mut db = CacheDB::<EmptyDB>::default();
+        let overrides = full_overrides();
+        let seed = overrides.native_asset_liquidity_amount.unwrap();
+        let chain_id = 1337;
         let fork = Some(100);
 
+        let mut db = CacheDB::<EmptyDB>::default();
+
         // Pre-fork blocks: nothing happens.
-        ensure_with_diff(fork, 99, &mut db, &diff).unwrap();
+        ensure_cgt_v2_predeploys(fork, &overrides, chain_id, 99, &mut db).unwrap();
         assert!(db.cache.accounts.is_empty());
 
         // The first active block applies the diff (even if it lands past the fork
         // second, e.g. after a sequencer outage).
-        ensure_with_diff(fork, 101, &mut db, &diff).unwrap();
-        let balance = db.cache.accounts.get(&reserve).unwrap().info.balance;
-        assert_eq!(balance, seed);
+        ensure_cgt_v2_predeploys(fork, &overrides, chain_id, 101, &mut db).unwrap();
+        let marker = db.cache.accounts.get(&CELO_GAS_BRIDGE_L2).unwrap();
+        assert_eq!(marker.info.code_hash, PROXY_SHELL_CODE_HASH);
+        assert_eq!(db.cache.accounts.get(&reserve).unwrap().info.balance, seed);
 
-        // Every later block sees the marker code and skips — no double mint.
-        ensure_with_diff(fork, 102, &mut db, &diff).unwrap();
-        ensure_with_diff(fork, 103, &mut db, &diff).unwrap();
-        let balance = db.cache.accounts.get(&reserve).unwrap().info.balance;
-        assert_eq!(balance, seed, "reserve seed must be minted exactly once");
+        // Every later block sees the marker code and skips — no double mint. This also
+        // holds without any params configured (post-migration nodes don't need them).
+        ensure_cgt_v2_predeploys(fork, &overrides, chain_id, 102, &mut db).unwrap();
+        ensure_cgt_v2_predeploys(fork, &Upgrade18Overrides::default(), chain_id, 103, &mut db)
+            .unwrap();
+        assert_eq!(
+            db.cache.accounts.get(&reserve).unwrap().info.balance,
+            seed,
+            "reserve seed must be minted exactly once"
+        );
     }
 
+    /// A scheduled activation with unresolvable params fails the boundary block loudly
+    /// instead of skipping the migration.
     #[test]
-    fn apply_state_diff_writes_code_storage_and_mints_balance() {
-        const CODE: &[u8] = &[0x60, 0x00, 0x60, 0x00, 0xfd]; // PUSH0 PUSH0 REVERT
-        const SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
-        const VALUE: U256 = U256::from_limbs([0xdead_beef, 0, 0, 0]);
-        const STORAGE: &[(U256, U256)] = &[(SLOT, VALUE)];
-        let addr = address!("4200000000000000000000000000000000000029");
-        let seed = U256::from(10).pow(U256::from(27)); // 1B CELO in wei
+    fn scheduled_fork_with_missing_params_halts() {
+        let mut db = CacheDB::<EmptyDB>::default();
+        let err =
+            ensure_cgt_v2_predeploys(Some(100), &Upgrade18Overrides::default(), 1337, 100, &mut db)
+                .unwrap_err();
+        assert!(err.to_string().contains("unresolved"), "got: {err}");
+        // Nothing was written: resolution fails before any commit. (The marker *read*
+        // may leave an empty entry in CacheDB's cache — that is not state.)
+        for (addr, account) in &db.cache.accounts {
+            assert!(account.info.is_empty_code_hash(), "unexpected code at {addr}");
+            assert_eq!(account.info.balance, U256::ZERO, "unexpected balance at {addr}");
+        }
+    }
 
-        let diff = [PredeployStateDiff {
-            address: addr,
-            code: Some(CODE),
-            storage: STORAGE,
-            balance_increment: seed,
-            nonce: Some(1),
-        }];
+    /// Unscheduled and pre-fork blocks are no-ops.
+    #[test]
+    fn ensure_is_noop_when_unscheduled_or_pre_fork() {
+        let mut db = CacheDB::<EmptyDB>::default();
+        ensure_cgt_v2_predeploys(None, &Upgrade18Overrides::default(), 42220, u64::MAX, &mut db)
+            .unwrap();
+        ensure_cgt_v2_predeploys(Some(100), &full_overrides(), 42220, 99, &mut db).unwrap();
+        assert!(db.cache.accounts.is_empty());
+    }
+
+    /// Balance is an increment (mint semantics): pre-existing dust on the reserve
+    /// survives the seed instead of being overwritten.
+    #[test]
+    fn reserve_seed_is_added_to_existing_balance() {
+        let reserve = address!("4200000000000000000000000000000000000029");
+        let overrides = full_overrides();
+        let seed = overrides.native_asset_liquidity_amount.unwrap();
+        let dust = U256::from(42);
 
         let mut db = CacheDB::<EmptyDB>::default();
-        // Pre-fund with "dust" to pin the increment (mint) semantics.
-        let dust = U256::from(42);
         db.insert_account_info(
-            addr,
+            reserve,
             revm::state::AccountInfo { balance: dust, ..Default::default() },
         );
 
-        apply_state_diff(&mut db, &diff).unwrap();
-
-        let account = db.cache.accounts.get(&addr).unwrap();
-        let info = &account.info;
-        assert_eq!(info.balance, dust + seed, "seed must be added, not overwrite dust");
-        assert_eq!(info.nonce, 1);
-        assert_eq!(info.code_hash, keccak256(CODE));
-        assert_eq!(info.code.as_ref().unwrap().original_byte_slice(), CODE);
-        assert_eq!(account.storage.get(&SLOT), Some(&VALUE));
+        ensure_cgt_v2_predeploys(Some(100), &overrides, 1337, 100, &mut db).unwrap();
+        assert_eq!(db.cache.accounts.get(&reserve).unwrap().info.balance, dust + seed);
     }
 
+    /// Resolved storage writes carry the overrides: the bridge and token words land in
+    /// `CeloGasBridgeL2`'s storage, the owner word in `LiquidityController`'s.
     #[test]
-    fn ensure_is_noop_when_unscheduled_or_table_empty() {
-        let mut db = CacheDB::<EmptyDB>::default();
-        // Unscheduled, pre-fork, and (currently) an empty static table are all no-ops.
-        ensure_cgt_v2_predeploys(None, u64::MAX, &mut db).unwrap();
-        ensure_cgt_v2_predeploys(Some(100), 98, &mut db).unwrap();
-        ensure_cgt_v2_predeploys(Some(100), 100, &mut db).unwrap();
-        assert!(db.cache.accounts.is_empty());
+    fn overrides_flow_into_resolved_storage() {
+        let overrides = full_overrides();
+        let diffs = resolve_state_diff(1337, &overrides).unwrap();
+
+        let storage_words = |addr: Address| -> Vec<U256> {
+            diffs
+                .iter()
+                .find(|d| d.address == addr && !d.storage.is_empty())
+                .unwrap()
+                .storage
+                .iter()
+                .map(|(_, v)| *v)
+                .collect()
+        };
+
+        let bridge_words = storage_words(CELO_GAS_BRIDGE_L2);
+        let bridge_word: U256 = overrides.celo_gas_bridge_l1.unwrap().into_word().into();
+        let token_word: U256 = overrides.celo_token_l1.unwrap().into_word().into();
+        assert!(bridge_words.contains(&bridge_word), "otherBridge override applied");
+        assert!(bridge_words.contains(&token_word), "celoTokenL1 override applied");
+
+        let controller_words = storage_words(address!("420000000000000000000000000000000000002a"));
+        let owner_word: U256 = overrides.liquidity_controller_owner.unwrap().into_word().into();
+        assert!(controller_words.contains(&owner_word), "owner override applied");
     }
 }
