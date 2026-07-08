@@ -255,6 +255,58 @@ mod tests {
         assert_eq!(forks.fork(CeloHardfork::Upgrade18), ForkCondition::Never);
     }
 
+    /// Upgrade 18 artifact-param overrides parse from genesis config extra fields
+    /// (addresses as hex strings; the amount as number, quantity, or decimal string).
+    #[test]
+    fn parses_upgrade18_overrides_from_extra_fields() {
+        use alloy_primitives::{U256, address};
+
+        let mut genesis = Genesis::default();
+        for (key, value) in [
+            ("upgrade18LiquidityControllerOwner", "0x00000000000000000000000000000000000000aa"),
+            ("upgrade18CeloTokenL1", "0x00000000000000000000000000000000000000bb"),
+            ("upgrade18CeloGasBridgeL1", "0x00000000000000000000000000000000000000cc"),
+            ("upgrade18NativeAssetLiquidityAmount", "1000000000000000000000000"),
+        ] {
+            genesis.config.extra_fields.insert(key.to_string(), serde_json::Value::from(value));
+        }
+        let spec: OpChainSpec = genesis.into();
+
+        let overrides = crate::chainspec::upgrade18_overrides(&spec);
+        assert_eq!(
+            overrides.liquidity_controller_owner,
+            Some(address!("00000000000000000000000000000000000000aa"))
+        );
+        assert_eq!(
+            overrides.celo_token_l1,
+            Some(address!("00000000000000000000000000000000000000bb"))
+        );
+        assert_eq!(
+            overrides.celo_gas_bridge_l1,
+            Some(address!("00000000000000000000000000000000000000cc"))
+        );
+        assert_eq!(
+            overrides.native_asset_liquidity_amount,
+            Some(U256::from(10).pow(U256::from(24))),
+            "decimal string amount"
+        );
+
+        // Hex quantity and plain number forms also parse.
+        let mut genesis = Genesis::default();
+        genesis.config.extra_fields.insert(
+            "upgrade18NativeAssetLiquidityAmount".to_string(),
+            serde_json::Value::from("0x10"),
+        );
+        let spec: OpChainSpec = genesis.into();
+        let overrides = crate::chainspec::upgrade18_overrides(&spec);
+        assert_eq!(overrides.native_asset_liquidity_amount, Some(U256::from(16)));
+
+        // Absent fields stay None.
+        let spec: OpChainSpec = Genesis::default().into();
+        let overrides = crate::chainspec::upgrade18_overrides(&spec);
+        assert_eq!(overrides, Default::default());
+    }
+
     /// op-geth peers on celo mainnet send this genesis hash in their `eth/Status`
     /// handshake (it's also what `forno.celo.org` returns from
     /// `eth_getBlockByNumber("0x0")`). Without the pre-Gingerbread reseal we

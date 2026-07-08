@@ -441,7 +441,8 @@ fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<(
 
     let components = |spec: Arc<OpChainSpec>| {
         let evm_config = CeloEvmConfig::celo(spec.clone())
-            .with_upgrade18_time(celo_reth::chainspec::upgrade18_time(spec.as_ref()));
+            .with_upgrade18_time(celo_reth::chainspec::upgrade18_time(spec.as_ref()))
+            .with_upgrade18_overrides(celo_reth::chainspec::upgrade18_overrides(spec.as_ref()));
         (evm_config, Arc::new(CeloConsensus::new(spec)))
     };
 

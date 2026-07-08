@@ -188,6 +188,17 @@ where
         self
     }
 
+    /// Sets override values for the Upgrade 18 activation artifact's `param:`
+    /// placeholders. Extract them from a parsed chain spec with
+    /// `chainspec::upgrade18_overrides`.
+    pub fn with_upgrade18_overrides(
+        mut self,
+        overrides: alloy_celo_evm::block::Upgrade18Overrides,
+    ) -> Self {
+        self.executor_factory = self.executor_factory.with_upgrade18_overrides(overrides);
+        self
+    }
+
     /// Builds a block execution context with an optional post-exec mode override.
     pub fn context_for_block_with_post_exec_mode(
         &self,
@@ -370,7 +381,13 @@ where
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
         let builder = R::from(evm.cip64_storage().clone());
 
-        Ok(OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder))
+        // Wrap in the Celo executor so the Upgrade 18 (CGT v2) transition also runs on
+        // this path — mirroring `CeloBlockExecutorFactory::create_executor`.
+        Ok(alloy_celo_evm::block::CeloBlockExecutor::new(
+            OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder),
+            self.executor_factory.upgrade18_time(),
+            self.executor_factory.upgrade18_overrides().clone(),
+        ))
     }
 
     fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
@@ -397,8 +414,16 @@ where
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
-        let executor =
-            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
+        // Wrap in the Celo executor so the Upgrade 18 (CGT v2) transition also runs on
+        // the sequencing path — op-reth's payload builder obtains its block builder
+        // through this method, so a raw `OpBlockExecutor` here would seal payloads
+        // *without* the transition while import/validation applies it (consensus split
+        // at the activation block).
+        let executor = alloy_celo_evm::block::CeloBlockExecutor::new(
+            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder),
+            self.executor_factory.upgrade18_time(),
+            self.executor_factory.upgrade18_overrides().clone(),
+        );
 
         Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,

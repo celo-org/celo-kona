@@ -44,9 +44,8 @@ use alloc::vec::Vec;
 use alloy_evm::{Database, block::BlockExecutionError};
 use alloy_primitives::{B256, Bytes, U256, address};
 use revm::{
-    DatabaseCommit,
-    primitives::{Address, AddressMap},
-    state::{Account, Bytecode, EvmStorageSlot},
+    primitives::Address,
+    state::{Account, Bytecode, EvmState, EvmStorageSlot},
 };
 
 /// The `CeloGasBridgeL2` predeploy proxy. Serves as the transition's completion marker:
@@ -193,8 +192,16 @@ fn resolve_state_diff(
     Ok(diffs)
 }
 
-/// Applies the CGT v2 predeploy state diff iff the executed block is the first
-/// Upgrade-18-active block whose pre-state does not already contain the migration.
+/// Computes the CGT v2 predeploy state changes iff the executed block is the first
+/// Upgrade-18-active block whose pre-state does not already contain the migration;
+/// returns `None` on every other block.
+///
+/// The caller (the Celo block executor) is responsible for reporting the returned
+/// changes to the block's `OnStateHook` **and** committing them to the database —
+/// exactly like `alloy_evm`'s `SystemCaller` does for pre-block system calls. Reporting
+/// matters: reth's live engine derives the block's state root from hook-streamed
+/// updates, so a silent `db.commit` (the upstream Canyon `ensure_create2_deployer`
+/// pattern) produces a sealed root that *excludes* the transition.
 ///
 /// # Why not the upstream Canyon first-block heuristic
 ///
@@ -212,38 +219,48 @@ fn resolve_state_diff(
 /// block — node import, payload building, or the kona proof — reaches the same decision.
 /// The cost is one account read per post-activation block. Because the marker check runs
 /// *before* parameter resolution, already-migrated chains never need the parameters.
-pub(crate) fn ensure_cgt_v2_predeploys<DB>(
+pub(crate) fn cgt_v2_state_changes<DB>(
     upgrade18_time: Option<u64>,
     overrides: &Upgrade18Overrides,
     chain_id: u64,
     timestamp: u64,
     db: &mut DB,
-) -> Result<(), BlockExecutionError>
+) -> Result<Option<EvmState>, BlockExecutionError>
 where
-    DB: Database + DatabaseCommit,
+    DB: Database,
 {
     let active = upgrade18_time.is_some_and(|activation| timestamp >= activation);
     if !active {
-        return Ok(());
+        return Ok(None);
     }
     let already_applied = db
         .basic(CELO_GAS_BRIDGE_L2)
         .map_err(BlockExecutionError::other)?
         .is_some_and(|account| !account.is_empty_code_hash());
     if already_applied {
-        return Ok(());
+        return Ok(None);
     }
 
     let diffs = resolve_state_diff(chain_id, overrides).map_err(BlockExecutionError::other)?;
-    apply_state_diff(db, &diffs).map_err(BlockExecutionError::other)
+    tracing::info!(
+        target: "celo::upgrade18",
+        chain_id,
+        timestamp,
+        accounts = diffs.len(),
+        "applying the Upgrade 18 (CGT v2) predeploy state transition"
+    );
+    build_state_changes(db, &diffs).map(Some).map_err(BlockExecutionError::other)
 }
 
-/// Commits the given account diffs directly to `db`, bypassing the EVM.
-fn apply_state_diff<DB>(db: &mut DB, diffs: &[ResolvedAccountDiff]) -> Result<(), DB::Error>
+/// Materializes the resolved account diffs against the live pre-state.
+fn build_state_changes<DB>(
+    db: &mut DB,
+    diffs: &[ResolvedAccountDiff],
+) -> Result<EvmState, DB::Error>
 where
-    DB: Database + DatabaseCommit,
+    DB: Database,
 {
-    let mut changes: AddressMap<Account> = AddressMap::default();
+    let mut changes = EvmState::default();
     for diff in diffs {
         // Start from the live account: proxies like 0x42…0015 already exist and keep
         // their untouched slots; fresh installs like 0x42…1023 start from the default.
@@ -265,8 +282,26 @@ where
         account.mark_touch();
         changes.insert(diff.address, account);
     }
+    Ok(changes)
+}
 
-    db.commit(changes);
+/// Computes and immediately commits the transition (no state-hook reporting) — the
+/// composition used by unit tests and any caller without a streaming state root.
+#[cfg(test)]
+pub(crate) fn ensure_cgt_v2_predeploys<DB>(
+    upgrade18_time: Option<u64>,
+    overrides: &Upgrade18Overrides,
+    chain_id: u64,
+    timestamp: u64,
+    db: &mut DB,
+) -> Result<(), BlockExecutionError>
+where
+    DB: Database + revm::DatabaseCommit,
+{
+    if let Some(changes) = cgt_v2_state_changes(upgrade18_time, overrides, chain_id, timestamp, db)?
+    {
+        db.commit(changes.into_iter().collect());
+    }
     Ok(())
 }
 
@@ -437,6 +472,38 @@ mod tests {
             assert!(account.info.is_empty_code_hash(), "unexpected code at {addr}");
             assert_eq!(account.info.balance, U256::ZERO, "unexpected balance at {addr}");
         }
+    }
+
+    /// The transition's commits must survive revm's `State` transition/bundle pipeline —
+    /// that is how reth persists block execution output. Regression test for the writes
+    /// being visible in the bundle (and therefore in the block's state root and the next
+    /// block's pre-state).
+    #[test]
+    fn transition_persists_through_revm_state_bundle() {
+        use revm::database::{State, states::bundle_state::BundleRetention};
+
+        let mut db = State::builder()
+            .with_database(CacheDB::<EmptyDB>::default())
+            .with_bundle_update()
+            .build();
+        ensure_cgt_v2_predeploys(Some(100), &full_overrides(), 1337, 100, &mut db).unwrap();
+        db.merge_transitions(BundleRetention::Reverts);
+        let bundle = db.take_bundle();
+
+        let marker = bundle.account(&CELO_GAS_BRIDGE_L2).expect("marker account in bundle");
+        assert_eq!(
+            marker.info.as_ref().map(|i| i.code_hash),
+            Some(PROXY_SHELL_CODE_HASH),
+            "marker code must be in the bundle"
+        );
+        let reserve = bundle
+            .account(&address!("4200000000000000000000000000000000000029"))
+            .expect("reserve account in bundle");
+        assert_eq!(
+            reserve.info.as_ref().map(|i| i.balance),
+            Some(full_overrides().native_asset_liquidity_amount.unwrap()),
+            "reserve seed must be in the bundle"
+        );
     }
 
     /// Unscheduled and pre-fork blocks are no-ops.

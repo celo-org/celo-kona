@@ -546,9 +546,12 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let upgrade18_time = crate::chainspec::upgrade18_time(ctx.chain_spec().as_ref());
+        let spec = ctx.chain_spec();
+        let upgrade18_time = crate::chainspec::upgrade18_time(spec.as_ref());
+        let upgrade18_overrides = crate::chainspec::upgrade18_overrides(spec.as_ref());
         Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist)
-            .with_upgrade18_time(upgrade18_time))
+            .with_upgrade18_time(upgrade18_time)
+            .with_upgrade18_overrides(upgrade18_overrides))
     }
 }
 
