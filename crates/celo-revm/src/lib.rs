@@ -26,6 +26,6 @@ pub use api::{
     default_ctx::{CELO_DEFAULT_SPEC, CeloContext, DefaultCelo},
 };
 pub use evm::CeloEvm;
-pub use fee_currency_context::FeeCurrencyContext;
+pub use fee_currency_context::{FeeCurrencyContext, non_native_fee_currency};
 pub use precompiles::CeloPrecompiles;
 pub use transaction::{CeloTransaction, CeloTxTr, Cip64Info};

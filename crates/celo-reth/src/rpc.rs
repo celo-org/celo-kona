@@ -28,6 +28,7 @@ use celo_alloy_rpc_types::{
 use celo_revm::{
     CeloTransaction,
     contracts::core_contracts::getExchangeRateCall,
+    non_native_fee_currency,
     units::{Fc, FcU256, Native, NativeU256},
 };
 use op_alloy_rpc_types::OpTransactionRequest;
@@ -817,7 +818,7 @@ impl CeloFeeApi {
         &self,
         request: &mut CeloTransactionRequest,
     ) -> Result<(), jsonrpsee_types::ErrorObjectOwned> {
-        let fc = match request.fee_currency.filter(|fc| *fc != Address::ZERO) {
+        let fc = match non_native_fee_currency(request.fee_currency) {
             Some(fc) => fc,
             None => return Ok(()),
         };
@@ -941,7 +942,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
             // an absent parameter. Normalize here so zero doesn't trigger an
             // exchange-rate lookup (which would fail — zero is never registered
             // in the FeeCurrencyDirectory) and error out to the caller.
-            match fee_currency.filter(|fc| *fc != Address::ZERO) {
+            match non_native_fee_currency(fee_currency) {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_price), rate)
@@ -957,7 +958,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
         .register_async_method("eth_maxPriorityFeePerGas", |params, ctx, _| async move {
             let fee_currency: Option<Address> = params.sequence().optional_next()?;
             let base_tip = (ctx.priority_fee)().await?;
-            match fee_currency.filter(|fc| *fc != Address::ZERO) {
+            match non_native_fee_currency(fee_currency) {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_tip), rate)
@@ -1046,24 +1047,6 @@ pub(crate) fn cip64_native_tip(
         );
     }
     native_tip.saturating_to_u128()
-}
-
-/// Returns the fee-currency address that `eth_feeHistory` should use to convert
-/// a CIP-64 tx's tip from FC units to native CELO — or `None` if the tx should
-/// go through the native `effective_tip_per_gas` path.
-///
-/// A CIP-64 tx with `fee_currency` absent or `Some(Address::ZERO)` pays fees
-/// in native CELO (see `is_fee_in_celo`), so its fee fields are already
-/// native-denominated and no exchange-rate conversion is needed. Returning
-/// `None` here routes it through the same tip computation used for non-CIP-64
-/// txs, avoiding a pointless directory lookup that would otherwise fail on
-/// `Address::ZERO` and cause the tx to underreport as tip = 0 in reward
-/// percentiles.
-#[inline]
-pub(crate) fn fee_history_cip64_conversion_currency(
-    fee_currency: Option<Address>,
-) -> Option<Address> {
-    fee_currency.filter(|fc| *fc != Address::ZERO)
 }
 
 /// Compute the native-equivalent tip for a CIP-64 tx in `eth_feeHistory`.
@@ -1213,7 +1196,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                     // would fail, and `cip64_fee_history_tip` would return 0,
                     // underreporting tips in reward percentiles.
                     let cip64_fc = if tx.ty() == cip64_ty {
-                        fee_history_cip64_conversion_currency(tx.fee_currency())
+                        non_native_fee_currency(tx.fee_currency())
                     } else {
                         None
                     };
@@ -1581,17 +1564,6 @@ mod tests {
             json["effectiveGasPrice"], "0x1dcdb320",
             "effectiveGasPrice must use the FC base fee, not native"
         );
-    }
-
-    #[test]
-    fn fee_history_cip64_conversion_currency_skips_native_sentinels() {
-        // No feeCurrency → native CELO → no conversion.
-        assert_eq!(fee_history_cip64_conversion_currency(None), None);
-        // Zero address is the native sentinel → must not look up a rate.
-        assert_eq!(fee_history_cip64_conversion_currency(Some(Address::ZERO)), None);
-        // Real ERC20 fee currency → returned for conversion.
-        let fc = Address::with_last_byte(0xAA);
-        assert_eq!(fee_history_cip64_conversion_currency(Some(fc)), Some(fc));
     }
 
     #[test]

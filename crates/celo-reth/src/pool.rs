@@ -13,7 +13,10 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256};
 use celo_alloy_consensus::CeloPooledTransaction;
-use celo_revm::units::{Fc, FcU256, Native, NativeU256};
+use celo_revm::{
+    non_native_fee_currency,
+    units::{Fc, Native, NativeU256},
+};
 use op_revm::OpSpecId;
 use reth_optimism_txpool::{
     OpPooledTransaction, OpPooledTx, conditional::MaybeConditionalTransaction,
@@ -113,36 +116,6 @@ impl ExchangeRate {
         assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
         Fc::new(mul_div_saturating(native_amount.into_inner(), self.numerator, self.denominator))
     }
-
-    /// `U256`-backed variant of [`Self::to_native`].
-    ///
-    /// Used by the RPC layer where rate-scaling needs `checked_mul` on `U256`
-    /// to avoid panicking on adversarial on-chain rates. Returns `None` if the
-    /// intermediate `amount * denominator` overflows `U256`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `numerator` is zero.
-    pub fn to_native_u256(&self, amount: FcU256) -> Option<NativeU256> {
-        assert!(self.numerator != 0, "ExchangeRate numerator must not be zero");
-        amount
-            .into_inner()
-            .checked_mul(U256::from(self.denominator))
-            .map(|v| NativeU256::new(v / U256::from(self.numerator)))
-    }
-
-    /// `U256`-backed variant of [`Self::to_fc`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `denominator` is zero.
-    pub fn to_fc_u256(&self, native_amount: NativeU256) -> Option<FcU256> {
-        assert!(self.denominator != 0, "ExchangeRate denominator must not be zero");
-        native_amount
-            .into_inner()
-            .checked_mul(U256::from(self.numerator))
-            .map(|v| FcU256::new(v / U256::from(self.denominator)))
-    }
 }
 
 /// Compute `(amount * mul) / div` at u256 precision, saturating to `u128::MAX`
@@ -230,11 +203,9 @@ const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated bef
 /// handler already treats it as native during execution. Normalizing here ensures
 /// the pool and the execution layer agree on which txs use the native fee path.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
-    inner
-        .transaction()
-        .as_cip64()
-        .and_then(|signed| signed.tx().fee_currency)
-        .filter(|addr| *addr != Address::ZERO)
+    non_native_fee_currency(
+        inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency),
+    )
 }
 
 impl CeloPoolTx {
@@ -1784,38 +1755,6 @@ mod tests {
     fn test_exchange_rate_to_fc_zero_denominator_panics() {
         let rate = ExchangeRate { numerator: 1000, denominator: 0 };
         let _ = rate.to_fc(Native::new(500));
-    }
-
-    #[test]
-    fn test_to_native_u256_normal_case() {
-        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
-        let got = rate.to_native_u256(FcU256::new(U256::from(100u64))).expect("no overflow");
-        assert_eq!(got.into_inner(), U256::from(50_000u64));
-    }
-
-    #[test]
-    fn test_to_fc_u256_normal_case() {
-        let rate = ExchangeRate { numerator: 2, denominator: 1000 };
-        let got = rate.to_fc_u256(NativeU256::new(U256::from(500u64))).expect("no overflow");
-        assert_eq!(got.into_inner(), U256::from(1u64));
-    }
-
-    #[test]
-    fn test_to_native_u256_returns_none_on_overflow() {
-        // numerator = denominator = 1, amount = U256::MAX, so amount * denominator overflows U256.
-        let rate = ExchangeRate { numerator: 1, denominator: u128::MAX };
-        let huge = FcU256::new(U256::MAX);
-        assert!(
-            rate.to_native_u256(huge).is_none(),
-            "checked_mul must catch overflow on adversarial rate"
-        );
-    }
-
-    #[test]
-    fn test_to_fc_u256_returns_none_on_overflow() {
-        let rate = ExchangeRate { numerator: u128::MAX, denominator: 1 };
-        let huge = NativeU256::new(U256::MAX);
-        assert!(rate.to_fc_u256(huge).is_none());
     }
 
     #[test]

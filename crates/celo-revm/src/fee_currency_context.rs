@@ -77,19 +77,22 @@ impl FeeCurrencyContext {
         Self::new(currencies, Some(current_block_number))
     }
 
+    /// Look up a registered currency, erroring for unregistered addresses.
+    /// Callers handle the native case (see [`non_native_fee_currency`]) first.
+    fn registered(&self, currency: Address) -> Result<&FeeCurrencyInfo, FeeCurrencyError> {
+        self.currencies
+            .get(&currency)
+            .ok_or(FeeCurrencyError::NotRegistered(currency))
+    }
+
     pub fn currency_intrinsic_gas_cost(
         &self,
         currency: Option<Address>,
     ) -> Result<u64, FeeCurrencyError> {
-        if currency.is_none_or(|currency| currency == Address::ZERO) {
+        let Some(currency) = non_native_fee_currency(currency) else {
             return Ok(0);
-        }
-
-        let currency_addr = currency.unwrap();
-        self.currencies.get(&currency_addr).map_or_else(
-            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
-            |info| Ok(info.intrinsic_gas),
-        )
+        };
+        Ok(self.registered(currency)?.intrinsic_gas)
     }
 
     /// Allow the contract to overshoot 2 times the deducted intrinsic gas
@@ -108,15 +111,10 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
     ) -> Result<(U256, U256), FeeCurrencyError> {
-        if currency.is_none() || currency.unwrap() == Address::ZERO {
+        let Some(currency) = non_native_fee_currency(currency) else {
             return Ok((U256::ONE, U256::ONE));
-        }
-
-        let currency_addr = currency.unwrap();
-        self.currencies.get(&currency_addr).map_or_else(
-            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
-            |info| Ok(info.exchange_rate),
-        )
+        };
+        Ok(self.registered(currency)?.exchange_rate)
     }
 
     /// Convert a native-CELO amount to its fee-currency equivalent at the
@@ -131,19 +129,13 @@ impl FeeCurrencyContext {
         currency: Option<Address>,
         amount: NativeU256,
     ) -> Result<FcU256, FeeCurrencyError> {
-        if currency.is_none() || currency.unwrap() == Address::ZERO {
+        let Some(currency) = non_native_fee_currency(currency) else {
             return Ok(FcU256::new(amount.into_inner()));
-        }
-
-        let currency_addr = currency.unwrap();
-        self.currencies.get(&currency_addr).map_or_else(
-            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
-            |info| {
-                Ok(FcU256::new(
-                    amount.into_inner().saturating_mul(info.exchange_rate.0) / info.exchange_rate.1,
-                ))
-            },
-        )
+        };
+        let (numerator, denominator) = self.registered(currency)?.exchange_rate;
+        Ok(FcU256::new(
+            amount.into_inner().saturating_mul(numerator) / denominator,
+        ))
     }
 
     /// Convert a fee-currency amount to its native-CELO equivalent. Same
@@ -153,20 +145,22 @@ impl FeeCurrencyContext {
         currency: Option<Address>,
         amount: FcU256,
     ) -> Result<NativeU256, FeeCurrencyError> {
-        if currency.is_none() || currency.unwrap() == Address::ZERO {
+        let Some(currency) = non_native_fee_currency(currency) else {
             return Ok(NativeU256::new(amount.into_inner()));
-        }
-
-        let currency_addr = currency.unwrap();
-        self.currencies.get(&currency_addr).map_or_else(
-            || Err(FeeCurrencyError::NotRegistered(currency_addr)),
-            |info| {
-                Ok(NativeU256::new(
-                    amount.into_inner().saturating_mul(info.exchange_rate.1) / info.exchange_rate.0,
-                ))
-            },
-        )
+        };
+        let (numerator, denominator) = self.registered(currency)?.exchange_rate;
+        Ok(NativeU256::new(
+            amount.into_inner().saturating_mul(denominator) / numerator,
+        ))
     }
+}
+
+/// Normalize a fee-currency field to `Some(addr)` only for a real ERC20 fee
+/// currency: `None` and `Address::ZERO` both denote native CELO (the zero
+/// address cannot host an ERC20 contract). This is the same rule as
+/// [`crate::CeloTxTr::is_fee_in_celo`], in `Option` form for lookups.
+pub fn non_native_fee_currency(currency: Option<Address>) -> Option<Address> {
+    currency.filter(|c| *c != Address::ZERO)
 }
 
 #[cfg(test)]

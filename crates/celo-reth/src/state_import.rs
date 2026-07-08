@@ -27,8 +27,7 @@ use tracing::{info, warn};
 
 use crate::chainspec::CeloChainSpecParser;
 
-/// Celo Mainnet chain ID.
-pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
+pub use celo_revm::constants::CELO_MAINNET_CHAIN_ID;
 
 /// Block number at which the Celo L1 → L2 migration occurs on Celo Mainnet.
 pub const CEL2_MIGRATION_BLOCK_NUMBER: u64 = 31_056_500;

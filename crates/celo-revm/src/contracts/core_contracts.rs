@@ -220,9 +220,10 @@ where
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
-    // Preserve the tx to restore afterwards (the system call overwrites it) and the
-    // transaction_id the committing teardown restores below.
-    let prev_tx = evm.ctx().tx().clone();
+    // Preserve the tx to restore afterwards (the system call overwrites `ctx.tx` anyway,
+    // so taking it and leaving a default avoids a deep clone) and the transaction_id the
+    // committing teardown restores below.
+    let prev_tx = core::mem::take(&mut evm.ctx().tx);
     let prev_transaction_id = evm.ctx().journal_ref().transaction_id;
 
     let call_result = match (commit, gas_limit) {
