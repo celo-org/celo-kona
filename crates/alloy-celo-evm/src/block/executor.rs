@@ -11,7 +11,7 @@
 //!
 //! [`CeloBlockExecutorFactory`]: super::CeloBlockExecutorFactory
 
-use crate::block::upgrade18::ensure_cgt_v2_predeploys;
+use crate::block::upgrade18::{Upgrade18Overrides, ensure_cgt_v2_predeploys};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
@@ -37,6 +37,8 @@ pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     inner: OpBlockExecutor<E, R, Spec>,
     /// Provisional Upgrade 18 (CGT v2) activation timestamp; `None` = not scheduled.
     upgrade18_time: Option<u64>,
+    /// Caller-supplied values for the activation artifact's `param:` placeholders.
+    upgrade18_overrides: Upgrade18Overrides,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
@@ -49,8 +51,12 @@ impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, 
 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
-    pub const fn new(inner: OpBlockExecutor<E, R, Spec>, upgrade18_time: Option<u64>) -> Self {
-        Self { inner, upgrade18_time }
+    pub const fn new(
+        inner: OpBlockExecutor<E, R, Spec>,
+        upgrade18_time: Option<u64>,
+        upgrade18_overrides: Upgrade18Overrides,
+    ) -> Self {
+        Self { inner, upgrade18_time, upgrade18_overrides }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -84,8 +90,14 @@ where
         // pre-execution changes (system calls, Canyon create2deployer) and before any
         // transaction of the block, exactly like the Canyon precedent.
         let timestamp = self.inner.evm.block().timestamp().saturating_to();
-        ensure_cgt_v2_predeploys(self.upgrade18_time, timestamp, self.inner.evm.db_mut())
-            .map_err(BlockExecutionError::other)
+        let chain_id = self.inner.evm.chain_id();
+        ensure_cgt_v2_predeploys(
+            self.upgrade18_time,
+            &self.upgrade18_overrides,
+            chain_id,
+            timestamp,
+            self.inner.evm.db_mut(),
+        )
     }
 
     fn execute_transaction_without_commit(
