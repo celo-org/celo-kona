@@ -97,6 +97,16 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         &self.spec
     }
 
+    /// The configured Upgrade 18 (CGT v2) activation timestamp.
+    pub const fn upgrade18_time(&self) -> Option<u64> {
+        self.upgrade18_time
+    }
+
+    /// The configured Upgrade 18 artifact param overrides.
+    pub const fn upgrade18_overrides(&self) -> &Upgrade18Overrides {
+        &self.upgrade18_overrides
+    }
+
     /// Exposes the EVM factory.
     pub const fn evm_factory(&self) -> &CeloEvmFactory {
         &self.evm_factory
