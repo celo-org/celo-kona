@@ -180,6 +180,14 @@ where
         self.executor_factory.spec()
     }
 
+    /// Sets the provisional Upgrade 18 (CGT v2) activation timestamp on the executor
+    /// factory, gating the CGT v2 predeploy irregular state transition. Extract the
+    /// value from a parsed chain spec with `chainspec::upgrade18_time`.
+    pub fn with_upgrade18_time(mut self, upgrade18_time: Option<u64>) -> Self {
+        self.executor_factory = self.executor_factory.with_upgrade18_time(upgrade18_time);
+        self
+    }
+
     /// Builds a block execution context with an optional post-exec mode override.
     pub fn context_for_block_with_post_exec_mode(
         &self,

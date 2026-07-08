@@ -9,7 +9,7 @@
 //! (e.g. the main-chain block executor and a re-executing ExEx) cannot interfere with each
 //! other's pending CIP-64 receipt data.
 
-use crate::{CeloEvmFactory, cip64_storage::Cip64Storage};
+use crate::{CeloEvmFactory, block::executor::CeloBlockExecutor, cip64_storage::Cip64Storage};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
@@ -36,6 +36,9 @@ use revm::{Inspector, context::TxEnv};
 pub struct CeloBlockExecutorFactory<R, Spec> {
     spec: Spec,
     evm_factory: CeloEvmFactory,
+    /// Provisional Upgrade 18 (CGT v2) activation timestamp; `None` = not scheduled.
+    /// Consumed by [`CeloBlockExecutor`] to gate the CGT v2 irregular state transition.
+    upgrade18_time: Option<u64>,
     _phantom: core::marker::PhantomData<fn() -> R>,
 }
 
@@ -44,15 +47,23 @@ impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
         Self {
             spec: self.spec.clone(),
             evm_factory: self.evm_factory.clone(),
+            upgrade18_time: self.upgrade18_time,
             _phantom: core::marker::PhantomData,
         }
     }
 }
 
 impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
-    /// Creates a new factory with the given chain spec and EVM factory.
+    /// Creates a new factory with the given chain spec and EVM factory. Upgrade 18 starts
+    /// unscheduled; see [`with_upgrade18_time`](Self::with_upgrade18_time).
     pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
-        Self { spec, evm_factory, _phantom: core::marker::PhantomData }
+        Self { spec, evm_factory, upgrade18_time: None, _phantom: core::marker::PhantomData }
+    }
+
+    /// Sets the provisional Upgrade 18 (CGT v2) activation timestamp.
+    pub const fn with_upgrade18_time(mut self, upgrade18_time: Option<u64>) -> Self {
+        self.upgrade18_time = upgrade18_time;
+        self
     }
 
     /// Exposes the chain specification.
@@ -85,7 +96,7 @@ where
     type TxExecutionResult =
         OpTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
     type Executor<'a, DB: StateDB, I: Inspector<CeloContext<DB>>> =
-        OpBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
+        CeloBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.evm_factory
@@ -103,6 +114,9 @@ where
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
-        OpBlockExecutor::new(evm, ctx, &self.spec, builder)
+        CeloBlockExecutor::new(
+            OpBlockExecutor::new(evm, ctx, &self.spec, builder),
+            self.upgrade18_time,
+        )
     }
 }

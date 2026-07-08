@@ -8,5 +8,5 @@
 mod hardfork;
 mod parser;
 
-pub use hardfork::CeloHardfork;
+pub use hardfork::{CeloHardfork, upgrade18_time};
 pub use parser::CeloChainSpecParser;

@@ -56,7 +56,8 @@ where
         parent_header: Sealed<Header>,
     ) -> Self {
         let trie_db = TrieDB::new(parent_header, provider, hinter);
-        let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory);
+        let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory)
+            .with_upgrade18_time(config.upgrade18_time);
         Self { config, trie_db, factory }
     }
 

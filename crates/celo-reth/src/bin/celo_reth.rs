@@ -440,7 +440,9 @@ fn run_celo_subcommand(mut cli: CeloCli, matches: &ArgMatches) -> eyre::Result<(
     install_prometheus_recorder();
 
     let components = |spec: Arc<OpChainSpec>| {
-        (CeloEvmConfig::celo(spec.clone()), Arc::new(CeloConsensus::new(spec)))
+        let evm_config = CeloEvmConfig::celo(spec.clone())
+            .with_upgrade18_time(celo_reth::chainspec::upgrade18_time(spec.as_ref()));
+        (evm_config, Arc::new(CeloConsensus::new(spec)))
     };
 
     match cli.command {

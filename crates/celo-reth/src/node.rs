@@ -13,7 +13,7 @@ use celo_alloy_consensus::CeloTxEnvelope;
 use op_alloy_rpc_types_engine::{
     OpExecutionData, OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4,
 };
-use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
+use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks, Hardforks};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_against_parent_timestamp,
@@ -536,7 +536,9 @@ pub struct CeloExecutorBuilder {
 
 impl<Node> ExecutorBuilder<Node> for CeloExecutorBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = CeloPrimitives>>,
+    Node: FullNodeTypes<
+        Types: NodeTypes<ChainSpec: OpHardforks + Hardforks, Primitives = CeloPrimitives>,
+    >,
 {
     type EVM = CeloEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
@@ -544,7 +546,9 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist))
+        let upgrade18_time = crate::chainspec::upgrade18_time(ctx.chain_spec().as_ref());
+        Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist)
+            .with_upgrade18_time(upgrade18_time))
     }
 }
 

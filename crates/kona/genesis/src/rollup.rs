@@ -57,6 +57,14 @@ pub struct CeloRollupConfig {
     /// Celo-specific Espresso batch-authentication settings parsed from the same `rollup.json`.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub espresso: CeloEspressoConfig,
+    /// Activation timestamp (L2) for Upgrade 18 (CGT v2). `None` = not scheduled.
+    ///
+    /// Gates the CGT v2 predeploy irregular state transition in the shared block executor
+    /// (`alloy-celo-evm`'s `CeloBlockExecutor`). The field name is provisional — the final
+    /// activation trigger is still an open decision (celo-blockchain-planning#1407) — but
+    /// whatever is chosen must stay keyed identically here and in the node's chain spec.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub upgrade18_time: Option<u64>,
 }
 
 impl CeloRollupConfig {
@@ -66,6 +74,7 @@ impl CeloRollupConfig {
         Self {
             op_rollup_config,
             espresso: CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None },
+            upgrade18_time: None,
         }
     }
 
@@ -90,6 +99,15 @@ impl CeloRollupConfig {
     /// address is configured).
     pub fn is_espresso_active(&self, timestamp: u64) -> bool {
         self.espresso.espresso_time.is_some_and(|t| timestamp >= t)
+    }
+
+    /// Returns true if Upgrade 18 (CGT v2) is active at the given L2 timestamp.
+    ///
+    /// Like [`Self::is_espresso_active`], this is intentionally orthogonal to the chained
+    /// OP Stack hardforks — Upgrade 18 is a Celo-only fork with no upstream
+    /// `HardForkConfig` slot.
+    pub fn is_upgrade18_active(&self, timestamp: u64) -> bool {
+        self.upgrade18_time.is_some_and(|t| timestamp >= t)
     }
 
     /// Resolves the Espresso batch-authentication parameters into a validated bundle suitable for
@@ -209,10 +227,13 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
             .map_err(serde::de::Error::custom)?,
         };
 
+        let upgrade18_time =
+            take::<u64>(&mut json_obj, "upgrade18_time").map_err(serde::de::Error::custom)?;
+
         let op_rollup_config = RollupConfig::deserialize(serde_json::Value::Object(json_obj))
             .map_err(serde::de::Error::custom)?;
 
-        Ok(Self { op_rollup_config, espresso })
+        Ok(Self { op_rollup_config, espresso, upgrade18_time })
     }
 }
 
@@ -374,6 +395,44 @@ mod tests {
         assert_eq!(deserialized.espresso, CeloEspressoConfig::default());
         assert!(!deserialized.is_batch_auth_enabled());
         assert!(!deserialized.is_espresso_active(u64::MAX));
+    }
+
+    #[test]
+    fn test_is_upgrade18_active() {
+        let mut cfg = CeloRollupConfig::new(RollupConfig::default());
+        // Unset: never active.
+        assert!(!cfg.is_upgrade18_active(0));
+        assert!(!cfg.is_upgrade18_active(u64::MAX));
+        // Set: boundary semantics match the OP Stack forks.
+        cfg.upgrade18_time = Some(100);
+        assert!(!cfg.is_upgrade18_active(99));
+        assert!(cfg.is_upgrade18_active(100));
+        assert!(cfg.is_upgrade18_active(101));
+    }
+
+    /// `upgrade18_time` must survive a serialize → deserialize round-trip in the same
+    /// flat `rollup.json` shape as the Espresso fields (the host/oracle boot-info
+    /// round-trip depends on this).
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serialize_deserialize_roundtrip_with_upgrade18() {
+        let mut original = CeloRollupConfig::new(RollupConfig::default());
+        original.upgrade18_time = Some(4242);
+
+        let json = serde_json::to_string(&original).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value.get("upgrade18_time").and_then(serde_json::Value::as_u64), Some(4242));
+
+        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+
+        // Unset: the key is omitted and deserializes back to None.
+        let original = CeloRollupConfig::new(RollupConfig::default());
+        let json = serde_json::to_string(&original).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("upgrade18_time").is_none());
+        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.upgrade18_time, None);
     }
 
     #[test]
