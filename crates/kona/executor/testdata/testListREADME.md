@@ -105,3 +105,28 @@ Transaction accepted due to a bug in op-geth's EIP-2930 sender recovery that use
 * Network: Celo Sepolia
 * File: `sepolia-post-jovian-basefee-change_block-20465049.tar.gz`
 * Explorer: https://celo-sepolia.blockscout.com/block/20465049
+
+## Upgrade 18 (CGT v2) migration boundary
+The only fixtures generated from a dev chain rather than a live network — the fork is not
+scheduled anywhere yet. They pin the CGT v2 irregular state transition in the stateless proof
+path: the boundary block's predeploy installs and reserve seed must be reproducible from an MPT
+witness alone, and the block after it must not re-apply them. `upgrade18_time` and the four
+activation-artifact param overrides travel inside each fixture's embedded `rollup.json`.
+
+`builder::core::upgrade18_fixture_tests` perturbs one transition input at a time and requires the
+block hash to move, so these two fixtures constrain the transition rather than merely replaying.
+
+Regenerate both with `e2e_test/generate_upgrade18_fixtures.sh` whenever
+`crates/alloy-celo-evm/res/predeploys.json` changes (real `celoGasBridgeL1` + reserve seed), or if
+the activation-trigger decision renames the rollup config keys.
+
+- Activation block
+  * Testcase: The first Upgrade 18-active block. Installs the six CGT v2 predeploys via direct
+    state writes and mints the `NativeAssetLiquidity` reserve seed, then executes the block's txs.
+  * Network: dev chain (1337)
+  * File: `devnet-upgrade18-boundary_block-2.tar.gz`
+- Block after the activation block
+  * Testcase: The completion marker (`CeloGasBridgeL2` code) is in the pre-state and comes from the
+    witness, so the transition must be skipped — exactly-once, in the stateless path.
+  * Network: dev chain (1337)
+  * File: `devnet-upgrade18-post-boundary_block-3.tar.gz`
