@@ -4,7 +4,7 @@
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::{
     CeloEvmFactory,
-    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory},
+    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory, Upgrade18Overrides},
     cip64_storage::Cip64Storage,
 };
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
@@ -57,7 +57,13 @@ where
     ) -> Self {
         let trie_db = TrieDB::new(parent_header, provider, hinter);
         let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory)
-            .with_upgrade18_time(config.upgrade18_time);
+            .with_upgrade18_time(config.upgrade18_time)
+            .with_upgrade18_overrides(Upgrade18Overrides {
+                liquidity_controller_owner: config.upgrade18_liquidity_controller_owner,
+                celo_token_l1: config.upgrade18_celo_token_l1,
+                celo_gas_bridge_l1: config.upgrade18_celo_gas_bridge_l1,
+                native_asset_liquidity_amount: config.upgrade18_native_asset_liquidity_amount,
+            });
         Self { config, trie_db, factory }
     }
 
