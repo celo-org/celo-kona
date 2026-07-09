@@ -8,8 +8,9 @@ use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::{Block, debug::ExecutionWitness};
 use alloy_transport::{RpcError, TransportErrorKind};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
+use backon::{ExponentialBuilder, Retryable};
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
@@ -19,12 +20,78 @@ use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use std::time::Duration;
 use tracing::{info, warn};
 
 /// Returns `true` if the RPC error indicates the node does not support the requested method
 /// (JSON-RPC error code -32601: Method not found).
 const fn is_rpc_method_not_found(e: &RpcError<TransportErrorKind>) -> bool {
     matches!(e, RpcError::ErrorResp(p) if p.code == -32601)
+}
+
+/// Backoff schedule for retrying a hint fetch when its underlying RPC call fails transiently.
+///
+/// kona's preimage server (`OnlineHostBackend::get_preimage`) retries a failed `fetch_hint`
+/// immediately with no delay, so a flaky RPC endpoint makes it busy-spin on the endpoint and
+/// flood the logs with `Failed to prefetch hint`. Retrying here with exponential backoff turns
+/// that into a bounded, quiet retry that recovers on its own: 100 ms, doubling each attempt,
+/// capped at 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
+fn hint_retry_policy() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_factor(2.0)
+        .with_max_delay(Duration::from_secs(120))
+        .with_max_times(20)
+}
+
+/// Retry only genuinely transient failures on the L1/L2 RPC path, classified by error kind
+/// rather than the outer variant:
+/// - transport infra failures — dropped connection/timeout (`Custom`), `BackendGone`, missing batch
+///   response — are retried;
+/// - HTTP responses are retried only for `429` and `5xx`; deterministic `4xx` (auth, not-found,
+///   bad-request) are terminal;
+/// - a JSON-RPC `ErrorResp` is retried only when it is itself a rate-limit (some providers return
+///   `429`/request-limit that way), via alloy's own `is_retry_err`;
+/// - everything else (method-not-found, (de)serialize, unsupported-feature, `NonRetryable`) is
+///   terminal, so it surfaces immediately instead of burning the whole backoff budget.
+fn is_retryable_rpc(rpc_err: &RpcError<TransportErrorKind>) -> bool {
+    match rpc_err {
+        RpcError::Transport(kind) => match kind {
+            TransportErrorKind::MissingBatchResponse(_) |
+            TransportErrorKind::BackendGone |
+            TransportErrorKind::Custom(_) => true,
+            TransportErrorKind::HttpError(http) => http.is_rate_limit_err() || http.status >= 500,
+            _ => false,
+        },
+        RpcError::ErrorResp(payload) => payload.is_retry_err(),
+        _ => false,
+    }
+}
+
+fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<RpcError<TransportErrorKind>>().is_some_and(is_retryable_rpc)
+}
+
+/// Retry only the transient EigenDA proxy-request failures. hokulea surfaces these as opaque
+/// `anyhow` strings (no typed error to match on), so match the transient ones by message:
+/// - the request send error and non-teapot `5xx` ("failed to fetch eigenda encoded payload…");
+/// - a reset/timeout while reading the success-response body ("should be able to get encoded
+///   payload from http response…").
+///
+/// Deterministic errors (commitment parse, 418-body decode, bad status handling, KV write)
+/// carry other messages and stay terminal, so they don't re-hit the proxy for the whole backoff
+/// budget. Coupled to hokulea's wording (pinned revision); tracked for a typed-error fix in
+/// celo-blockchain-planning#1430.
+#[cfg(feature = "eigenda")]
+fn is_retryable_eigenda_err(err: &anyhow::Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("failed to fetch eigenda encoded payload") ||
+        msg.contains("should be able to get encoded payload from http response")
+}
+
+/// Logs a hint-fetch retry with the delay before the next attempt.
+fn notify_hint_retry(err: &anyhow::Error, backoff: Duration) {
+    warn!(target: "single_hint_handler", %err, ?backoff, "transient failure fetching hint; retrying");
 }
 
 /// The [HintHandler] for the [CeloSingleChainHost].
@@ -43,16 +110,37 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        match hint.ty {
+        match &hint.ty {
             ExtendedHintType::Original(ty) => {
-                Self::fetch_original_hint(Hint { ty, data: hint.data }, cfg, providers, kv).await
+                let ty = *ty;
+                // L1/L2 RPC path: retry only genuine transport failures, not deterministic
+                // JSON-RPC errors.
+                (|| {
+                    Self::fetch_original_hint(
+                        Hint { ty, data: hint.data.clone() },
+                        cfg,
+                        providers,
+                        kv.clone(),
+                    )
+                })
+                .retry(hint_retry_policy())
+                .when(is_retryable_transport_err)
+                .notify(notify_hint_retry)
+                .await
             }
             ExtendedHintType::EigenDACert => {
                 let eigenda_provider = providers
                     .eigenda_preimage_provider
                     .as_ref()
                     .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
-                fetch_eigenda_hint(hint.data, eigenda_provider, kv).await
+                // Back off transient EigenDA proxy-request failures (see is_retryable_eigenda_err)
+                // rather than falling through to kona's immediate spin loop; deterministic errors
+                // surface immediately.
+                (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
+                    .retry(hint_retry_policy())
+                    .when(is_retryable_eigenda_err)
+                    .notify(notify_hint_retry)
+                    .await
             }
         }
     }
@@ -69,7 +157,18 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        Self::fetch_original_hint(hint, cfg, providers, kv).await
+        (|| {
+            Self::fetch_original_hint(
+                Hint { ty: hint.ty, data: hint.data.clone() },
+                cfg,
+                providers,
+                kv.clone(),
+            )
+        })
+        .retry(hint_retry_policy())
+        .when(is_retryable_transport_err)
+        .notify(notify_hint_retry)
+        .await
     }
 }
 
@@ -234,12 +333,20 @@ impl CeloSingleChainHintHandler {
                 // code hash preimage without the geth hashdb scheme prefix.
                 let code = match code {
                     Ok(code) => code,
+                    // A transient failure on the primary lookup must back off — propagate it
+                    // (still downcastable) instead of masking it with the fallback, whose
+                    // deterministic miss would otherwise surface as terminal and spin in kona. A
+                    // normal "wrong hashdb scheme" miss is a non-retryable `ErrorResp`, so it still
+                    // falls through to the fallback.
+                    Err(e) if is_retryable_rpc(&e) => return Err(anyhow::Error::new(e)),
+                    // Preserve the fallback's transport error (via `context`, not a stringified
+                    // `anyhow!`) so a transient failure there stays downcastable and is retried.
                     Err(_) => providers
                         .l2
                         .client()
                         .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
                         .await
-                        .map_err(|e| anyhow!("Error fetching code hash preimage: {e}"))?,
+                        .context("Error fetching code hash preimage")?,
                 };
 
                 let mut kv_lock = kv.write().await;
