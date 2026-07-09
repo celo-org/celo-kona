@@ -39,9 +39,10 @@ where
     pub data: Vec<CeloBlobData>,
     /// Whether the source is open.
     pub open: bool,
-    /// Espresso batch-authentication configuration. When `Some` and active for the L1 origin time
+    /// Espresso batch-authentication configuration. When `Some` and enforced at the L1 origin time
     /// of the block being scanned, event-based batch authentication is used. Otherwise (no config,
-    /// or fork not yet active) the source falls back to vanilla OP Stack sender verification.
+    /// or not yet enforced — pre-fork or within the grace window) the source falls back to vanilla
+    /// OP Stack sender verification.
     pub(crate) batch_auth_config: Option<BatchAuthConfig>,
     /// LRU caches for batch auth lookback window traversal (receipts + headers). Present iff
     /// [`Self::batch_auth_config`] is set.
@@ -74,11 +75,11 @@ where
 
     /// Extracts blob data and indexed blob hashes from the given transactions.
     ///
-    /// When the Espresso fork is active at `l1_origin_time`, each transaction is authorized via
-    /// the `authenticated_hashes` map (commitment → authenticating `caller`); otherwise vanilla
-    /// OP Stack sender verification against `batcher_address` is used. The gating decision is made
-    /// per-transaction by [`is_batch_authorized`] from [`Self::batch_auth_config`] +
-    /// `l1_origin_time`.
+    /// When event-based authentication is enforced at `l1_origin_time`, each transaction is
+    /// authorized via the `authenticated_hashes` map (commitment → authenticating `caller`);
+    /// otherwise vanilla OP Stack sender verification against `batcher_address` is used. The gating
+    /// decision is made per-transaction by [`is_batch_authorized`] from
+    /// [`Self::batch_auth_config`] + `l1_origin_time`.
     fn extract_blob_data(
         &self,
         txs: Vec<TxEnvelope>,
@@ -175,14 +176,15 @@ where
             .await
             .map_err(Into::into)?;
 
-        // Only scan for authenticating events when Espresso is active. Pre-Espresso (or Espresso
-        // not yet active) the lookback walk is bypassed entirely so derivation is
-        // byte-identical to upstream OP Stack (the BatchAuthenticator events are still
-        // emitted on L1 but ignored).
-        let espresso_active =
-            self.batch_auth_config.is_some_and(|c| c.is_active(block_ref.timestamp));
-        let authenticated_hashes: Option<BTreeMap<B256, Address>> = if espresso_active {
-            let config = self.batch_auth_config.expect("config present when espresso active");
+        // Only scan for authenticating events once event-based authentication is enforced (fork
+        // active plus the grace period). Before that — pre-fork or within the grace window — the
+        // lookback walk is bypassed entirely and sender-based authorization is used, so derivation
+        // is byte-identical to upstream OP Stack (the BatchAuthenticator events are still emitted
+        // on L1 but ignored).
+        let auth_enforced =
+            self.batch_auth_config.is_some_and(|c| c.is_enforced(block_ref.timestamp));
+        let authenticated_hashes: Option<BTreeMap<B256, Address>> = if auth_enforced {
+            let config = self.batch_auth_config.expect("config present when auth enforced");
             let cache = self.auth_cache.as_mut().expect("cache present when config present");
             Some(
                 collect_authenticated_batches(
@@ -514,7 +516,10 @@ mod tests {
             batch_inbox,
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         // The commitment is the unindexed data word; the authenticating `caller` (= the batch tx
         // sender) is the indexed topic.
         let log = Log {
@@ -551,7 +556,10 @@ mod tests {
             batch_inbox,
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         // The commitment is authenticated, but by a different caller than the batch tx sender.
         let other_caller = address!("00000000000000000000000000000000000000bb");
         let log = Log {
@@ -583,7 +591,10 @@ mod tests {
             batch_inbox,
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
         source.chain_provider.insert_receipts(block_info.hash, Vec::new());
 
@@ -698,7 +709,10 @@ mod tests {
             BLOB_TX_SENDER, // batcher_address gates the tx `to`
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         // The blob batch commitment is keccak256(concat(blob_versioned_hashes)); authenticated by
         // the batch tx's recovered signer.
         let commitment = compute_blob_batch_hash(&blob_tx_hashes());
@@ -736,7 +750,10 @@ mod tests {
             BLOB_TX_SENDER,
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         let commitment = compute_blob_batch_hash(&blob_tx_hashes());
         // Commitment authenticated, but by `other_caller`, not the batch tx sender BLOB_TX_BATCHER.
         let log = Log {
@@ -768,7 +785,10 @@ mod tests {
             BLOB_TX_SENDER,
             Some(auth_config(auth_addr)),
         );
-        let block_info = BlockInfo::default();
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
         source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
         // No auth event for the blob batch commitment.
         source.chain_provider.insert_receipts(block_info.hash, Vec::new());
