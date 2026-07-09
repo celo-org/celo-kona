@@ -258,11 +258,11 @@ async fn init_blob_provider_with_backoff(
 /// Backoff for the one-off beacon genesis/slot reads at provider construction. Deliberately
 /// shorter than the hint-fetch budget: this runs at host startup, so a genuine misconfiguration
 /// (bad URL / auth / non-beacon endpoint) — which cannot always be told apart from a transient
-/// decode at this layer — fails in ~20s instead of hanging, while a real transient blip that
-/// recovers in seconds is still absorbed.
+/// decode at this layer — fails in under a minute instead of hanging, while a real transient blip
+/// that recovers in seconds is still absorbed.
 fn beacon_init_retry_policy() -> ExponentialBuilder {
     ExponentialBuilder::default()
-        .with_min_delay(Duration::from_millis(200))
+        .with_min_delay(Duration::from_secs(1))
         .with_factor(2.0)
         .with_max_delay(Duration::from_secs(10))
         .with_max_times(7)
