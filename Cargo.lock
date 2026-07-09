@@ -724,9 +724,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-debug"
-version = "2.1.0"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ff0a296b58194c7464aa56f2bdad065c5a24b43a6de5d62b8a985ae3969ecd0"
+checksum = "48b9ad6eee93dd35a9ec0a6c1c6b180892a900ee17a6ed6500921552dd71e846"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -2271,7 +2271,9 @@ dependencies = [
  "alloy-op-evm",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-rlp",
  "alloy-rpc-client",
+ "alloy-rpc-types-debug",
  "alloy-rpc-types-engine 2.0.5",
  "alloy-transport-http",
  "alloy-trie",
@@ -2292,9 +2294,11 @@ dependencies = [
  "op-revm",
  "rand 0.9.4",
  "revm 38.0.0",
+ "rocksdb",
  "rstest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -3223,7 +3227,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3745,8 +3749,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "celo-executor",
+ "celo-genesis",
  "clap",
  "kona-cli",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
