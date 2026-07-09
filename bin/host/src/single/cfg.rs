@@ -1,7 +1,9 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
+use super::handler::hint_retry_policy;
 use crate::single::CeloSingleChainHintHandler;
 use alloy_provider::RootProvider;
+use backon::Retryable;
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
@@ -20,13 +22,16 @@ use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
 };
 use kona_proof::HintType;
-use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
+use kona_providers_alloy::{
+    BeaconClient, BeaconClientError, OnlineBeaconClient, OnlineBlobProvider,
+};
 use kona_std_fpvm::{FileChannel, FileDescriptor};
 #[cfg(feature = "eigenda")]
 use reqwest::Url;
 use serde::Serialize;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::task::{self, JoinHandle};
+use tracing::warn;
 
 /// The host binary CLI application arguments.
 #[derive(Default, Parser, Serialize, Clone, Debug)]
@@ -157,13 +162,16 @@ impl CeloSingleChainHost {
                 .ok_or(SingleChainHostError::Other("Provider must be set"))?,
         )
         .await;
-        let blob_provider = OnlineBlobProvider::init(OnlineBeaconClient::new_http(
+        let beacon_client = OnlineBeaconClient::new_http(
             self.kona_cfg
                 .l1_beacon_address
                 .clone()
                 .ok_or(SingleChainHostError::Other("Beacon API URL must be set"))?,
-        ))
-        .await;
+        );
+        // `OnlineBlobProvider::init` panics if the one-off beacon genesis/slot config load hits a
+        // transient RPC failure; load those values with the shared backoff and build the provider
+        // directly so a flaky beacon endpoint is retried instead of taking the host down.
+        let blob_provider = init_blob_provider_with_backoff(beacon_client).await?;
         let l2_provider = rpc_provider::<Celo>(
             self.kona_cfg
                 .l2_node_address
@@ -191,6 +199,55 @@ impl CeloSingleChainHost {
             eigenda_preimage_provider,
         })
     }
+}
+
+/// Builds an [`OnlineBlobProvider`] without the panic path in [`OnlineBlobProvider::init`],
+/// which `.expect()`s if the one-off beacon genesis-time / slot-interval load hits a transient
+/// RPC failure. Those two values are fetched here under the shared hint backoff and the provider
+/// is constructed directly, so a flaky beacon endpoint is retried quietly instead of panicking
+/// the preimage server (which would abort the whole host run for its consumer). A sustained
+/// outage surfaces as a `SingleChainHostError` after the backoff budget.
+async fn init_blob_provider_with_backoff(
+    beacon: OnlineBeaconClient,
+) -> Result<OnlineBlobProvider<OnlineBeaconClient>, SingleChainHostError> {
+    let genesis_time = (|| async { beacon.genesis_time().await })
+        .retry(hint_retry_policy())
+        .when(is_retryable_beacon_err)
+        .notify(notify_beacon_retry)
+        .await
+        .map_err(|e| {
+            warn!(target: "single_host_cfg", error = %e, "failed to load beacon genesis time after retries");
+            SingleChainHostError::Other("failed to load beacon genesis time")
+        })?
+        .data
+        .genesis_time;
+
+    let slot_interval = (|| async { beacon.slot_interval().await })
+        .retry(hint_retry_policy())
+        .when(is_retryable_beacon_err)
+        .notify(notify_beacon_retry)
+        .await
+        .map_err(|e| {
+            warn!(target: "single_host_cfg", error = %e, "failed to load beacon slot interval after retries");
+            SingleChainHostError::Other("failed to load beacon slot interval")
+        })?
+        .data
+        .seconds_per_slot;
+
+    Ok(OnlineBlobProvider { beacon_client: beacon, genesis_time, slot_interval })
+}
+
+/// A beacon config read (`genesis_time` / `slot_interval`) can only fail with
+/// [`BeaconClientError::Http`] — a reqwest transport or response-decode error — and on this
+/// idempotent path every such failure is transient, so retry it. The deterministic variants
+/// (slot/blob-not-found, KZG) never arise here and stay terminal.
+const fn is_retryable_beacon_err(err: &BeaconClientError) -> bool {
+    matches!(err, BeaconClientError::Http(_))
+}
+
+/// Logs a transient beacon config-read failure and the delay before the next attempt.
+fn notify_beacon_retry(err: &BeaconClientError, backoff: Duration) {
+    warn!(target: "single_host_cfg", error = %err, ?backoff, "transient beacon RPC failure loading blob-provider config; retrying");
 }
 
 #[cfg(feature = "eigenda")]
