@@ -24,7 +24,10 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use futures_util::FutureExt;
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::{
-    common::EnvironmentArgs, db, download::DownloadCommand, p2p, prune, re_execute, stage,
+    common::EnvironmentArgs,
+    db,
+    download::{DownloadCommand, DownloadDefaults},
+    p2p, prune, re_execute, stage,
 };
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
@@ -98,6 +101,13 @@ const DEFAULT_MANIFEST_URL_SEPOLIA: &str = "https://snapshots.celo.org/celo-sepo
 /// `--chain-id` default of `1` (Ethereum mainnet).
 const DEFAULT_CHAIN_ID: &str = "42220";
 
+/// Public snapshot root for `celo-reth download` snapshot discovery — `--list-snapshots` and the
+/// latest-snapshot auto-discovery (used when no `--url` / `--manifest-url` / `--manifest-path` is
+/// given). Overrides the upstream Ethereum-only `snapshots.reth.rs`; the discovery API is derived
+/// as `<SNAPSHOTS_SOURCE_URL>/api/snapshots`, a JSON index that must be published alongside the
+/// snapshots for `--list-snapshots` to return results. Wired up in [`init_celo_download_defaults`].
+const SNAPSHOTS_SOURCE_URL: &str = "https://snapshots.celo.org";
+
 /// Top-level Celo-only subcommand wrapper.
 ///
 /// Used only when intercepting Celo-owned paths from the binary's argv before handing the rest of
@@ -137,7 +147,8 @@ enum CeloCommand {
     ReExecute(re_execute::Command<CeloChainSpecParser>),
     /// Download a Celo reth snapshot. Defaults `--manifest-url` to the cLabs-operated
     /// `snapshots.celo.org` endpoint for the selected `--chain` (Mainnet or Celo Sepolia);
-    /// pass `--url`, `--manifest-url`, or `--manifest-path` to override.
+    /// pass `--url`, `--manifest-url`, or `--manifest-path` to override. `--list-snapshots`
+    /// lists available Celo snapshots from `snapshots.celo.org`.
     #[command(name = DOWNLOAD)]
     Download(Box<DownloadCommand<CeloChainSpecParser>>),
     /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
@@ -243,8 +254,24 @@ fn init_celo_version_metadata() {
     let _ = try_init_version_metadata(meta);
 }
 
+/// Point `celo-reth download`'s snapshot discovery at the cLabs-operated `snapshots.celo.org`
+/// endpoint instead of the upstream Ethereum-only `snapshots.reth.rs`.
+///
+/// This drives `--list-snapshots` and the "latest snapshot" auto-discovery (both GET
+/// `<source>/api/snapshots`), plus the generated `--url` help text. It is independent of the
+/// `--manifest-url` default set in [`celo_cli_command`], which the normal download path uses — a
+/// download with an explicit or defaulted `--manifest-url` never consults this discovery API, so
+/// this only affects `--list-snapshots` and no-URL discovery.
+///
+/// The underlying global is a [`OnceLock`](std::sync::OnceLock), so the first call wins; the `Err`
+/// (already-set) case is ignored for safety in tests / other entry points.
+fn init_celo_download_defaults() {
+    let _ = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL).try_init();
+}
+
 fn main() {
     init_celo_version_metadata();
+    init_celo_download_defaults();
     reth_cli_util::sigsegv_handler::install();
 
     if std::env::var_os("RUST_BACKTRACE").is_none() {
@@ -667,4 +694,19 @@ fn spawn_proofs_db_metrics<S>(
             storage.report_metrics();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Celo download source URL must derive the `/api/snapshots` discovery endpoint that
+    /// `--list-snapshots` (and latest-snapshot auto-discovery) query, so the CLI lists Celo
+    /// snapshots from `snapshots.celo.org` instead of the upstream Ethereum-only
+    /// `snapshots.reth.rs`.
+    #[test]
+    fn celo_download_source_derives_celo_snapshot_api() {
+        let defaults = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL);
+        assert_eq!(defaults.snapshot_api_url.as_ref(), "https://snapshots.celo.org/api/snapshots");
+    }
 }
