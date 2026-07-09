@@ -3,47 +3,133 @@
 use crate::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
-use alloy_primitives::{B256, Bytes, Sealable, Sealed};
-use alloy_provider::{Provider, network::primitives::BlockTransactions};
+use alloy_eips::BlockId;
+use alloy_primitives::{B256, Bytes, Sealable, Sealed, keccak256, map::HashMap};
+use alloy_provider::{Provider, RootProvider, network::primitives::BlockTransactions};
+use alloy_rpc_types_debug::ExecutionWitness;
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_genesis::CeloRollupConfig;
 use celo_registry::ROLLUP_CONFIGS;
 use futures_util::stream::{StreamExt, TryStreamExt};
-use kona_executor::test_utils::{
-    ExecutorTestFixture, ExecutorTestFixtureCreator, LoadedExecutorTestFixture, load_test_fixture,
+use kona_executor::{
+    ExecutorResult, TrieDBProvider,
+    test_utils::{DiskTrieNodeProvider, ExecutorTestFixtureCreator, TestTrieNodeProviderError},
 };
-use kona_mpt::NoopTrieHinter;
+use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use kona_protocol::Predeploys;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
+use rocksdb::{DB, Options};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
+
+/// The test fixture format for the [`CeloStatelessL2Builder`].
+///
+/// Celo config preserves Espresso settings when fixtures round-trip. CGTv2 is
+/// driven by its deposit signal, without fixture timestamp or reserve overrides.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CeloExecutorTestFixture {
+    /// The rollup configuration for the executing chain.
+    pub rollup_config: CeloRollupConfig,
+    /// The parent block header.
+    pub parent_header: alloy_consensus::Header,
+    /// The executing payload attributes.
+    pub executing_payload: OpPayloadAttributes,
+    /// The expected block hash.
+    pub expected_block_hash: B256,
+}
+
+/// A loaded [`CeloExecutorTestFixture`] and its backing temporary fixture directory.
+#[derive(Debug)]
+pub struct LoadedCeloExecutorTestFixture {
+    /// Keeps the untarred fixture directory alive while the `RocksDB` provider is open.
+    pub fixture_dir: tempfile::TempDir,
+    /// The deserialized fixture metadata and payload.
+    pub fixture: CeloExecutorTestFixture,
+    /// Trie/database provider backed by the fixture's key-value store.
+    pub provider: DiskTrieNodeProvider,
+}
+
+/// Loads a [`CeloExecutorTestFixture`] stored at the passed `fixture_path`.
+///
+/// A copy of `kona_executor::test_utils::load_test_fixture`, forked only to deserialize
+/// the Celo-typed fixture format — keep the tarball layout and key-value store handling
+/// in sync with upstream.
+pub async fn load_test_fixture(fixture_path: PathBuf) -> LoadedCeloExecutorTestFixture {
+    let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+    tokio::process::Command::new("tar")
+        .arg("-xvf")
+        .arg(fixture_path.as_path())
+        .arg("-C")
+        .arg(fixture_dir.path())
+        .arg("--strip-components=1")
+        .output()
+        .await
+        .expect("Failed to untar fixture");
+
+    let kv_store = DB::open(&fixture_kv_options(), fixture_dir.path().join("kv"))
+        .unwrap_or_else(|e| panic!("Failed to open database at {fixture_dir:?}: {e}"));
+    let fixture: CeloExecutorTestFixture =
+        serde_json::from_slice(&fs::read(fixture_dir.path().join("fixture.json")).await.unwrap())
+            .expect("Failed to deserialize fixture");
+
+    LoadedCeloExecutorTestFixture {
+        fixture_dir,
+        fixture,
+        provider: DiskTrieNodeProvider::new(kv_store),
+    }
+}
+
+/// The `RocksDB` settings the fixture key-value store is created with and must be reopened with.
+///
+/// Must match what kona's `ExecutorTestFixtureCreator` writes the store with (currently
+/// Snappy compression) — if upstream changes its creator options, the checked-in
+/// tarballs stop loading here.
+fn fixture_kv_options() -> Options {
+    let mut options = Options::default();
+    options.set_compression_type(rocksdb::DBCompressionType::Snappy);
+    options.create_if_missing(true);
+    options
+}
 
 /// Loads and executes a test fixture from a tarball path.
 ///
 /// Returns the execution outcome and the fixture data for further inspection.
 pub async fn load_and_execute_fixture(
     fixture_path: PathBuf,
-) -> (CeloBlockBuildingOutcome, ExecutorTestFixture) {
+) -> (CeloBlockBuildingOutcome, CeloExecutorTestFixture) {
+    let (outcome, fixture) = execute_fixture_with(fixture_path, |_| {}).await;
+    (outcome.expect("Failed to execute block"), fixture)
+}
+
+/// Loads a test fixture, applies `mutate` to its [`CeloRollupConfig`], and executes the block.
+///
+/// The mutation hook exists so tests can prove that a fixture actually *constrains* a piece of
+/// consensus: perturb one config value, and the produced block hash must stop matching
+/// `expected_block_hash`.
+pub async fn execute_fixture_with(
+    fixture_path: PathBuf,
+    mutate: impl FnOnce(&mut CeloRollupConfig),
+) -> (ExecutorResult<CeloBlockBuildingOutcome>, CeloExecutorTestFixture) {
     // `_fixture_dir` keeps the untarred fixture directory alive while the provider is in use.
-    let LoadedExecutorTestFixture { fixture_dir: _fixture_dir, fixture, provider } =
+    let LoadedCeloExecutorTestFixture { fixture_dir: _fixture_dir, mut fixture, provider } =
         load_test_fixture(fixture_path).await;
 
-    // Wrap RollupConfig to CeloRollupConfig
-    let celo_rollup_config = CeloRollupConfig::new(fixture.rollup_config.clone());
+    mutate(&mut fixture.rollup_config);
+
     let mut executor = CeloStatelessL2Builder::new(
-        &celo_rollup_config,
+        &fixture.rollup_config,
         CeloEvmFactory::default(),
         provider,
         NoopTrieHinter,
         fixture.parent_header.clone().seal_slow(),
     );
 
-    let outcome =
-        executor.build_block(fixture.executing_payload.clone()).expect("Failed to execute block");
-
+    let outcome = executor.build_block(fixture.executing_payload.clone());
     (outcome, fixture)
 }
 
-/// Executes a [ExecutorTestFixture] stored at the passed `fixture_path` and asserts that the
+/// Executes a [`CeloExecutorTestFixture`] stored at the passed `fixture_path` and asserts that the
 /// produced block hash matches the expected block hash.
 pub async fn run_test_fixture(fixture_path: PathBuf) {
     let (outcome, fixture) = load_and_execute_fixture(fixture_path).await;
@@ -167,43 +253,115 @@ pub async fn fetch_block_replay_inputs<P: Provider>(
     Ok((parent_header, executing_header, payload_attrs))
 }
 
+/// A [`TrieDBProvider`] served entirely from an in-memory preimage map, keyed by `keccak256` of
+/// the value — the same keying the fixture's on-disk key-value store uses. Built with
+/// [`witness_trie_provider`].
+#[derive(Debug)]
+pub struct WitnessTrieNodeProvider {
+    preimages: HashMap<B256, Bytes>,
+}
+
+/// Fetches every preimage needed to statelessly re-execute `block_number` — the node's
+/// `debug_executionWitness` plus the message-passer account-proof supplement — into an
+/// in-memory [`WitnessTrieNodeProvider`].
+///
+/// The witness covers execution and state-root recomputation, but not quite everything this
+/// executor reads: it is supplemented with an `eth_getProof` for the `L2ToL1MessagePasser`
+/// account, so the node must also serve historical proofs (`--rpc.eth-proof-window`).
+pub async fn witness_trie_provider(
+    provider: &RootProvider,
+    block_number: u64,
+) -> Result<WitnessTrieNodeProvider, String> {
+    let witness = fetch_execution_witness(provider, block_number).await?;
+    let mut preimages = witness_preimages(witness);
+    preimages.extend(fetch_message_passer_account_proof(provider, block_number).await);
+    Ok(WitnessTrieNodeProvider { preimages })
+}
+
+impl WitnessTrieNodeProvider {
+    fn get(&self, hash: B256) -> Result<&Bytes, TestTrieNodeProviderError> {
+        self.preimages.get(&hash).ok_or_else(|| {
+            tracing::error!(%hash, "preimage absent from the execution witness");
+            TestTrieNodeProviderError::PreimageNotFound
+        })
+    }
+}
+
+impl TrieProvider for WitnessTrieNodeProvider {
+    type Error = TestTrieNodeProviderError;
+
+    fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
+        use alloy_rlp::Decodable;
+        TrieNode::decode(&mut self.get(key)?.as_ref()).map_err(TestTrieNodeProviderError::Rlp)
+    }
+}
+
+impl TrieDBProvider for WitnessTrieNodeProvider {
+    fn bytecode_by_hash(&self, code_hash: B256) -> Result<Bytes, Self::Error> {
+        self.get(code_hash).cloned()
+    }
+
+    fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
+        use alloy_rlp::Decodable;
+        alloy_consensus::Header::decode(&mut self.get(hash)?.as_ref())
+            .map_err(TestTrieNodeProviderError::Rlp)
+    }
+}
+
 /// Creates a static test fixture for the [`CeloStatelessL2Builder`] with the configuration
 /// provided.
+///
+/// `rollup_config` overrides the [`static@ROLLUP_CONFIGS`] registry lookup, which only knows the
+/// production Celo chains — a dev chain has to supply its own `rollup.json`. That path is also
+/// how the Upgrade 18 activation-artifact param overrides reach the executor.
 pub async fn create_static_fixture(
     provider_url: &str,
     block_number: u64,
     base_fixture_directory: PathBuf,
+    rollup_config: Option<CeloRollupConfig>,
 ) {
     let creator =
         ExecutorTestFixtureCreator::new(provider_url, block_number, base_fixture_directory);
 
-    let chain_id = creator.provider.get_chain_id().await.expect("Failed to get chain ID");
-    let rollup_config = ROLLUP_CONFIGS.get(&chain_id).expect("Rollup config not found");
+    let rollup_config = match rollup_config {
+        Some(config) => config,
+        None => {
+            let chain_id = creator.provider.get_chain_id().await.expect("Failed to get chain ID");
+            ROLLUP_CONFIGS
+                .get(&chain_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "No rollup config for chain {chain_id}; pass one explicitly with \
+                         --rollup-config"
+                    )
+                })
+                .clone()
+        }
+    };
 
     let (parent_header, executing_header, payload_attrs) =
-        fetch_block_replay_inputs(&creator.provider, rollup_config, creator.block_number)
+        fetch_block_replay_inputs(&creator.provider, &rollup_config, creator.block_number)
             .await
             .expect("Failed to fetch block replay inputs");
 
     let fixture_path = creator.data_dir.join("fixture.json");
-    let fixture = ExecutorTestFixture {
-        rollup_config: rollup_config.op_rollup_config.clone(),
+    let fixture = CeloExecutorTestFixture {
+        rollup_config: rollup_config.clone(),
         parent_header: parent_header.inner().clone(),
         expected_block_hash: executing_header.hash_slow(),
         executing_payload: payload_attrs.clone(),
     };
 
-    let mut executor = CeloStatelessL2Builder::new(
-        rollup_config,
-        CeloEvmFactory::default(),
-        creator,
-        NoopTrieHinter,
-        parent_header,
-    );
-    let outcome = executor.build_block(payload_attrs).expect("Failed to execute block");
+    // Collect every preimage up front from the node's execution witness (served by reth) and
+    // replay the block against an in-memory provider keyed by keccak256 of each value.
+    let provider = witness_trie_provider(&creator.provider, creator.block_number)
+        .await
+        .unwrap_or_else(|e| panic!("failed to collect the execution witness: {e}"));
+    store_preimages(&creator, &provider).await;
+    let produced_header = build_block(&rollup_config, provider, parent_header, payload_attrs);
 
     assert_eq!(
-        outcome.header.inner(),
+        produced_header.inner(),
         &executing_header,
         "Produced header (left) does not match the expected header (right)"
     );
@@ -222,4 +380,96 @@ pub async fn create_static_fixture(
 
     // Remove the leftover directory.
     fs::remove_dir_all(data_dir).await.expect("Failed to remove temporary directory");
+}
+
+/// Builds the fixture's block and returns the sealed header it produced.
+fn build_block<P: TrieDBProvider + std::fmt::Debug>(
+    rollup_config: &CeloRollupConfig,
+    provider: P,
+    parent_header: alloy_consensus::Sealed<alloy_consensus::Header>,
+    payload_attrs: OpPayloadAttributes,
+) -> alloy_consensus::Sealed<alloy_consensus::Header> {
+    let mut executor = CeloStatelessL2Builder::new(
+        rollup_config,
+        CeloEvmFactory::default(),
+        provider,
+        NoopTrieHinter,
+        parent_header,
+    );
+    executor.build_block(payload_attrs).expect("Failed to execute block").header
+}
+
+/// Asks the node for the target block's execution witness.
+async fn fetch_execution_witness(
+    provider: &RootProvider,
+    block_number: u64,
+) -> Result<ExecutionWitness, String> {
+    provider
+        .client()
+        .request::<[String; 1], ExecutionWitness>(
+            "debug_executionWitness",
+            [format!("0x{block_number:x}")],
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetches the account-trie path to the `L2ToL1MessagePasser` predeploy at the parent block.
+///
+/// The execution witness alone is not sufficient for [`CeloStatelessL2Builder`]. To seal an
+/// Isthmus block the builder reads that predeploy's account out of the parent's account trie
+/// (its storage root becomes the header's `withdrawals_root`), but the node derives the same
+/// root from hashed-state cursors rather than by walking the trie, so the path never enters the
+/// witness — unless the block happens to write to the account, as the Upgrade 18 transition
+/// does. The account proof supplies exactly those nodes.
+///
+/// Requires the node to serve historical proofs (`--rpc.eth-proof-window`). Returns an empty map
+/// on failure: for blocks that do touch the predeploy the witness already covers it, and if it
+/// does not, the build fails with a loud missing-preimage error anyway.
+async fn fetch_message_passer_account_proof(
+    provider: &RootProvider,
+    block_number: u64,
+) -> HashMap<B256, Bytes> {
+    let parent = BlockId::number(block_number - 1);
+    match provider.get_proof(Predeploys::L2_TO_L1_MESSAGE_PASSER, Vec::new()).block_id(parent).await
+    {
+        Ok(proof) => {
+            proof.account_proof.into_iter().map(|node| (keccak256(node.as_ref()), node)).collect()
+        }
+        Err(e) => {
+            tracing::warn!(
+                err = %e,
+                "eth_getProof for the L2ToL1MessagePasser account failed — if the build below \
+                 dies with a missing-preimage error, this is the cause: the node must serve \
+                 historical proofs at the parent block (raise --rpc.eth-proof-window)"
+            );
+            HashMap::default()
+        }
+    }
+}
+
+/// Indexes the witness preimages by `keccak256` of their value.
+///
+/// Trie nodes, contract bytecode and ancestor headers are all addressed by their keccak hash, so
+/// one flat map serves `trie_node_by_hash`, `bytecode_by_hash` and `header_by_hash` alike. The
+/// witness's fourth field, `keys`, holds the preimages of hashed account addresses and storage
+/// slots; [`TrieDB`](kona_executor::TrieDB) hashes those itself and never looks them up, so they
+/// are dropped rather than baked into the checked-in tarball.
+fn witness_preimages(witness: ExecutionWitness) -> HashMap<B256, Bytes> {
+    witness
+        .state
+        .into_iter()
+        .chain(witness.codes)
+        .chain(witness.headers)
+        .map(|preimage| (keccak256(preimage.as_ref()), preimage))
+        .collect()
+}
+
+/// Writes the collected preimages into the fixture's key-value store, which is what the
+/// checked-in tarball ships and `load_test_fixture` reads back.
+async fn store_preimages(creator: &ExecutorTestFixtureCreator, provider: &WitnessTrieNodeProvider) {
+    let kv_store = creator.kv_store.lock().await;
+    for (hash, preimage) in &provider.preimages {
+        kv_store.put(hash, preimage.as_ref()).expect("Failed to write preimage");
+    }
 }

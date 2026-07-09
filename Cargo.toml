@@ -131,6 +131,7 @@ alloy-rpc-client = { version = "2.3.0", default-features = false }
 alloy-rpc-types-eth = { version = "2.3.0", default-features = false }
 alloy-transport-http = { version = "2.3.0", default-features = false }
 alloy-rpc-types-engine = { version = "2.3.0", default-features = false }
+alloy-rpc-types-debug = { version = "2.3.0", default-features = false }
 alloy-network-primitives = { version = "2.3.0", default-features = false }
 alloy-pubsub = { version = "2.3.0", default-features = false }
 alloy-transport-ws = { version = "2.3.0", default-features = false }
