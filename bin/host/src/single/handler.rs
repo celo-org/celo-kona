@@ -36,7 +36,7 @@ const fn is_rpc_method_not_found(e: &RpcError<TransportErrorKind>) -> bool {
 /// flood the logs with `Failed to prefetch hint`. Retrying here with exponential backoff turns
 /// that into a bounded, quiet retry that recovers on its own: 100 ms, doubling each attempt,
 /// capped at 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
-pub(crate) fn hint_retry_policy() -> ExponentialBuilder {
+fn hint_retry_policy() -> ExponentialBuilder {
     ExponentialBuilder::default()
         .with_min_delay(Duration::from_millis(100))
         .with_factor(2.0)

@@ -1,9 +1,8 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use super::handler::hint_retry_policy;
 use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler};
 use alloy_provider::RootProvider;
-use backon::Retryable;
+use backon::{ExponentialBuilder, Retryable};
 use celo_alloy_network::Celo;
 use celo_genesis::CeloRollupConfig;
 use clap::Parser;
@@ -222,7 +221,7 @@ impl CeloSingleChainHost {
 
 /// Builds an [`OnlineBlobProvider`] without the panic path in [`OnlineBlobProvider::init`],
 /// which `.expect()`s if the one-off beacon genesis-time / slot-interval load hits a transient
-/// RPC failure. Those two values are fetched here under the shared hint backoff and the provider
+/// RPC failure. Those two values are fetched here under a short bounded backoff and the provider
 /// is constructed directly, so a flaky beacon endpoint is retried quietly instead of panicking
 /// the preimage server (which would abort the whole host run for its consumer). A sustained
 /// outage surfaces as a `SingleChainHostError` after the backoff budget.
@@ -230,7 +229,7 @@ async fn init_blob_provider_with_backoff(
     beacon: OnlineBeaconClient,
 ) -> Result<OnlineBlobProvider<OnlineBeaconClient>, SingleChainHostError> {
     let genesis_time = (|| async { beacon.genesis_time().await })
-        .retry(hint_retry_policy())
+        .retry(beacon_init_retry_policy())
         .when(is_retryable_beacon_err)
         .notify(notify_beacon_retry)
         .await
@@ -242,7 +241,7 @@ async fn init_blob_provider_with_backoff(
         .genesis_time;
 
     let slot_interval = (|| async { beacon.slot_interval().await })
-        .retry(hint_retry_policy())
+        .retry(beacon_init_retry_policy())
         .when(is_retryable_beacon_err)
         .notify(notify_beacon_retry)
         .await
@@ -256,12 +255,31 @@ async fn init_blob_provider_with_backoff(
     Ok(OnlineBlobProvider { beacon_client: beacon, genesis_time, slot_interval })
 }
 
-/// A beacon config read (`genesis_time` / `slot_interval`) can only fail with
-/// [`BeaconClientError::Http`] — a reqwest transport or response-decode error — and on this
-/// idempotent path every such failure is transient, so retry it. The deterministic variants
-/// (slot/blob-not-found, KZG) never arise here and stay terminal.
-const fn is_retryable_beacon_err(err: &BeaconClientError) -> bool {
-    matches!(err, BeaconClientError::Http(_))
+/// Backoff for the one-off beacon genesis/slot reads at provider construction. Deliberately
+/// shorter than the hint-fetch budget: this runs at host startup, so a genuine misconfiguration
+/// (bad URL / auth / non-beacon endpoint) — which cannot always be told apart from a transient
+/// decode at this layer — fails in ~20s instead of hanging, while a real transient blip that
+/// recovers in seconds is still absorbed.
+fn beacon_init_retry_policy() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(200))
+        .with_factor(2.0)
+        .with_max_delay(Duration::from_secs(10))
+        .with_max_times(7)
+}
+
+/// Classifies a beacon config-read failure. These reads (`/eth/v1/beacon/genesis`,
+/// `/eth/v1/config/spec`) never call `error_for_status`, so a bad HTTP status comes back as a
+/// status-less body-decode error. When a status *is* present, retry only the transient ones
+/// (`5xx`, `429`) and let deterministic `4xx` (auth, not-found) fail fast; otherwise retry
+/// transport failures and body/decode errors — the intermittent flaky-endpoint case this guards
+/// against — bounded by the short [`beacon_init_retry_policy`].
+fn is_retryable_beacon_err(err: &BeaconClientError) -> bool {
+    let BeaconClientError::Http(e) = err else { return false };
+    if let Some(status) = e.status() {
+        return status.is_server_error() || status.as_u16() == 429;
+    }
+    e.is_connect() || e.is_timeout() || e.is_body() || e.is_decode()
 }
 
 /// Logs a transient beacon config-read failure and the delay before the next attempt.
