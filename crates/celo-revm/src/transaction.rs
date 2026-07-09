@@ -34,7 +34,7 @@ pub trait CeloTxTr: OpTxTr {
     /// matches op-geth's `feeCurrency == nil` check (Go's nil `common.Address` is
     /// the zero value).
     fn is_fee_in_celo(&self) -> bool {
-        self.fee_currency().is_none_or(|addr| addr == Address::ZERO)
+        crate::non_native_fee_currency(self.fee_currency()).is_none()
     }
 }
 

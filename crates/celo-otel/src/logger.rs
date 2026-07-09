@@ -20,9 +20,7 @@ pub fn init_tracing(
     otel_resource: Resource,
     export_telemetry: bool,
 ) -> Result<()> {
-    if verbosity_level == 0 {
-        ensure!(verbosity_level > 0, "verbosity_level must be greater than 0");
-    }
+    ensure!(verbosity_level > 0, "verbosity_level must be greater than 0");
     let level = match verbosity_level {
         1 => Level::ERROR,
         2 => Level::WARN,

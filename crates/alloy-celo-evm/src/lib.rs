@@ -190,11 +190,6 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         &mut self.inner.inner.0.ctx
     }
 
-    /// Provides a mutable reference to the EVM inspector.
-    pub const fn inspector_mut(&mut self) -> &mut I {
-        &mut self.inner.inner.0.inspector
-    }
-
     /// Creates a FeeCurrencyContext from the current EVM state.
     pub fn create_fee_currency_context(&mut self) -> celo_revm::FeeCurrencyContext
     where

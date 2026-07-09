@@ -102,20 +102,21 @@ impl Cip64Storage {
             "CIP-64 tx succeeded but no receipt data was stored — transact_raw invariant violated"
         );
 
-        // Merge CIP-64 pre/post logs with the main execution logs if available
-        let logs = if let Some(data) = &cip64_data {
-            let info = &data.cip64_info;
+        let base_fee_in_erc20 = cip64_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
+
+        // Merge CIP-64 pre/post logs with the main execution logs if available.
+        // `cip64_data` was just popped, so the log vectors are moved, not cloned.
+        let logs = if let Some(data) = cip64_data {
+            let info = data.cip64_info;
             let capacity = info.logs_pre.len() + main_logs.len() + info.logs_post.len();
             let mut merged = Vec::with_capacity(capacity);
-            merged.extend_from_slice(&info.logs_pre);
+            merged.extend(info.logs_pre);
             merged.extend(main_logs);
-            merged.extend_from_slice(&info.logs_post);
+            merged.extend(info.logs_post);
             merged
         } else {
             main_logs
         };
-
-        let base_fee_in_erc20 = cip64_data.as_ref().and_then(|d| d.cip64_info.base_fee_in_erc20);
         CeloCip64Receipt {
             inner: alloy_consensus::Receipt {
                 status: Eip658Value::Eip658(success),
