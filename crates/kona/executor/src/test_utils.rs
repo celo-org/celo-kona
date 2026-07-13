@@ -462,7 +462,12 @@ async fn fetch_message_passer_account_proof(
             proof.account_proof.into_iter().map(|node| (keccak256(node.as_ref()), node)).collect()
         }
         Err(e) => {
-            tracing::warn!(err = %e, "eth_getProof for the L2ToL1MessagePasser account failed");
+            tracing::warn!(
+                err = %e,
+                "eth_getProof for the L2ToL1MessagePasser account failed — if the build below \
+                 dies with a missing-preimage error, this is the cause: the node must serve \
+                 historical proofs at the parent block (raise --rpc.eth-proof-window)"
+            );
             HashMap::default()
         }
     }
