@@ -319,18 +319,15 @@ fn main() {
             let fee_currency_limits =
                 FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
 
-            // Snapshot the historical-proofs fields before we move rollup_args
-            // into CeloNode::new. Mirrors the OP launcher pattern in
-            // ethereum-optimism/optimism @ kona-node/v1.5.1:
-            //   rust/op-reth/crates/node/src/proof_history.rs
+            // Snapshot the historical-proofs fields before moving rollup_args into CeloNode.
             let RollupArgs {
                 proofs_history,
-                proofs_history_storage_path,
+                history,
                 proofs_history_window,
                 proofs_history_verification_interval,
-                proofs_history_storage_version,
                 ..
             } = rollup_args.clone();
+            let proofs_history_window = proofs_history_window.window;
 
             let blocklist = FeeCurrencyBlocklist::default();
             let node = CeloNode::new(rollup_args)
@@ -338,18 +335,14 @@ fn main() {
                 .with_fee_currency_limits(fee_currency_limits);
 
             // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
-            // set, dispatch on the on-disk schema version (--proofs-history.storage-version)
-            // and hand the matching MDBX store to `launch_celo_node`. When it is unset we
-            // still go through `launch_celo_node` (with `None`), so the Celo RPC modules
-            // are wired identically on every path — the `::<MdbxProofsStorage>` turbofish
-            // there only pins the otherwise-unused store type parameter.
+            // set, dispatch on the on-disk schema version (--proofs-history.storage-version) and
+            // hand the matching MDBX store to `launch_celo_node`. When it is unset we still go
+            // through `launch_celo_node` (with `None`), so the Celo RPC modules are wired
+            // identically on every path. The `::<MdbxProofsStorage>` turbofish there only pins the
+            // otherwise-unused store type parameter.
             if proofs_history {
-                let path = proofs_history_storage_path.ok_or_else(|| {
-                    eyre::eyre!(
-                        "--proofs-history.storage-path is required when --proofs-history is set"
-                    )
-                })?;
-                match proofs_history_storage_version {
+                let path = history.resolve_storage_path(builder.config().datadir().as_ref());
+                match history.storage_version {
                     ProofsStorageVersion::V1 => {
                         info!(target: "reth::cli", "Using on-disk storage for proofs history (v1)");
                         let mdbx =

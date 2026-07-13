@@ -110,7 +110,7 @@ impl CeloSingleChainHost {
                     providers,
                     CeloSingleChainHintHandler,
                 )
-                .with_proactive_hint(proactive_hint_type()),
+                .with_high_level_hint(high_level_hint_type()),
                 rollup_config_json,
             ));
 
@@ -299,15 +299,15 @@ impl OnlineHostBackendCfg for CeloSingleChainHost {
     type Providers = CeloSingleChainProviders;
 }
 
-/// Returns the proactive hint type for the host backend.
+/// Returns the high-level hint type for the host backend.
 #[cfg(feature = "eigenda")]
-const fn proactive_hint_type() -> ExtendedHintType {
+const fn high_level_hint_type() -> ExtendedHintType {
     ExtendedHintType::Original(HintType::L2PayloadWitness)
 }
 
-/// Returns the proactive hint type for the host backend.
+/// Returns the high-level hint type for the host backend.
 #[cfg(not(feature = "eigenda"))]
-const fn proactive_hint_type() -> HintType {
+const fn high_level_hint_type() -> HintType {
     HintType::L2PayloadWitness
 }
 
