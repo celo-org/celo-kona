@@ -73,9 +73,9 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<OpChainSpec>> {
             .wrap_err("merging celo TOML hardforks into genesis")?;
     }
 
-    let gingerbread_block = read_u64(&genesis, "gingerbreadBlock");
-    let cel2_time = read_u64(&genesis, "cel2Time");
-    let upgrade18_time = read_u64(&genesis, "upgrade18Time");
+    let gingerbread_block = read_u64(&genesis, "gingerbreadBlock")?;
+    let cel2_time = read_u64(&genesis, "cel2Time")?;
+    let upgrade18_time = read_u64(&genesis, "upgrade18Time")?;
     let mut spec: OpChainSpec = genesis.into();
     patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time, upgrade18_time);
     reseal_pre_gingerbread_genesis(&mut spec, gingerbread_block);
@@ -191,8 +191,21 @@ fn patch_celo_hardforks(
     }
 }
 
-fn read_u64(genesis: &Genesis, key: &str) -> Option<u64> {
-    genesis.config.extra_fields.get(key).and_then(serde_json::Value::as_u64)
+/// Reads an optional u64 fork-activation value from the genesis `config` extra fields.
+///
+/// A key that is present but not a u64 is an error, not `None`: treating it as absent
+/// would silently leave the corresponding fork unscheduled.
+fn read_u64(genesis: &Genesis, key: &str) -> eyre::Result<Option<u64>> {
+    genesis
+        .config
+        .extra_fields
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| eyre::eyre!("genesis config `{key}` must be a u64, got: {value}"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -305,6 +318,49 @@ mod tests {
         let spec: OpChainSpec = Genesis::default().into();
         let overrides = crate::chainspec::upgrade18_overrides(&spec);
         assert_eq!(overrides, Default::default());
+    }
+
+    /// A present-but-malformed override must stop the node, not be treated as absent —
+    /// on artifact-known chains the artifact constant would otherwise silently win over
+    /// the operator's intended value.
+    #[test]
+    #[should_panic(expected = "upgrade18LiquidityControllerOwner")]
+    fn malformed_upgrade18_address_override_panics() {
+        let mut genesis = Genesis::default();
+        genesis.config.extra_fields.insert(
+            "upgrade18LiquidityControllerOwner".to_string(),
+            serde_json::Value::from("0xnot-an-address"),
+        );
+        let spec: OpChainSpec = genesis.into();
+        crate::chainspec::upgrade18_overrides(&spec);
+    }
+
+    /// Same for the reserve seed — including a JSON number too large for u64, which the
+    /// old parser dropped silently.
+    #[test]
+    #[should_panic(expected = "upgrade18NativeAssetLiquidityAmount")]
+    fn oversized_upgrade18_amount_number_panics() {
+        let mut genesis = Genesis::default();
+        genesis
+            .config
+            .extra_fields
+            .insert("upgrade18NativeAssetLiquidityAmount".to_string(), serde_json::json!(1e24));
+        let spec: OpChainSpec = genesis.into();
+        crate::chainspec::upgrade18_overrides(&spec);
+    }
+
+    /// A malformed fork-activation value is an error, not "fork unscheduled".
+    #[test]
+    fn malformed_fork_time_is_an_error() {
+        let mut genesis = Genesis::default();
+        genesis
+            .config
+            .extra_fields
+            .insert("upgrade18Time".to_string(), serde_json::Value::from("soon"));
+        let err = read_u64(&genesis, "upgrade18Time").unwrap_err();
+        assert!(err.to_string().contains("upgrade18Time"), "got: {err}");
+        // Absent keys are still fine.
+        assert_eq!(read_u64(&genesis, "cel2Time").unwrap(), None);
     }
 
     /// op-geth peers on celo mainnet send this genesis hash in their `eth/Status`
