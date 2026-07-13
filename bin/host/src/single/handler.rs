@@ -6,7 +6,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
-use alloy_rpc_types::{Block, debug::ExecutionWitness};
+use alloy_rpc_types::Block;
 use alloy_transport::{RpcError, TransportErrorKind};
 use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
@@ -21,13 +21,7 @@ use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::time::Duration;
-use tracing::{info, warn};
-
-/// Returns `true` if the RPC error indicates the node does not support the requested method
-/// (JSON-RPC error code -32601: Method not found).
-const fn is_rpc_method_not_found(e: &RpcError<TransportErrorKind>) -> bool {
-    matches!(e, RpcError::ErrorResp(p) if p.code == -32601)
-}
+use tracing::warn;
 
 /// Backoff schedule for retrying a hint fetch when its underlying RPC call fails transiently.
 ///
@@ -72,6 +66,37 @@ fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
     err.downcast_ref::<RpcError<TransportErrorKind>>().is_some_and(is_retryable_rpc)
 }
 
+/// High-level hints are retained by kona-host and retried from its `get_preimage` loop. Their inner
+/// retry budget must stay short so the loop can promptly try the fine-grained fallback.
+const fn is_high_level_hint(ty: HintType) -> bool {
+    matches!(ty, HintType::L2PayloadWitness)
+}
+
+const HIGH_LEVEL_HINT_FAILURE_DELAY: Duration = Duration::from_millis(100);
+
+/// Prevents kona-host's retained high-level hint loop from immediately repeating terminal errors.
+async fn throttle_terminal_high_level_failure(ty: HintType, err: &anyhow::Error) {
+    if is_high_level_hint(ty) && !is_retryable_transport_err(err) {
+        tokio::time::sleep(HIGH_LEVEL_HINT_FAILURE_DELAY).await;
+    }
+}
+
+/// Selects the inner retry policy for an original Kona hint.
+///
+/// The retained payload-witness hint gets one short transient retry. Terminal failures are delayed
+/// separately before returning so kona-host can try the fine-grained hint without hot-spinning.
+/// Other hints keep the longer outage-tolerance policy.
+fn original_hint_retry_policy(ty: HintType) -> ExponentialBuilder {
+    if is_high_level_hint(ty) {
+        ExponentialBuilder::default()
+            .with_min_delay(HIGH_LEVEL_HINT_FAILURE_DELAY)
+            .with_max_delay(HIGH_LEVEL_HINT_FAILURE_DELAY)
+            .with_max_times(1)
+    } else {
+        hint_retry_policy()
+    }
+}
+
 /// Retry only the transient EigenDA proxy-request failures. hokulea surfaces these as opaque
 /// `anyhow` strings (no typed error to match on), so match the transient ones by message:
 /// - the request send error and non-teapot `5xx` ("failed to fetch eigenda encoded payload…");
@@ -113,19 +138,12 @@ impl HintHandler for CeloSingleChainHintHandler {
         match &hint.ty {
             ExtendedHintType::Original(ty) => {
                 let ty = *ty;
-                // L1/L2 RPC path: retry only genuine transport failures, not deterministic
-                // JSON-RPC errors.
-                (|| {
-                    Self::fetch_original_hint(
-                        Hint { ty, data: hint.data.clone() },
-                        cfg,
-                        providers,
-                        kv.clone(),
-                    )
-                })
-                .retry(hint_retry_policy())
-                .when(is_retryable_transport_err)
-                .notify(notify_hint_retry)
+                Self::fetch_original_hint_with_retry(
+                    Hint { ty, data: hint.data.clone() },
+                    cfg,
+                    providers,
+                    kv,
+                )
                 .await
             }
             ExtendedHintType::EigenDACert => {
@@ -157,23 +175,44 @@ impl HintHandler for CeloSingleChainHintHandler {
         providers: &<Self::Cfg as OnlineHostBackendCfg>::Providers,
         kv: SharedKeyValueStore,
     ) -> Result<()> {
-        (|| {
-            Self::fetch_original_hint(
-                Hint { ty: hint.ty, data: hint.data.clone() },
-                cfg,
-                providers,
-                kv.clone(),
-            )
-        })
-        .retry(hint_retry_policy())
-        .when(is_retryable_transport_err)
-        .notify(notify_hint_retry)
+        Self::fetch_original_hint_with_retry(
+            Hint { ty: hint.ty, data: hint.data },
+            cfg,
+            providers,
+            kv,
+        )
         .await
     }
 }
 
 /// Implements the fetchers for each hint type.
 impl CeloSingleChainHintHandler {
+    /// Fetches an original hint with bounded retries for transient RPC failures.
+    ///
+    /// High-level hints get only one short inner retry so kona-host can promptly try its
+    /// fine-grained fallback while retaining the hint for the next preimage loop.
+    async fn fetch_original_hint_with_retry(
+        hint: Hint<HintType>,
+        cfg: &<Self as HintHandler>::Cfg,
+        providers: &<<Self as HintHandler>::Cfg as OnlineHostBackendCfg>::Providers,
+        kv: SharedKeyValueStore,
+    ) -> Result<()> {
+        let Hint { ty, data } = hint;
+        let result = (|| {
+            Self::fetch_original_hint(Hint { ty, data: data.clone() }, cfg, providers, kv.clone())
+        })
+        .retry(original_hint_retry_policy(ty))
+        .when(is_retryable_transport_err)
+        .notify(notify_hint_retry)
+        .await;
+
+        if let Err(err) = &result {
+            throttle_terminal_high_level_failure(ty, err).await;
+        }
+
+        result
+    }
+
     /// fetch_original_hint fetches and processes an original hint.
     async fn fetch_original_hint(
         hint: Hint<HintType>,
@@ -454,26 +493,12 @@ impl CeloSingleChainHintHandler {
                 let payload_attributes: OpPayloadAttributes =
                     serde_json::from_slice(&hint.data[32..])?;
 
-                let execute_payload_response = match providers
-                    .l2
-                    .client()
-                    .request::<(B256, OpPayloadAttributes), ExecutionWitness>(
-                        "debug_executePayload",
-                        (parent_block_hash, payload_attributes),
-                    )
-                    .await
-                {
-                    Ok(response) => response,
-                    Err(e) => {
-                        info!(
-                            target: "single_hint_handler",
-                            err = %e,
-                            method_not_found = is_rpc_method_not_found(&e),
-                            "debug_executePayload unavailable, skipping witness preimage collection"
-                        );
-                        return Ok(());
-                    }
-                };
+                let execute_payload_response = crate::backend::util::fetch_execution_witness(
+                    providers.l2.client(),
+                    parent_block_hash,
+                    payload_attributes,
+                )
+                .await?;
 
                 let preimages = execute_payload_response
                     .state
@@ -492,5 +517,42 @@ impl CeloSingleChainHintHandler {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_rpc_client::RpcClient;
+    use alloy_transport::mock::{Asserter, MockResponse};
+    use backon::BackoffBuilder;
+    use tokio::time::Instant;
+
+    #[test]
+    fn payload_witness_limits_inner_backoff_to_one_short_retry() {
+        let mut backoff = original_hint_retry_policy(HintType::L2PayloadWitness).build();
+
+        assert_eq!(backoff.next(), Some(Duration::from_millis(100)));
+        assert_eq!(backoff.next(), None);
+    }
+
+    #[tokio::test]
+    async fn method_not_found_payload_witness_is_throttled() {
+        let asserter = Asserter::new();
+        asserter.push(MockResponse::method_not_found());
+        let client = RpcClient::mocked(asserter);
+        let error = crate::backend::util::fetch_execution_witness(
+            &client,
+            B256::ZERO,
+            OpPayloadAttributes::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(!is_retryable_transport_err(&error));
+
+        let started = Instant::now();
+        throttle_terminal_high_level_failure(HintType::L2PayloadWitness, &error).await;
+
+        assert!(started.elapsed() >= Duration::from_millis(100));
     }
 }
