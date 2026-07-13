@@ -1,0 +1,40 @@
+# Upgrade 18 (CGT v2) byte-identity gate — celo-blockchain-planning#1417.
+#
+# Rebuilds a fresh v6.0.0 CGT genesis from the artifact's pinned celo-org/optimism
+# commit and asserts the activation artifact reproduces it byte-for-byte (see
+# scripts/upgrade18_genesis_parity/). Both sides are pinned, so this only needs to
+# run when the artifact (or the gate) changes.
+name: Upgrade 18 genesis parity
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - crates/alloy-celo-evm/res/predeploys.json
+      - crates/alloy-celo-evm/src/block/upgrade18_data.rs
+      - scripts/upgrade18_genesis_parity/**
+      - .github/workflows/upgrade18_genesis_parity.yml
+  pull_request:
+    paths:
+      - crates/alloy-celo-evm/res/predeploys.json
+      - crates/alloy-celo-evm/src/block/upgrade18_data.rs
+      - scripts/upgrade18_genesis_parity/**
+      - .github/workflows/upgrade18_genesis_parity.yml
+  workflow_dispatch:
+
+jobs:
+  genesis-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1.4.0
+        with:
+          # The forge release the artifact was generated with. The compared bytecode
+          # is pinned by solc + foundry.toml, not the forge version, but matching it
+          # removes one variable when the gate fails.
+          version: v1.2.3
+      - name: Verify artifact against a fresh v6.0.0 genesis
+        run: scripts/upgrade18_genesis_parity/run.sh
