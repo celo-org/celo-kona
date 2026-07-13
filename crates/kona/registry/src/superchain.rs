@@ -3,9 +3,22 @@
 use super::ChainList;
 use alloy_primitives::map::HashMap;
 
-const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
-const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
-const CELO_MAINNET_CHAIN_ID: u64 = 42220;
+/// Chain ID of the Celo Chaos testnet.
+pub const CELO_CHAOS_CHAIN_ID: u64 = 11162320;
+/// Chain ID of Celo Sepolia.
+pub const CELO_SEPOLIA_CHAIN_ID: u64 = 11142220;
+/// Chain ID of Celo Mainnet.
+pub const CELO_MAINNET_CHAIN_ID: u64 = 42220;
+
+/// Returns `true` for the known Celo chain IDs (Mainnet, Sepolia, Chaos).
+///
+/// Kona-side single source of the "is this a Celo chain?" predicate; the proof
+/// boot loader keys its Celo-specific derivation overrides (Fjord sequencer
+/// drift, pre-Jovian BPO gating) off this set, so a new Celo network must be
+/// added here to derive correctly via the preimage-oracle fallback.
+pub const fn is_celo_chain(chain_id: u64) -> bool {
+    matches!(chain_id, CELO_MAINNET_CHAIN_ID | CELO_SEPOLIA_CHAIN_ID | CELO_CHAOS_CHAIN_ID)
+}
 
 /// Fjord max sequencer drift for every Celo chain (Mainnet, Sepolia, Chaos).
 ///
@@ -74,10 +87,7 @@ impl Registry {
 
                 // chain_config.as_rollup_config() copies da_challenge_address from
                 // alt_da_config.da_challenge_address, but the node RPC rollup config does not.
-                if rollup.l2_chain_id == CELO_CHAOS_CHAIN_ID ||
-                    rollup.l2_chain_id == CELO_SEPOLIA_CHAIN_ID ||
-                    rollup.l2_chain_id == CELO_MAINNET_CHAIN_ID
-                {
+                if is_celo_chain(rollup.l2_chain_id.id()) {
                     rollup.da_challenge_address = None;
                 }
                 // Wrap RollupConfig to CeloRollupConfig

@@ -472,14 +472,7 @@ impl CeloTxEnvelope {
 
     /// Reference to transaction hash. Used to identify transaction.
     pub fn hash(&self) -> &B256 {
-        match self {
-            Self::Legacy(tx) => tx.hash(),
-            Self::Eip2930(tx) => tx.hash(),
-            Self::Eip1559(tx) => tx.hash(),
-            Self::Eip7702(tx) => tx.hash(),
-            Self::Cip64(tx) => tx.hash(),
-            Self::Deposit(tx) => tx.hash_ref(),
-        }
+        self.tx_hash()
     }
 
     /// Return the length of the inner txn, including type byte length

@@ -7,7 +7,7 @@ use crate::{
     },
     contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
-    fee_currency_context::FeeCurrencyContext,
+    fee_currency_context::{FeeCurrencyContext, non_native_fee_currency},
     transaction::{CeloTxTr, Cip64Info},
     units::{Fc, FcU256, NativeU256},
 };
@@ -23,13 +23,13 @@ use revm::{
     Database, Inspector,
     context::{LocalContextTr, journal::JournalInner, result::InvalidTransaction},
     context_interface::{
-        Block, Cfg, ContextSetters, ContextTr, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, Transaction,
         journaled_state::account::JournaledAccountTr,
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, MainnetHandler, PrecompileProvider, SYSTEM_ADDRESS,
-        evm::FrameTr, handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
+        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS, evm::FrameTr,
+        handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
         validation::validate_priority_fee_tx,
     },
     inspector::InspectorHandler,
@@ -81,7 +81,6 @@ fn is_legacy_chain_id_exception(
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
-    pub mainnet: MainnetHandler<EVM, ERROR, FRAME>,
     pub op: op_revm::handler::OpHandler<EVM, ERROR, FRAME>,
     /// When set, [`Self::execution_result`] skips `commit_tx` so the transaction's journal
     /// entries survive for an enclosing `checkpoint` / `checkpoint_revert` to commit or revert.
@@ -99,7 +98,6 @@ impl<EVM, ERROR, FRAME> core::fmt::Debug for CeloHandler<EVM, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> CeloHandler<EVM, ERROR, FRAME> {
     pub fn new() -> Self {
         Self {
-            mainnet: MainnetHandler::default(),
             op: op_revm::handler::OpHandler::new(),
             no_commit: false,
         }
@@ -304,12 +302,10 @@ where
         .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
 
         // Collect logs from the system call to be included in the final receipt
-        let mut tx = evm.ctx().tx().clone();
-        let info = tx.cip64_tx_info.as_mut().unwrap();
+        let info = evm.ctx().tx.cip64_tx_info.as_mut().unwrap();
         info.credit_gas_used = credit_gas_used;
         info.credit_gas_refunded = credit_gas_refunded;
         info.logs_post = logs;
-        evm.ctx().set_tx(tx);
         self.log_and_warn_gas_cost(evm, fee_currency)?;
         Ok(())
     }
@@ -320,12 +316,15 @@ where
         evm: &mut CeloEvm<DB, INSP, P>,
         fee_currency: Option<Address>,
     ) -> Result<(), ERROR> {
-        let cip64_info = evm.ctx().tx().cip64_tx_info.clone().unwrap();
-
+        // Compute the intrinsic gas cost first so the `evm.ctx()` borrow below can live to the
+        // end of the function without conflicting with the `fee_currency_context` access here.
         let intrinsic_gas_cost = evm
             .fee_currency_context
             .currency_intrinsic_gas_cost(fee_currency)
             .map_err(|e| InvalidTransaction::from(e.to_string()))?;
+
+        let ctx = evm.ctx();
+        let info = ctx.tx().cip64_tx_info.as_ref().unwrap();
 
         // Log the gas summary for debugging and verification
         // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
@@ -336,18 +335,18 @@ where
             credit(gas_used={}, gas_refunded={}), \
             intrinsic_gas={}",
             fee_currency,
-            cip64_info.debit_gas_used,
-            cip64_info.debit_gas_refunded,
-            cip64_info.credit_gas_used,
-            cip64_info.credit_gas_refunded,
+            info.debit_gas_used,
+            info.debit_gas_refunded,
+            info.credit_gas_used,
+            info.credit_gas_refunded,
             intrinsic_gas_cost
         );
 
         // Compare raw gas (before refunds) against intrinsic gas limit
-        let total_raw_gas = cip64_info.debit_gas_used
-            + cip64_info.debit_gas_refunded
-            + cip64_info.credit_gas_used
-            + cip64_info.credit_gas_refunded;
+        let total_raw_gas = info.debit_gas_used
+            + info.debit_gas_refunded
+            + info.credit_gas_used
+            + info.credit_gas_refunded;
         if total_raw_gas > intrinsic_gas_cost {
             if total_raw_gas > intrinsic_gas_cost * 2 {
                 warn!(
@@ -433,7 +432,7 @@ where
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
         // types; we narrow back to `u128` at this boundary rather than widening them.
-        let mut tx = evm.ctx().tx().clone();
+        let tx = &mut evm.ctx().tx;
         tx.cip64_tx_info = Some(Cip64Info {
             debit_gas_used,
             debit_gas_refunded,
@@ -444,7 +443,6 @@ where
             base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
         });
         tx.effective_gas_price = Some(effective_gas_price.into_inner());
-        evm.ctx().set_tx(tx);
 
         Ok(())
     }
@@ -675,7 +673,7 @@ where
 
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
-        if fee_currency.is_some_and(|fc| fc != Address::ZERO) {
+        if non_native_fee_currency(fee_currency).is_some() {
             let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)
@@ -885,13 +883,13 @@ where
                 };
                 validate_priority_fee_tx(max_fee, max_priority_fee, base_fee_for_check, false)?;
                 // CIP-64-specific validation (chain-ID + priority fee) is complete.
-                // Fall through to `self.mainnet.validate_env(evm)` for generic
+                // Fall through to `self.op.mainnet.validate_env(evm)` for generic
                 // checks (block gas limit, EIP-7825 gas cap, EIP-3860 initcode
                 // size). CIP-64 maps to `Custom` in revm, so its gas-price
                 // match arm is a no-op and chain-ID is re-checked harmlessly.
             }
             _ => {
-                // Ethereum's tx types will be handled in the "self.mainnet.validate_env(evm)" call below
+                // Ethereum's tx types will be handled in the "self.op.mainnet.validate_env(evm)" call below
                 // where not only those transactions are validated, but also the block specifics.
             }
         }
@@ -905,13 +903,13 @@ where
             // preserving the original value to restore afterward
             let original_tx_chain_id_check = evm.ctx().cfg().tx_chain_id_check;
             evm.ctx().modify_cfg(|cfg| cfg.tx_chain_id_check = false);
-            let result = self.mainnet.validate_env(evm);
+            let result = self.op.mainnet.validate_env(evm);
             evm.ctx()
                 .modify_cfg(|cfg| cfg.tx_chain_id_check = original_tx_chain_id_check);
             return result;
         }
 
-        self.mainnet.validate_env(evm)
+        self.op.mainnet.validate_env(evm)
     }
 
     fn validate_against_state_and_deduct_caller(
@@ -968,15 +966,11 @@ where
         // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
         // rather than `None`. Without this the receipt encoding would differ from
         // the historical behavior and break receipt roots.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo {
-            let mut tx = evm.ctx().tx().clone();
-            tx.cip64_tx_info = Some(Cip64Info {
+        if evm.ctx().tx().is_cip64() && fees_in_celo {
+            evm.ctx().tx.cip64_tx_info = Some(Cip64Info {
                 base_fee_in_erc20: Some(basefee),
                 ..Default::default()
             });
-            evm.ctx().set_tx(tx);
         }
 
         // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
@@ -1017,7 +1011,7 @@ where
         // use the native reimbursement path here.
         let fees_in_celo = evm.ctx().tx().is_fee_in_celo();
         if fees_in_celo {
-            self.mainnet.reimburse_caller(evm, exec_result)?;
+            self.op.mainnet.reimburse_caller(evm, exec_result)?;
         }
 
         let context = evm.ctx();
@@ -1055,7 +1049,7 @@ where
             return Ok(());
         }
 
-        self.mainnet.reward_beneficiary(evm, frame_result)?;
+        self.op.mainnet.reward_beneficiary(evm, frame_result)?;
         let basefee = evm.ctx().block().basefee() as u128;
 
         // If the transaction is not a deposit transaction, fees are paid out
@@ -1073,7 +1067,7 @@ where
 
         // EIP-8037 reservoir TODO (inert until an Amsterdam-equivalent OpSpecId
         // activates; `gas().used()` is reservoir-free before that): the caller refund
-        // (`reimburse_caller`) and the coinbase tip (`self.mainnet.reward_beneficiary`
+        // (`reimburse_caller`) and the coinbase tip (`self.op.mainnet.reward_beneficiary`
         // above) delegate to the mainnet handler and inherit its reservoir handling, but
         // the celo-specific base-fee and operator-fee distribution below meters on raw
         // `frame_result.gas().used()`. Once the reservoir can be non-zero, `used()` must

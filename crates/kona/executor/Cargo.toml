@@ -62,6 +62,7 @@ alloy-rpc-types-engine = { workspace = true, optional = true }
 alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"], optional = true }
 alloy-rpc-client = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
@@ -78,6 +79,7 @@ test-utils = [
     "dep:alloy-provider",
     "dep:alloy-rpc-client",
     "dep:alloy-transport-http",
+    "dep:futures-util",
     "kona-executor/test-utils",
     # `Cip64Storage::all_entries` and its accessor are feature-gated to avoid
     # unbounded memory growth in production binaries; enable them here so the

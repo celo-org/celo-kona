@@ -42,7 +42,6 @@ pub struct CeloEspressoConfig {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, derive_more::Deref, derive_more::DerefMut)]
-// #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 /// CeloRollupConfig is thin wrapper around RollupConfig that ensures that deserialization can
 /// handle config containing the cel2_time field.

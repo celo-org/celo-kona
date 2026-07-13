@@ -9,7 +9,7 @@ use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams, eip7840::Blob
 use alloy_evm::EvmEnv;
 use alloy_primitives::U256;
 use celo_genesis::CeloRollupConfig;
-use celo_revm::constants::{CELO_EIP_1559_BASE_FEE_FLOOR, CELO_MAX_CODE_SIZE};
+use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
@@ -48,12 +48,14 @@ where
     }
 
     /// Returns the active [CfgEnv] for the executor.
+    ///
+    /// The Celo contract-code-size limit is not set here: `CeloEvmFactory::build_evm`
+    /// stamps `CELO_MAX_CODE_SIZE` onto every EVM it creates, which is the only way
+    /// this env is consumed.
     pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
-        let mut cfg_env = CfgEnv::new()
+        CfgEnv::new()
             .with_chain_id(self.config.l2_chain_id.into())
-            .with_spec_and_mainnet_gas_params(self.config.spec_id(timestamp));
-        cfg_env.limit_contract_code_size = Some(CELO_MAX_CODE_SIZE);
-        cfg_env
+            .with_spec_and_mainnet_gas_params(self.config.spec_id(timestamp))
     }
 
     fn next_block_base_fee(
