@@ -30,7 +30,9 @@
 //! celo-blockchain-planning#1405). Resolution order: override, then per-network
 //! constant. **A scheduled fork with an unresolvable parameter fails block execution**
 //! at the boundary — the chain halts loudly instead of silently skipping the migration
-//! or seeding a zero reserve.
+//! or seeding a zero reserve. An explicitly zero value is rejected the same way: no
+//! placeholder has a legitimate zero, so a zeroed override (operator typo) must not
+//! reach state.
 //!
 //! The reserve seed is the migration's single deliberate "mint native CELO" step; it
 //! backs the CELO held by the legacy `OptimismPortal` escrow on L1. Balances are applied
@@ -115,7 +117,7 @@ impl Upgrade18Overrides {
 /// rather than skipping the migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Upgrade18ParamMissing {
-    /// The unresolvable placeholder.
+    /// The unresolvable placeholder (absent, or resolved to the illegitimate value zero).
     pub param: Upgrade18Param,
     /// The chain the resolution ran for.
     pub chain_id: u64,
@@ -125,9 +127,9 @@ impl core::fmt::Display for Upgrade18ParamMissing {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "Upgrade 18 (CGT v2) is scheduled but artifact param `{}` is unresolved for \
-             chain {} — supply it via Upgrade18Overrides or a regenerated predeploys \
-             artifact before the activation timestamp",
+            "Upgrade 18 (CGT v2) is scheduled but artifact param `{}` is unresolved (absent \
+             or zero) for chain {} — supply it via Upgrade18Overrides or a regenerated \
+             predeploys artifact before the activation timestamp",
             self.param.name(),
             self.chain_id
         )
@@ -156,10 +158,18 @@ fn resolve_state_diff(
     overrides: &Upgrade18Overrides,
 ) -> Result<Vec<ResolvedAccountDiff>, Upgrade18ParamMissing> {
     let resolve = |param: Upgrade18Param| {
-        overrides
+        let value = overrides
             .get(param)
             .or_else(|| super::upgrade18_data::known_param(chain_id, param))
-            .ok_or(Upgrade18ParamMissing { param, chain_id })
+            .ok_or(Upgrade18ParamMissing { param, chain_id })?;
+        // No placeholder has a legitimate zero value: a zero reserve seed leaves every
+        // CELO escrowed on L1 unbacked, and a zero address bricks the receiving contract
+        // (ownerless LiquidityController, bridge pointing at 0x0). Treat an explicit
+        // zero — most plausibly an operator typo — exactly like an absent value.
+        if value.is_zero() {
+            return Err(Upgrade18ParamMissing { param, chain_id });
+        }
+        Ok(value)
     };
 
     let mut diffs = Vec::with_capacity(RAW_PREDEPLOYS.len() * 2);
@@ -481,6 +491,22 @@ mod tests {
             seed,
             "reserve seed must be minted exactly once"
         );
+    }
+
+    /// An explicit zero is as fatal as an absent value: a zero reserve seed leaves bridged
+    /// CELO unbacked and a zero address bricks the receiving contract, so a zeroed
+    /// override (operator typo) must fail resolution, not reach state.
+    #[test]
+    fn zero_valued_params_are_rejected() {
+        let mut overrides = full_overrides();
+        overrides.native_asset_liquidity_amount = Some(U256::ZERO);
+        let err = resolve_state_diff(1337, &overrides).unwrap_err();
+        assert_eq!(err.param, Upgrade18Param::NativeAssetLiquidityAmount);
+
+        let mut overrides = full_overrides();
+        overrides.liquidity_controller_owner = Some(Address::ZERO);
+        let err = resolve_state_diff(1337, &overrides).unwrap_err();
+        assert_eq!(err.param, Upgrade18Param::LiquidityControllerOwner);
     }
 
     /// A scheduled activation with unresolvable params fails the boundary block loudly
