@@ -367,17 +367,9 @@ where
     > {
         let evm = self.evm_for_block(db, block.header())?;
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
-        // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
-        let builder = R::from(evm.cip64_storage().clone());
-
-        // Wrap in the Celo executor so the Upgrade 18 (CGT v2) transition also runs on
-        // this path — mirroring `CeloBlockExecutorFactory::create_executor`.
-        Ok(self.executor_factory.wrap_executor(OpBlockExecutor::new(
-            evm,
-            ctx,
-            self.executor_factory.spec(),
-            builder,
-        )))
+        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
+        // on this path.
+        Ok(self.executor_factory.create_wrapped_executor(evm, ctx))
     }
 
     fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
@@ -403,18 +395,12 @@ where
         let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
-        let builder = R::from(evm.cip64_storage().clone());
-        // Wrap in the Celo executor so the Upgrade 18 (CGT v2) transition also runs on
-        // the sequencing path — op-reth's payload builder obtains its block builder
-        // through this method, so a raw `OpBlockExecutor` here would seal payloads
-        // *without* the transition while import/validation applies it (consensus split
-        // at the activation block).
-        let executor = self.executor_factory.wrap_executor(OpBlockExecutor::new(
-            evm,
-            ctx.clone(),
-            self.executor_factory.spec(),
-            builder,
-        ));
+        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
+        // on the sequencing path — op-reth's payload builder obtains its block builder
+        // through this method, so an executor built outside the factory here would seal
+        // payloads *without* the transition while import/validation applies it
+        // (consensus split at the activation block).
+        let executor = self.executor_factory.create_wrapped_executor(evm, ctx.clone());
 
         Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,

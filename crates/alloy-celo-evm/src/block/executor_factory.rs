@@ -102,21 +102,35 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         &self.evm_factory
     }
 
-    /// Wraps a raw [`OpBlockExecutor`] into the [`CeloBlockExecutor`] carrying this
-    /// factory's Upgrade 18 (CGT v2) activation values.
+    /// Builds the [`CeloBlockExecutor`] for the given EVM and block context: binds a
+    /// fresh receipt builder to the EVM's own [`Cip64Storage`], constructs the inner
+    /// [`OpBlockExecutor`] against this factory's spec, and wraps it with the factory's
+    /// Upgrade 18 (CGT v2) activation values.
     ///
-    /// This is the only place the wrap rule lives: every execution path (import,
-    /// sequencing, proof) must obtain its executor through it — a raw
-    /// [`OpBlockExecutor`] on any path would skip the Upgrade 18 transition there and
-    /// split consensus at the activation block.
-    pub fn wrap_executor<'a, E>(
-        &'a self,
-        inner: OpBlockExecutor<E, R, &'a Spec>,
-    ) -> CeloBlockExecutor<E, R, &'a Spec>
+    /// This is the only place executors are constructed: every execution path (import,
+    /// sequencing, proof, post-exec) must come through it, directly or via
+    /// [`BlockExecutorFactory::create_executor`] — an [`OpBlockExecutor`] built anywhere
+    /// else would skip the Upgrade 18 transition on that path and split consensus at the
+    /// activation block.
+    pub fn create_wrapped_executor<DB, I>(
+        &self,
+        evm: <CeloEvmFactory as EvmFactory>::Evm<DB, I>,
+        ctx: OpBlockExecutionCtx,
+    ) -> CeloBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &Spec>
     where
-        R: OpReceiptBuilder,
+        DB: StateDB,
+        I: Inspector<CeloContext<DB>>,
+        R: OpReceiptBuilder + From<Cip64Storage>,
+        Spec: OpHardforks + Clone,
     {
-        CeloBlockExecutor::new(inner, self.upgrade18_time, self.upgrade18_overrides.clone())
+        // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
+        // long-lived receipt builder or storage handle — both are scoped to this executor.
+        let builder = R::from(evm.cip64_storage().clone());
+        CeloBlockExecutor::new(
+            OpBlockExecutor::new(evm, ctx, &self.spec, builder),
+            self.upgrade18_time,
+            self.upgrade18_overrides.clone(),
+        )
     }
 }
 
@@ -154,9 +168,6 @@ where
         DB: StateDB,
         I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>>,
     {
-        // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
-        // long-lived receipt builder or storage handle — both are scoped to this executor.
-        let builder = R::from(evm.cip64_storage().clone());
-        self.wrap_executor(OpBlockExecutor::new(evm, ctx, &self.spec, builder))
+        self.create_wrapped_executor(evm, ctx)
     }
 }
