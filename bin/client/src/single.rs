@@ -6,7 +6,6 @@ use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_derive::CeloEthereumDataSource;
 use celo_driver::CeloDriver;
-use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use core::fmt::Debug;
 #[cfg(feature = "eigenda")]
@@ -41,11 +40,10 @@ where
         Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
-    // Wrap RollupConfig to CeloRollupConfig, carrying the Espresso batch-authentication settings
-    // resolved during boot.
-    let mut celo_rollup_config = CeloRollupConfig::new(boot.op_boot_info.rollup_config.clone());
-    celo_rollup_config.espresso = boot.espresso;
-    let celo_rollup_config = Arc::new(celo_rollup_config);
+    // Reassemble the full CeloRollupConfig (Espresso + Upgrade 18 settings resolved during
+    // boot). Building it from the OP config alone would zero the Celo-only fields and execute
+    // the Upgrade 18 boundary block without the CGT v2 transition the node applies.
+    let celo_rollup_config = Arc::new(boot.celo_rollup_config());
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
     let safe_head_hash =

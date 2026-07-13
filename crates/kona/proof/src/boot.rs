@@ -3,7 +3,7 @@
 //! TODO: When Celo network which we want to use for CI is included in [superchain-registry], we can
 //! remove `CeloBootInfo`.
 
-use alloy_primitives::{B256, address};
+use alloy_primitives::{Address, B256, U256, address};
 use celo_genesis::{CeloEspressoConfig, CeloRollupConfig};
 use celo_registry::{CELO_FJORD_MAX_SEQUENCER_DRIFT, ROLLUP_CONFIGS, is_celo_chain};
 use kona_genesis::RollupConfig;
@@ -32,6 +32,27 @@ pub struct CeloBootInfo {
     /// which has no place for these fields, so they are tracked alongside it here.
     #[serde(default)]
     pub espresso: CeloEspressoConfig,
+    /// Activation timestamp (L2) for Upgrade 18 (CGT v2); `None` = not scheduled.
+    ///
+    /// Sourced from the [`CeloRollupConfig`] like [`espresso`](Self::espresso). Dropping it at
+    /// boot would make the proof execute the activation boundary block *without* the CGT v2
+    /// irregular state transition the node applies — a guaranteed state-root mismatch on every
+    /// proof from the boundary block on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade18_time: Option<u64>,
+    /// Overrides `liquidityControllerOwner` in the Upgrade 18 activation artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade18_liquidity_controller_owner: Option<Address>,
+    /// Overrides `celoTokenL1` in the Upgrade 18 activation artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade18_celo_token_l1: Option<Address>,
+    /// Overrides `celoGasBridgeL1` in the Upgrade 18 activation artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade18_celo_gas_bridge_l1: Option<Address>,
+    /// Overrides `nativeAssetLiquidityAmount` (the reserve seed, in wei) in the Upgrade 18
+    /// activation artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade18_native_asset_liquidity_amount: Option<U256>,
 }
 
 impl CeloBootInfo {
@@ -105,6 +126,11 @@ impl CeloBootInfo {
         // Pin the Espresso settings for the known Celo chains to the program-baked values, so a
         // proof always derives with the Espresso params bound by its verification key rather than
         // any host-supplied value.
+        //
+        // TODO(upgrade18): when Upgrade 18 (CGT v2) is scheduled on a production chain, pin its
+        // activation params for the known chain IDs the same way — in particular
+        // `upgrade18_native_asset_liquidity_amount`, which mints the reserve seed backing all
+        // bridged CELO, must be bound by the verification key rather than host-supplied.
         enforce_celo_espresso(&mut celo_rollup_config.espresso, chain_id);
         // Reject internally inconsistent Espresso settings up front, so a misconfiguration fails
         // fast here instead of corrupting derivation. This covers `espresso_time` set without a
@@ -114,8 +140,18 @@ impl CeloBootInfo {
         celo_rollup_config.validate_espresso().map_err(|e| {
             OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e))
         })?;
-        let espresso = celo_rollup_config.espresso;
-        let mut rollup_config = celo_rollup_config.op_rollup_config;
+        // Exhaustive destructuring: a Celo-only field added to `CeloRollupConfig` in the future
+        // must be threaded through this boot info too (or consciously dropped here) — the
+        // compiler will point at this spot.
+        let CeloRollupConfig {
+            op_rollup_config: mut rollup_config,
+            espresso,
+            upgrade18_time,
+            upgrade18_liquidity_controller_owner,
+            upgrade18_celo_token_l1,
+            upgrade18_celo_gas_bridge_l1,
+            upgrade18_native_asset_liquidity_amount,
+        } = celo_rollup_config;
 
         // Celo chains run with a non-default Fjord max sequencer drift (2892). The embedded
         // registry stamps it onto every Celo rollup config, but a config arriving via the
@@ -172,7 +208,31 @@ impl CeloBootInfo {
                 l1_config,
             },
             espresso,
+            upgrade18_time,
+            upgrade18_liquidity_controller_owner,
+            upgrade18_celo_token_l1,
+            upgrade18_celo_gas_bridge_l1,
+            upgrade18_native_asset_liquidity_amount,
         })
+    }
+
+    /// Reassembles the full [`CeloRollupConfig`]: the upstream OP config carried by
+    /// [`BootInfo`] plus the Celo-only settings tracked alongside it here.
+    ///
+    /// This is what the executor must be configured with. Building a [`CeloRollupConfig`]
+    /// from `op_boot_info.rollup_config` alone (`CeloRollupConfig::new`) silently zeroes
+    /// `upgrade18_time` and the activation-artifact params, which skips the CGT v2
+    /// transition in the proof while the node applies it.
+    pub fn celo_rollup_config(&self) -> CeloRollupConfig {
+        CeloRollupConfig {
+            op_rollup_config: self.op_boot_info.rollup_config.clone(),
+            espresso: self.espresso,
+            upgrade18_time: self.upgrade18_time,
+            upgrade18_liquidity_controller_owner: self.upgrade18_liquidity_controller_owner,
+            upgrade18_celo_token_l1: self.upgrade18_celo_token_l1,
+            upgrade18_celo_gas_bridge_l1: self.upgrade18_celo_gas_bridge_l1,
+            upgrade18_native_asset_liquidity_amount: self.upgrade18_native_asset_liquidity_amount,
+        }
     }
 }
 
@@ -281,6 +341,45 @@ mod tests {
             enforce_celo_espresso(&mut espresso, chain_id);
             assert_eq!(espresso, expected, "chain {chain_id} must derive with the baked Espresso");
         }
+    }
+
+    /// `celo_rollup_config` must carry every Celo-only field into the executor's config —
+    /// this is the seam where dropping one silently disables the corresponding consensus
+    /// rule in the proof (the Upgrade 18 transition, most critically).
+    #[test]
+    fn celo_rollup_config_carries_all_celo_fields() {
+        use alloy_primitives::U256;
+
+        let espresso = CeloEspressoConfig {
+            espresso_time: Some(7),
+            batch_authenticator_address: Some(Address::repeat_byte(0xee)),
+        };
+        let boot = CeloBootInfo {
+            op_boot_info: BootInfo {
+                l1_head: B256::repeat_byte(1),
+                agreed_l2_output_root: B256::repeat_byte(2),
+                claimed_l2_output_root: B256::repeat_byte(3),
+                claimed_l2_block_number: 4,
+                chain_id: 1337,
+                rollup_config: RollupConfig::default(),
+                l1_config: Default::default(),
+            },
+            espresso,
+            upgrade18_time: Some(4242),
+            upgrade18_liquidity_controller_owner: Some(Address::repeat_byte(0xaa)),
+            upgrade18_celo_token_l1: Some(Address::repeat_byte(0xbb)),
+            upgrade18_celo_gas_bridge_l1: Some(Address::repeat_byte(0xcc)),
+            upgrade18_native_asset_liquidity_amount: Some(U256::from(1_000_000u64)),
+        };
+
+        let cfg = boot.celo_rollup_config();
+        assert_eq!(cfg.op_rollup_config, boot.op_boot_info.rollup_config);
+        assert_eq!(cfg.espresso, espresso);
+        assert_eq!(cfg.upgrade18_time, Some(4242));
+        assert_eq!(cfg.upgrade18_liquidity_controller_owner, Some(Address::repeat_byte(0xaa)));
+        assert_eq!(cfg.upgrade18_celo_token_l1, Some(Address::repeat_byte(0xbb)));
+        assert_eq!(cfg.upgrade18_celo_gas_bridge_l1, Some(Address::repeat_byte(0xcc)));
+        assert_eq!(cfg.upgrade18_native_asset_liquidity_amount, Some(U256::from(1_000_000u64)));
     }
 
     #[test]
