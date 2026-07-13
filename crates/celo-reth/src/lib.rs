@@ -28,7 +28,7 @@ use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, Hardforks};
 use reth_evm::{
     BlockExecutorForEvm, ConfigureEvm, Database, EvmEnv,
     eth::NextEvmEnvAttributes,
@@ -54,7 +54,6 @@ pub mod payload;
 #[cfg(feature = "std")]
 pub mod rpc;
 
-#[cfg(feature = "std")]
 pub mod chainspec;
 
 #[cfg(feature = "std")]
@@ -144,7 +143,7 @@ impl<ChainSpec, N: NodePrimitives, R> Clone for CeloEvmConfig<ChainSpec, N, R> {
     }
 }
 
-impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
+impl<ChainSpec: OpHardforks + Hardforks + EthChainSpec> CeloEvmConfig<ChainSpec> {
     /// Creates a new [`CeloEvmConfig`] with the given chain spec.
     pub fn celo(chain_spec: Arc<ChainSpec>) -> Self {
         Self::celo_with_blocklist(
@@ -154,17 +153,26 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
     }
 
     /// Creates a new [`CeloEvmConfig`] with the given chain spec and shared fee currency blocklist.
+    ///
+    /// The Upgrade 18 (CGT v2) activation timestamp and artifact param overrides are
+    /// derived from the chain spec here (the `Upgrade18` hardfork entry and the genesis
+    /// `config` extra fields), so no construction site can forget to wire them — a config
+    /// without them would seal blocks *without* the transition at the activation boundary.
     pub fn celo_with_blocklist(
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
+        let upgrade18_time = chainspec::upgrade18_time(chain_spec.as_ref());
+        let upgrade18_overrides = chainspec::upgrade18_overrides(chain_spec.as_ref());
         // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
         // and the executor factory re-binds the receipt builder to that per-EVM storage on
         // every `create_executor` call.
         let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),
+            executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory)
+                .with_upgrade18_time(upgrade18_time)
+                .with_upgrade18_overrides(upgrade18_overrides),
             _pd: core::marker::PhantomData,
         }
     }
@@ -178,25 +186,6 @@ where
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         self.executor_factory.spec()
-    }
-
-    /// Sets the provisional Upgrade 18 (CGT v2) activation timestamp on the executor
-    /// factory, gating the CGT v2 predeploy irregular state transition. Extract the
-    /// value from a parsed chain spec with `chainspec::upgrade18_time`.
-    pub fn with_upgrade18_time(mut self, upgrade18_time: Option<u64>) -> Self {
-        self.executor_factory = self.executor_factory.with_upgrade18_time(upgrade18_time);
-        self
-    }
-
-    /// Sets override values for the Upgrade 18 activation artifact's `param:`
-    /// placeholders. Extract them from a parsed chain spec with
-    /// `chainspec::upgrade18_overrides`.
-    pub fn with_upgrade18_overrides(
-        mut self,
-        overrides: alloy_celo_evm::block::Upgrade18Overrides,
-    ) -> Self {
-        self.executor_factory = self.executor_factory.with_upgrade18_overrides(overrides);
-        self
     }
 
     /// Builds a block execution context with an optional post-exec mode override.
@@ -383,11 +372,12 @@ where
 
         // Wrap in the Celo executor so the Upgrade 18 (CGT v2) transition also runs on
         // this path — mirroring `CeloBlockExecutorFactory::create_executor`.
-        Ok(alloy_celo_evm::block::CeloBlockExecutor::new(
-            OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder),
-            self.executor_factory.upgrade18_time(),
-            self.executor_factory.upgrade18_overrides().clone(),
-        ))
+        Ok(self.executor_factory.wrap_executor(OpBlockExecutor::new(
+            evm,
+            ctx,
+            self.executor_factory.spec(),
+            builder,
+        )))
     }
 
     fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
@@ -419,11 +409,12 @@ where
         // through this method, so a raw `OpBlockExecutor` here would seal payloads
         // *without* the transition while import/validation applies it (consensus split
         // at the activation block).
-        let executor = alloy_celo_evm::block::CeloBlockExecutor::new(
-            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder),
-            self.executor_factory.upgrade18_time(),
-            self.executor_factory.upgrade18_overrides().clone(),
-        );
+        let executor = self.executor_factory.wrap_executor(OpBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            self.executor_factory.spec(),
+            builder,
+        ));
 
         Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,

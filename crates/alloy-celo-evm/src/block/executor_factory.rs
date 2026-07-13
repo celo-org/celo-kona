@@ -97,19 +97,26 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         &self.spec
     }
 
-    /// The configured Upgrade 18 (CGT v2) activation timestamp.
-    pub const fn upgrade18_time(&self) -> Option<u64> {
-        self.upgrade18_time
-    }
-
-    /// The configured Upgrade 18 artifact param overrides.
-    pub const fn upgrade18_overrides(&self) -> &Upgrade18Overrides {
-        &self.upgrade18_overrides
-    }
-
     /// Exposes the EVM factory.
     pub const fn evm_factory(&self) -> &CeloEvmFactory {
         &self.evm_factory
+    }
+
+    /// Wraps a raw [`OpBlockExecutor`] into the [`CeloBlockExecutor`] carrying this
+    /// factory's Upgrade 18 (CGT v2) activation values.
+    ///
+    /// This is the only place the wrap rule lives: every execution path (import,
+    /// sequencing, proof) must obtain its executor through it — a raw
+    /// [`OpBlockExecutor`] on any path would skip the Upgrade 18 transition there and
+    /// split consensus at the activation block.
+    pub fn wrap_executor<'a, E>(
+        &'a self,
+        inner: OpBlockExecutor<E, R, &'a Spec>,
+    ) -> CeloBlockExecutor<E, R, &'a Spec>
+    where
+        R: OpReceiptBuilder,
+    {
+        CeloBlockExecutor::new(inner, self.upgrade18_time, self.upgrade18_overrides.clone())
     }
 }
 
@@ -150,10 +157,6 @@ where
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
-        CeloBlockExecutor::new(
-            OpBlockExecutor::new(evm, ctx, &self.spec, builder),
-            self.upgrade18_time,
-            self.upgrade18_overrides.clone(),
-        )
+        self.wrap_executor(OpBlockExecutor::new(evm, ctx, &self.spec, builder))
     }
 }
