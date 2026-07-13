@@ -19,6 +19,7 @@ use kona_host::{
 };
 use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
+    VerifyingPreimageFetcher,
 };
 use kona_proof::HintType;
 use kona_providers_alloy::{
@@ -91,10 +92,10 @@ impl CeloSingleChainHost {
                 PreimageServer::new(
                     OracleServer::new(preimage),
                     HintReader::new(hint),
-                    Arc::new(CeloConfigBackend::new(
+                    Arc::new(VerifyingPreimageFetcher::new(CeloConfigBackend::new(
                         OfflineHostBackend::new(kv_store),
                         rollup_config_json,
-                    )),
+                    ))),
                 )
                 .start()
                 .await
@@ -102,7 +103,7 @@ impl CeloSingleChainHost {
             })
         } else {
             let providers = self.create_providers().await?;
-            let backend = CeloConfigBackend::new(
+            let backend = VerifyingPreimageFetcher::new(CeloConfigBackend::new(
                 OnlineHostBackend::new(
                     self.clone(),
                     kv_store.clone(),
@@ -111,7 +112,7 @@ impl CeloSingleChainHost {
                 )
                 .with_proactive_hint(proactive_hint_type()),
                 rollup_config_json,
-            );
+            ));
 
             task::spawn(async {
                 PreimageServer::new(
