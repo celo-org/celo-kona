@@ -70,16 +70,16 @@ fi
 # ---------------------------------------------------------------------------
 
 FORK_TS=$(($(date +%s) + 10))
-python3 - "$SCRIPT_DIR/celo-dev-genesis.json" "$GENESIS" "$FORK_TS" <<'EOF'
+python3 - "$SCRIPT_DIR/celo-dev-genesis.json" "$GENESIS" "$FORK_TS" "$OWNER" "$TOKEN_L1" "$BRIDGE_L1" "$SEED" <<'EOF'
 import json, sys
-src, dst, fork_ts = sys.argv[1], sys.argv[2], int(sys.argv[3])
+src, dst, fork_ts, owner, token_l1, bridge_l1, seed = sys.argv[1:8]
 genesis = json.load(open(src))
 genesis["config"].update({
-    "upgrade18Time": fork_ts,
-    "upgrade18LiquidityControllerOwner": "0x00000000000000000000000000000000000000aa",
-    "upgrade18CeloTokenL1": "0x00000000000000000000000000000000000000bb",
-    "upgrade18CeloGasBridgeL1": "0x00000000000000000000000000000000000000cc",
-    "upgrade18NativeAssetLiquidityAmount": "1000000000000000000000000",
+    "upgrade18Time": int(fork_ts),
+    "upgrade18LiquidityControllerOwner": owner,
+    "upgrade18CeloTokenL1": token_l1,
+    "upgrade18CeloGasBridgeL1": bridge_l1,
+    "upgrade18NativeAssetLiquidityAmount": seed,
 })
 # The dev genesis has no L2CrossDomainMessenger; withdraw()'s void
 # `messenger.sendMessage(...)` call would fail solc's extcodesize existence
