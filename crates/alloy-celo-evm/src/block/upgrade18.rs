@@ -292,6 +292,13 @@ where
         let mut account: Account = info.into();
         for (slot, value) in &diff.storage {
             let original = db.storage(diff.address, *slot)?;
+            // Skip writes already at their target value (e.g. the EIP-1967 impl slot of
+            // proxies that pre-date the fork): the bundle layer filters unchanged slots
+            // anyway, so skipping here keeps the state-hook stream identical to what
+            // actually lands in the bundle and the state root.
+            if original == *value {
+                continue;
+            }
             account
                 .storage
                 .insert(*slot, EvmStorageSlot::new_changed(original, *value, Default::default()));
@@ -573,6 +580,30 @@ mod tests {
             .unwrap();
         ensure_cgt_v2_predeploys(Some(100), &full_overrides(), 42220, 99, &mut db).unwrap();
         assert!(db.cache.accounts.is_empty());
+    }
+
+    /// Slots already at their target value are omitted from the reported changes, so the
+    /// state-hook stream matches what the bundle layer keeps (its `is_changed` filter)
+    /// and what lands in the state root.
+    #[test]
+    fn already_correct_slots_are_omitted_from_changes() {
+        let controller = address!("420000000000000000000000000000000000002a");
+        let owner_slot = U256::from(0x33);
+        let overrides = full_overrides();
+        let owner_word: U256 = overrides.liquidity_controller_owner.unwrap().into_word().into();
+
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_storage(controller, owner_slot, owner_word).unwrap();
+
+        let changes = cgt_v2_state_changes(Some(100), &overrides, 1337, 100, &mut db)
+            .unwrap()
+            .expect("boundary block applies the transition");
+        let account = changes.get(&controller).unwrap();
+        assert!(
+            !account.storage.contains_key(&owner_slot),
+            "a slot already at its target value must not be reported"
+        );
+        assert!(!account.storage.is_empty(), "the remaining slots are still written");
     }
 
     /// Balance is an increment (mint semantics): pre-existing dust on the reserve
