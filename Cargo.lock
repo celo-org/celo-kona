@@ -2202,6 +2202,7 @@ dependencies = [
  "alloy-celo-evm",
  "alloy-consensus 2.0.5",
  "alloy-primitives",
+ "async-trait",
  "celo-derive",
  "celo-driver",
  "celo-genesis",
@@ -2219,6 +2220,7 @@ dependencies = [
  "kona-std-fpvm-proc",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 
