@@ -125,15 +125,6 @@ impl CeloRollupConfig {
         self.espresso.batch_authenticator_address.is_some_and(|addr| !addr.is_zero())
     }
 
-    /// Returns true if Upgrade 18 (CGT v2) is active at the given L2 timestamp.
-    ///
-    /// This is intentionally orthogonal to the chained
-    /// OP Stack hardforks — Upgrade 18 is a Celo-only fork with no upstream
-    /// `HardForkConfig` slot.
-    pub fn is_upgrade18_active(&self, timestamp: u64) -> bool {
-        self.upgrade18_time.is_some_and(|t| timestamp >= t)
-    }
-
     /// Resolves the Espresso batch-authentication parameters into a validated bundle suitable for
     /// the derivation data sources.
     ///
@@ -439,19 +430,6 @@ mod tests {
         // No Espresso fields in this config => defaults (disabled).
         assert_eq!(deserialized.espresso, CeloEspressoConfig::default());
         assert!(!deserialized.is_batch_auth_enabled());
-    }
-
-    #[test]
-    fn test_is_upgrade18_active() {
-        let mut cfg = CeloRollupConfig::new(RollupConfig::default());
-        // Unset: never active.
-        assert!(!cfg.is_upgrade18_active(0));
-        assert!(!cfg.is_upgrade18_active(u64::MAX));
-        // Set: boundary semantics match the OP Stack forks.
-        cfg.upgrade18_time = Some(100);
-        assert!(!cfg.is_upgrade18_active(99));
-        assert!(cfg.is_upgrade18_active(100));
-        assert!(cfg.is_upgrade18_active(101));
     }
 
     /// `upgrade18_time` and the four artifact param overrides must survive a serialize →
