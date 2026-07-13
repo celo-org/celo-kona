@@ -54,6 +54,10 @@ pub struct LoadedCeloExecutorTestFixture {
 }
 
 /// Loads a [`CeloExecutorTestFixture`] stored at the passed `fixture_path`.
+///
+/// A copy of `kona_executor::test_utils::load_test_fixture`, forked only to deserialize
+/// the Celo-typed fixture format — keep the tarball layout and key-value store handling
+/// in sync with upstream.
 pub async fn load_test_fixture(fixture_path: PathBuf) -> LoadedCeloExecutorTestFixture {
     let fixture_dir = tempfile::tempdir().expect("Failed to create temporary directory");
     tokio::process::Command::new("tar")
@@ -80,6 +84,10 @@ pub async fn load_test_fixture(fixture_path: PathBuf) -> LoadedCeloExecutorTestF
 }
 
 /// The `RocksDB` settings the fixture key-value store is created with and must be reopened with.
+///
+/// Must match what kona's `ExecutorTestFixtureCreator` writes the store with (currently
+/// Snappy compression) — if upstream changes its creator options, the checked-in
+/// tarballs stop loading here.
 fn fixture_kv_options() -> Options {
     let mut options = Options::default();
     options.set_compression_type(rocksdb::DBCompressionType::Snappy);
