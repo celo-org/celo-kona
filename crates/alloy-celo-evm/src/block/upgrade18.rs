@@ -20,6 +20,13 @@
 //! the CELO reserve seed), `LiquidityController` (`0x42…002A`), and `CeloGasBridgeL2`
 //! (`0x42…1023`).
 //!
+//! The artifact carries no account nonces, and the transition leaves every touched
+//! account's nonce at its live pre-fork value (zero for fresh installs). The
+//! byte-identical claim above therefore assumes the reference genesis assigns these
+//! accounts nonce zero — true for its `vm.etch`-style predeploy allocs today, and
+//! something the artifact generator must keep true (or the artifact must grow a nonce
+//! field) if that ever changes.
+//!
 //! # Parameters
 //!
 //! Four artifact values are `param:` placeholders ([`Upgrade18Param`]). Two are known
