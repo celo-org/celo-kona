@@ -40,6 +40,8 @@ metrics = { workspace = true, optional = true }
 revm = { workspace = true, features = ["optional_no_base_fee"] }
 # Test-only: a local recorder to assert the std-only skip metric is emitted.
 metrics-util = "0.20"
+# Test-only: cross-check the generated upgrade18 data against res/predeploys.json.
+serde_json = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]

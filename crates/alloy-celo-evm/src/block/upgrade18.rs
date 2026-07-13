@@ -396,28 +396,54 @@ mod tests {
         }
     }
 
-    /// Mainnet's known params resolve to the values shipped in the artifact.
+    /// `known_param` matches the artifact's per-network constants for *every* network
+    /// and param the artifact knows — a codegen bug swapping networks or truncating a
+    /// word must fail here, not at an activation boundary. Unresolved placeholders
+    /// (`celoGasBridgeL1`, `nativeAssetLiquidityAmount`) must stay unknown everywhere.
     #[test]
-    fn mainnet_known_params_match_artifact() {
-        let owner = super::super::upgrade18_data::known_param(
-            CELO_MAINNET_CHAIN_ID,
+    fn known_params_match_artifact_for_all_networks() {
+        use celo_revm::constants::CELO_CHAOS_CHAIN_ID;
+
+        let artifact: serde_json::Value =
+            serde_json::from_str(include_str!("../../res/predeploys.json")).unwrap();
+        let networks = [
+            ("mainnet", CELO_MAINNET_CHAIN_ID),
+            ("sepolia", CELO_SEPOLIA_CHAIN_ID),
+            ("chaos", CELO_CHAOS_CHAIN_ID),
+        ];
+        let params = [
             Upgrade18Param::LiquidityControllerOwner,
-        )
-        .unwrap();
-        assert_eq!(
-            Address::from_word(owner.into()),
-            address!("d533ca259b330c7a88f74e000a3faea2d63b7972"),
-            "mainnet LiquidityController owner = Celo governance"
-        );
-        let token = super::super::upgrade18_data::known_param(
-            CELO_MAINNET_CHAIN_ID,
             Upgrade18Param::CeloTokenL1,
-        )
-        .unwrap();
-        assert_eq!(
-            Address::from_word(token.into()),
-            address!("057898f3C43F129a17517B9056D23851F124b19f"),
-            "mainnet L1 CELO ERC-20"
+            Upgrade18Param::CeloGasBridgeL1,
+            Upgrade18Param::NativeAssetLiquidityAmount,
+        ];
+        for param in params {
+            let artifact_values = &artifact["params"][param.name()];
+            for (network, chain_id) in networks {
+                // Mirrors the codegen filter: only `0x…` words in a per-network table
+                // become `known_param` entries; unresolved placeholders are plain
+                // strings and yield no entry on any network.
+                let expected = artifact_values
+                    .get(network)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|s| s.strip_prefix("0x"))
+                    .map(|hex| U256::from_str_radix(hex, 16).unwrap());
+                assert_eq!(
+                    super::super::upgrade18_data::known_param(chain_id, param),
+                    expected,
+                    "{network}: {}",
+                    param.name()
+                );
+            }
+        }
+        // Sanity: the artifact actually ships the two known params for mainnet, so the
+        // loop above is not vacuously comparing None to None.
+        assert!(
+            super::super::upgrade18_data::known_param(
+                CELO_MAINNET_CHAIN_ID,
+                Upgrade18Param::LiquidityControllerOwner
+            )
+            .is_some()
         );
     }
 

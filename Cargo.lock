@@ -114,6 +114,7 @@ dependencies = [
  "op-alloy-consensus",
  "op-revm",
  "revm 38.0.0",
+ "serde_json",
  "spin 0.10.0",
  "tracing",
 ]
