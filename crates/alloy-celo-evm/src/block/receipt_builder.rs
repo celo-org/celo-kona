@@ -73,4 +73,10 @@ impl OpReceiptBuilder for CeloAlloyReceiptBuilder {
     fn build_deposit_receipt(&self, inner: OpDepositReceipt) -> Self::Receipt {
         CeloReceiptEnvelope::Deposit(inner.with_bloom())
     }
+
+    fn strip_deposit_nonce(&self, receipt: &mut Self::Receipt) {
+        if let CeloReceiptEnvelope::Deposit(deposit) = receipt {
+            deposit.receipt.deposit_nonce = None;
+        }
+    }
 }
