@@ -53,20 +53,36 @@ pub fn upgrade18_time(spec: &impl Hardforks) -> Option<u64> {
 /// Overrides beat the artifact's per-network constants; on chains the artifact doesn't
 /// know (dev/e2e) all four are required once the fork is scheduled. Absent fields stay
 /// `None`.
+///
+/// # Panics
+///
+/// If a key is present but unparseable. Treating it as absent instead would silently
+/// fall back to the artifact's per-network constant (or to an `Upgrade18ParamMissing`
+/// halt blaming the wrong cause) — an operator-supplied value must either apply or
+/// stop the node at startup.
 pub fn upgrade18_overrides(spec: &impl EthChainSpec) -> Upgrade18Overrides {
     let fields = &spec.genesis().config.extra_fields;
     let address = |key: &str| -> Option<Address> {
-        fields.get_deserialized::<Address>(key).and_then(Result::ok)
+        fields.get_deserialized::<Address>(key).map(|parsed| {
+            parsed.unwrap_or_else(|e| {
+                panic!("genesis config `{key}` is not a valid `0x…` address: {e}")
+            })
+        })
     };
     let amount = |key: &str| -> Option<U256> {
         let value = fields.get(key)?;
-        if let Some(n) = value.as_u64() {
-            return Some(U256::from(n));
-        }
-        let s = value.as_str()?;
-        s.strip_prefix("0x")
-            .map_or_else(|| U256::from_str_radix(s, 10), |hex| U256::from_str_radix(hex, 16))
-            .ok()
+        let parsed = value.as_u64().map(U256::from).or_else(|| {
+            let s = value.as_str()?;
+            s.strip_prefix("0x")
+                .map_or_else(|| U256::from_str_radix(s, 10), |hex| U256::from_str_radix(hex, 16))
+                .ok()
+        });
+        Some(parsed.unwrap_or_else(|| {
+            panic!(
+                "genesis config `{key}` must be a u64 number, `0x…` quantity, or decimal \
+                 string (wei), got: {value}"
+            )
+        }))
     };
     Upgrade18Overrides {
         liquidity_controller_owner: address("upgrade18LiquidityControllerOwner"),
