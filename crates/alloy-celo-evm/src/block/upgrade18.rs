@@ -13,8 +13,12 @@
 //! The injected state comes from a pinned artifact, `res/predeploys.json`, generated in
 //! celo-org/optimism at the frozen `celo-contracts/v6.0.0` tag by simulating the real
 //! `L2Genesis.s.sol` init calls — so the post-fork state of the touched accounts is
-//! byte-identical to a fresh v6.0.0 genesis. It is compiled into the generated (no-std)
-//! `upgrade18_data` module covering six predeploys:
+//! byte-identical to a fresh v6.0.0 genesis. That claim is enforced offline by
+//! `scripts/upgrade18_genesis_parity/` (CI: `upgrade18_genesis_parity.yml`), which
+//! replays the pinned `L2Genesis` and diffs the six accounts; it documents the one
+//! deliberate deviation — `L2Genesis` also writes anti-griefing `initialize()` storage
+//! to fresh *implementation* accounts, which this migration does not. It is compiled
+//! into the generated (no-std) `upgrade18_data` module covering six predeploys:
 //! `L1BlockCGT` (`0x42…0015`), `L2ToL1MessagePasserCGT` (`0x42…0016`),
 //! `CeloSequencerFeeVault` (`0x42…0011`), `NativeAssetLiquidity` (`0x42…0029`, carries
 //! the CELO reserve seed), `LiquidityController` (`0x42…002A`), and `CeloGasBridgeL2`
@@ -23,9 +27,9 @@
 //! The artifact carries no account nonces, and the transition leaves every touched
 //! account's nonce at its live pre-fork value (zero for fresh installs). The
 //! byte-identical claim above therefore assumes the reference genesis assigns these
-//! accounts nonce zero — true for its `vm.etch`-style predeploy allocs today, and
-//! something the artifact generator must keep true (or the artifact must grow a nonce
-//! field) if that ever changes.
+//! accounts nonce zero — true for its `vm.etch`-style predeploy allocs today (asserted
+//! by the parity gate above), and something the artifact generator must keep true (or
+//! the artifact must grow a nonce field) if that ever changes.
 //!
 //! # Parameters
 //!
