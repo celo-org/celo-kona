@@ -19,18 +19,24 @@
 #      op-node, not by dev-mode wall-clock mining — carries the migration
 #      (spot-checked: bridge proxy installed, reserve seeded, owner set);
 #   4. op-node keeps sequencing past the irregular state transition, and the
-#      transition applies exactly once.
+#      transition applies exactly once;
+#   5. with op-batcher posting calldata batches to L1, op-node *derives* the
+#      boundary from L1 data — the safe head crosses the migration;
+#   6. celo-executor (the proof-path executor) replays the boundary blocks to
+#      the same block hashes, configured from the proof-side rollup.json —
+#      the variant that carries the four param overrides op-node's does not.
 #
-# Topology: anvil as a bare L1 (no OP contracts — with zero deposits and no
-# batcher, the deposit-contract and system-config addresses are never read,
-# which is fine for unsafe-head sequencing), celo-reth as the L2 EL, op-node
-# as the sequencing CL.
+# Topology: anvil as a bare L1 (no OP contracts — with zero deposits, the
+# deposit-contract and system-config addresses are never read), celo-reth as
+# the L2 EL, op-node as the sequencing CL, op-batcher for the derivation leg.
 #
 # Requirements:
 #   anvil + cast (foundry), jq, python3
-#   celo-reth        target/debug/celo-reth (or $CELO_RETH)
-#   op-node          $OP_NODE_BIN, or built from $CELO_OPTIMISM_DIR
-#                    (branch with Upgrade 18 fork plumbing; needs go on PATH)
+#   celo-reth           target/debug/celo-reth (or $CELO_RETH)
+#   execution-verifier  target/debug/execution-verifier (or $EXECUTION_VERIFIER)
+#   op-node, op-batcher $OP_NODE_BIN / $OP_BATCHER_BIN, or built from
+#                       $CELO_OPTIMISM_DIR (branch with Upgrade 18 fork
+#                       plumbing; needs go on PATH)
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -41,13 +47,21 @@ DEV_GENESIS="$REPO_ROOT/e2e_test/celo-dev-genesis.json"
 
 L1_PORT=8945
 L2_HTTP_PORT=8947
+L2_WS_PORT=8948
 L2_AUTH_PORT=8953
 OP_NODE_RPC_PORT=9945
+BATCHER_RPC_PORT=9947
 L1_RPC="http://127.0.0.1:$L1_PORT"
 L2_RPC="http://127.0.0.1:$L2_HTTP_PORT"
+L2_WS="ws://127.0.0.1:$L2_WS_PORT"
 
 L1_CHAIN_ID=900
 L2_BLOCK_TIME=2
+
+# anvil's default account 0: funds the batcher. Must match the rollup.json
+# genesis system_config batcherAddr, or derivation rejects the batches.
+BATCHER_ADDR=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+BATCHER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 # L2 blocks between genesis and the fork: enough for pre-fork assertions, small
 # enough that the catching-up sequencer reaches it in seconds.
 FORK_DELAY_BLOCKS=12
@@ -76,9 +90,10 @@ DATADIR="$WORK/reth-data"
 ANVIL_PID=
 RETH_PID=
 OP_NODE_PID=
+BATCHER_PID=
 
 cleanup() {
-    for pid in "$OP_NODE_PID" "$RETH_PID" "$ANVIL_PID"; do
+    for pid in "$BATCHER_PID" "$OP_NODE_PID" "$RETH_PID" "$ANVIL_PID"; do
         if [[ -n "$pid" ]]; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -90,12 +105,14 @@ trap cleanup EXIT
 
 fail() {
     echo "FAIL: $1"
-    echo "--- op-node log tail ---"; tail -20 "$WORK/op-node.log" 2>/dev/null || true
-    echo "--- celo-reth log tail ---"; tail -20 "$WORK/celo-reth.log" 2>/dev/null || true
+    for log in op-node op-batcher celo-reth; do
+        [[ -s "$WORK/$log.log" ]] || continue
+        echo "--- $log log tail ---"; tail -20 "$WORK/$log.log"
+    done
     exit 1
 }
 
-for port in $L1_PORT $L2_HTTP_PORT $L2_AUTH_PORT $OP_NODE_RPC_PORT; do
+for port in $L1_PORT $L2_HTTP_PORT $L2_WS_PORT $L2_AUTH_PORT $OP_NODE_RPC_PORT $BATCHER_RPC_PORT; do
     if lsof -ti :"$port" &>/dev/null; then
         echo "Killing stale process on port $port..."
         kill "$(lsof -ti :"$port")" 2>/dev/null || true
@@ -117,6 +134,19 @@ if [[ -z "$OP_NODE_BIN" ]]; then
     (cd "$CELO_OPTIMISM_DIR" && go build -o "$OP_NODE_BIN" ./op-node/cmd)
 fi
 [[ -x "$OP_NODE_BIN" ]] || fail "op-node binary $OP_NODE_BIN not executable"
+
+if [[ -z "$OP_BATCHER_BIN" ]]; then
+    [[ -n "$CELO_OPTIMISM_DIR" ]] ||
+        fail "set OP_BATCHER_BIN to an op-batcher, or CELO_OPTIMISM_DIR to build one"
+    echo "Building op-batcher from $CELO_OPTIMISM_DIR..."
+    OP_BATCHER_BIN="$WORK/op-batcher"
+    (cd "$CELO_OPTIMISM_DIR" && go build -o "$OP_BATCHER_BIN" ./op-batcher/cmd)
+fi
+[[ -x "$OP_BATCHER_BIN" ]] || fail "op-batcher binary $OP_BATCHER_BIN not executable"
+
+EXECUTION_VERIFIER="${EXECUTION_VERIFIER:-$REPO_ROOT/target/debug/execution-verifier}"
+[[ -x "$EXECUTION_VERIFIER" ]] ||
+    fail "execution-verifier not found at $EXECUTION_VERIFIER (cargo build -p execution-verifier)"
 
 python3 -c 'import secrets; print(secrets.token_hex(32))' > "$JWT"
 
@@ -163,13 +193,20 @@ echo "Scheduled upgrade18Time=$FORK_TS (L2 genesis + $((FORK_DELAY_BLOCKS * L2_B
 # celo-reth (no --dev: op-node drives it through the engine API)
 # ---------------------------------------------------------------------------
 
+# --rpc.eth-proof-window: execution-verifier's witness preimage source
+# supplements debug_executionWitness with a historical eth_getProof (see
+# celo-executor's test_utils), which reth only serves within this window.
 "$CELO_RETH" init --chain "$GENESIS" --datadir "$DATADIR" &>"$WORK/celo-reth.log"
 "$CELO_RETH" node \
     --chain "$GENESIS" \
     --datadir "$DATADIR" \
+    --rpc.eth-proof-window 100000 \
     --http \
     --http.port $L2_HTTP_PORT \
     --http.api eth,web3,net,debug \
+    --ws \
+    --ws.port $L2_WS_PORT \
+    --ws.api eth,web3,net,debug \
     --authrpc.addr 127.0.0.1 \
     --authrpc.port $L2_AUTH_PORT \
     --authrpc.jwtsecret "$JWT" \
@@ -198,7 +235,7 @@ json.dump({
         "l2": {"hash": "$L2_GENESIS_HASH", "number": 0},
         "l2_time": $L1_GENESIS_TS,
         "system_config": {
-            "batcherAddr": "0x0000000000000000000000000000000000009985",
+            "batcherAddr": "$BATCHER_ADDR",
             "overhead": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "scalar": "0x00000000000000000000000000000000000000000000000000000000000f4240",
             "gasLimit": $GAS_LIMIT,
@@ -287,6 +324,25 @@ OP_NODE_PID=$!
 # config parse error, so surviving to a moving unsafe head covers it.
 
 # ---------------------------------------------------------------------------
+# op-batcher: posts calldata batches to L1 so op-node *derives* a safe head
+# ---------------------------------------------------------------------------
+
+"$OP_BATCHER_BIN" \
+    --l1-eth-rpc="$L1_RPC" \
+    --l2-eth-rpc="$L2_RPC" \
+    --rollup-rpc="http://127.0.0.1:$OP_NODE_RPC_PORT" \
+    --private-key="$BATCHER_KEY" \
+    --data-availability-type=calldata \
+    --max-channel-duration=1 \
+    --poll-interval=1s \
+    --num-confirmations=1 \
+    --throttle.unsafe-da-bytes-lower-threshold=0 \
+    --rpc.addr=127.0.0.1 \
+    --rpc.port=$BATCHER_RPC_PORT \
+    &>"$WORK/op-batcher.log" &
+BATCHER_PID=$!
+
+# ---------------------------------------------------------------------------
 # Assertion 2: op-node sequences celo-reth blocks past the boundary
 # ---------------------------------------------------------------------------
 
@@ -343,5 +399,71 @@ UNSAFE=$(curl -sf -X POST -H 'Content-Type: application/json' \
     "http://127.0.0.1:$OP_NODE_RPC_PORT" | jq -r .result.unsafe_l2.number)
 ((UNSAFE >= BOUNDARY)) || fail "op-node unsafe head ($UNSAFE) never reached the boundary"
 echo "OK  op-node syncStatus unsafe head at $UNSAFE (>= boundary $BOUNDARY)"
+
+# ---------------------------------------------------------------------------
+# Assertion 5: the safe head crosses the boundary — op-node *derives* the
+# migration block from L1 batch data, not just sequences it
+# ---------------------------------------------------------------------------
+
+echo "Waiting for the derived safe head to pass the boundary..."
+SAFE=0
+for _ in {1..90}; do
+    kill -0 "$BATCHER_PID" 2>/dev/null || fail "op-batcher exited early"
+    SAFE=$(curl -sf -X POST -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"optimism_syncStatus","params":[]}' \
+        "http://127.0.0.1:$OP_NODE_RPC_PORT" | jq -r .result.safe_l2.number)
+    ((SAFE >= BOUNDARY)) && break
+    sleep 1
+done
+((SAFE >= BOUNDARY)) ||
+    fail "derived safe head ($SAFE) never crossed the boundary ($BOUNDARY)"
+echo "OK  derivation: safe head at $SAFE (>= boundary $BOUNDARY)"
+
+# ---------------------------------------------------------------------------
+# Assertion 6: proof-path executor parity — replay the boundary blocks through
+# celo-executor, configured from the proof-side rollup.json (which, unlike
+# op-node's, carries the four param overrides)
+# ---------------------------------------------------------------------------
+
+ROLLUP_PROOF="$WORK/rollup-proof.json"
+python3 - "$ROLLUP" "$ROLLUP_PROOF" "$OWNER" "$TOKEN_L1" "$BRIDGE_L1" "$SEED" <<'EOF'
+import json, sys
+src, dst, owner, token_l1, bridge_l1, seed = sys.argv[1:7]
+config = json.load(open(src))
+config.update({
+    "upgrade18_liquidity_controller_owner": owner,
+    "upgrade18_celo_token_l1": token_l1,
+    "upgrade18_celo_gas_bridge_l1": bridge_l1,
+    "upgrade18_native_asset_liquidity_amount": hex(int(seed)),
+})
+json.dump(config, open(dst, "w"))
+EOF
+
+# From the boundary onward only: sealing an Isthmus block statelessly reads the
+# L2ToL1MessagePasser account for the withdrawals root, and on this dev genesis
+# that account only exists once Upgrade 18 installs it — real chains carry it
+# pre-fork, so pre-fork replay is a dev-genesis artifact, not migration surface.
+"$EXECUTION_VERIFIER" \
+    --l2-rpc "$L2_WS" \
+    --rollup-config "$ROLLUP_PROOF" \
+    --start-block $BOUNDARY \
+    --end-block $((BOUNDARY + 2)) \
+    &>"$WORK/execution-verifier.log" ||
+    { tail -20 "$WORK/execution-verifier.log"; fail "celo-executor replay of the boundary blocks failed"; }
+echo "OK  celo-executor replayed blocks $BOUNDARY..$((BOUNDARY + 2)) (proof-side rollup.json)"
+
+# Negative check: with op-node's rollup.json — no param overrides, and chain
+# 1337 is unknown to the artifact — the boundary block must fail to replay
+# (Upgrade18ParamMissing). Proves the param channel is load-bearing, i.e. the
+# positive run above verified something real.
+if "$EXECUTION_VERIFIER" \
+    --l2-rpc "$L2_WS" \
+    --rollup-config "$ROLLUP" \
+    --start-block $BOUNDARY \
+    --end-block $BOUNDARY \
+    &>"$WORK/execution-verifier-neg.log"; then
+    fail "boundary replay without the param overrides must fail, but passed"
+fi
+echo "OK  boundary replay without the param overrides fails as it must"
 
 echo "PASS: op-node drove celo-reth across the Upgrade 18 boundary"
