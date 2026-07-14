@@ -187,7 +187,25 @@ impl CeloSingleChainHintHandler {
 
                 let hash: B256 = hint.data.as_ref().try_into()?;
                 let raw_header: Bytes =
-                    providers.l1.client().request("debug_getRawHeader", [hash]).await?;
+                    match providers.l1.client().request("debug_getRawHeader", [hash]).await {
+                        Ok(raw_header) => raw_header,
+                        // Not every L1 endpoint serves geth's raw-debug API (anvil does not);
+                        // re-encode the header from `eth_getBlockByHash` instead. The hash check
+                        // below rejects a bad re-encoding.
+                        Err(e) if is_rpc_method_not_found(&e) => {
+                            let block = providers
+                                .l1
+                                .get_block_by_hash(hash)
+                                .await?
+                                .ok_or(anyhow!("Block not found"))?;
+                            alloy_rlp::encode(block.header.into_consensus()).into()
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
+                ensure!(
+                    keccak256(&raw_header) == hash,
+                    "L1 header preimage does not match its hash"
+                );
 
                 let mut kv_lock = kv.write().await;
                 kv_lock.set(PreimageKey::new_keccak256(*hash).into(), raw_header.into())?;
@@ -214,7 +232,22 @@ impl CeloSingleChainHintHandler {
 
                 let hash: B256 = hint.data.as_ref().try_into()?;
                 let raw_receipts: Vec<Bytes> =
-                    providers.l1.client().request("debug_getRawReceipts", [hash]).await?;
+                    match providers.l1.client().request("debug_getRawReceipts", [hash]).await {
+                        Ok(raw_receipts) => raw_receipts,
+                        // Same fallback as `L1BlockHeader` above; a bad re-encoding surfaces in
+                        // the client as a receipts-root mismatch against the verified header.
+                        Err(e) if is_rpc_method_not_found(&e) => providers
+                            .l1
+                            .get_block_receipts(hash.into())
+                            .await?
+                            .ok_or(anyhow!("Block receipts not found"))?
+                            .into_iter()
+                            .map(|receipt| {
+                                receipt.into_primitives_receipt().inner.encoded_2718().into()
+                            })
+                            .collect(),
+                        Err(e) => return Err(e.into()),
+                    };
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
