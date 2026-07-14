@@ -387,18 +387,21 @@ async fn verify_block(
         .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
 
     // Verify the result
-    if outcome.header.inner() != &executing_header {
+    let verified = outcome.header.inner() == &executing_header;
+    if !verified {
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
-        metrics.lock().block_verification_completed(false, start.elapsed());
-    } else {
-        metrics.lock().block_verification_completed(true, start.elapsed());
     }
+    metrics.lock().block_verification_completed(verified, start.elapsed());
     tracker.lock().add_verified_block(block_number);
+    anyhow::ensure!(
+        verified,
+        "block {block_number}: locally executed header does not match the canonical header"
+    );
     Ok(block_number)
 }
 
@@ -438,14 +441,23 @@ async fn verify_block_range(
         }
     }
 
-    // Process results and spawn new tasks continuously
+    // Process results and spawn new tasks continuously. Failures don't stop the range — every
+    // block gets verified and reported — but they must not vanish into the JoinSet either:
+    // range-mode callers rely on the returned error for a non-zero exit code.
+    let mut failures = 0u64;
     while let Some(joined) = handles.join_next().await {
         match joined {
             Ok(Ok(_)) => {}
             // A failed fetch/execution would otherwise vanish silently while the
             // persisted watermark stalls; surface it and keep verifying.
-            Ok(Err(e)) => tracing::error!("Block verification task failed: {e:#}"),
-            Err(e) => tracing::error!("Block verification task panicked: {e}"),
+            Ok(Err(e)) => {
+                tracing::error!("Block verification task failed: {e:#}");
+                failures += 1;
+            }
+            Err(e) => {
+                tracing::error!("Block verification task panicked: {e}");
+                failures += 1;
+            }
         }
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
@@ -454,6 +466,10 @@ async fn verify_block_range(
         }
     }
 
+    anyhow::ensure!(
+        failures == 0,
+        "{failures} block(s) in range [{start_block}, {end_block}] failed verification"
+    );
     Ok(())
 }
 
