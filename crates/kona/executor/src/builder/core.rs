@@ -109,6 +109,9 @@ where
         // also need a handle to return in `CeloBlockBuildingOutcome` so callers (e.g.
         // CIP-64 gas-accounting tests) can read post-execution entries.
         let cip64_storage = evm.cip64_storage().clone();
+        // Keep a receipt builder bound to the same storage for header assembly. The executor
+        // consumes its builder, unlike upstream's long-lived `OpBlockExecutorFactory`.
+        let receipt_builder = CeloAlloyReceiptBuilder::from(cip64_storage.clone());
 
         // Step 3. Decode and validate the block transactions within the payload attributes.
         let transactions = attrs
@@ -146,7 +149,8 @@ where
         // Step 4. Merge state transitions and seal the block.
         state.merge_transitions(BundleRetention::Reverts);
         let bundle = state.take_bundle();
-        let header = self.seal_block(&attrs, parent_hash, &block_env, &ex_result, bundle)?;
+        let header =
+            self.seal_block(&attrs, parent_hash, &block_env, &ex_result, &receipt_builder, bundle)?;
 
         info!(
             target: "block_builder",

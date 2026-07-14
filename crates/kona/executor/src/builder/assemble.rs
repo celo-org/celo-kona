@@ -2,15 +2,16 @@
 
 use super::CeloStatelessL2Builder;
 use crate::util::{encode_holocene_eip_1559_params, encode_jovian_eip_1559_params};
-use alloc::vec::Vec;
+use alloy_celo_evm::block::CeloAlloyReceiptBuilder;
 use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, Sealed};
-use alloy_eips::{Encodable2718, eip7685::EMPTY_REQUESTS_HASH};
+use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_evm::block::BlockExecutionResult;
 use alloy_primitives::{B256, Sealable, U256, logs_bloom};
 use alloy_trie::EMPTY_ROOT_HASH;
 use celo_alloy_consensus::CeloReceiptEnvelope;
-use celo_genesis::CeloRollupConfig;
-use kona_executor::{ExecutorError, ExecutorResult, TrieDBError, TrieDBProvider};
+use kona_executor::{
+    ExecutorError, ExecutorResult, TrieDBError, TrieDBProvider, compute_receipts_root,
+};
 use kona_mpt::{TrieHinter, ordered_trie_with_encoder};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
@@ -29,6 +30,7 @@ where
         parent_hash: B256,
         block_env: &BlockEnv,
         ex_result: &BlockExecutionResult<CeloReceiptEnvelope>,
+        receipt_builder: &CeloAlloyReceiptBuilder,
         bundle: BundleState,
     ) -> ExecutorResult<Sealed<Header>> {
         let timestamp: u64 = block_env.timestamp.try_into().expect("timestamp should fit in u64");
@@ -45,7 +47,8 @@ where
             |tx, buf| buf.put_slice(tx.as_ref()),
         )
         .root();
-        let receipts_root = compute_receipts_root(&ex_result.receipts, self.config, timestamp);
+        let receipts_root =
+            compute_receipts_root(receipt_builder, &ex_result.receipts, self.config, timestamp);
         let withdrawals_root = if self.config.is_isthmus_active(timestamp) {
             Some(self.message_passer_account()?)
         } else if self.config.is_canyon_active(timestamp) {
@@ -163,37 +166,5 @@ where
                 .ok_or(TrieDBError::MissingAccountInfo)?
                 .storage_root),
         }
-    }
-}
-
-/// Computes the receipts root from the given set of receipts.
-pub fn compute_receipts_root(
-    receipts: &[CeloReceiptEnvelope],
-    config: &CeloRollupConfig,
-    timestamp: u64,
-) -> B256 {
-    // There is a minor bug in op-geth and op-erigon where in the Regolith hardfork,
-    // the receipt root calculation does not inclide the deposit nonce in the
-    // receipt encoding. In the Regolith hardfork, we must strip the deposit nonce
-    // from the receipt encoding to match the receipt root calculation.
-    if config.is_regolith_active(timestamp) && !config.is_canyon_active(timestamp) {
-        let receipts = receipts
-            .iter()
-            .cloned()
-            .map(|receipt| match receipt {
-                CeloReceiptEnvelope::Deposit(mut deposit_receipt) => {
-                    deposit_receipt.receipt.deposit_nonce = None;
-                    CeloReceiptEnvelope::Deposit(deposit_receipt)
-                }
-                _ => receipt,
-            })
-            .collect::<Vec<_>>();
-
-        ordered_trie_with_encoder(receipts.as_ref(), |receipt, mut buf| {
-            receipt.encode_2718(&mut buf)
-        })
-        .root()
-    } else {
-        ordered_trie_with_encoder(receipts, |receipt, mut buf| receipt.encode_2718(&mut buf)).root()
     }
 }
