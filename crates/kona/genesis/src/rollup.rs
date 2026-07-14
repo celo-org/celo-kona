@@ -14,19 +14,17 @@ use kona_genesis::RollupConfig;
 /// celo-kona wraps upstream kona instead of patching it at source.
 pub const BATCH_AUTH_LOOKBACK_WINDOW: u64 = 100;
 
-/// Seconds after `espresso_time` during which derivation still accepts sender-authenticated
-/// batches. Event-based batch authentication is enforced only for L1 blocks with origin time
-/// `>= espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS`.
+/// Grace period, in seconds, after `espresso_time` during which derivation still accepts
+/// sender-authenticated batches. Event-based authentication is enforced only once an L1 block's
+/// origin time reaches `espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS`.
 ///
-/// This grace period lets a batcher switch to authenticated submission at activation without a
-/// configured lead time: a batch decided pre-fork (no auth event) that lands in a post-activation
-/// L1 block is still accepted under sender authorization as long as its inclusion delay stays below
-/// the grace period. Sized to one full [`BATCH_AUTH_LOOKBACK_WINDOW`] at the nominal 12s L1 slot
-/// time (~20 min).
+/// This lets a batcher switch to authenticated submission right at activation: a batch decided
+/// pre-fork (so without an auth event) that lands in a post-activation L1 block is still accepted
+/// under sender authorization, as long as it is included within the grace period. Sized to one
+/// full [`BATCH_AUTH_LOOKBACK_WINDOW`] at the nominal 12s L1 slot time (~20 minutes).
 ///
-/// MUST match op-node's `derive.BatchAuthEnforcementDelaySecs` exactly — this is a consensus
-/// constant, and the fault-proof derivation must agree with the op-node verifier at the fork
-/// boundary.
+/// This is a consensus constant: it MUST match op-node's `derive.BatchAuthEnforcementDelaySecs`,
+/// or fault-proof derivation and the op-node verifier will disagree at the fork boundary.
 pub const BATCH_AUTH_ENFORCEMENT_DELAY_SECS: u64 = BATCH_AUTH_LOOKBACK_WINDOW * 12;
 
 /// Celo-specific Espresso batch-authentication configuration.

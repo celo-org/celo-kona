@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_post_espresso_event_path() {
+    async fn test_auth_enforced_event_path() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -534,13 +534,13 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
 
-        // Post-Espresso: commitment authenticated and tx sender matches authenticating caller.
+        // Auth enforced: commitment authenticated and tx sender matches authenticating caller.
         source.load_blobs(&block_info, Address::ZERO).await.unwrap();
         assert_eq!(source.data.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_post_espresso_caller_mismatch_rejected() {
+    async fn test_auth_enforced_caller_mismatch_rejected() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -574,13 +574,13 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx]);
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
 
-        // Post-Espresso: commitment authenticated but tx sender != authenticating caller: rejected.
+        // Auth enforced: commitment authenticated but tx sender != authenticating caller: rejected.
         source.load_blobs(&block_info, Address::ZERO).await.unwrap();
         assert!(source.data.is_empty());
     }
 
     #[tokio::test]
-    async fn test_post_espresso_no_event_rejected() {
+    async fn test_auth_enforced_no_event_rejected() {
         let batch_inbox = address!("0123456789012345678901234567890123456789");
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let tx = test_legacy_tx(batch_inbox);
@@ -619,6 +619,31 @@ mod tests {
         source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
 
         // Sender matches: accepted via the pre-Espresso path.
+        source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
+        assert_eq!(source.data.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_grace_window_uses_sender_path() {
+        // Fork active but within the grace window (timestamp < espresso_time +
+        // BATCH_AUTH_ENFORCEMENT_DELAY_SECS): a sender-matching batch is accepted without an
+        // authenticating event. No receipts are inserted, so this also proves the lookback scan
+        // is bypassed — the enforced path could not even fetch them.
+        let batch_inbox = address!("0123456789012345678901234567890123456789");
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            batch_inbox,
+            Some(auth_config(auth_addr)),
+        );
+        let tx = test_legacy_tx(batch_inbox);
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS - 1,
+            ..Default::default()
+        };
+        source.chain_provider.insert_block_with_transactions(0, block_info, vec![tx.clone()]);
+
         source.load_blobs(&block_info, tx.recover_signer().unwrap()).await.unwrap();
         assert_eq!(source.data.len(), 1);
     }
@@ -696,12 +721,12 @@ mod tests {
         assert_eq!(source.data.len(), blob_tx_hashes().len());
     }
 
-    /// Post-Espresso: a 4844 blob tx whose blob batch commitment was authenticated by an event
+    /// Auth enforced: a 4844 blob tx whose blob batch commitment was authenticated by an event
     /// emitted by the batch tx's own sender is accepted; its blob versioned hashes are filled.
     /// Direct analogue of the Go "authenticated blob tx accepted" sub-test (commitment =
     /// `ComputeBlobBatchHash(blobHashes)`, auth caller = batcher).
     #[tokio::test]
-    async fn test_post_espresso_4844_blob_event_path() {
+    async fn test_auth_enforced_4844_blob_event_path() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let mut source = CeloBlobSource::new(
             TestChainProvider::default(),
@@ -737,11 +762,11 @@ mod tests {
         assert_eq!(source.data.len(), blob_tx_hashes().len());
     }
 
-    /// Post-Espresso: a 4844 blob tx whose blob batch commitment is authenticated, but by a
+    /// Auth enforced: a 4844 blob tx whose blob batch commitment is authenticated, but by a
     /// different caller than the batch tx sender, is rejected (caller-binding). Mirrors the Go
     /// "authenticated tx rejected when sender differs from auth caller" sub-test, on the blob path.
     #[tokio::test]
-    async fn test_post_espresso_4844_blob_caller_mismatch_rejected() {
+    async fn test_auth_enforced_4844_blob_caller_mismatch_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let other_caller = address!("00000000000000000000000000000000000000bb");
         let mut source = CeloBlobSource::new(
@@ -773,11 +798,11 @@ mod tests {
         assert!(source.data.is_empty());
     }
 
-    /// Post-Espresso: a 4844 blob tx from the batcher with no authenticating event is rejected —
+    /// Auth enforced: a 4844 blob tx from the batcher with no authenticating event is rejected —
     /// the sender-based fallback is gone once Espresso is active. Mirrors the Go "fallback batcher
     /// without auth event rejected" sub-test, on the blob path.
     #[tokio::test]
-    async fn test_post_espresso_4844_blob_no_event_rejected() {
+    async fn test_auth_enforced_4844_blob_no_event_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let mut source = CeloBlobSource::new(
             TestChainProvider::default(),
