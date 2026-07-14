@@ -3785,6 +3785,7 @@ dependencies = [
  "futures",
  "kona-executor",
  "kona-mpt",
+ "op-alloy-rpc-types-engine",
  "opentelemetry 0.30.0",
  "opentelemetry-otlp 0.30.0",
  "parking_lot",

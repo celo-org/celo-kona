@@ -13,7 +13,10 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
-use celo_executor::{CeloStatelessL2Builder, test_utils::fetch_block_replay_inputs};
+use celo_executor::{
+    CeloStatelessL2Builder,
+    test_utils::{fetch_block_replay_inputs, witness_trie_provider},
+};
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
@@ -21,6 +24,7 @@ use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
 use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
 use metrics::Metrics;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
@@ -403,16 +407,39 @@ async fn verify_block(
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-    let mut executor = CeloStatelessL2Builder::new(
-        rollup_config,
-        CeloEvmFactory::default(),
-        &trie,
-        NoopTrieHinter,
-        parent_header,
-    );
-    let outcome = executor
+    fn execute<P: TrieDBProvider + std::fmt::Debug>(
+        rollup_config: &celo_registry::CeloRollupConfig,
+        trie_provider: P,
+        parent_header: alloy_consensus::Sealed<alloy_consensus::Header>,
+        payload_attrs: OpPayloadAttributes,
+        block_number: u64,
+    ) -> Result<celo_executor::CeloBlockBuildingOutcome> {
+        CeloStatelessL2Builder::new(
+            rollup_config,
+            CeloEvmFactory::default(),
+            trie_provider,
+            NoopTrieHinter,
+            parent_header,
+        )
         .build_block(payload_attrs)
-        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))
+    }
+
+    // Preimage source: prefer the execution witness (works against reth, which does not
+    // implement `debug_dbGet`), fall back to on-demand `debug_dbGet` fetches (archival op-geth).
+    let outcome = match witness_trie_provider(provider, block_number).await {
+        Ok(witness_provider) => {
+            execute(rollup_config, witness_provider, parent_header, payload_attrs, block_number)?
+        }
+        Err(e) => {
+            tracing::debug!(
+                block_number,
+                err = %e,
+                "debug_executionWitness unavailable, falling back to debug_dbGet"
+            );
+            execute(rollup_config, &trie, parent_header, payload_attrs, block_number)?
+        }
+    };
 
     // Verify the result
     let verified = outcome.header.inner() == &executing_header;

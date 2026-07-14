@@ -5,7 +5,7 @@ use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Header;
 use alloy_eips::BlockId;
 use alloy_primitives::{B256, Bytes, Sealable, Sealed, keccak256, map::HashMap};
-use alloy_provider::{Provider, network::primitives::BlockTransactions};
+use alloy_provider::{Provider, RootProvider, network::primitives::BlockTransactions};
 use alloy_rpc_types_debug::ExecutionWitness;
 use alloy_rpc_types_engine::PayloadAttributes;
 use celo_genesis::CeloRollupConfig;
@@ -273,10 +273,27 @@ pub enum PreimageSource {
 }
 
 /// A [`TrieDBProvider`] served entirely from an in-memory preimage map, keyed by `keccak256` of
-/// the value — the same keying the fixture's on-disk key-value store uses.
+/// the value — the same keying the fixture's on-disk key-value store uses. Built with
+/// [`witness_trie_provider`].
 #[derive(Debug)]
-struct WitnessTrieNodeProvider {
+pub struct WitnessTrieNodeProvider {
     preimages: HashMap<B256, Bytes>,
+}
+
+/// Fetches every preimage needed to statelessly re-execute `block_number` — the node's
+/// `debug_executionWitness` plus the message-passer account-proof supplement (see
+/// [`PreimageSource::Witness`]) — into an in-memory [`WitnessTrieNodeProvider`].
+///
+/// This is the preimage path that works against reth-based nodes, which do not implement
+/// `debug_dbGet` (the archival-op-geth alternative, [`PreimageSource::DbGet`]).
+pub async fn witness_trie_provider(
+    provider: &RootProvider,
+    block_number: u64,
+) -> Result<WitnessTrieNodeProvider, String> {
+    let witness = fetch_execution_witness(provider, block_number).await?;
+    let mut preimages = witness_preimages(witness);
+    preimages.extend(fetch_message_passer_account_proof(provider, block_number).await);
+    Ok(WitnessTrieNodeProvider { preimages })
 }
 
 impl WitnessTrieNodeProvider {
@@ -357,24 +374,28 @@ pub async fn create_static_fixture(
     let witness = match preimage_source {
         PreimageSource::DbGet => None,
         PreimageSource::Witness => Some(
-            fetch_execution_witness(&creator)
+            fetch_execution_witness(&creator.provider, creator.block_number)
                 .await
                 .unwrap_or_else(|e| panic!("debug_executionWitness unavailable: {e}")),
         ),
-        PreimageSource::Auto => match fetch_execution_witness(&creator).await {
-            Ok(witness) => Some(witness),
-            Err(e) => {
-                tracing::info!(err = %e, "debug_executionWitness unavailable, falling back to debug_dbGet");
-                None
+        PreimageSource::Auto => {
+            match fetch_execution_witness(&creator.provider, creator.block_number).await {
+                Ok(witness) => Some(witness),
+                Err(e) => {
+                    tracing::info!(err = %e, "debug_executionWitness unavailable, falling back to debug_dbGet");
+                    None
+                }
             }
-        },
+        }
     };
 
     // The executor is generic over its provider, so the two preimage sources take separate
     // arms rather than a boxed provider.
     let produced_header = if let Some(witness) = witness {
         let mut preimages = witness_preimages(witness);
-        preimages.extend(fetch_message_passer_account_proof(&creator).await);
+        preimages.extend(
+            fetch_message_passer_account_proof(&creator.provider, creator.block_number).await,
+        );
         store_preimages(&creator, &preimages).await;
         let provider = WitnessTrieNodeProvider { preimages };
         build_block(&rollup_config, provider, parent_header, payload_attrs)
@@ -423,14 +444,14 @@ fn build_block<P: TrieDBProvider + std::fmt::Debug>(
 
 /// Asks the node for the target block's execution witness.
 async fn fetch_execution_witness(
-    creator: &ExecutorTestFixtureCreator,
+    provider: &RootProvider,
+    block_number: u64,
 ) -> Result<ExecutionWitness, String> {
-    creator
-        .provider
+    provider
         .client()
         .request::<[String; 1], ExecutionWitness>(
             "debug_executionWitness",
-            [format!("0x{:x}", creator.block_number)],
+            [format!("0x{block_number:x}")],
         )
         .await
         .map_err(|e| e.to_string())
@@ -449,14 +470,11 @@ async fn fetch_execution_witness(
 /// on failure: for blocks that do touch the predeploy the witness already covers it, and if it
 /// does not, the build fails with a loud missing-preimage error anyway.
 async fn fetch_message_passer_account_proof(
-    creator: &ExecutorTestFixtureCreator,
+    provider: &RootProvider,
+    block_number: u64,
 ) -> HashMap<B256, Bytes> {
-    let parent = BlockId::number(creator.block_number - 1);
-    match creator
-        .provider
-        .get_proof(Predeploys::L2_TO_L1_MESSAGE_PASSER, Vec::new())
-        .block_id(parent)
-        .await
+    let parent = BlockId::number(block_number - 1);
+    match provider.get_proof(Predeploys::L2_TO_L1_MESSAGE_PASSER, Vec::new()).block_id(parent).await
     {
         Ok(proof) => {
             proof.account_proof.into_iter().map(|node| (keccak256(node.as_ref()), node)).collect()
