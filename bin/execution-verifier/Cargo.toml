@@ -45,6 +45,7 @@ kona-mpt.workspace = true
 thiserror.workspace = true
 alloy-rlp.workspace = true
 alloy-consensus.workspace = true
+op-alloy-rpc-types-engine.workspace = true
 parking_lot = "0.12.4"
 
 # tracing and telemetry
