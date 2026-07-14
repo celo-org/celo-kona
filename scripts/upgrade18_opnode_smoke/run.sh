@@ -24,7 +24,11 @@
 #      boundary from L1 data — the safe head crosses the migration;
 #   6. celo-executor (the proof-path executor) replays the boundary blocks to
 #      the same block hashes, configured from the proof-side rollup.json —
-#      the variant that carries the four param overrides op-node's does not.
+#      the variant that carries the four param overrides op-node's does not;
+#   7. the full proof pipeline: celo-host runs the FPVM client program
+#      (natively) to prove the boundary block from L1 batch data — boot-info
+#      carriage of the Upgrade 18 settings through the preimage oracle,
+#      derivation inside the client, and the witness-fed oracle executor.
 #
 # Topology: anvil as a bare L1 (no OP contracts — with zero deposits, the
 # deposit-contract and system-config addresses are never read), celo-reth as
@@ -34,6 +38,7 @@
 #   anvil + cast (foundry), jq, python3
 #   celo-reth           target/debug/celo-reth (or $CELO_RETH)
 #   execution-verifier  target/debug/execution-verifier (or $EXECUTION_VERIFIER)
+#   celo-host           target/debug/celo-host (or $CELO_HOST)
 #   op-node, op-batcher $OP_NODE_BIN / $OP_BATCHER_BIN, or built from
 #                       $CELO_OPTIMISM_DIR (branch with Upgrade 18 fork
 #                       plumbing; needs go on PATH)
@@ -51,6 +56,7 @@ L2_WS_PORT=8948
 L2_AUTH_PORT=8953
 OP_NODE_RPC_PORT=9945
 BATCHER_RPC_PORT=9947
+BEACON_STUB_PORT=9958
 L1_RPC="http://127.0.0.1:$L1_PORT"
 L2_RPC="http://127.0.0.1:$L2_HTTP_PORT"
 L2_WS="ws://127.0.0.1:$L2_WS_PORT"
@@ -91,9 +97,10 @@ ANVIL_PID=
 RETH_PID=
 OP_NODE_PID=
 BATCHER_PID=
+BEACON_PID=
 
 cleanup() {
-    for pid in "$BATCHER_PID" "$OP_NODE_PID" "$RETH_PID" "$ANVIL_PID"; do
+    for pid in "$BEACON_PID" "$BATCHER_PID" "$OP_NODE_PID" "$RETH_PID" "$ANVIL_PID"; do
         if [[ -n "$pid" ]]; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -112,7 +119,7 @@ fail() {
     exit 1
 }
 
-for port in $L1_PORT $L2_HTTP_PORT $L2_WS_PORT $L2_AUTH_PORT $OP_NODE_RPC_PORT $BATCHER_RPC_PORT; do
+for port in $L1_PORT $L2_HTTP_PORT $L2_WS_PORT $L2_AUTH_PORT $OP_NODE_RPC_PORT $BATCHER_RPC_PORT $BEACON_STUB_PORT; do
     if lsof -ti :"$port" &>/dev/null; then
         echo "Killing stale process on port $port..."
         kill "$(lsof -ti :"$port")" 2>/dev/null || true
@@ -147,6 +154,9 @@ fi
 EXECUTION_VERIFIER="${EXECUTION_VERIFIER:-$REPO_ROOT/target/debug/execution-verifier}"
 [[ -x "$EXECUTION_VERIFIER" ]] ||
     fail "execution-verifier not found at $EXECUTION_VERIFIER (cargo build -p execution-verifier)"
+
+CELO_HOST="${CELO_HOST:-$REPO_ROOT/target/debug/celo-host}"
+[[ -x "$CELO_HOST" ]] || fail "celo-host not found at $CELO_HOST (cargo build -p celo-host)"
 
 python3 -c 'import secrets; print(secrets.token_hex(32))' > "$JWT"
 
@@ -465,5 +475,90 @@ if "$EXECUTION_VERIFIER" \
     fail "boundary replay without the param overrides must fail, but passed"
 fi
 echo "OK  boundary replay without the param overrides fails as it must"
+
+# ---------------------------------------------------------------------------
+# Assertion 7: full proof pipeline — celo-host runs the FPVM client program
+# (natively) to prove the boundary block from L1 batch data
+# ---------------------------------------------------------------------------
+
+# The layers assertion 6 does not cover: boot-info carriage of the Upgrade 18
+# settings through the preimage oracle, derivation inside the client program,
+# and the witness-fed oracle executor.
+
+# kona's blob provider insists on a beacon endpoint at startup even though
+# calldata batches never touch it afterwards: serve the two static responses
+# it reads at init.
+python3 - $BEACON_STUB_PORT "$L1_GENESIS_TS" <<'EOF' &>"$WORK/beacon-stub.log" &
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port, genesis_time = int(sys.argv[1]), sys.argv[2]
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/eth/v1/beacon/genesis"):
+            body = {"data": {"genesis_time": genesis_time}}
+        elif self.path.startswith("/eth/v1/config/spec"):
+            body = {"data": {"SECONDS_PER_SLOT": "2"}}
+        else:
+            self.send_error(404)
+            return
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+EOF
+BEACON_PID=$!
+
+output_at() {
+    curl -sf -X POST -H 'Content-Type: application/json' \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"optimism_outputAtBlock\",\"params\":[\"$(printf '0x%x' "$1")\"]}" \
+        "http://127.0.0.1:$OP_NODE_RPC_PORT"
+}
+
+AGREED=$(output_at $((BOUNDARY - 1)))
+AGREED_ROOT=$(jq -r .result.outputRoot <<<"$AGREED")
+AGREED_HEAD=$(jq -r .result.blockRef.hash <<<"$AGREED")
+CLAIMED_ROOT=$(output_at $BOUNDARY | jq -r .result.outputRoot)
+# Any L1 head works as long as the batches covering the claim are under it;
+# the safe-head crossing in assertion 5 guarantees that for the current tip.
+L1_HEAD=$(cast block latest --rpc-url "$L1_RPC" --field hash)
+
+prove_boundary() { # $1: rollup config for the proof, $2: log file
+    "$CELO_HOST" single \
+        --native \
+        --l1-head "$L1_HEAD" \
+        --agreed-l2-head-hash "$AGREED_HEAD" \
+        --agreed-l2-output-root "$AGREED_ROOT" \
+        --claimed-l2-output-root "$CLAIMED_ROOT" \
+        --claimed-l2-block-number "$BOUNDARY" \
+        --l1-node-address "$L1_RPC" \
+        --l1-beacon-address "http://127.0.0.1:$BEACON_STUB_PORT" \
+        --l2-node-address "$L2_RPC" \
+        --rollup-config-path "$1" \
+        --l1-config-path "$L1_CHAIN_CONFIG" \
+        &>"$2"
+}
+
+prove_boundary "$ROLLUP_PROOF" "$WORK/celo-host.log" ||
+    { tail -30 "$WORK/celo-host.log"; fail "celo-host failed to prove the boundary block"; }
+echo "OK  proof pipeline: celo-host proved boundary block $BOUNDARY from L1 data"
+
+# Negative check: with op-node's param-less rollup.json the client program must
+# halt at the boundary on the unresolved params, not silently skip the
+# migration and disagree about the output root later.
+if prove_boundary "$ROLLUP" "$WORK/celo-host-neg.log"; then
+    fail "boundary proof without the param overrides must fail, but passed"
+fi
+grep -q "artifact param .* is unresolved" "$WORK/celo-host-neg.log" ||
+    { tail -20 "$WORK/celo-host-neg.log"; fail "negative proof run failed for an unexpected reason"; }
+echo "OK  boundary proof without the param overrides halts on the unresolved params"
 
 echo "PASS: op-node drove celo-reth across the Upgrade 18 boundary"
