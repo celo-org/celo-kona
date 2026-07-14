@@ -26,7 +26,7 @@ clap.workspace = true
 url.workspace = true
 futures = "0.3.31"
 tracing-subscriber.workspace = true
-alloy-provider = { workspace = true, features = ["ipc"] }
+alloy-provider = { workspace = true, features = ["ipc", "ws"] }
 alloy-rpc-client.workspace = true
 alloy-transport.workspace = true
 alloy-transport-ws = "=2.0.5"
@@ -38,6 +38,7 @@ alloy-transport-ipc = "=2.0.5"
 alloy-network.workspace = true
 celo-executor = { workspace = true, features = ["test-utils"] }
 celo-registry.workspace = true
+serde_json.workspace = true
 alloy-primitives.workspace = true
 alloy-celo-evm.workspace = true
 kona-mpt.workspace = true

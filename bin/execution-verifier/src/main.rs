@@ -63,6 +63,11 @@ pub struct ExecutionVerifierCommand {
     /// socket.
     #[arg(long)]
     pub l2_rpc: String,
+    /// Path to a `rollup.json` holding the chain's rollup config (`CeloRollupConfig`, including
+    /// any Celo-only fields such as the Upgrade 18 settings). Takes precedence over the
+    /// registry lookup; required for chains the registry does not know (dev/e2e chains).
+    #[arg(long)]
+    pub rollup_config: Option<PathBuf>,
     /// L2 inclusive starting block number to execute.
     #[arg(long)]
     pub start_block: Option<u64>,
@@ -170,9 +175,32 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         .get_chain_id()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get chain ID: {e}"))?;
-    let rollup_config = ROLLUP_CONFIGS
-        .get(&chain_id)
-        .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
+    let rollup_config = match &cli.rollup_config {
+        Some(path) => {
+            let file = std::fs::File::open(path).map_err(|e| {
+                anyhow::anyhow!("Failed to open rollup config {}: {e}", path.display())
+            })?;
+            let config: celo_registry::CeloRollupConfig =
+                serde_json::from_reader(file).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse rollup config {}: {e}", path.display())
+                })?;
+            anyhow::ensure!(
+                config.l2_chain_id == chain_id,
+                "rollup config L2 chain ID {} does not match the RPC's chain ID {chain_id}",
+                config.l2_chain_id
+            );
+            config
+        }
+        None => ROLLUP_CONFIGS
+            .get(&chain_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Rollup config not found for chain ID {chain_id} \
+                     (pass --rollup-config for chains not in the registry)"
+                )
+            })?
+            .clone(),
+    };
 
     let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
 
