@@ -71,12 +71,8 @@ pub fn upgrade18_overrides(spec: &impl EthChainSpec) -> Upgrade18Overrides {
     };
     let amount = |key: &str| -> Option<U256> {
         let value = fields.get(key)?;
-        let parsed = value.as_u64().map(U256::from).or_else(|| {
-            let s = value.as_str()?;
-            s.strip_prefix("0x")
-                .map_or_else(|| U256::from_str_radix(s, 10), |hex| U256::from_str_radix(hex, 16))
-                .ok()
-        });
+        let parsed =
+            value.as_u64().map(U256::from).or_else(|| value.as_str()?.parse::<U256>().ok());
         Some(parsed.unwrap_or_else(|| {
             panic!(
                 "genesis config `{key}` must be a u64 number, `0x…` quantity, or decimal \
