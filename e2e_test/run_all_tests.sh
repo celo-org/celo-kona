@@ -78,7 +78,8 @@ GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
 # the debug_* sidecar methods (debug_executePayload, debug_executionWitness,
 # debug_proofsSyncStatus) from the bounded-history store. `proofs init` snapshots the
 # freshly written genesis state to anchor the proof window; the ExEx extends it from
-# there as blocks are mined. (Exercised by test_proofs_history_debug.sh.)
+# there as blocks are mined. V2 is explicit because `proofs init` backfills by default
+# and V1 does not support backfill. (Exercised by test_proofs_history_debug.sh.)
 echo "Initializing datadir and proofs-history storage..."
 if ! "$CELO_RETH" init --chain "$GENESIS_JSON" --datadir "$DATADIR" \
     &>"$SCRIPT_DIR/celo-reth.log"; then
@@ -87,7 +88,8 @@ if ! "$CELO_RETH" init --chain "$GENESIS_JSON" --datadir "$DATADIR" \
     exit 1
 fi
 if ! "$CELO_RETH" proofs init --chain "$GENESIS_JSON" --datadir "$DATADIR" \
-    --proofs-history.storage-path "$PROOFS_DIR" &>"$SCRIPT_DIR/celo-reth.log"; then
+    --proofs-history.storage-path "$PROOFS_DIR" \
+    --proofs-history.storage-version v2 &>"$SCRIPT_DIR/celo-reth.log"; then
     echo "ERROR: celo-reth proofs init failed."
     tail -40 "$SCRIPT_DIR/celo-reth.log"
     exit 1
@@ -104,6 +106,7 @@ echo "Starting celo-reth in dev mode (datadir=$DATADIR)..."
     --disable-discovery \
     --proofs-history \
     --proofs-history.storage-path "$PROOFS_DIR" \
+    --proofs-history.storage-version v2 \
     --proofs-history.window 100000 \
     &>"$SCRIPT_DIR/celo-reth.log" &
 CELO_RETH_PID=$!
