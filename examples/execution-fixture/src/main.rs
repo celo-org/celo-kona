@@ -18,14 +18,14 @@
 //! - `-c` or `--rollup-config`: (Optional) Path to the chain's `rollup.json`. If not provided, the
 //!   config is looked up in `celo-registry` by the RPC's chain ID — which only knows the production
 //!   Celo chains, so a dev chain must pass one.
-//! - `--preimage-source`: (Optional) How to source trie/bytecode/header preimages. Defaults to
-//!   probing `debug_executionWitness` (served by reth) and falling back to `debug_dbGet` (served by
-//!   archival op-geth).
+//!
+//! Preimages are collected from the L2 node's `debug_executionWitness` (served by reth), so the
+//! RPC must be a reth-based archive node serving historical proofs (`--rpc.eth-proof-window`).
 
 use anyhow::{Context, Result, anyhow};
-use celo_executor::test_utils::{PreimageSource, create_static_fixture};
+use celo_executor::test_utils::create_static_fixture;
 use celo_genesis::CeloRollupConfig;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use kona_cli::{LogArgs, LogConfig};
 use std::path::PathBuf;
 use tracing::info;
@@ -51,30 +51,6 @@ pub struct ExecutionFixtureCommand {
     /// Path to the chain's `rollup.json`. Required for chains `celo-registry` does not know.
     #[arg(long, short = 'c')]
     pub rollup_config: Option<PathBuf>,
-    /// Where to source the execution preimages from.
-    #[arg(long, value_enum, default_value_t = PreimageSourceArg::Auto)]
-    pub preimage_source: PreimageSourceArg,
-}
-
-/// CLI mirror of [`PreimageSource`].
-#[derive(ValueEnum, Debug, Clone, Copy)]
-pub enum PreimageSourceArg {
-    /// Probe `debug_executionWitness`, falling back to `debug_dbGet`.
-    Auto,
-    /// Fetch preimages on demand via `debug_dbGet` (archival op-geth).
-    DbGet,
-    /// Collect preimages up front from `debug_executionWitness` (reth).
-    Witness,
-}
-
-impl From<PreimageSourceArg> for PreimageSource {
-    fn from(arg: PreimageSourceArg) -> Self {
-        match arg {
-            PreimageSourceArg::Auto => Self::Auto,
-            PreimageSourceArg::DbGet => Self::DbGet,
-            PreimageSourceArg::Witness => Self::Witness,
-        }
-    }
 }
 
 #[tokio::main]
@@ -110,14 +86,7 @@ async fn main() -> Result<()> {
         })
         .transpose()?;
 
-    create_static_fixture(
-        cli.l2_rpc.as_str(),
-        cli.block_number,
-        output_dir,
-        rollup_config,
-        cli.preimage_source.into(),
-    )
-    .await;
+    create_static_fixture(cli.l2_rpc.as_str(), cli.block_number, output_dir, rollup_config).await;
 
     info!(block_number = cli.block_number, "Successfully created static test fixture");
     Ok(())

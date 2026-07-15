@@ -253,25 +253,6 @@ pub async fn fetch_block_replay_inputs<P: Provider>(
     Ok((parent_header, executing_header, payload_attrs))
 }
 
-/// Where the fixture creator sources the trie-node, bytecode and header preimages it needs to
-/// statelessly re-execute the target block.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PreimageSource {
-    /// Probe `debug_executionWitness`, and fall back to [`Self::DbGet`] if the node does not
-    /// serve it.
-    #[default]
-    Auto,
-    /// Fetch preimages on demand via geth's raw database accessor, `debug_dbGet`. Requires an
-    /// archival op-geth node; reth does not implement this method.
-    DbGet,
-    /// Collect every preimage up front from `debug_executionWitness`, which reth (and therefore a
-    /// `celo-reth` dev node) serves. The witness covers execution and state root recomputation,
-    /// but not quite everything this executor reads: the creator supplements it with an
-    /// `eth_getProof` for the `L2ToL1MessagePasser` account, so the node must also serve
-    /// historical proofs (`--rpc.eth-proof-window`).
-    Witness,
-}
-
 /// A [`TrieDBProvider`] served entirely from an in-memory preimage map, keyed by `keccak256` of
 /// the value — the same keying the fixture's on-disk key-value store uses. Built with
 /// [`witness_trie_provider`].
@@ -281,11 +262,12 @@ pub struct WitnessTrieNodeProvider {
 }
 
 /// Fetches every preimage needed to statelessly re-execute `block_number` — the node's
-/// `debug_executionWitness` plus the message-passer account-proof supplement (see
-/// [`PreimageSource::Witness`]) — into an in-memory [`WitnessTrieNodeProvider`].
+/// `debug_executionWitness` plus the message-passer account-proof supplement — into an
+/// in-memory [`WitnessTrieNodeProvider`].
 ///
-/// This is the preimage path that works against reth-based nodes, which do not implement
-/// `debug_dbGet` (the archival-op-geth alternative, [`PreimageSource::DbGet`]).
+/// The witness covers execution and state-root recomputation, but not quite everything this
+/// executor reads: it is supplemented with an `eth_getProof` for the `L2ToL1MessagePasser`
+/// account, so the node must also serve historical proofs (`--rpc.eth-proof-window`).
 pub async fn witness_trie_provider(
     provider: &RootProvider,
     block_number: u64,
@@ -337,7 +319,6 @@ pub async fn create_static_fixture(
     block_number: u64,
     base_fixture_directory: PathBuf,
     rollup_config: Option<CeloRollupConfig>,
-    preimage_source: PreimageSource,
 ) {
     let creator =
         ExecutorTestFixtureCreator::new(provider_url, block_number, base_fixture_directory);
@@ -371,37 +352,18 @@ pub async fn create_static_fixture(
         executing_payload: payload_attrs.clone(),
     };
 
-    let witness = match preimage_source {
-        PreimageSource::DbGet => None,
-        PreimageSource::Witness => Some(
-            fetch_execution_witness(&creator.provider, creator.block_number)
-                .await
-                .unwrap_or_else(|e| panic!("debug_executionWitness unavailable: {e}")),
-        ),
-        PreimageSource::Auto => {
-            match fetch_execution_witness(&creator.provider, creator.block_number).await {
-                Ok(witness) => Some(witness),
-                Err(e) => {
-                    tracing::info!(err = %e, "debug_executionWitness unavailable, falling back to debug_dbGet");
-                    None
-                }
-            }
-        }
-    };
-
-    // The executor is generic over its provider, so the two preimage sources take separate
-    // arms rather than a boxed provider.
-    let produced_header = if let Some(witness) = witness {
-        let mut preimages = witness_preimages(witness);
-        preimages.extend(
-            fetch_message_passer_account_proof(&creator.provider, creator.block_number).await,
-        );
-        store_preimages(&creator, &preimages).await;
-        let provider = WitnessTrieNodeProvider { preimages };
-        build_block(&rollup_config, provider, parent_header, payload_attrs)
-    } else {
-        build_block(&rollup_config, creator, parent_header, payload_attrs)
-    };
+    // Collect every preimage up front from the node's execution witness (served by reth),
+    // supplemented with the message-passer account proof, and replay the block against an
+    // in-memory provider keyed by keccak256 of each value.
+    let witness = fetch_execution_witness(&creator.provider, creator.block_number)
+        .await
+        .unwrap_or_else(|e| panic!("debug_executionWitness unavailable: {e}"));
+    let mut preimages = witness_preimages(witness);
+    preimages
+        .extend(fetch_message_passer_account_proof(&creator.provider, creator.block_number).await);
+    store_preimages(&creator, &preimages).await;
+    let provider = WitnessTrieNodeProvider { preimages };
+    let produced_header = build_block(&rollup_config, provider, parent_header, payload_attrs);
 
     assert_eq!(
         produced_header.inner(),
