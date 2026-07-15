@@ -1,6 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler};
+use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler, CeloVerifyingPreimageFetcher};
 use alloy_provider::RootProvider;
 use backon::{ExponentialBuilder, Retryable};
 use celo_alloy_network::Celo;
@@ -19,7 +19,6 @@ use kona_host::{
 };
 use kona_preimage::{
     BidirectionalChannel, Channel, HintReader, HintWriter, OracleReader, OracleServer,
-    VerifyingPreimageFetcher,
 };
 use kona_proof::HintType;
 use kona_providers_alloy::{
@@ -92,7 +91,7 @@ impl CeloSingleChainHost {
                 PreimageServer::new(
                     OracleServer::new(preimage),
                     HintReader::new(hint),
-                    Arc::new(VerifyingPreimageFetcher::new(CeloConfigBackend::new(
+                    Arc::new(CeloVerifyingPreimageFetcher::new(CeloConfigBackend::new(
                         OfflineHostBackend::new(kv_store),
                         rollup_config_json,
                     ))),
@@ -103,7 +102,7 @@ impl CeloSingleChainHost {
             })
         } else {
             let providers = self.create_providers().await?;
-            let backend = VerifyingPreimageFetcher::new(CeloConfigBackend::new(
+            let backend = CeloVerifyingPreimageFetcher::new(CeloConfigBackend::new(
                 OnlineHostBackend::new(
                     self.clone(),
                     kv_store.clone(),

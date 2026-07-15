@@ -1,7 +1,10 @@
 //! A Celo-specific preimage server backend that serves the rollup config with Espresso settings.
 
 use async_trait::async_trait;
-use kona_preimage::{HintRouter, PreimageFetcher, PreimageKey, errors::PreimageOracleResult};
+use kona_preimage::{
+    HintRouter, PreimageFetcher, PreimageKey, PreimageKeyType, errors::PreimageOracleResult,
+    verify_preimage,
+};
 use kona_proof::boot::L2_ROLLUP_CONFIG_KEY;
 use std::sync::Arc;
 
@@ -60,10 +63,57 @@ where
     }
 }
 
+/// Verifies standard preimages while preserving Hokulea's global-generic preimage namespace.
+///
+/// The OP fault-proof spec reserves type 3 for generic global keys whose values are authenticated
+/// externally, rather than self-verified from `(key, data)`. The current Kona host does not produce
+/// this key type, so upstream treats observing [`PreimageKeyType::GlobalGeneric`] as a programmer
+/// error. Hokulea uses the same type byte with EigenDA-specific key derivation for validity and
+/// field-element values. All other key types retain upstream [`verify_preimage`] behavior.
+///
+/// See <https://specs.optimism.io/fault-proof/index.html#type-3-global-generic-key>.
+#[derive(Debug, Clone, Copy)]
+pub struct CeloVerifyingPreimageFetcher<F> {
+    /// The wrapped preimage fetcher.
+    inner: F,
+}
+
+impl<F> CeloVerifyingPreimageFetcher<F> {
+    /// Creates a Celo-aware verifying preimage fetcher.
+    pub const fn new(inner: F) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl<F> PreimageFetcher for CeloVerifyingPreimageFetcher<F>
+where
+    F: PreimageFetcher + Send + Sync,
+{
+    async fn get_preimage(&self, key: PreimageKey) -> PreimageOracleResult<Vec<u8>> {
+        let data = self.inner.get_preimage(key).await?;
+        if key.key_type() != PreimageKeyType::GlobalGeneric {
+            verify_preimage(key, &data)?;
+        }
+        Ok(data)
+    }
+}
+
+#[async_trait]
+impl<F> HintRouter for CeloVerifyingPreimageFetcher<F>
+where
+    F: HintRouter + Send + Sync,
+{
+    async fn route_hint(&self, hint: String) -> PreimageOracleResult<()> {
+        self.inner.route_hint(hint).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kona_preimage::errors::PreimageOracleError;
+    use alloy_primitives::keccak256;
+    use kona_preimage::{PreimageKeyType, errors::PreimageOracleError};
     use tokio::sync::Mutex;
 
     /// A stub backend that records the keys delegated to it and returns a canned response.
@@ -131,5 +181,37 @@ mod tests {
         let err = backend.get_preimage(rollup_config_key()).await.unwrap_err();
         assert!(matches!(err, PreimageOracleError::KeyNotFound));
         assert_eq!(backend.inner.delegated.lock().await.as_slice(), &[rollup_config_key()]);
+    }
+
+    /// Hokulea uses global-generic keys to address EigenDA validity and field-element values.
+    #[tokio::test]
+    async fn passes_through_global_generic_preimages() {
+        let data = vec![1];
+        let key = PreimageKey::new(
+            *keccak256(b"eigenda-validity-address"),
+            PreimageKeyType::GlobalGeneric,
+        );
+        let inner = StubBackend { response: Some(data.clone()), delegated: Mutex::new(Vec::new()) };
+        let backend = CeloVerifyingPreimageFetcher::new(inner);
+
+        let served = backend.get_preimage(key).await.expect("global-generic preimage served");
+
+        assert_eq!(served, data);
+        assert_eq!(backend.inner.delegated.lock().await.as_slice(), &[key]);
+    }
+
+    /// Self-verifying key types retain upstream preimage verification.
+    #[tokio::test]
+    async fn rejects_corrupt_keccak_preimages() {
+        let key = PreimageKey::new(*keccak256(b"expected-preimage"), PreimageKeyType::Keccak256);
+        let inner = StubBackend {
+            response: Some(b"corrupt-preimage".to_vec()),
+            delegated: Mutex::new(Vec::new()),
+        };
+        let backend = CeloVerifyingPreimageFetcher::new(inner);
+
+        let err = backend.get_preimage(key).await.unwrap_err();
+
+        assert!(matches!(err, PreimageOracleError::IncorrectData(reported) if reported == key));
     }
 }
