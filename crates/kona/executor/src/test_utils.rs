@@ -352,17 +352,12 @@ pub async fn create_static_fixture(
         executing_payload: payload_attrs.clone(),
     };
 
-    // Collect every preimage up front from the node's execution witness (served by reth),
-    // supplemented with the message-passer account proof, and replay the block against an
-    // in-memory provider keyed by keccak256 of each value.
-    let witness = fetch_execution_witness(&creator.provider, creator.block_number)
+    // Collect every preimage up front from the node's execution witness (served by reth) and
+    // replay the block against an in-memory provider keyed by keccak256 of each value.
+    let provider = witness_trie_provider(&creator.provider, creator.block_number)
         .await
-        .unwrap_or_else(|e| panic!("debug_executionWitness unavailable: {e}"));
-    let mut preimages = witness_preimages(witness);
-    preimages
-        .extend(fetch_message_passer_account_proof(&creator.provider, creator.block_number).await);
-    store_preimages(&creator, &preimages).await;
-    let provider = WitnessTrieNodeProvider { preimages };
+        .unwrap_or_else(|e| panic!("failed to collect the execution witness: {e}"));
+    store_preimages(&creator, &provider).await;
     let produced_header = build_block(&rollup_config, provider, parent_header, payload_attrs);
 
     assert_eq!(
@@ -472,9 +467,9 @@ fn witness_preimages(witness: ExecutionWitness) -> HashMap<B256, Bytes> {
 
 /// Writes the collected preimages into the fixture's key-value store, which is what the
 /// checked-in tarball ships and `load_test_fixture` reads back.
-async fn store_preimages(creator: &ExecutorTestFixtureCreator, preimages: &HashMap<B256, Bytes>) {
+async fn store_preimages(creator: &ExecutorTestFixtureCreator, provider: &WitnessTrieNodeProvider) {
     let kv_store = creator.kv_store.lock().await;
-    for (hash, preimage) in preimages {
+    for (hash, preimage) in &provider.preimages {
         kv_store.put(hash, preimage.as_ref()).expect("Failed to write preimage");
     }
 }
