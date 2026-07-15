@@ -39,11 +39,8 @@ alloy-network.workspace = true
 celo-executor = { workspace = true, features = ["test-utils"] }
 celo-registry.workspace = true
 serde_json.workspace = true
-alloy-primitives.workspace = true
 alloy-celo-evm.workspace = true
 kona-mpt.workspace = true
-thiserror.workspace = true
-alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 op-alloy-rpc-types-engine.workspace = true
 parking_lot = "0.12.4"
