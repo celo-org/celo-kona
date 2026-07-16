@@ -38,9 +38,11 @@ pub const BATCH_AUTH_ENFORCEMENT_DELAY_SECS: u64 = BATCH_AUTH_LOOKBACK_WINDOW * 
 pub struct CeloEspressoConfig {
     /// Activation timestamp (L2) for the Espresso event-only batch authorization hardfork.
     ///
-    /// Pre-fork the derivation pipeline runs vanilla OP Stack semantics (sender-based
-    /// authorization, no `BatchAuthenticator` event lookup). Post-fork batches must be
-    /// authenticated by `BatchInfoAuthenticated` events; sender-based fallback is rejected.
+    /// Pre-fork — and within the [`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`] grace window after
+    /// activation — the derivation pipeline runs vanilla OP Stack semantics (sender-based
+    /// authorization, no `BatchAuthenticator` event lookup). Once an L1 block's origin time
+    /// reaches `espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS`, batches must be authenticated
+    /// by `BatchInfoAuthenticated` events; sender-based fallback is rejected.
     ///
     /// The per-L1-block decision in the data source is gated on the L1 origin time of the block
     /// being scanned, mirroring the upstream `ecotoneTime` precedent.
@@ -89,20 +91,6 @@ impl CeloRollupConfig {
     /// events instead of relying on sender verification.
     pub fn is_batch_auth_enabled(&self) -> bool {
         self.espresso.batch_authenticator_address.is_some_and(|addr| !addr.is_zero())
-    }
-
-    /// Returns true if Espresso event-only batch authorization is active at the given L1 origin
-    /// timestamp.
-    ///
-    /// Pre-fork the derivation pipeline runs vanilla OP Stack semantics (sender-based
-    /// authorization, no `BatchAuthenticator` event lookup). Post-fork batches must be
-    /// authenticated by `BatchInfoAuthenticated` events; sender-based fallback is rejected.
-    ///
-    /// This is intentionally orthogonal to the chained OP Stack hardforks and to
-    /// [`Self::is_batch_auth_enabled`] (which only signals that a `BatchAuthenticator` contract
-    /// address is configured).
-    pub fn is_espresso_active(&self, timestamp: u64) -> bool {
-        self.espresso.espresso_time.is_some_and(|t| timestamp >= t)
     }
 
     /// Resolves the Espresso batch-authentication parameters into a validated bundle suitable for
@@ -386,20 +374,6 @@ mod tests {
         // No Espresso fields in this config => defaults (disabled).
         assert_eq!(deserialized.espresso, CeloEspressoConfig::default());
         assert!(!deserialized.is_batch_auth_enabled());
-        assert!(!deserialized.is_espresso_active(u64::MAX));
-    }
-
-    #[test]
-    fn test_is_espresso_active() {
-        let mut cfg = CeloRollupConfig::new(RollupConfig::default());
-        // Unset: never active.
-        assert!(!cfg.is_espresso_active(0));
-        assert!(!cfg.is_espresso_active(u64::MAX));
-        // Set: boundary semantics match the OP Stack forks.
-        cfg.espresso.espresso_time = Some(100);
-        assert!(!cfg.is_espresso_active(99));
-        assert!(cfg.is_espresso_active(100));
-        assert!(cfg.is_espresso_active(101));
     }
 
     #[test]
@@ -558,8 +532,6 @@ mod tests {
             Some(address!("00000000000000000000000000000000000000aa"))
         );
         assert!(cfg.is_batch_auth_enabled());
-        assert!(cfg.is_espresso_active(1234));
-        assert!(!cfg.is_espresso_active(1233));
     }
 
     /// The derived `Serialize` must emit the same flat shape the custom `Deserialize` consumes, so
