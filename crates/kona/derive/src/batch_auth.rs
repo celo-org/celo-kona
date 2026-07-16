@@ -11,16 +11,20 @@
 //! on the L1 origin time of the block being scanned — mirroring the upstream `ecotoneTime`
 //! precedent.
 //!
-//! - **Pre-Espresso (or Espresso unset):** the pipeline runs vanilla OP Stack semantics. A batch is
-//!   authorized iff its sender matches `batcher_address`. The `BatchAuthenticator` event lookback
-//!   is bypassed entirely.
-//! - **Post-Espresso:** a batch is authorized iff its commitment hash was authenticated by a
-//!   `BatchInfoAuthenticated(bytes32 commitment, address indexed caller)` event emitted by the
-//!   configured `BatchAuthenticator` contract within the lookback window AND the batch
-//!   transaction's recovered L1 sender equals the `caller` that emitted that event. This
-//!   caller-binding prevents one batcher from replaying a batch authenticated by another. On
-//!   duplicate authentication of the same commitment within the lookback window, the newest event's
-//!   caller wins.
+//! Enforcement is delayed by a grace period after activation
+//! ([`celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS`] — see its docs for the rationale and
+//! sizing), giving two regimes by L1 origin time:
+//!
+//! - **Before enforcement (pre-fork, or within the grace window):** the pipeline runs vanilla OP
+//!   Stack semantics. A batch is authorized iff its sender matches `batcher_address`. The
+//!   `BatchAuthenticator` event lookback is bypassed entirely.
+//! - **Enforced (origin time `>= espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS`):** a batch is
+//!   authorized iff its commitment hash was authenticated by a `BatchInfoAuthenticated(bytes32
+//!   commitment, address indexed caller)` event emitted by the configured `BatchAuthenticator`
+//!   contract within the lookback window AND the batch transaction's recovered L1 sender equals the
+//!   `caller` that emitted that event. This caller-binding prevents one batcher from replaying a
+//!   batch authenticated by another. On duplicate authentication of the same commitment within the
+//!   lookback window, the newest event's caller wins. Sender-based fallback is rejected.
 //!
 //! The authorization semantics must stay in lockstep with the op-node verifier (the Go batcher
 //! emits the `BatchInfoAuthenticated` events that this module consumes).
@@ -32,7 +36,7 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_consensus::{Receipt, TxEnvelope, TxReceipt, transaction::SignerRecoverable};
 use alloy_primitives::{Address, B256, b256, keccak256};
-use celo_genesis::BATCH_AUTH_LOOKBACK_WINDOW;
+use celo_genesis::{BATCH_AUTH_ENFORCEMENT_DELAY_SECS, BATCH_AUTH_LOOKBACK_WINDOW};
 use kona_derive::ChainProvider;
 use kona_protocol::BlockInfo;
 use lru::LruCache;
@@ -58,18 +62,20 @@ pub struct BatchAuthConfig {
     ///
     /// The fork is conceptually an L2-timestamp hardfork, but the per-L1-block decision made at
     /// the data source layer is gated on the L1 origin time of the block being scanned (see
-    /// [`Self::is_active`]) — mirroring the upstream `ecotoneTime` precedent.
+    /// [`Self::is_enforced`]) — mirroring the upstream `ecotoneTime` precedent.
     pub espresso_time: u64,
 }
 
 impl BatchAuthConfig {
-    /// Returns true when Espresso event-only batch authorization is active at the given L1 origin
-    /// time, i.e. `l1_origin_time >= espresso_time`.
+    /// Returns true once event-based batch authentication is EXCLUSIVELY enforced at the given L1
+    /// origin time: `l1_origin_time >= espresso_time +`
+    /// [`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`].
+    /// Before that — pre-fork or within the grace window — derivation keeps accepting
+    /// sender-authenticated batches.
     ///
-    /// Mirrors [`celo_genesis::CeloRollupConfig::is_espresso_active`] for the case where a
-    /// `BatchAuthenticator` is configured.
-    pub const fn is_active(&self, l1_origin_time: u64) -> bool {
-        l1_origin_time >= self.espresso_time
+    /// Mirrors op-node's `derive.isEspressoAuthEnforced`; must stay in lockstep with it.
+    pub const fn is_enforced(&self, l1_origin_time: u64) -> bool {
+        l1_origin_time >= self.espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS
     }
 }
 
@@ -254,15 +260,17 @@ impl BatchAuthCache {
 /// Behaviour is gated by `auth_config` together with `l1_origin_time` (the L1 origin time of the
 /// block being scanned):
 ///
-/// - **Pre-Espresso / vanilla OP Stack** — `auth_config` is `None`, or it is `Some` but the fork is
-///   not yet active at `l1_origin_time` ([`BatchAuthConfig::is_active`] is false): authorized iff
-///   the transaction sender matches `batcher_address`. `authenticated_hashes` is ignored.
-/// - **Post-Espresso** — `auth_config` is `Some` and active: authorized iff `batch_hash` is present
-///   in `authenticated_hashes` AND the transaction's recovered L1 sender equals the `caller` that
-///   authenticated that commitment. This caller-binding prevents one batcher from replaying a batch
-///   authenticated by another.
+/// - **Before enforcement / vanilla OP Stack** — `auth_config` is `None`, or it is `Some` but
+///   enforcement has not begun at `l1_origin_time` ([`BatchAuthConfig::is_enforced`] is false, i.e.
+///   pre-fork or within the grace window): authorized iff the transaction sender matches
+///   `batcher_address`. `authenticated_hashes` is ignored.
+/// - **Enforced** — `auth_config` is `Some` and [`BatchAuthConfig::is_enforced`] is true:
+///   authorized iff `batch_hash` is present in `authenticated_hashes` AND the transaction's
+///   recovered L1 sender equals the `caller` that authenticated that commitment. This
+///   caller-binding prevents one batcher from replaying a batch authenticated by another.
+///   Sender-based fallback is rejected.
 ///
-/// Because the fork time lives inside [`BatchAuthConfig`], the post-Espresso (caller-bound) branch
+/// Because the fork time lives inside [`BatchAuthConfig`], the enforced (caller-bound) branch
 /// is only reachable when an authenticator is configured — the "fork active but no authenticator"
 /// state is unrepresentable.
 ///
@@ -278,9 +286,9 @@ pub fn is_batch_authorized(
     l1_origin_time: u64,
 ) -> bool {
     if let Some(config) = auth_config &&
-        config.is_active(l1_origin_time)
+        config.is_enforced(l1_origin_time)
     {
-        // Post-Espresso: the commitment must be authenticated AND the recovered batch tx sender
+        // Enforced: the commitment must be authenticated AND the recovered batch tx sender
         // must equal the `caller` that emitted the authenticating event. Sender-based
         // fallback is rejected.
         let Some(&caller) = authenticated_hashes.get(&batch_hash) else {
@@ -288,9 +296,10 @@ pub fn is_batch_authorized(
         };
         return tx.recover_signer().map(|sender| sender == caller).unwrap_or(false);
     }
-    // Pre-Espresso (or Espresso not yet active): vanilla OP Stack sender verification. Kept
-    // byte-identical to upstream kona's `BlobSource::extract_blob_data`, which substitutes
-    // `Address::ZERO` on signature-recovery failure (`unwrap_or_default`) rather than rejecting.
+    // Before enforcement (pre-fork or within the grace window): vanilla OP Stack sender
+    // verification. Kept byte-identical to upstream kona's `BlobSource::extract_blob_data`, which
+    // substitutes `Address::ZERO` on signature-recovery failure (`unwrap_or_default`) rather than
+    // rejecting.
     tx.recover_signer().unwrap_or_default() == batcher_address
 }
 
@@ -439,11 +448,12 @@ mod tests {
         BatchAuthConfig { authenticator_address, espresso_time: 0 }
     }
 
-    // L1 origin time used as "post-Espresso" for an `active_config` (espresso_time = 0).
-    const POST_ESPRESSO_TIME: u64 = 0;
+    // L1 origin time at which event-based auth is enforced for an `active_config`
+    // (espresso_time = 0): the first second past the grace period.
+    const ENFORCED_TIME: u64 = BATCH_AUTH_ENFORCEMENT_DELAY_SECS;
 
     #[test]
-    fn test_is_batch_authorized_post_espresso_matching_caller_accepted() {
+    fn test_is_batch_authorized_enforced_matching_caller_accepted() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
@@ -454,7 +464,7 @@ mod tests {
         // The commitment was authenticated by the tx's own sender.
         authenticated.insert(batch_hash, sender);
 
-        // Post-Espresso, commitment authenticated and tx sender == authenticating caller:
+        // Auth enforced, commitment authenticated and tx sender == authenticating caller:
         // authorized.
         assert!(is_batch_authorized(
             &tx,
@@ -462,12 +472,12 @@ mod tests {
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_ESPRESSO_TIME,
+            ENFORCED_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_espresso_caller_mismatch_rejected() {
+    fn test_is_batch_authorized_enforced_caller_mismatch_rejected() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
@@ -478,40 +488,40 @@ mod tests {
         // The commitment is authenticated, but by a different caller than the tx sender.
         authenticated.insert(batch_hash, other_caller);
 
-        // Post-Espresso, commitment authenticated but tx sender != authenticating caller: rejected.
+        // Auth enforced, commitment authenticated but tx sender != authenticating caller: rejected.
         assert!(!is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_ESPRESSO_TIME,
+            ENFORCED_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_espresso_no_event_rejected() {
+    fn test_is_batch_authorized_enforced_no_event_rejected() {
         let auth_addr = address!("1234567890123456789012345678901234567890");
         let config = active_config(auth_addr);
         let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
         let authenticated = BTreeMap::new(); // empty
 
         let tx = test_legacy_tx(Address::ZERO);
-        // Post-Espresso, commitment absent: rejected even for an empty map.
+        // Auth enforced, commitment absent: rejected even for an empty map.
         assert!(!is_batch_authorized(
             &tx,
             batch_hash,
             Some(&config),
             &authenticated,
             Address::ZERO,
-            POST_ESPRESSO_TIME,
+            ENFORCED_TIME,
         ));
     }
 
     #[test]
-    fn test_is_batch_authorized_post_espresso_sender_fallback_rejected() {
-        // Even when sender matches batcher_address, post-Espresso requires an authenticating event
-        // for the commitment.
+    fn test_is_batch_authorized_enforced_sender_fallback_rejected() {
+        // Even when sender matches batcher_address, the enforced regime requires an authenticating
+        // event for the commitment.
         let batch_hash = B256::ZERO;
         let authenticated = BTreeMap::new();
 
@@ -526,7 +536,7 @@ mod tests {
             Some(&config),
             &authenticated,
             sender,
-            POST_ESPRESSO_TIME,
+            ENFORCED_TIME,
         ));
     }
 
@@ -582,6 +592,44 @@ mod tests {
             &authenticated,
             sender,
             pre_espresso_time,
+        ));
+    }
+
+    #[test]
+    fn test_is_batch_authorized_grace_window_uses_sender_path() {
+        // Fork active but still within the grace window (espresso_time <= t < espresso_time +
+        // BATCH_AUTH_ENFORCEMENT_DELAY_SECS): the event path is gated off and only the sender check
+        // is honored, even if a matching auth event exists. This is what lets a batcher switch to
+        // authenticated submission at activation without a configured lead time.
+        let auth_addr = address!("1234567890123456789012345678901234567890");
+        let espresso_time = 1_000;
+        let config = BatchAuthConfig { authenticator_address: auth_addr, espresso_time };
+        let batch_hash = b256!("abcdef0000000000000000000000000000000000000000000000000000000000");
+        let mut authenticated = BTreeMap::new();
+
+        let tx = test_legacy_tx(Address::ZERO);
+        let sender = tx.recover_signer().unwrap();
+        authenticated.insert(batch_hash, sender);
+        // In the grace window: fork active, but before espresso_time + delay.
+        let grace_time = espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS - 1;
+
+        // Sender mismatch: rejected even though a matching event exists (event path gated off).
+        assert!(!is_batch_authorized(
+            &tx,
+            batch_hash,
+            Some(&config),
+            &authenticated,
+            address!("0000000000000000000000000000000000000001"),
+            grace_time,
+        ));
+        // Sender match: authorized via the sender path.
+        assert!(is_batch_authorized(
+            &tx,
+            batch_hash,
+            Some(&config),
+            &authenticated,
+            sender,
+            grace_time,
         ));
     }
 
