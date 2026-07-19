@@ -26,7 +26,10 @@ use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles};
+use op_revm::{
+    L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles,
+    transaction::deposit::DEPOSIT_TRANSACTION_TYPE,
+};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{BlockEnv, TxEnv},
@@ -43,9 +46,11 @@ use revm::{
 pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
+pub mod fee_context_cache;
 
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
+use fee_context_cache::{FeeCurrencyContextCache, L1_INFO_DEPOSITOR};
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
@@ -177,6 +182,28 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `CeloEvmConfig::builder_for_next_block` — the one entry point reth routes sequencing
     /// through (the payload builder), and which import/derivation deliberately bypass.
     blocklist_enabled: bool,
+    /// Shared cache of block-start fee-currency contexts, keyed by `(number, parent_hash)`.
+    ///
+    /// Exists for reth's `debug_trace*` path, which replays a block through a fresh EVM per
+    /// transaction over cumulatively-committed state: without the cache, each per-tx EVM
+    /// re-loads exchange rates from *mid-block* state, diverging from the consensus rule that
+    /// all transactions in a block settle at block-start rates. See [`fee_context_cache`] for
+    /// the full design.
+    fee_context_cache: FeeCurrencyContextCache,
+    /// Whether this EVM reads from and writes to the
+    /// [`fee_context_cache`](Self::fee_context_cache).
+    ///
+    /// The cache is an *RPC replay aid*, and its write gate trusts transaction content that
+    /// `debug_traceRawBlock` lets a caller forge (an unsigned deposit's `from`), so consensus
+    /// execution must never consult it. EVMs are created with this `true` by default
+    /// ([`CeloEvmFactory::create_evm`]) so the loose per-tx EVMs reth's RPC layer builds
+    /// (`debug_trace*`, `trace_*`, replay helpers) participate; every consensus path — block
+    /// import, derivation, sequencing, the kona proof executor — receives its EVM through
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), which
+    /// flips it off via [`with_fee_context_cache_disabled`](Self::with_fee_context_cache_disabled)
+    /// (the inverse of the blocklist's opt-in pattern). Consensus loses nothing: a
+    /// single-EVM-per-block executor loads the correct context fresh at tx 0 by construction.
+    fee_context_cache_enabled: bool,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -222,6 +249,8 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
             blocklist_enabled: false,
+            fee_context_cache: FeeCurrencyContextCache::default(),
+            fee_context_cache_enabled: true,
         }
     }
 
@@ -231,6 +260,19 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     #[must_use]
     pub const fn with_blocklist_enabled(mut self) -> Self {
         self.blocklist_enabled = true;
+        self
+    }
+
+    /// Disables the block-start fee-context cache for this EVM. Called on every consensus
+    /// execution path via
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) so that
+    /// import, derivation, sequencing and proof execution neither read the RPC-writable cache
+    /// nor pay its extra `Database::block_hash` lookup; only the loose per-tx EVMs the RPC
+    /// layer builds keep it on. See the `fee_context_cache_enabled` field docs and the
+    /// [`fee_context_cache`] module docs.
+    #[must_use]
+    pub const fn with_fee_context_cache_disabled(mut self) -> Self {
+        self.fee_context_cache_enabled = false;
         self
     }
 }
@@ -284,12 +326,71 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
+        // Capture whether this is the L1-info deposit (always tx 0 of a block) — the one
+        // transaction whose EVM provably sees block-start state, gating fee-context harvesting
+        // below.
+        let is_l1_info_deposit = tx.op_tx.base.tx_type == DEPOSIT_TRANSACTION_TYPE
+            && tx.op_tx.base.caller == L1_INFO_DEPOSITOR;
 
-        // The base-fee check is enabled during real state transitions — both sequencing AND block
-        // import / derivation re-execution — and disabled during RPC simulation (`eth_call`,
-        // `eth_estimateGas`, tracing). It gates the CIP-64 receipt-info store, which import and
-        // derivation also need.
+        // The base-fee check is enabled during replay-style execution — sequencing, block import
+        // / derivation re-execution, AND block tracing (`debug_trace*`, `trace_*`, `ots_*`) — and
+        // disabled during call-style RPC simulation (`eth_call`, `eth_estimateGas`,
+        // `debug_traceCall`). It gates the CIP-64 receipt-info store, which import and derivation
+        // also need, and participation in the block-start fee-context cache below.
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
+
+        // Block-start fee-currency context cache (see `fee_context_cache` module docs).
+        //
+        // Consensus rule: every transaction of a block settles CIP-64 fees at the exchange rates
+        // read from *block-start* state. Single-EVM-per-block paths (executor, parity tracer) get
+        // that from the `updated_at_block` check in `load_fee_currency_context`; reth's
+        // `debug_trace*` builds a fresh EVM per transaction over mid-block state, so here we seed
+        // the context from the shared cache instead of letting the handler re-load mid-block
+        // rates. Participation requires both:
+        //   - `fee_context_cache_enabled`: consensus executors (import/derivation/sequencing/
+        //     proofs) opt out at `CeloBlockExecutorFactory::create_executor` — they load the
+        //     correct context fresh at tx 0 and must never depend on RPC-writable state.
+        //   - `base_fee_check_enabled`: call-style simulations (`eth_call`/`estimateGas`/
+        //     `debug_traceCall`) run at end-of-block state where the rates they load are the
+        //     intended semantics.
+        let use_fee_context_cache = self.fee_context_cache_enabled && base_fee_check_enabled;
+        let block_number = self.ctx().block.number;
+        let mut cache_key = None;
+        if use_fee_context_cache
+            && self.inner.fee_currency_context.updated_at_block != Some(block_number)
+        {
+            let number: u64 = block_number.saturating_to();
+            // Genesis has no parent; a failing `block_hash` (fail open) skips caching entirely.
+            if number > 0
+                && let Ok(parent_hash) = self.db_mut().block_hash(number - 1)
+            {
+                cache_key = Some((number, parent_hash));
+                // The L1-info deposit's EVM never *reads* the cache: in an honest replay its DB
+                // is at block-start state, so a fresh load is correct by construction and the
+                // read buys nothing. Skipping it means the harvest below always overwrites the
+                // entry with a freshly-loaded context, so every block trace repairs a stale or
+                // poisoned entry at tx 0 before its later per-tx EVMs consult it.
+                if !is_l1_info_deposit {
+                    if let Some(context) = self.fee_context_cache.get(number, parent_hash) {
+                        // `load_fee_currency_context` will short-circuit on `updated_at_block`.
+                        // No directory system calls run, so there is no warmth to neutralize —
+                        // same observable state as consensus transactions 1..n of the block.
+                        self.inner.fee_currency_context = context;
+                    } else {
+                        // A miss mid-block means this trace EVM falls back to loading rates from
+                        // mid-block state — the pre-cache behavior — and the resulting trace may
+                        // be silently wrong if an earlier tx moved a rate. Rare (FIFO eviction or
+                        // an inconsistent `block_hash` view), but make it observable.
+                        tracing::debug!(
+                            target: "celo",
+                            block = number,
+                            "fee-context cache miss on replay-style execution; \
+                             falling back to mid-block rates"
+                        );
+                    }
+                }
+            }
+        }
 
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
         // the sequencing path: `blocklist_enabled` is set on EVMs built via
@@ -381,6 +482,27 @@ where
             _ => {}
         }
 
+        // Harvest the block-start fee-currency context into the shared cache. Population is
+        // restricted to the EVM that executed the L1-info deposit: in every honest replay that
+        // transaction is index 0, so nothing of the block was committed to the DB the context
+        // was loaded from — the context is block-start. `debug_traceRawBlock` lets a caller
+        // forge a deposit at a later index (deposits are unsigned), so a poisoned write is
+        // possible — but with consensus opted out (`fee_context_cache_enabled`) its blast
+        // radius is trace output only, and honest traces overwrite the entry at tx 0 (the
+        // deposit EVM never seeds, see above). Mid-block trace EVMs that missed the cache load
+        // mid-block rates (pre-cache behavior) but never write. The `updated_at_block` guard
+        // skips harvesting when execution failed before the handler loaded the context.
+        if let Some((number, parent_hash)) = cache_key
+            && is_l1_info_deposit
+            && self.inner.fee_currency_context.updated_at_block == Some(block_number)
+        {
+            self.fee_context_cache.insert(
+                number,
+                parent_hash,
+                self.inner.fee_currency_context.clone(),
+            );
+        }
+
         result
     }
 
@@ -454,6 +576,15 @@ pub struct CeloEvmFactory {
     /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
     /// empty.
     pub blocklist: FeeCurrencyBlocklist,
+    /// Shared cache of block-start fee-currency contexts. Populated by the EVM executing a
+    /// block's L1-info deposit (tx 0) and consulted by later EVMs replaying transactions of the
+    /// same block, so that reth's per-transaction trace EVMs (`debug_trace*`) validate CIP-64
+    /// fees against block-start exchange rates like consensus does. See [`fee_context_cache`].
+    ///
+    /// Unlike [`blocklist`](Self::blocklist) this is an implementation detail, not
+    /// configuration: nothing outside the crate constructs or inspects it, so it stays
+    /// `pub(crate)` (wired by `Default`).
+    pub(crate) fee_context_cache: FeeCurrencyContextCache,
 }
 
 impl CeloEvmFactory {
@@ -487,6 +618,8 @@ fn make_test_evm(
         // RPC-simulation test additionally disables the base-fee check, which the
         // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
         blocklist_enabled: true,
+        fee_context_cache: FeeCurrencyContextCache::default(),
+        fee_context_cache_enabled: true,
     }
 }
 
@@ -516,6 +649,10 @@ impl CeloEvmFactory {
             // factory and must not touch the blocklist. Sequencing flips it on via
             // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
             blocklist_enabled: false,
+            fee_context_cache: self.fee_context_cache.clone(),
+            // On by default so the loose per-tx EVMs reth's RPC layer builds participate;
+            // consensus executors flip it off in `create_executor` (see the field docs).
+            fee_context_cache_enabled: true,
         }
     }
 }
@@ -615,6 +752,207 @@ mod tests {
             cip64_tx_info: None,
             effective_gas_price: None,
         }
+    }
+
+    /// Build a deposit `CeloTransaction<TxEnv>` from the given caller. With
+    /// [`L1_INFO_DEPOSITOR`] as caller this is the L1-info deposit — always tx 0 of a block —
+    /// which is what gates fee-context cache population in `transact_raw`.
+    fn make_deposit_tx(caller: Address) -> CeloTransaction<TxEnv> {
+        CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller,
+                    tx_type: DEPOSIT_TRANSACTION_TYPE,
+                    gas_limit: 1_000_000,
+                    ..Default::default()
+                },
+                enveloped_tx: None,
+                deposit: Default::default(),
+            },
+            fee_currency: None,
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        }
+    }
+
+    /// The parent hash `transact_raw` computes for a test EVM at block `number`:
+    /// `InMemoryDB` delegates `block_hash` to `EmptyDB`, which is deterministic.
+    fn test_db_parent_hash(number: u64) -> alloy_primitives::B256 {
+        revm::Database::block_hash(&mut revm::database::InMemoryDB::default(), number - 1).unwrap()
+    }
+
+    /// A `FeeCurrencyContext` as loaded at the start of block `number`, with `fc` registered.
+    /// The empty in-memory DB can never produce a registered currency, so observing `fc` in an
+    /// EVM's context proves it came from the cache.
+    fn block_start_context(number: u64, fc: Address) -> celo_revm::FeeCurrencyContext {
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            celo_revm::fee_currency_context::FeeCurrencyInfo {
+                exchange_rate: (U256::from(2), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        celo_revm::FeeCurrencyContext::new(currencies, Some(U256::from(number)))
+    }
+
+    /// `transact_raw` must seed the fee-currency context from the shared cache instead of
+    /// letting the handler re-load it from (mid-block) DB state. This is the fix for
+    /// `debug_traceBlock*` replaying each tx in a fresh EVM: without seeding, a CIP-64 tx
+    /// traced after an in-block rate update is validated at the wrong rate
+    /// ("max fee per gas less than block base fee").
+    #[test]
+    fn test_transact_raw_seeds_context_from_cache() {
+        let fc = Address::with_last_byte(0xAA);
+
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, test_db_parent_hash(5), block_start_context(5, fc));
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        evm.ctx_mut().block.number = U256::from(5);
+
+        // Outcome irrelevant: seeding happens before execution and must survive tx failure.
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+
+        assert_eq!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)),
+            Ok((U256::from(2), U256::from(1))),
+            "context must come from the cache, not a fresh load from the (empty) DB"
+        );
+    }
+
+    /// Only the EVM executing the L1-info deposit (provably at block-start state) may
+    /// populate the cache; any other tx must not, or a mid-block trace EVM could poison
+    /// the entry with mid-block rates.
+    #[test]
+    fn test_only_l1_info_deposit_populates_cache() {
+        let parent = test_db_parent_hash(5);
+
+        // L1-info deposit → populates.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.transact_raw(make_deposit_tx(L1_INFO_DEPOSITOR)).expect("deposit must execute");
+        let harvested = evm
+            .fee_context_cache
+            .get(5, parent)
+            .expect("L1-info deposit must populate the block-start cache");
+        assert_eq!(harvested.updated_at_block, Some(U256::from(5)));
+
+        // User deposit (index > 0 possible) → must not populate.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.transact_raw(make_deposit_tx(Address::with_last_byte(0x01)))
+            .expect("deposit must execute");
+        assert!(evm.fee_context_cache.get(5, parent).is_none());
+
+        // Regular (non-deposit) tx → must not populate.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.ctx_mut().block.number = U256::from(5);
+        let _ = evm.transact_raw(make_cip64_tx(Address::with_last_byte(0xAA)));
+        assert!(evm.fee_context_cache.get(5, parent).is_none());
+    }
+
+    /// Consensus executors (import/derivation/sequencing/proofs) opt out of the cache via
+    /// `with_fee_context_cache_disabled` in `CeloBlockExecutorFactory::create_executor`: a
+    /// disabled EVM must neither read a (potentially RPC-poisoned) entry nor populate one.
+    #[test]
+    fn test_disabled_evm_bypasses_cache() {
+        let fc = Address::with_last_byte(0xAA);
+        let parent = test_db_parent_hash(5);
+
+        // No read: a pre-seeded (think: poisoned) entry must not reach the EVM.
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, parent, block_start_context(5, fc));
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        let mut evm = evm.with_fee_context_cache_disabled();
+        evm.ctx_mut().block.number = U256::from(5);
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)).is_err(),
+            "disabled EVM must load from its own DB state, not the shared cache"
+        );
+
+        // No write: even the L1-info deposit must not populate when disabled.
+        let mut evm =
+            make_test_evm(FeeCurrencyBlocklist::default()).with_fee_context_cache_disabled();
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.transact_raw(make_deposit_tx(L1_INFO_DEPOSITOR)).expect("deposit must execute");
+        assert!(evm.fee_context_cache.get(5, parent).is_none());
+    }
+
+    /// The L1-info deposit's EVM must never seed from the cache (its fresh load is correct by
+    /// construction) and its harvest must overwrite the existing entry — this is the
+    /// self-healing property: every block trace repairs a stale or poisoned entry at tx 0
+    /// before later per-tx EVMs of the same request read it.
+    #[test]
+    fn test_l1_info_deposit_ignores_and_repairs_existing_entry() {
+        let fc = Address::with_last_byte(0xAA);
+        let parent = test_db_parent_hash(5);
+
+        // A "poisoned" entry: registers `fc`, which the empty DB can never produce.
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, parent, block_start_context(5, fc));
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache.clone();
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.transact_raw(make_deposit_tx(L1_INFO_DEPOSITOR)).expect("deposit must execute");
+
+        // Not seeded: the deposit's own context came from a fresh (empty-DB) load.
+        assert!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)).is_err(),
+            "the L1-info deposit's EVM must never read the cache"
+        );
+        // Repaired: the poisoned entry was overwritten with the freshly-loaded context.
+        let repaired = cache.get(5, parent).expect("entry must still exist");
+        assert_eq!(repaired.updated_at_block, Some(U256::from(5)));
+        assert!(
+            repaired.currency_exchange_rate(Some(fc)).is_err(),
+            "harvest must overwrite the poisoned entry with the fresh block-start context"
+        );
+    }
+
+    /// Call-style simulations (`eth_call`/`eth_estimateGas`/`debug_traceCall` set
+    /// `disable_base_fee`) run at end-of-block state where the rates they load are the
+    /// intended semantics — they must neither read block-start rates from the cache nor
+    /// populate it.
+    #[test]
+    fn test_call_style_simulation_bypasses_cache() {
+        let fc = Address::with_last_byte(0xAA);
+
+        // No read: seeded rate must not reach the EVM.
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, test_db_parent_hash(5), block_start_context(5, fc));
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.ctx_mut().cfg.disable_base_fee = true;
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)).is_err(),
+            "call-style simulation must load from its own DB state, not the cache"
+        );
+
+        // No write: even the L1-info deposit must not populate under disable_base_fee.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.ctx_mut().cfg.disable_base_fee = true;
+        evm.transact_raw(make_deposit_tx(L1_INFO_DEPOSITOR)).expect("deposit must execute");
+        assert!(evm.fee_context_cache.get(5, test_db_parent_hash(5)).is_none());
+    }
+
+    /// Genesis has no parent to key on — the cache must be skipped entirely, not fed a
+    /// bogus key.
+    #[test]
+    fn test_genesis_block_skips_cache() {
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        // make_test_evm defaults to block 0.
+        evm.transact_raw(make_deposit_tx(L1_INFO_DEPOSITOR)).expect("deposit must execute");
+        // Nothing to assert via get() without a defined key shape for genesis — assert the
+        // context was still loaded normally (handler path unaffected).
+        assert_eq!(evm.inner.fee_currency_context.updated_at_block, Some(U256::ZERO));
     }
 
     /// `transact_raw` must NOT reject a blocklisted currency: `base_fee_check_enabled`
