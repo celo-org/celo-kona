@@ -77,7 +77,7 @@ pub use receipt::CeloReceipt;
 pub use receipts::CeloRethReceiptBuilder;
 
 // Re-export block assembler and execution context from op-reth (same for Celo as OP Stack).
-pub use alloy_op_evm::{OpBlockExecutor, post_exec::PostExecExecutorExt};
+pub use alloy_op_evm::{OpBlockExecutor, PreRefundGasUsed, post_exec::PostExecExecutorExt};
 pub use reth_optimism_evm::{
     ConfigurePostExecEvm, OpBlockAssembler, OpBlockExecutionCtx, OpNextBlockEnvAttributes,
     PostExecMode, l1,
@@ -377,6 +377,7 @@ where
             Executor: PostExecExecutorExt
                           + BlockExecutor<
                 Evm: alloy_evm::Evm<DB: core::ops::DerefMut<Target = revm::database::State<DB>>>,
+                Result: PreRefundGasUsed,
             >,
         > + 'a,
         Self::Error,

@@ -1,48 +1,114 @@
 //! Block executor for Celo.
+//!
+//! This module provides the per-block bridge between a [`CeloEvm`](crate::CeloEvm)'s own
+//! [`Cip64Storage`] and the receipt builder that consumes it. Each [`CeloEvm`](crate::CeloEvm)
+//! produced by a [`CeloEvmFactory`] owns a fresh [`Cip64Storage`]. On every call to
+//! [`create_executor`](BlockExecutorFactory::create_executor), the factory constructs a new
+//! receipt builder bound to that storage. The factory itself holds no long-lived storage handle,
+//! so two consumers using the same [`CeloEvmFactory`] cannot interfere with each other's pending
+//! CIP-64 receipt data.
 
-pub use executor_factory::CeloBlockExecutorFactory;
+use crate::{CeloEvmFactory, cip64_storage::Cip64Storage};
+use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
+use alloy_eips::Encodable2718;
+use alloy_evm::{
+    EvmFactory, FromRecoveredTx, FromTxWithEncoded,
+    block::{BlockExecutorFactory, StateDB},
+};
+use alloy_op_evm::{
+    OpBlockExecutionCtx, OpBlockExecutor,
+    block::{OpTxResult, receipt_builder::OpReceiptBuilder},
+};
+use alloy_op_hardforks::OpHardforks;
+use celo_revm::{CeloContext, CeloTransaction};
+use op_alloy_consensus::OpTransaction as OpConsensusTransaction;
+use op_revm::OpHaltReason;
+use revm::{Inspector, context::TxEnv};
+
 pub use receipt_builder::CeloAlloyReceiptBuilder;
 
-pub mod executor_factory;
 pub mod receipt_builder;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::CeloEvmFactory;
-    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
-    use alloy_eips::{Encodable2718, eip2718::WithEncoded};
-    use alloy_evm::{
-        EvmEnv, EvmFactory,
-        block::{BlockExecutor, BlockExecutorFactory},
-    };
-    use alloy_op_evm::OpBlockExecutionCtx;
-    use alloy_op_hardforks::OpChainHardforks;
-    use alloy_primitives::{Address, Signature};
-    use celo_alloy_consensus::CeloTxEnvelope;
-    use revm::database::{CacheDB, EmptyDB, State};
+/// Celo block executor factory.
+///
+/// Behaves like [`alloy_op_evm::OpBlockExecutorFactory`] but rebuilds `R` per call to
+/// [`create_executor`](BlockExecutorFactory::create_executor) so the receipt builder is always
+/// bound to the EVM's own [`Cip64Storage`]. The `R` type parameter is the runtime receipt builder
+/// used by [`OpBlockExecutor`]; the factory itself never holds an instance of `R`.
+#[derive(Debug, Default)]
+pub struct CeloBlockExecutorFactory<R, Spec> {
+    spec: Spec,
+    evm_factory: CeloEvmFactory,
+    _phantom: core::marker::PhantomData<fn() -> R>,
+}
 
-    #[test]
-    fn test_with_encoded() {
-        let executor_factory = CeloBlockExecutorFactory::<CeloAlloyReceiptBuilder, _>::new(
-            OpChainHardforks::op_mainnet(),
-            CeloEvmFactory::default(),
-        );
-        let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
-        let evm = executor_factory.evm_factory().create_evm(&mut db, EvmEnv::default());
-        let mut executor = executor_factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let tx = Recovered::new_unchecked(
-            CeloTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::new(
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ))),
-            Address::ZERO,
-        );
-        let tx_with_encoded = WithEncoded::new(tx.encoded_2718().into(), tx.clone());
-
-        // make sure we can use both `WithEncoded` and transaction itself as inputs.
-        let _ = executor.execute_transaction(&tx);
-        let _ = executor.execute_transaction(&tx_with_encoded);
+impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
+    fn clone(&self) -> Self {
+        Self {
+            spec: self.spec.clone(),
+            evm_factory: self.evm_factory.clone(),
+            _phantom: core::marker::PhantomData,
+        }
     }
 }
+
+impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
+    /// Creates a new factory with the given chain spec and EVM factory.
+    pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
+        Self { spec, evm_factory, _phantom: core::marker::PhantomData }
+    }
+
+    /// Exposes the chain specification.
+    pub const fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
+    /// Exposes the EVM factory.
+    pub const fn evm_factory(&self) -> &CeloEvmFactory {
+        &self.evm_factory
+    }
+}
+
+impl<R, Spec> BlockExecutorFactory for CeloBlockExecutorFactory<R, Spec>
+where
+    R: OpReceiptBuilder<
+            Transaction: Transaction + Encodable2718 + OpConsensusTransaction,
+            Receipt: TxReceipt,
+        > + From<Cip64Storage>
+        + Send
+        + Sync
+        + 'static,
+    Spec: OpHardforks + Clone + Send + Sync + 'static,
+    CeloTransaction<TxEnv>: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+{
+    type EvmFactory = CeloEvmFactory;
+    type ExecutionCtx<'a> = OpBlockExecutionCtx;
+    type Transaction = R::Transaction;
+    type Receipt = R::Receipt;
+    type TxExecutionResult =
+        OpTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
+    type Executor<'a, DB: StateDB, I: Inspector<CeloContext<DB>>> =
+        OpBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
+
+    fn evm_factory(&self) -> &Self::EvmFactory {
+        &self.evm_factory
+    }
+
+    fn create_executor<'a, DB, I>(
+        &'a self,
+        evm: <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
+        ctx: Self::ExecutionCtx<'a>,
+    ) -> Self::Executor<'a, DB, I>
+    where
+        DB: StateDB,
+        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>>,
+    {
+        // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
+        // long-lived receipt builder or storage handle; both are scoped to this executor.
+        let builder = R::from(evm.cip64_storage().clone());
+        OpBlockExecutor::new(evm, ctx, &self.spec, builder)
+    }
+}
+
+#[cfg(test)]
+mod tests;

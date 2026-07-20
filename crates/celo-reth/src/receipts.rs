@@ -70,4 +70,10 @@ impl OpReceiptBuilder for CeloRethReceiptBuilder {
     fn build_deposit_receipt(&self, inner: OpDepositReceipt) -> Self::Receipt {
         CeloReceipt::Deposit(inner)
     }
+
+    fn strip_deposit_nonce(&self, receipt: &mut Self::Receipt) {
+        if let CeloReceipt::Deposit(deposit) = receipt {
+            deposit.deposit_nonce = None;
+        }
+    }
 }

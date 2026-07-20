@@ -7,4 +7,4 @@ mod handler;
 pub use handler::CeloSingleChainHintHandler;
 
 mod backend;
-pub use backend::CeloConfigBackend;
+pub use backend::{CeloConfigBackend, CeloVerifyingPreimageFetcher};

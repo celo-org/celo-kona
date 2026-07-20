@@ -102,3 +102,26 @@ Verify with `just hack`.
 ## E2E Tests
 
 Located in `e2e_test/`. Run with `e2e_test/run_all_tests.sh` — it builds celo-reth, starts a dev node, funds test accounts, and runs all `test_*.sh` scripts automatically. JavaScript tests use viem in `e2e_test/js-tests/`.
+
+## Dependency Bumps and Upstream Ports
+
+A dependency bump is not complete when the manifests compile. Celo owns wrappers, adapters, and modified copies of upstream code, so every bump must include a semantic audit of the full upstream range.
+
+1. Resolve the exact old and new refs from `Cargo.toml`, `Cargo.lock`, tags, and git revisions. Never audit a dependency's current `main` or `HEAD` in place of the pinned versions.
+2. Scan every relevant commit in every source repository whose packages moved. This includes the Optimism monorepo's Kona, op-reth, op-alloy, op-revm, and alloy-op-evm crates, plus alloy-rs/core, alloy-rs/alloy, alloy-rs/eips, bluealloy/revm, and paradigmxyz/reth when their resolved versions or revisions change. Include transitive family changes revealed by the lockfile.
+3. Inventory Celo-owned counterparts before classifying changes. At minimum inspect `bin/client`, `bin/host`, `crates/kona/*`, `crates/celo-reth`, `crates/alloy-celo-evm`, `crates/celo-alloy/*`, and `crates/celo-revm`, including files that copy, wrap, adapt, or reimplement upstream behavior.
+4. Classify every relevant upstream commit as `PORT`, `INHERIT`, or `N/A`, with a reason. `INHERIT` means the bumped dependency executes the fixed code directly. `PORT` means Celo owns a separate implementation or adapter that must receive the same semantic change. A compile fix alone is not evidence that the audit is complete.
+5. Make each semantic port a separate, reviewable commit. Preserve the upstream implementation's structure, naming, control flow, and tests as closely as possible. Change only what Celo-specific types, APIs, hardfork rules, or behavior require, and do not mix opportunistic refactors into the port.
+6. Name the exact upstream source in the port commit message. Use the full `owner/repository@SHA`, state the upstream purpose, explain why the dependency bump does not inherit it, and describe the minimal Celo adaptation. For example:
+
+   ```text
+   Upstream: paradigmxyz/reth@<full-sha> (<upstream subject>)
+
+   celo-kona owns a separate <copy/adapter>, so the dependency bump does not
+   apply this change there. Keep the upstream implementation intact except for
+   <specific Celo adaptation>.
+   ```
+
+   Put durable Celo invariants or intentional semantic differences in code comments. The commit message is still required for provenance; do not rely on a code comment alone.
+7. Keep an audit ledger in the working notes or PR description so reviewers can see the complete scanned range and the `PORT`/`INHERIT`/`N/A` decision for each relevant change. Do not add otherwise-unused dependencies merely to mirror an upstream manifest.
+8. After changing a git tag or revision, clean the affected workspace packages before trusting incremental results, then run the verification depth required by this project, including no-std or dependency checks when the changed surfaces require them.
