@@ -2,11 +2,14 @@
 
 use crate::{
     CeloEvmConfig, celo_next_block_base_fee,
+    fee_resolver::ProviderFeeContextResolver,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
+use alloy_celo_evm::fee_context_cache::FeeContextResolver;
+use alloy_consensus::Header;
 use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
@@ -47,6 +50,7 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
+use reth_storage_api::{HeaderProvider, StateProviderFactory};
 use std::sync::Arc;
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
@@ -536,7 +540,14 @@ pub struct CeloExecutorBuilder {
 
 impl<Node> ExecutorBuilder<Node> for CeloExecutorBuilder
 where
-    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = CeloPrimitives>>,
+    Node: FullNodeTypes<
+        Types: NodeTypes<
+            ChainSpec: OpHardforks + Send + Sync + 'static,
+            Primitives = CeloPrimitives,
+        >,
+    >,
+    Node::Provider:
+        StateProviderFactory + HeaderProvider<Header = Header> + Clone + Send + Sync + 'static,
 {
     type EVM = CeloEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
@@ -544,7 +555,16 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist))
+        // Wire a provider-backed block-start fee-context resolver so reth's per-tx `debug_trace*`
+        // replay EVMs pin CIP-64 fees to block-start rates from canonical state. Consensus never
+        // consults it (opted out at `create_executor`); see `crate::fee_resolver`.
+        let resolver: Arc<dyn FeeContextResolver> =
+            Arc::new(ProviderFeeContextResolver::new(ctx.provider().clone(), ctx.chain_spec()));
+        Ok(CeloEvmConfig::celo_with_blocklist_and_resolver(
+            ctx.chain_spec(),
+            self.blocklist,
+            Some(resolver),
+        ))
     }
 }
 

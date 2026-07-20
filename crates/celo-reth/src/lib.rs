@@ -69,6 +69,9 @@ pub mod download_repair;
 #[cfg(feature = "std")]
 pub mod snapshot_manifest;
 
+#[cfg(feature = "std")]
+pub mod fee_resolver;
+
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
 
@@ -158,10 +161,28 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
+        Self::celo_with_blocklist_and_resolver(chain_spec, blocklist, None)
+    }
+
+    /// Creates a new [`CeloEvmConfig`] with the given chain spec, shared fee currency blocklist,
+    /// and an optional block-start fee-context resolver.
+    ///
+    /// The resolver (wired by the node's executor builder, backed by the state provider — see
+    /// [`crate::fee_resolver`]) lets reth's per-transaction `debug_trace*` replay EVMs pin CIP-64
+    /// fees to block-start rates. Consensus execution never consults it. Pass `None` for consumers
+    /// that don't trace (or don't have a provider).
+    pub fn celo_with_blocklist_and_resolver(
+        chain_spec: Arc<ChainSpec>,
+        blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+        resolver: Option<Arc<dyn alloy_celo_evm::fee_context_cache::FeeContextResolver>>,
+    ) -> Self {
         // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
         // and the executor factory re-binds the receipt builder to that per-EVM storage on
         // every `create_executor` call.
-        let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
+        let mut evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
+        if let Some(resolver) = resolver {
+            evm_factory = evm_factory.with_context_resolver(resolver);
+        }
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
             executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),

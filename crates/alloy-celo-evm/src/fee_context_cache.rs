@@ -1,4 +1,4 @@
-//! Block-start fee-currency context cache.
+//! Block-start fee-currency context: resolver and memo.
 //!
 //! # Why this exists
 //!
@@ -17,91 +17,80 @@
 //! surfacing as `max fee per gas less than block base fee` errors on
 //! `debug_traceBlockByHash`, or silently wrong gas/fee amounts in traces.
 //!
-//! This cache carries the block-start context across those per-transaction EVMs. It is
-//! shared via [`CeloEvmFactory`](crate::CeloEvmFactory) (like the fee-currency
-//! blocklist) and consulted in `CeloEvm::transact_raw`.
+//! # Mechanism: a trusted resolver plus a memo
 //!
-//! # Scope: RPC replay only — consensus never touches this cache
+//! [`CeloEvm::transact_raw`](crate::CeloEvm) pins those per-tx replay EVMs to block-start rates by
+//! asking a **[`FeeContextResolver`]** for the block's context, keyed `(block_number,
+//! parent_hash)`. The resolver computes the context **solely from canonical-chain state** — the
+//! std-only node layer (`celo-reth`) wires one backed by the state provider: look up the canonical
+//! header at `block_number`, verify its parent, load state at `parent_hash`, and run the
+//! directory/oracle view calls under that block's env. Because the value derives only from
+//! canonical state, no RPC caller can influence it (a forged `debug_traceBlock` body cannot change
+//! a rate), and historical blocks resolve the same as recent ones.
 //!
-//! The population gate below trusts *transaction content* (`tx_type == DEPOSIT && caller ==
-//! L1_INFO_DEPOSITOR`), and `debug_traceRawBlock` replays attacker-supplied blocks in which a
-//! deposit's `from` is unauthenticated bytes (deposits carry no signature). A forged deposit
-//! placed after a rate-update tx could therefore write a *mid-block* context under the key the
-//! next canonical block will use. Consensus execution must never be exposed to that, so every
-//! consensus path — block import, derivation, sequencing, and the kona proof executor — opts out
-//! wholesale: `CeloBlockExecutorFactory::create_executor`, the single choke point all of them
-//! obtain their EVM through, disables cache participation
-//! (`CeloEvm::with_fee_context_cache_disabled`). Consensus loses nothing — a
-//! single-EVM-per-block executor loads the correct context fresh at tx 0 by construction — and
-//! gains isolation: it neither reads RPC-writable state nor performs the cache's extra
-//! `Database::block_hash` lookup (which on a witness-recording proof DB could perturb the
-//! recorded preimage set). Only the loose per-tx EVMs reth's RPC layer builds directly via
-//! `EvmFactory::create_evm*` participate.
+//! The resolver's work (a provider read plus contract view calls) is memoized by the
+//! [`FeeCurrencyContextCache`] so it runs at most once per block across all the per-tx EVMs of a
+//! trace — not once per transaction. The memo is shared via
+//! [`CeloEvmFactory`](crate::CeloEvmFactory) (like the fee-currency blocklist). Its only writer is
+//! the resolver path in `transact_raw`, so every cached value is canonical-derived; there is no
+//! writer that trusts transaction content, hence nothing to poison.
 //!
-//! # Design
+//! # Scope: RPC replay only — consensus never participates
 //!
-//! - **Key**: `(block_number, parent_hash)`. The block-start fee-currency context is a function of
-//!   the parent state (plus the block env the directory/oracle calls run under): pre-execution
-//!   system calls (beacon root / history storage) never touch the fee-currency directory or
-//!   oracles, and nothing else runs before tx 0. Reorg siblings with different parents get
-//!   different keys; header-field keys (number/timestamp/prevrandao) can collide across unsafe-head
-//!   reorgs. (Two same-parent siblings share a key; their contexts can only differ if a registered
-//!   rate contract reads header fields like `TIMESTAMP` — no deployed Celo fee-currency contract
-//!   does, and self-healing below bounds the damage to one trace.)
-//! - **Population** is restricted to EVMs whose *current transaction is the L1-info deposit*. In
-//!   every honest replay that transaction is index 0, so nothing of the block has been committed to
-//!   the DB the context was loaded from — the loaded context is block-start. Mid-block trace EVMs
-//!   that *miss* the cache fall back to the pre-cache behavior (logged at debug level) and never
-//!   write.
-//! - **Self-healing**: the L1-info deposit's EVM never *reads* the cache — its fresh load is
-//!   correct by construction — and its harvest *overwrites* the entry. Every block-trace request
-//!   therefore repairs a stale or poisoned entry at tx 0 before its own later per-tx EVMs consult
-//!   it. (`debug_traceTransaction` populates the same way: reth replays the preceding transactions,
-//!   starting with the deposit, through one non-inspecting EVM before tracing the target in a fresh
-//!   one.)
-//! - **Call-style simulations bypass entirely** (`transact_raw` skips the cache when the base-fee
-//!   check is disabled): `eth_call`/`eth_estimateGas`/`debug_traceCall` run at end-of-block state
-//!   where the rates they load are the intended semantics — they must neither read block-start
-//!   rates nor write end-of-block rates.
+//! Every consensus path — block import, derivation, sequencing, and the kona proof executor — opts
+//! out wholesale: `CeloBlockExecutorFactory::create_executor`, the single choke point all of them
+//! obtain their EVM through, disables participation (`CeloEvm::with_fee_context_cache_disabled`).
+//! Consensus loses nothing — a single-EVM-per-block executor loads the correct context fresh at
+//! tx 0 by construction — and gains isolation: it never consults the resolver/memo and never pays
+//! the extra `Database::block_hash` lookup (which on a witness-recording proof DB could perturb the
+//! recorded preimage set). no-std consumers (kona) wire no resolver at all. Only the loose per-tx
+//! EVMs reth's RPC layer builds directly via `EvmFactory::create_evm*` participate.
 //!
-//! Seeding also preserves warm/cold accounting: a hit skips the directory system calls
-//! altogether, exactly like consensus transactions 1..n, so there is no warmth to
-//! neutralize (no `transaction_id` bump needed).
+//! **Key**: `(block_number, parent_hash)`. Reorg siblings with different parents get different
+//! keys; header-field keys (number/timestamp/prevrandao) can collide across unsafe-head reorgs.
+//! Seeding a memo hit skips the directory system calls, so there is no warmth to neutralize (no
+//! `transaction_id` bump needed) — the same observable state as consensus transactions 1..n.
 //!
-//! Misses degrade gracefully: genesis (no parent), a failing `Database::block_hash`,
-//! or an evicted entry simply run the pre-cache behavior.
+//! **Call-style simulations bypass entirely** (`transact_raw` skips this when the base-fee check
+//! is disabled): `eth_call`/`eth_estimateGas`/`debug_traceCall` run at end-of-block state where the
+//! rates they load are the intended semantics.
 //!
-//! # Residual risk (accepted)
-//!
-//! A caller with `debug`-namespace access can still poison an entry via a forged raw block and
-//! race a *concurrent* trace request between its tx-0 repair and a later read, corrupting that
-//! one trace response. This affects RPC output only (consensus is opted out), requires access to
-//! a namespace reth documents as trusted-only, and self-heals on the next request — accepted
-//! rather than adding request-scoped machinery. The real fix is upstream: reth reusing one EVM
-//! per block in `debug_trace*`, after which this cache can be deleted.
+//! When the block-start context cannot be obtained, `transact_raw` **refuses** rather than fall
+//! back to current-state (mid-block) rates: the block-start-rates rule is absolute and a
+//! mid-block per-tx EVM cannot reconstruct block-start rates from its own state. This covers a
+//! failing `Database::block_hash`, an unresolvable block (a resolver that returns `None` — a
+//! non-canonical/forged block, or a canonical block whose state the node has pruned), and a node
+//! with no resolver wired. Genesis (block 0) is the one benign exception: it carries no
+//! transactions and its state *is* block-start, so the handler's fresh load is already correct and
+//! pinning is skipped. The real fix is upstream: reth reusing one EVM per block in `debug_trace*`,
+//! after which the resolver and memo can be deleted.
 
 use alloc::{collections::VecDeque, sync::Arc};
-use alloy_primitives::{Address, B256, address};
+use alloy_primitives::B256;
 use celo_revm::FeeCurrencyContext;
 use spin::Mutex;
 
-/// Sender of the L1-attributes deposit transaction — always transaction 0 of every
-/// OP-stack (and Celo L2) block. Same address on all chains.
+/// Resolves the block-start fee-currency context for a block from trusted (canonical-chain) state.
 ///
-/// Mirrors kona's `L1_INFO_DEPOSITOR_ADDRESS` (`kona-protocol`, `info/variant.rs`), the
-/// derivation-layer constant used to *construct* the attributes deposit; it is `pub(crate)`
-/// upstream, hence the local copy. In an *honest* replay a deposit from this sender is at
-/// block-start state, which is what gates cache population — but the pair is forgeable via
-/// `debug_traceRawBlock` (deposits are unsigned), which is why consensus opts out of the cache
-/// entirely (see module docs).
-pub const L1_INFO_DEPOSITOR: Address = address!("0xDeaDDEaDdeAddEAddeadDEaDDEAdDeaDDeAD0001");
+/// Consulted by [`CeloEvm::transact_raw`](crate::CeloEvm) on reth's per-tx `debug_trace*` replay
+/// EVMs (see the module docs) to obtain block-start CIP-64 rates instead of loading mid-block ones.
+/// A resolver is wired only by the std-only node layer (`celo-reth`), backed by the state provider;
+/// no-std consumers (kona) and consensus executors never use one.
+///
+/// Implementations **must** derive the returned context solely from canonical-chain state for the
+/// given `(block_number, parent_hash)` — never from any caller-supplied block body — so that a
+/// value can never be influenced by an RPC caller (e.g. a forged `debug_traceBlock` payload).
+pub trait FeeContextResolver: Send + Sync {
+    /// Returns the block-start [`FeeCurrencyContext`] for the block at `block_number` whose parent
+    /// is `parent_hash`, or `None` if it cannot be resolved from canonical state (unknown or
+    /// non-canonical block, pruned history, provider error).
+    fn resolve(&self, block_number: u64, parent_hash: B256) -> Option<FeeCurrencyContext>;
+}
 
-/// Maximum number of cached block contexts.
+/// Maximum number of memoized block contexts.
 ///
-/// Bounds memory only; correctness never depends on residency. Concurrent tracing is
-/// semaphore-limited well below this, and every block-trace entry point starts at tx 0,
-/// which repopulates its own block's entry before the per-tx EVMs of that request
-/// consult it.
+/// Bounds memory only; correctness never depends on residency — a miss simply re-runs the
+/// resolver. Concurrent tracing is semaphore-limited well below this.
 const CACHE_CAPACITY: usize = 128;
 
 type CacheKey = (u64, B256);
@@ -125,14 +114,12 @@ impl FeeCurrencyContextCache {
         self.inner.lock().iter().find(|(k, _)| *k == key).map(|(_, ctx)| ctx.clone())
     }
 
-    /// Inserts the block-start context for `(number, parent_hash)`, evicting the oldest
-    /// entry when full. Re-inserting an existing key replaces its value in place — this is
-    /// load-bearing: the L1-info deposit's EVM never seeds from the cache and always
-    /// harvests, so each block-trace request *repairs* a stale or poisoned entry at tx 0
-    /// (see module docs, "Self-healing").
+    /// Memoizes the block-start context for `(number, parent_hash)`, evicting the oldest entry
+    /// when full. Re-inserting an existing key replaces its value in place.
     ///
-    /// Callers must only pass contexts loaded from block-start state (see module docs);
-    /// `CeloEvm::transact_raw` enforces this by gating on the L1-info deposit tx.
+    /// The only caller is `CeloEvm::transact_raw`, which inserts exactly what a
+    /// [`FeeContextResolver`] returned — a value derived solely from canonical state (see module
+    /// docs), never from transaction content.
     pub fn insert(&self, number: u64, parent_hash: B256, context: FeeCurrencyContext) {
         let key = (number, parent_hash);
         let mut entries = self.inner.lock();
