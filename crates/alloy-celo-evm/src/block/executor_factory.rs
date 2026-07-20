@@ -103,6 +103,14 @@ where
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
+        // Every consensus execution path — celo-reth block import, derivation, sequencing, and
+        // the kona proof executor — obtains its EVM through this method, making it the single
+        // choke point where CIP-64 receipt-data storage is enabled: `OpBlockExecutor` pops one
+        // stored entry per transaction in `build_receipt`, so only these receipt-building
+        // executors may store. Loose RPC replay/trace EVMs the RPC layer builds directly via
+        // `EvmFactory::create_evm*` leave it off — the single-slot storage would otherwise be
+        // filled twice and panic (see `CeloEvm::cip64_store_enabled`).
+        let evm = evm.with_cip64_store_enabled();
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }

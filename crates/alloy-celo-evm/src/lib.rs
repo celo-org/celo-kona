@@ -177,6 +177,25 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `CeloEvmConfig::builder_for_next_block` — the one entry point reth routes sequencing
     /// through (the payload builder), and which import/derivation deliberately bypass.
     blocklist_enabled: bool,
+    /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
+    /// transaction.
+    ///
+    /// The store hands a CIP-64 tx's pre/post transfer logs and `base_fee_in_erc20` to the
+    /// receipt builder, which pops exactly one entry per transaction in `build_receipt`. It must
+    /// therefore run only on EVMs that build receipts: the slot is single-entry and
+    /// `store_cip64_info` panics if a second transaction stores before the first is consumed.
+    ///
+    /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
+    /// flipped to `true` only by
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), the choke
+    /// point every receipt-building executor (import, derivation, sequencing, kona proofs) passes
+    /// through. Loose per-tx EVMs the RPC layer builds directly — parity `trace_*`, otterscan
+    /// `ots_*`, and reth's `replay_transactions_until` prefix replay for `debug_traceTransaction`
+    /// / `debug_traceCall` — leave it off: they run many transactions through one EVM without
+    /// ever building a receipt, so storing would fill the slot twice and panic. (This replaced an
+    /// earlier `!self.inspect` proxy, which wrongly let the *non-inspecting*
+    /// `replay_transactions_until` path store and panic.)
+    cip64_store_enabled: bool,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -222,6 +241,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
             blocklist_enabled: false,
+            cip64_store_enabled: false,
         }
     }
 
@@ -231,6 +251,18 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     #[must_use]
     pub const fn with_blocklist_enabled(mut self) -> Self {
         self.blocklist_enabled = true;
+        self
+    }
+
+    /// Enables CIP-64 receipt-data storage for this EVM. Called only by
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) (and the
+    /// dormant post-exec executors), the receipt-building paths that pop exactly one stored entry
+    /// per transaction. Loose RPC EVMs (parity `trace_*`, otterscan, `replay_transactions_until`)
+    /// leave it off so they never fill the single-entry slot twice. See the
+    /// `cip64_store_enabled` field docs.
+    #[must_use]
+    pub const fn with_cip64_store_enabled(mut self) -> Self {
+        self.cip64_store_enabled = true;
         self
     }
 }
@@ -285,10 +317,10 @@ where
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
 
-        // The base-fee check is enabled during real state transitions — both sequencing AND block
-        // import / derivation re-execution — and disabled during RPC simulation (`eth_call`,
-        // `eth_estimateGas`, tracing). It gates the CIP-64 receipt-info store, which import and
-        // derivation also need.
+        // The base-fee check is enabled during replay-style execution — sequencing, block import
+        // / derivation re-execution, AND block tracing (`debug_trace*`, `trace_*`, `ots_*`) — and
+        // disabled during call-style RPC simulation (`eth_call`, `eth_estimateGas`,
+        // `debug_traceCall`). It is a defensive conjunct on the CIP-64 receipt-info store.
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
@@ -315,21 +347,27 @@ where
         match &result {
             Ok(_) => {
                 // CIP64 NOTE:
-                // Extract and store the cip64 info so the receipt builder can add the
-                // credit/debit logs when building the receipt. Store only on the real
-                // execution path, the only place `build_receipt` consumes it. We require both:
-                //   - `base_fee_check_enabled`: RPC simulation (eth_call/estimateGas) disables the
-                //     base-fee check and never builds receipts.
-                //   - `!self.inspect`: tracing replays many txs through one shared, inspecting EVM
-                //     and never builds receipts. parity `trace_block`/`trace_filter` and otterscan
-                //     `ots_*` keep the base-fee check enabled, so without this conjunct the second
-                //     CIP-64 tx would trip the slot-occupied panic in `store_cip64_info`.
-                // Confining the store to the receipt-building path keeps that panic a true
-                // signal of an executor double-store bug (see `Cip64Storage` docs), rather than
-                // a false positive on legitimate tracing.
+                // Hand this tx's CIP-64 pre/post transfer logs and `base_fee_in_erc20` to the
+                // receipt builder, which pops exactly one entry per transaction in
+                // `build_receipt`. Store only on EVMs that build receipts. We require both:
+                //   - `cip64_store_enabled`: set only at
+                //     `CeloBlockExecutorFactory::create_executor` (the receipt-building executors:
+                //     import, derivation, sequencing, kona proofs). Loose RPC EVMs — parity
+                //     `trace_*`, otterscan `ots_*`, and reth's `replay_transactions_until` prefix
+                //     replay (`debug_traceTransaction`/`debug_traceCall`) — run many txs through
+                //     one EVM without building receipts, so storing would fill the single slot
+                //     twice and panic in `store_cip64_info`. This replaced an earlier
+                //     `!self.inspect` proxy, which wrongly let the *non-inspecting*
+                //     `replay_transactions_until` path store and panic.
+                //   - `base_fee_check_enabled`: redundant given the flag on every real executor,
+                //     but a defensive guard so a call-style simulation EVM (eth_call/estimateGas,
+                //     `disable_base_fee`) never stores even if the store flag were ever set on it.
+                // Confining the store to the receipt-building path keeps the slot-occupied panic a
+                // true signal of an executor double-store bug (see `Cip64Storage` docs), rather
+                // than a false positive on legitimate tracing/replay.
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
                 if base_fee_check_enabled
-                    && !self.inspect
+                    && self.cip64_store_enabled
                     && let Some(cip64_info) = cip64_info
                 {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
@@ -487,6 +525,9 @@ fn make_test_evm(
         // RPC-simulation test additionally disables the base-fee check, which the
         // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
         blocklist_enabled: true,
+        // Tests default to the receipt-building executor path (stores CIP-64 info); loose-EVM
+        // tests flip this off to exercise the parity/ots/replay shapes.
+        cip64_store_enabled: true,
     }
 }
 
@@ -516,6 +557,10 @@ impl CeloEvmFactory {
             // factory and must not touch the blocklist. Sequencing flips it on via
             // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
             blocklist_enabled: false,
+            // Off by default: only receipt-building executors store CIP-64 info, and they flip it
+            // on in `create_executor`. Loose RPC EVMs (trace/ots/replay) must not store — the
+            // single slot would be filled twice and panic (see the field docs).
+            cip64_store_enabled: false,
         }
     }
 }
@@ -773,9 +818,10 @@ mod tests {
     }
 
     /// Verify that base-fee-disabled RPC simulation (eth_call / eth_estimateGas) never stores
-    /// CIP-64 receipt data: the `base_fee_check_enabled` gate in `transact_raw` skips the store
-    /// on those paths, which never build receipts. (The inspecting/tracing path is covered
-    /// separately by [`test_cip64_info_not_stored_while_inspecting`].)
+    /// CIP-64 receipt data even on a store-enabled EVM: the `base_fee_check_enabled` defensive
+    /// conjunct in `transact_raw` skips the store on those paths, which never build receipts.
+    /// (The trace/replay paths are covered by
+    /// [`test_loose_evm_replays_cip64_txs_without_storing`].)
     ///
     /// The handler still populates `cip64_tx_info` during simulation for
     /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
@@ -812,36 +858,73 @@ mod tests {
         );
     }
 
-    /// Verify that an inspecting EVM (block tracing) does not store CIP-64 receipt data even
-    /// with the base-fee check ENABLED — the parity `trace_block` / otterscan `ots_*` path.
-    /// Before the `!self.inspect` gate in `transact_raw`, the store ran here and a second
-    /// CIP-64 tx replayed through the same EVM tripped the slot-occupied panic in
-    /// `store_cip64_info`. The panic is intentional for the executor path (see `Cip64Storage`
-    /// docs), so the fix skips the store while inspecting rather than weakening the panic.
+    /// Regression: loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and reth's
+    /// `replay_transactions_until` prefix replay (`debug_traceTransaction`/`debug_traceCall`) —
+    /// run many transactions through ONE EVM with the base-fee check ENABLED and never build
+    /// receipts. They must not store CIP-64 receipt data: the single-slot `Cip64Storage` would be
+    /// filled twice and `store_cip64_info` would panic on the second CIP-64 tx. The
+    /// `cip64_store_enabled` flag (off for these EVMs) is what prevents the store.
+    ///
+    /// Both loose shapes are covered: `inspecting=false` is the non-inspecting
+    /// `replay_transactions_until` EVM (the shape the earlier `!self.inspect` proxy failed to
+    /// guard, so this exact case panicked); `inspecting=true` is the parity/ots trace EVM.
     #[test]
-    fn test_cip64_info_not_stored_while_inspecting() {
+    fn test_loose_evm_replays_cip64_txs_without_storing() {
         use revm::state::AccountInfo;
 
-        let blocklist = FeeCurrencyBlocklist::default();
-        let mut evm = make_test_evm(blocklist);
+        for inspecting in [false, true] {
+            let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+            evm.cip64_store_enabled = false; // loose RPC EVM (as `create_evm*` produces)
+            evm.set_inspector_enabled(inspecting);
 
+            let caller = Address::with_last_byte(0x01);
+            evm.db_mut().insert_account_info(
+                caller,
+                AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+            );
+
+            // Two successful native-fee CIP-64 txs through the same EVM (base fee enabled).
+            // `transact_raw` does not commit, so the account nonce stays 0 and both nonce-0 txs
+            // validate — enough to attempt the store twice. With the store gate mis-set this
+            // panics on the second via the single-slot assertion; with the flag off it stores
+            // nothing.
+            for i in 0..2 {
+                let mut tx = make_cip64_tx(Address::ZERO);
+                tx.fee_currency = Some(Address::ZERO);
+                let result = evm.transact_raw(tx);
+                assert!(result.is_ok(), "loose replay tx {i} should succeed: {result:?}");
+            }
+
+            assert!(
+                evm.cip64_storage.pop_cip64_receipt_data().is_none(),
+                "loose replay EVM (inspecting={inspecting}) must not store CIP-64 receipt data"
+            );
+        }
+    }
+
+    /// The receipt-building executors (`CeloBlockExecutorFactory::create_executor`) set
+    /// `cip64_store_enabled`, so a successful CIP-64 tx stores exactly one entry for
+    /// `build_receipt` to pop.
+    #[test]
+    fn test_cip64_info_stored_on_executor_path() {
+        use revm::state::AccountInfo;
+
+        // `make_test_evm` sets `cip64_store_enabled = true` (the receipt-building path).
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
         let caller = Address::with_last_byte(0x01);
         evm.db_mut().insert_account_info(
             caller,
             AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
         );
 
-        // Tracing EVM: inspecting, but base fee left ENABLED (unlike eth_call / estimateGas).
-        evm.set_inspector_enabled(true);
-
         let mut tx = make_cip64_tx(Address::ZERO);
         tx.fee_currency = Some(Address::ZERO);
         let result = evm.transact_raw(tx);
-        assert!(result.is_ok(), "inspecting tx should succeed: {result:?}");
+        assert!(result.is_ok(), "tx should succeed: {result:?}");
 
         assert!(
-            evm.cip64_storage.pop_cip64_receipt_data().is_none(),
-            "tracing (inspecting EVM) must not store CIP-64 receipt data"
+            evm.cip64_storage.pop_cip64_receipt_data().is_some(),
+            "receipt-building executor must store CIP-64 receipt data"
         );
     }
 

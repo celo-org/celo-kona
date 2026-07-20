@@ -363,7 +363,10 @@ where
         + 'a,
         Self::Error,
     > {
-        let evm = self.evm_for_block(db, block.header())?;
+        // Receipt-building executor built outside `create_executor`, so enable CIP-64 receipt
+        // storage like that choke point does. Dormant on Celo (SDM unscheduled), but keep the
+        // invariant.
+        let evm = self.evm_for_block(db, block.header())?.with_cip64_store_enabled();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
         let builder = R::from(evm.cip64_storage().clone());
@@ -389,9 +392,11 @@ where
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         // Next-block (sequencing-side) builder, so enable the blocklist like
-        // `builder_for_next_block`. Dormant on Celo: SDM/post-exec is unscheduled, so this
-        // path is never actually driven.
-        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
+        // `builder_for_next_block`, and enable CIP-64 receipt storage like `create_executor`
+        // does for every receipt-building executor. Dormant on Celo: SDM/post-exec is
+        // unscheduled, so this path is never actually driven.
+        let evm =
+            self.evm_with_env(db, evm_env).with_blocklist_enabled().with_cip64_store_enabled();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
