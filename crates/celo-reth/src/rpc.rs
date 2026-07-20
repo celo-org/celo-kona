@@ -108,19 +108,16 @@ pub struct CeloTransactionRequest {
     pub fee_currency: Option<alloy_primitives::Address>,
 }
 
-/// Helper struct for single-pass serde of [`CeloTransactionRequest`].
+/// Helper struct for serializing [`CeloTransactionRequest`].
 ///
-/// Uses `#[serde(flatten)]` so that the inner `OpTransactionRequest` fields and
-/// `feeCurrency` are serialized/deserialized in one pass without an intermediate
-/// `serde_json::Value` allocation.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// Uses `#[serde(flatten)]` so the inner `OpTransactionRequest` fields and `feeCurrency`
+/// serialize in one pass. Serialization always emits the canonical `feeCurrency` key.
+/// Deserialization is handled manually (see below) to match the key case-insensitively.
+#[derive(serde::Serialize)]
 struct CeloTransactionRequestHelper {
     #[serde(flatten)]
     inner: OpTransactionRequest,
-    /// A missing key or explicit JSON `null` is treated as `None` (native fee).
-    /// Any other value that fails to parse as an `Address` is a hard error, so
-    /// clients that intended a CIP-64 tx don't silently fall back to a native-fee tx.
-    #[serde(rename = "feeCurrency", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "feeCurrency", skip_serializing_if = "Option::is_none")]
     fee_currency: Option<alloy_primitives::Address>,
 }
 
@@ -133,8 +130,30 @@ impl serde::Serialize for CeloTransactionRequest {
 
 impl<'de> serde::Deserialize<'de> for CeloTransactionRequest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let helper = CeloTransactionRequestHelper::deserialize(deserializer)?;
-        Ok(Self { inner: helper.inner, fee_currency: helper.fee_currency })
+        use serde::de::Error as _;
+
+        // go-ethereum's `encoding/json` matches JSON object keys to struct tags
+        // case-insensitively, so op-geth binds `feeCurrency`, `feecurrency`, `FeeCurrency`,
+        // etc. all to the same field. serde is case-sensitive, so we deserialize into a
+        // `serde_json::Value` and pull the fee-currency key out case-insensitively before
+        // handing the remainder to `OpTransactionRequest`. Without this, a client sending a
+        // non-canonical casing (e.g. minipay's `feecurrency`) would be silently treated as a
+        // native-fee tx and get a surcharge-free — and thus too-low — gas estimate.
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+
+        // A missing key or explicit JSON `null` is treated as `None` (native fee). Any other
+        // value that fails to parse as an `Address` is a hard error, so clients that intended
+        // a CIP-64 tx don't silently fall back to a native-fee tx.
+        let mut fee_currency = None;
+        if let Some(obj) = value.as_object_mut() &&
+            let Some(key) = obj.keys().find(|k| k.eq_ignore_ascii_case("feecurrency")).cloned()
+        {
+            let raw = obj.remove(&key).expect("key just found above");
+            fee_currency = serde_json::from_value(raw).map_err(D::Error::custom)?;
+        }
+
+        let inner = serde_json::from_value(value).map_err(D::Error::custom)?;
+        Ok(Self { inner, fee_currency })
     }
 }
 
@@ -1500,6 +1519,33 @@ mod tests {
         let json =
             r#"{"feeCurrency": "0x1234", "to": "0x0000000000000000000000000000000000000000"}"#;
         assert!(serde_json::from_str::<CeloTransactionRequest>(json).is_err());
+    }
+
+    #[test]
+    fn serde_fee_currency_key_is_case_insensitive() {
+        // go-ethereum matches JSON keys to struct tags case-insensitively, so op-geth
+        // accepts any casing of `feeCurrency`. celo-reth mirrors that to avoid a
+        // surcharge-free gas estimate when a client (e.g. minipay) sends `feecurrency`.
+        let fc: Address = "0x765DE816845861e75A25fCA122bb6898B8B1282a".parse().unwrap();
+        for key in ["feeCurrency", "feecurrency", "FeeCurrency", "FEECURRENCY", "feeCURRENCY"] {
+            let json = format!(
+                r#"{{"{key}": "0x765DE816845861e75A25fCA122bb6898B8B1282a", "to": "0x0000000000000000000000000000000000000000"}}"#
+            );
+            let deser: CeloTransactionRequest = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("key {key:?} should deserialize: {e}"));
+            assert_eq!(deser.fee_currency, Some(fc), "key {key:?} did not bind fee_currency");
+        }
+    }
+
+    #[test]
+    fn serde_lowercase_fee_currency_reserializes_canonically() {
+        // A non-canonical key on the way in must come back out as the canonical
+        // `feeCurrency` so downstream consumers (and forwarded requests) are uniform.
+        let json = r#"{"feecurrency": "0x765DE816845861e75A25fCA122bb6898B8B1282a", "to": "0x0000000000000000000000000000000000000000"}"#;
+        let deser: CeloTransactionRequest = serde_json::from_str(json).unwrap();
+        let reser = serde_json::to_string(&deser).unwrap();
+        assert!(reser.contains("\"feeCurrency\""), "expected canonical key, got: {reser}");
+        assert!(!reser.contains("feecurrency"), "lowercase key leaked: {reser}");
     }
 
     /// Verify CIP-64 receipt serialization: type=0x7b, baseFee present, effectiveGasPrice
