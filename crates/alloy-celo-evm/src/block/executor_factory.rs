@@ -103,6 +103,11 @@ where
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
+        // Every consensus execution path — block import, derivation, sequencing, kona proofs —
+        // gets its EVM here, so this is where CIP-64 receipt-data storage is enabled. Loose RPC
+        // EVMs built via `EvmFactory::create_evm*` leave it off (see
+        // `CeloEvm::cip64_store_enabled`).
+        let evm = evm.with_cip64_store_enabled();
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }
