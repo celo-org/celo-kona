@@ -104,12 +104,13 @@ where
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
         // The single choke point every consensus execution path (celo-reth block import,
-        // derivation, sequencing, kona proofs) obtains its EVM through: opt out of the block-start
-        // fee-context cache (an RPC-only replay aid — see the `fee_context_cache` module docs), and
-        // enable CIP-64 receipt storage (only receipt-building executors may fill the single-slot
-        // store — see `CeloEvm::cip64_store_enabled`). Loose RPC EVMs from `create_evm*` keep the
-        // opposite defaults.
-        let evm = evm.with_fee_context_cache_disabled().with_cip64_store_enabled();
+        // derivation, sequencing, kona proofs) obtains its EVM through: configure it for a
+        // receipt-building executor — opt out of the block-start fee-context cache (an RPC-only
+        // replay aid — see the `fee_context_cache` module docs) and enable CIP-64 receipt storage
+        // (only receipt-building executors may fill the single-slot store — see
+        // `CeloEvm::cip64_store_enabled`). Loose RPC EVMs from `create_evm*` keep the opposite
+        // defaults.
+        let evm = evm.for_block_executor();
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }

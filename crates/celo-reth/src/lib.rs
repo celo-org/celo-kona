@@ -384,13 +384,11 @@ where
         + 'a,
         Self::Error,
     > {
-        // Consensus-side executor built outside `create_executor`, so mirror that choke point:
-        // disable the fee-context cache and enable CIP-64 receipt storage (this builds receipts).
-        // Dormant on Celo (SDM unscheduled), but keep both invariants.
-        let evm = self
-            .evm_for_block(db, block.header())?
-            .with_fee_context_cache_disabled()
-            .with_cip64_store_enabled();
+        // Consensus-side executor built outside `create_executor`, so mirror that choke point by
+        // configuring the EVM for a receipt-building executor (disables the fee-context cache,
+        // enables CIP-64 receipt storage). Dormant on Celo (SDM unscheduled), but keep the
+        // invariant.
+        let evm = self.evm_for_block(db, block.header())?.for_block_executor();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
         let builder = R::from(evm.cip64_storage().clone());
@@ -416,14 +414,11 @@ where
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         // Next-block (sequencing-side) builder, so enable the blocklist like
-        // `builder_for_next_block`; disable the fee-context cache and enable CIP-64 receipt
-        // storage like `create_executor` does for every consensus/receipt-building executor.
+        // `builder_for_next_block`, and configure the EVM for a receipt-building executor
+        // (disables the fee-context cache, enables CIP-64 receipt storage) like `create_executor`
+        // does for every consensus/receipt-building executor.
         // Dormant on Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
-        let evm = self
-            .evm_with_env(db, evm_env)
-            .with_blocklist_enabled()
-            .with_fee_context_cache_disabled()
-            .with_cip64_store_enabled();
+        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled().for_block_executor();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
