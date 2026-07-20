@@ -879,6 +879,25 @@ mod tests {
         celo_revm::FeeCurrencyContext::new(currencies, Some(U256::from(number)))
     }
 
+    /// Like [`block_start_context`] but registers `fc` at an explicit `rate` and charges no
+    /// currency intrinsic gas, so a test can seed a specific block-start rate and watch it drive
+    /// validation without an intrinsic-gas floor getting in the way.
+    fn block_start_context_with_rate(
+        number: u64,
+        fc: Address,
+        rate: (U256, U256),
+    ) -> celo_revm::FeeCurrencyContext {
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            celo_revm::fee_currency_context::FeeCurrencyInfo {
+                exchange_rate: rate,
+                intrinsic_gas: 0,
+            },
+        );
+        celo_revm::FeeCurrencyContext::new(currencies, Some(U256::from(number)))
+    }
+
     /// `transact_raw` must seed the fee-currency context from the shared cache instead of
     /// letting the handler re-load it from (mid-block) DB state. This is the fix for
     /// `debug_traceBlock*` replaying each tx in a fresh EVM: without seeding, a CIP-64 tx
@@ -902,6 +921,46 @@ mod tests {
             evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)),
             Ok((U256::from(2), U256::from(1))),
             "context must come from the cache, not a fresh load from the (empty) DB"
+        );
+    }
+
+    /// The seeded block-start rate must actually *drive* the CIP-64 base-fee check, not merely
+    /// populate a field: a rate that lifts `base_fee_in_erc20` above the tx's max fee must reject
+    /// (`GasPriceLessThanBasefee`), a rate that keeps it below must pass. Catches a regression
+    /// that seeds the field but validates against DB state, which the sibling
+    /// [`test_transact_raw_seeds_context_from_cache`] (only reading the field back) would miss.
+    #[test]
+    fn test_seeded_rate_governs_base_fee_validation() {
+        let fc = Address::with_last_byte(0xAA);
+        // `make_cip64_tx` sets max_fee_per_gas = 1_000_000_000; pick a basefee well under it so the
+        // seeded rate alone decides whether `base_fee_in_erc20` crosses the max fee.
+        let basefee = 1_000_000u64;
+
+        // Seed `rate` as block 5's block-start context, then trace one CIP-64 tx against it.
+        let trace_with_rate = |rate: (U256, U256)| {
+            let cache = FeeCurrencyContextCache::default();
+            cache.insert(5, test_db_parent_hash(5), block_start_context_with_rate(5, fc, rate));
+            let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+            evm.fee_context_cache = cache;
+            evm.ctx_mut().block.number = U256::from(5);
+            evm.ctx_mut().block.basefee = basefee;
+            format!("{:?}", evm.transact_raw(make_cip64_tx(fc)))
+        };
+
+        // Rate 10_000:1 -> base_fee_in_erc20 = 1e6 * 1e4 = 1e10 > 1e9 max fee -> rejected on the
+        // seeded rate, in `validate_env`, before any debit.
+        let rejected = trace_with_rate((U256::from(10_000), U256::ONE));
+        assert!(
+            rejected.contains("GasPriceLessThanBasefee"),
+            "a high seeded block-start rate must reject via the base-fee check; got {rejected}"
+        );
+
+        // Rate 1:1 -> base_fee_in_erc20 = 1e6 <= 1e9 -> passes the base-fee check; the tx then
+        // fails downstream, so the one thing it must NOT be is the base-fee rejection.
+        let passed = trace_with_rate((U256::ONE, U256::ONE));
+        assert!(
+            !passed.contains("GasPriceLessThanBasefee"),
+            "a low seeded block-start rate must pass the base-fee check; got {passed}"
         );
     }
 
