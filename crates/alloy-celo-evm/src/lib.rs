@@ -184,15 +184,14 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     context_resolver: Option<Arc<dyn FeeContextResolver>>,
     /// Whether this EVM participates in block-start fee-context pinning. `true` by default (the
     /// loose per-tx EVMs reth's RPC layer builds participate); consensus opts out via
-    /// [`with_fee_context_cache_disabled`](Self::with_fee_context_cache_disabled). See
-    /// [`fee_context_cache`].
+    /// [`for_block_executor`](Self::for_block_executor). See [`fee_context_cache`].
     fee_context_cache_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each tx.
     ///
     /// The single-entry slot is popped once per tx by the receipt builder, so `store_cip64_info`
     /// panics if a second tx stores before the first is consumed. Only receipt-building executors
     /// may store: `false` by default, flipped on solely by
-    /// [`create_executor`](block::CeloBlockExecutorFactory). Loose RPC EVMs (parity `trace_*`,
+    /// [`for_block_executor`](Self::for_block_executor). Loose RPC EVMs (parity `trace_*`,
     /// otterscan `ots_*`, `replay_transactions_until` prefix replay) run many txs through one EVM
     /// without building receipts and must leave it off.
     cip64_store_enabled: bool,
@@ -257,21 +256,34 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         self
     }
 
-    /// Disables block-start fee-context pinning for this EVM. Called on every consensus path via
-    /// [`create_executor`](block::CeloBlockExecutorFactory) so consensus neither reads the
-    /// RPC-writable cache nor pays its extra `Database::block_hash` lookup. See the
-    /// `fee_context_cache_enabled` field docs.
+    /// Configures this EVM for a receipt-building block executor — every consensus/replay path:
+    /// block import, derivation, sequencing, kona proofs, and the dormant post-exec builders.
+    /// Disables the block-start fee-context cache and enables CIP-64 receipt storage.
+    ///
+    /// The two flags are a matched pair: disabling the cache without enabling the store would drop
+    /// CIP-64 receipt data, and enabling the store without disabling the cache would let a
+    /// consensus executor consult the RPC-writable memo. Their setters are `pub(crate)`, making
+    /// this the only cross-crate way to set either, so a new executor site cannot set one and
+    /// forget the other. See the `fee_context_cache_enabled` / `cip64_store_enabled` field docs.
     #[must_use]
-    pub const fn with_fee_context_cache_disabled(mut self) -> Self {
+    pub const fn for_block_executor(self) -> Self {
+        self.with_fee_context_cache_disabled().with_cip64_store_enabled()
+    }
+
+    /// Disables block-start fee-context pinning for this EVM. Kept `pub(crate)`: executor sites
+    /// in other crates must use [`for_block_executor`](Self::for_block_executor), which pairs it
+    /// with its matched store flag.
+    #[must_use]
+    pub(crate) const fn with_fee_context_cache_disabled(mut self) -> Self {
         self.fee_context_cache_enabled = false;
         self
     }
 
-    /// Enables CIP-64 receipt-data storage for this EVM. Called only by the receipt-building
-    /// executors (via [`create_executor`](block::CeloBlockExecutorFactory) and the dormant
-    /// post-exec paths). See the `cip64_store_enabled` field docs.
+    /// Enables CIP-64 receipt-data storage for this EVM. Kept `pub(crate)`: executor sites in
+    /// other crates must use [`for_block_executor`](Self::for_block_executor), which pairs it
+    /// with its matched cache flag.
     #[must_use]
-    pub const fn with_cip64_store_enabled(mut self) -> Self {
+    pub(crate) const fn with_cip64_store_enabled(mut self) -> Self {
         self.cip64_store_enabled = true;
         self
     }

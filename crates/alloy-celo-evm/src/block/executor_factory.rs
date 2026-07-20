@@ -111,7 +111,7 @@ where
         // worker executes without popping, the canonical replay pops without storing) —
         // unreachable while Celo schedules no Amsterdam fork, but a landmine on a rebase onto an
         // Amsterdam-active stack.
-        let evm = evm.with_fee_context_cache_disabled().with_cip64_store_enabled();
+        let evm = evm.for_block_executor();
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }

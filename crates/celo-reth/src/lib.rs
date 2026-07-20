@@ -382,13 +382,9 @@ where
         + 'a,
         Self::Error,
     > {
-        // Consensus-side executor built outside `create_executor` — mirror that choke point
-        // (fee-context cache off, CIP-64 store on). Dormant on Celo (SDM unscheduled), but keep
-        // the invariant.
-        let evm = self
-            .evm_for_block(db, block.header())?
-            .with_fee_context_cache_disabled()
-            .with_cip64_store_enabled();
+        // Consensus-side executor built outside `create_executor` — mirror that choke point with
+        // `for_block_executor`. Dormant on Celo (SDM unscheduled), but keep the invariant.
+        let evm = self.evm_for_block(db, block.header())?.for_block_executor();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
         let builder = R::from(evm.cip64_storage().clone());
@@ -414,14 +410,9 @@ where
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         // Next-block (sequencing-side) builder: enable the blocklist like
-        // `builder_for_next_block` and mirror `create_executor` (fee-context cache off, CIP-64
-        // store on).
+        // `builder_for_next_block` and mirror `create_executor` with `for_block_executor`.
         // Dormant on Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
-        let evm = self
-            .evm_with_env(db, evm_env)
-            .with_blocklist_enabled()
-            .with_fee_context_cache_disabled()
-            .with_cip64_store_enabled();
+        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled().for_block_executor();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
