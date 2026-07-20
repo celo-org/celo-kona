@@ -110,7 +110,12 @@ where
         // buys it nothing, and it must never read state an RPC trace can write (see
         // `fee_context_cache` module docs). Only the loose per-tx EVMs reth's RPC layer builds
         // directly via `EvmFactory::create_evm*` keep the cache on.
-        let evm = evm.with_fee_context_cache_disabled();
+        //
+        // This is also where CIP-64 receipt-data storage is enabled: `OpBlockExecutor` pops one
+        // stored entry per transaction in `build_receipt`, so only these receipt-building
+        // executors may store. Loose RPC replay/trace EVMs leave it off — the single-slot storage
+        // would otherwise be filled twice and panic (see `CeloEvm::cip64_store_enabled`).
+        let evm = evm.with_fee_context_cache_disabled().with_cip64_store_enabled();
         OpBlockExecutor::new(evm, ctx, &self.spec, builder)
     }
 }
