@@ -60,6 +60,13 @@ where
 
         // Block-start state is the parent's post-state; run the directory/oracle view calls under
         // this block's own env, matching what consensus loads at tx 0.
+        //
+        // Parity caveat: this is the *raw* parent post-state. Consensus loads its context inside
+        // tx 0's handler, i.e. after this block's pre-transaction system calls (EIP-4788 beacon
+        // root, EIP-2935 block-hash history) have written their system contracts. We do not replay
+        // those, so parity of the resolved rates relies on the FeeCurrencyDirectory / oracle view
+        // calls being independent of the beacon-root and block-hash system contracts — true today
+        // (disjoint contracts), but revisit if a fee-currency oracle ever reads that state.
         let state = self.provider.history_by_block_hash(parent_hash).ok()?;
         let env = alloy_op_evm::evm_env_for_op_block(
             &header,
