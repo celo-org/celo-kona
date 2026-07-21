@@ -23,15 +23,29 @@
 // prefix replay covers both the rate update (bug 1) and two earlier CIP-64
 // transactions (bug 2).
 //
-// args: feeCurrency oracle
+// 3. Mid-block call simulations. debug_traceCall with a txIndex simulates a
+//    call at a mid-block position; the call EVM used to load its fee-currency
+//    context from the mid-block state instead of the block-start context a
+//    transaction at that position would see. Fixed by the
+//    capture/seed_block_replay_ctx hook (same reth branch + celo-kona impl).
+//    Covered here by removing the fee currency from the directory mid-block
+//    and tracing a CIP-64 call positioned after the removal: with block-start
+//    context the currency is still registered.
+//
+// args: feeCurrency oracle directory
 import { numberToHex, parseAbi, parseEther } from "viem";
 import { publicClient, walletClient, account } from "./viem_setup.mjs";
 
-const [feeCurrency, oracle] = process.argv.slice(2);
+const [feeCurrency, oracle, directory] = process.argv.slice(2);
 const CIP64_TX_COUNT = 3;
 
 const oracleAbi = parseAbi([
   "function setExchangeRate(address token, uint256 numerator, uint256 denominator)",
+]);
+const directoryAbi = parseAbi([
+  "function getCurrencies() view returns (address[])",
+  "function removeCurrencies(address currency, uint256 index)",
+  "function setCurrencyConfig(address token, address oracle, uint256 intrinsicGas)",
 ]);
 
 function fail(message) {
@@ -229,7 +243,121 @@ async function main() {
     fail(`debug_traceTransaction: unexpected result ${JSON.stringify(single)}`);
   }
 
+  await traceCallAfterMidBlockRemoval();
+
   console.log(JSON.stringify({ success: true, error: null }));
+}
+
+// Lands a directory removal of the fee currency and a plain transfer in one
+// block, then debug_traceCall's a CIP-64 call positioned at the transfer's
+// index: the prefix replay includes the removal, so only the block-start
+// context (where the currency is still registered) lets the trace succeed.
+async function traceCallAfterMidBlockRemoval() {
+  let removalReceipt, followUpReceipt;
+  for (let attempt = 1; ; attempt++) {
+    // Re-resolved every attempt: a retry after a lone-mined removal re-registers
+    // the currency below, which changes its directory index.
+    const currencies = await publicClient.readContract({
+      address: directory,
+      abi: directoryAbi,
+      functionName: "getCurrencies",
+    });
+    const index = currencies.findIndex(
+      (c) => c.toLowerCase() === feeCurrency.toLowerCase(),
+    );
+    if (index < 0) {
+      fail("fee currency not registered in the directory");
+    }
+
+    const nonce = await publicClient.getTransactionCount({
+      address: account.address,
+    });
+    // Same pattern as sendBatch: the follow-up tx first, queued on a nonce gap
+    // behind the removal so both land in one block.
+    const followUpRequest = await walletClient.prepareTransactionRequest({
+      account,
+      to: account.address,
+      value: 1n,
+      gas: 21000,
+      nonce: nonce + 1,
+    });
+    const followUpHash = await walletClient.sendRawTransaction({
+      serializedTransaction: await walletClient.signTransaction(followUpRequest),
+    });
+    const removalHash = await walletClient.writeContract({
+      address: directory,
+      abi: directoryAbi,
+      functionName: "removeCurrencies",
+      args: [feeCurrency, BigInt(index)],
+      gas: 200000n,
+      nonce,
+    });
+    [removalReceipt, followUpReceipt] = await Promise.all(
+      [removalHash, followUpHash].map((hash) =>
+        publicClient.waitForTransactionReceipt({ hash, timeout: 30_000 }),
+      ),
+    );
+    if (
+      removalReceipt.blockNumber === followUpReceipt.blockNumber &&
+      removalReceipt.transactionIndex < followUpReceipt.transactionIndex
+    ) {
+      break;
+    }
+    if (attempt >= 5) {
+      fail("could not land the removal and follow-up tx in one block");
+    }
+    if (removalReceipt.status === "success") {
+      // The removal landed without the follow-up; re-register the currency so
+      // the next attempt's removal starts from the original directory state.
+      const restoreHash = await walletClient.writeContract({
+        address: directory,
+        abi: directoryAbi,
+        functionName: "setCurrencyConfig",
+        args: [feeCurrency, oracle, 60000n],
+        gas: 200000n,
+      });
+      await publicClient.waitForTransactionReceipt({
+        hash: restoreHash,
+        timeout: 30_000,
+      });
+    }
+  }
+  if (removalReceipt.status !== "success") {
+    fail("directory removal reverted");
+  }
+
+  const { baseFeePerGas } = await publicClient.getBlock({
+    blockNumber: removalReceipt.blockNumber,
+  });
+  let trace;
+  try {
+    trace = await publicClient.request({
+      method: "debug_traceCall",
+      params: [
+        {
+          from: account.address,
+          to: "0x00000000000000000000000000000000DeaDBeef",
+          value: "0x1",
+          feeCurrency,
+          maxFeePerGas: numberToHex(baseFeePerGas * 200n),
+          maxPriorityFeePerGas: "0x64",
+          gas: numberToHex(90000n),
+        },
+        numberToHex(removalReceipt.blockNumber),
+        {
+          tracer: "callTracer",
+          txIndex: numberToHex(followUpReceipt.transactionIndex),
+        },
+      ],
+    });
+  } catch (e) {
+    fail(
+      `debug_traceCall(txIndex) after mid-block removal failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+  if (trace.error || trace.from?.toLowerCase() !== account.address.toLowerCase()) {
+    fail(`debug_traceCall(txIndex): unexpected result ${JSON.stringify(trace)}`);
+  }
 }
 
 await main();

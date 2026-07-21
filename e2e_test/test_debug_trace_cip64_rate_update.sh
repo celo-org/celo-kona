@@ -90,7 +90,7 @@ prepare_node
 fee_currency=$(deploy_fee_currency false false false)
 echo "fee currency: $fee_currency"
 
-result=$(js-tests/debug_trace_rate_update.mjs "$fee_currency" "$ORACLE3" || true)
+result=$(js-tests/debug_trace_rate_update.mjs "$fee_currency" "$ORACLE3" "$FEE_CURRENCY_DIRECTORY_ADDR" || true)
 echo "$result"
 if [ "$(echo "$result" | jq .success)" != "true" ]; then
     echo "FAIL: debug_trace* returned wrong results for a block with a mid-block rate update"
