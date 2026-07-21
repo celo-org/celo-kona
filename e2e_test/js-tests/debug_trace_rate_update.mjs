@@ -50,11 +50,52 @@ async function setRate(numerator, nonce) {
   });
 }
 
+// If part of the batch mined without the rest (e.g. the rate update alone, at
+// which point the CIP-64 txs are unminable at the 100:1 rate), replace the
+// first unmined nonce with a fee-bumped rate reset, resubmit the remaining
+// CIP-64 txs in case the pool dropped them, and wait for the account nonce to
+// pass the batch so the next attempt starts clean.
+async function unstickBatch(nonce, maxFeePerGas, serializedCipTxs) {
+  const firstUnmined = await publicClient.getTransactionCount({
+    address: account.address,
+  });
+  const resetHash = await walletClient.writeContract({
+    address: oracle,
+    abi: oracleAbi,
+    functionName: "setExchangeRate",
+    args: [feeCurrency, parseEther("2"), parseEther("1")],
+    gas: 200000n,
+    nonce: firstUnmined,
+    maxFeePerGas: maxFeePerGas * 2n,
+    maxPriorityFeePerGas: 10n ** 9n,
+  });
+  for (const serializedTransaction of serializedCipTxs) {
+    // Already-known / replaced / mined txs are all fine here.
+    await walletClient.sendRawTransaction({ serializedTransaction }).catch(() => {});
+  }
+  await publicClient.waitForTransactionReceipt({
+    hash: resetHash,
+    timeout: 30_000,
+  });
+  const target = nonce + 1 + CIP64_TX_COUNT;
+  for (let i = 0; i < 30; i++) {
+    const mined = await publicClient.getTransactionCount({
+      address: account.address,
+    });
+    if (mined >= target) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  fail("could not unstick the account after a partially mined batch");
+}
+
 // Send the rate update (nonce n) and the CIP-64 txs (nonces n+1..) as one
 // batch, submitting the CIP-64 txs FIRST: the nonce gap keeps them queued
 // until the rate update reaches the pool, so no block can mine the rate
 // update without them — a block sealing mid-batch just pushes the whole
-// batch into the next block. Returns receipts once all are mined.
+// batch into the next block. Returns receipts once all are mined, or null
+// (after restoring the 2:1 rate) if the batch had to be unstuck.
 async function sendBatch() {
   const nonce = await publicClient.getTransactionCount({
     address: account.address,
@@ -64,7 +105,7 @@ async function sendBatch() {
   // movement, but is far below the converted base fee at the 100:1 rate.
   const { baseFeePerGas } = await publicClient.getBlock();
   const maxFeePerGas = baseFeePerGas * 10n;
-  const cipHashes = await Promise.all(
+  const serializedCipTxs = await Promise.all(
     Array.from({ length: CIP64_TX_COUNT }, async (_, i) => {
       const cipRequest = await walletClient.prepareTransactionRequest({
         account,
@@ -76,15 +117,16 @@ async function sendBatch() {
         maxPriorityFeePerGas: 100n,
         nonce: nonce + 1 + i,
       });
-      return walletClient.sendRawTransaction({
-        serializedTransaction: await walletClient.signTransaction(cipRequest),
-      });
+      return walletClient.signTransaction(cipRequest);
     }),
   );
+  const cipHashes = [];
+  for (const serializedTransaction of serializedCipTxs) {
+    cipHashes.push(
+      await walletClient.sendRawTransaction({ serializedTransaction }),
+    );
+  }
   const rateHash = await setRate("100", nonce);
-  // If the rate update somehow mined without the CIP-64 txs, they are
-  // unminable at the 100:1 rate and their receipts never appear — time out
-  // loudly rather than hang.
   let rateReceipt, cipReceipts;
   try {
     [rateReceipt, ...cipReceipts] = await Promise.all(
@@ -92,8 +134,9 @@ async function sendBatch() {
         publicClient.waitForTransactionReceipt({ hash, timeout: 30_000 }),
       ),
     );
-  } catch (e) {
-    fail(`timed out waiting for the batch to mine: ${e.shortMessage ?? e.message}`);
+  } catch {
+    await unstickBatch(nonce, maxFeePerGas, serializedCipTxs);
+    return null;
   }
   return { rateReceipt, cipReceipts, cipHashes, maxFeePerGas };
 }
@@ -101,6 +144,10 @@ async function sendBatch() {
 async function sendBatchInOneBlock() {
   for (let attempt = 1; attempt <= 5; attempt++) {
     const res = await sendBatch();
+    if (res === null) {
+      // The batch was unstuck (rate already back at 2:1); just try again.
+      continue;
+    }
     const receipts = [res.rateReceipt, ...res.cipReceipts];
     const sameBlock = receipts.every(
       (r) => r.blockNumber === res.rateReceipt.blockNumber,
