@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Regression test for two debug_trace* replay bugs on CIP-64 blocks:
+// Regression test for three debug_trace* replay bugs on CIP-64 blocks, all
+// violations of one invariant: replay and simulation must use the fee-currency
+// context (exchange rates, directory membership) from block-start state, like
+// transactions actually included in the block do.
 //
-// 1. Fresh-EVM-per-transaction replay. CIP-64 consensus rule: all transactions
-//    in a block settle at the fee-currency exchange rate read from block-start
-//    state. reth's debug API used to replay blocks with a fresh EVM per
-//    transaction, so a rate update landing earlier in the block made the replay
-//    of a later CIP-64 transaction re-load the new rate mid-block and fail with
-//    "max fee per gas less than block base fee". Fixed by replaying blocks on a
-//    single EVM (celo-org/reth branch karlb/debug-trace-single-evm).
+// 1. Fresh-EVM-per-transaction replay. reth's debug API used to replay blocks
+//    with a fresh EVM per transaction, so a rate update landing earlier in the
+//    block made the replay of a later CIP-64 transaction re-load the new rate
+//    mid-block and fail with "max fee per gas less than block base fee". Fixed
+//    by replaying blocks on a single EVM (celo-org/reth branch
+//    karlb/debug-trace-single-evm).
 //
 // 2. Cip64Storage double store. The prefix replay of debug_traceTransaction is
 //    a non-inspecting EVM that never builds receipts, but it used to store
@@ -15,22 +17,21 @@
 //    replayed. Fixed by the cip64_store_enabled flag (celo-kona
 //    karlb/cip64-replay-double-store).
 //
-// This script lands, in the SAME block: an oracle rate update (2:1 -> 100:1)
-// followed by three CIP-64 transactions with limited fee headroom (valid at
-// 2:1, invalid at 100:1). It then asserts that debug_traceBlockByNumber and
-// debug_traceBlockByHash trace every transaction, and that
-// debug_traceTransaction succeeds on the last CIP-64 transaction — whose
-// prefix replay covers both the rate update (bug 1) and two earlier CIP-64
-// transactions (bug 2).
-//
 // 3. Mid-block call simulations. debug_traceCall with a txIndex simulates a
 //    call at a mid-block position; the call EVM used to load its fee-currency
 //    context from the mid-block state instead of the block-start context a
 //    transaction at that position would see. Fixed by the
 //    capture/seed_block_replay_ctx hook (same reth branch + celo-kona impl).
-//    Covered here by removing the fee currency from the directory mid-block
-//    and tracing a CIP-64 call positioned after the removal: with block-start
-//    context the currency is still registered.
+//
+// The script lands, in the SAME block, an oracle rate update (2:1 -> 100:1)
+// followed by three CIP-64 transactions with limited fee headroom (valid at
+// 2:1, invalid at 100:1), then asserts that debug_traceBlockByNumber and
+// debug_traceBlockByHash trace every transaction and that
+// debug_traceTransaction succeeds on the last CIP-64 transaction — whose
+// prefix replay covers the rate update (bug 1) and two earlier CIP-64
+// transactions (bug 2). It then covers bug 3 by removing the fee currency from
+// the directory mid-block and tracing a CIP-64 call positioned after the
+// removal: only with block-start context is the currency still registered.
 //
 // args: feeCurrency oracle directory
 import { numberToHex, parseAbi, parseEther } from "viem";
@@ -339,6 +340,9 @@ async function traceCallAfterMidBlockRemoval() {
           to: "0x00000000000000000000000000000000DeaDBeef",
           value: "0x1",
           feeCurrency,
+          // 200x: above the converted base fee even at the 100:1 rate still
+          // active from the rate-update scenario, so the trace outcome hinges
+          // only on the directory membership of the fee currency.
           maxFeePerGas: numberToHex(baseFeePerGas * 200n),
           maxPriorityFeePerGas: "0x64",
           gas: numberToHex(90000n),

@@ -299,10 +299,12 @@ alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", ta
 alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.3.1" }
 op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.3.1" }
 
-# Temporary reth fork carrying the debug_trace* single-EVM-per-block fix
-# (celo-org/reth branch karlb/debug-trace-single-evm, based on the pinned
-# upstream rev). Drop once the fix lands upstream. The patch must cover every
-# reth crate in the graph so the op-reth git deps unify with the fork.
+# Temporary reth fork carrying the debug_trace* single-EVM-per-block fix and
+# the block-replay-context hook (celo-org/reth branch
+# karlb/debug-trace-single-evm, based on the pinned upstream rev). Drop once
+# the fixes land upstream. The patch must cover every reth crate in the graph
+# so the op-reth git deps unify with the fork; on a rev bump, regenerate this
+# list from the reth packages Cargo.lock resolves from this git source.
 [patch."https://github.com/paradigmxyz/reth"]
 reth-basic-payload-builder = { git = "https://github.com/celo-org/reth", rev = "3d837f48b4c5fe9c9d1e15846a95e7769d02a6d3" }
 reth-chain-state = { git = "https://github.com/celo-org/reth", rev = "3d837f48b4c5fe9c9d1e15846a95e7769d02a6d3" }
