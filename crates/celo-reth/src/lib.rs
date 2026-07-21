@@ -69,6 +69,9 @@ pub mod download_repair;
 #[cfg(feature = "std")]
 pub mod snapshot_manifest;
 
+#[cfg(feature = "std")]
+pub mod fee_resolver;
+
 #[cfg(all(test, feature = "std"))]
 pub(crate) mod test_utils;
 
@@ -158,10 +161,25 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
+        Self::celo_with_blocklist_and_resolver(chain_spec, blocklist, None)
+    }
+
+    /// Creates a new [`CeloEvmConfig`] with the given chain spec, shared fee currency blocklist,
+    /// and an optional block-start fee-context resolver (see [`crate::fee_resolver`]) letting
+    /// reth's per-tx `debug_trace*` replay EVMs pin CIP-64 fees to block-start rates. Consensus
+    /// never consults it; pass `None` for consumers that don't trace.
+    pub fn celo_with_blocklist_and_resolver(
+        chain_spec: Arc<ChainSpec>,
+        blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+        resolver: Option<Arc<dyn alloy_celo_evm::fee_context_cache::FeeContextResolver>>,
+    ) -> Self {
         // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
         // and the executor factory re-binds the receipt builder to that per-EVM storage on
         // every `create_executor` call.
-        let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
+        let mut evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
+        if let Some(resolver) = resolver {
+            evm_factory = evm_factory.with_context_resolver(resolver);
+        }
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
             executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),
@@ -364,9 +382,13 @@ where
         + 'a,
         Self::Error,
     > {
-        // Receipt-building executor built outside `create_executor`, so enable CIP-64 receipt
-        // storage as that path does. Dormant on Celo (SDM unscheduled).
-        let evm = self.evm_for_block(db, block.header())?.with_cip64_store_enabled();
+        // Consensus-side executor built outside `create_executor` — mirror that choke point
+        // (fee-context cache off, CIP-64 store on). Dormant on Celo (SDM unscheduled), but keep
+        // the invariant.
+        let evm = self
+            .evm_for_block(db, block.header())?
+            .with_fee_context_cache_disabled()
+            .with_cip64_store_enabled();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
         let builder = R::from(evm.cip64_storage().clone());
@@ -391,11 +413,15 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        // Next-block (sequencing-side) builder, so enable the blocklist like
-        // `builder_for_next_block`, and CIP-64 receipt storage like `create_executor`. Dormant on
-        // Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
-        let evm =
-            self.evm_with_env(db, evm_env).with_blocklist_enabled().with_cip64_store_enabled();
+        // Next-block (sequencing-side) builder: enable the blocklist like
+        // `builder_for_next_block` and mirror `create_executor` (fee-context cache off, CIP-64
+        // store on).
+        // Dormant on Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
+        let evm = self
+            .evm_with_env(db, evm_env)
+            .with_blocklist_enabled()
+            .with_fee_context_cache_disabled()
+            .with_cip64_store_enabled();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());

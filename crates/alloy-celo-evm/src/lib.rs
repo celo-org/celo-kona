@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, format};
+use alloc::{borrow::Cow, format, sync::Arc};
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
     precompiles::{DynPrecompile, PrecompilesMap},
@@ -22,10 +22,7 @@ use celo_revm::{
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
-use core::{
-    fmt::Debug,
-    ops::{Deref, DerefMut},
-};
+use core::ops::{Deref, DerefMut};
 use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
@@ -43,9 +40,11 @@ use revm::{
 pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
+pub mod fee_context_cache;
 
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
+use fee_context_cache::{FeeContextResolver, FeeCurrencyContextCache};
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
@@ -177,22 +176,25 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
     /// its dormant post-exec sibling — which import/derivation deliberately bypass.
     blocklist_enabled: bool,
-    /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
-    /// transaction.
+    /// Shared memo of block-start fee-currency contexts, filled from the
+    /// [`context_resolver`](Self::context_resolver) on a miss. See [`fee_context_cache`].
+    fee_context_cache: FeeCurrencyContextCache,
+    /// Trusted resolver consulted on a [`fee_context_cache`](Self::fee_context_cache) miss; wired
+    /// by `celo-reth`, `None` on no-std consumers (kona). See [`FeeContextResolver`].
+    context_resolver: Option<Arc<dyn FeeContextResolver>>,
+    /// Whether this EVM participates in block-start fee-context pinning. `true` by default (the
+    /// loose per-tx EVMs reth's RPC layer builds participate); consensus opts out via
+    /// [`with_fee_context_cache_disabled`](Self::with_fee_context_cache_disabled). See
+    /// [`fee_context_cache`].
+    fee_context_cache_enabled: bool,
+    /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each tx.
     ///
-    /// The store hands a tx's pre/post transfer logs and `base_fee_in_erc20` to the receipt
-    /// builder, which pops exactly one entry per CIP-64 transaction in `build_receipt`. The slot
-    /// holds one entry and `store_cip64_info` panics on a second store, so only EVMs that build
-    /// receipts may store.
-    ///
-    /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
-    /// flipped to `true` only for receipt-building executors:
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
-    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
-    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
-    /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
-    /// `replay_transactions_until` — that run a whole block through one EVM without building
-    /// receipts, and leave it off.
+    /// The single-entry slot is popped once per tx by the receipt builder, so `store_cip64_info`
+    /// panics if a second tx stores before the first is consumed. Only receipt-building executors
+    /// may store: `false` by default, flipped on solely by
+    /// [`create_executor`](block::CeloBlockExecutorFactory). Loose RPC EVMs (parity `trace_*`,
+    /// otterscan `ots_*`, `replay_transactions_until` prefix replay) run many txs through one EVM
+    /// without building receipts and must leave it off.
     cip64_store_enabled: bool,
 }
 
@@ -239,6 +241,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
             blocklist_enabled: false,
+            fee_context_cache: FeeCurrencyContextCache::default(),
+            context_resolver: None,
+            fee_context_cache_enabled: true,
             cip64_store_enabled: false,
         }
     }
@@ -252,8 +257,19 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         self
     }
 
-    /// Enables CIP-64 receipt-data storage for this EVM. Only receipt-building executors may call
-    /// this; see the `cip64_store_enabled` field docs.
+    /// Disables block-start fee-context pinning for this EVM. Called on every consensus path via
+    /// [`create_executor`](block::CeloBlockExecutorFactory) so consensus neither reads the
+    /// RPC-writable cache nor pays its extra `Database::block_hash` lookup. See the
+    /// `fee_context_cache_enabled` field docs.
+    #[must_use]
+    pub const fn with_fee_context_cache_disabled(mut self) -> Self {
+        self.fee_context_cache_enabled = false;
+        self
+    }
+
+    /// Enables CIP-64 receipt-data storage for this EVM. Called only by the receipt-building
+    /// executors (via [`create_executor`](block::CeloBlockExecutorFactory) and the dormant
+    /// post-exec paths). See the `cip64_store_enabled` field docs.
     #[must_use]
     pub const fn with_cip64_store_enabled(mut self) -> Self {
         self.cip64_store_enabled = true;
@@ -314,9 +330,56 @@ where
         // The base-fee check is enabled during replay-style execution — sequencing, block import
         // / derivation re-execution, AND block tracing (`debug_traceTransaction`,
         // `debug_traceBlock*`, parity `trace_*`, `ots_*`) — and disabled during call-style RPC
-        // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
+        // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`). It gates participation
+        // in the block-start fee-context cache below.
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
+        // Block-start fee-context pinning for reth's per-tx `debug_trace*` replay EVMs (see the
+        // `fee_context_cache` module docs for the full rationale): consensus executors opt out
+        // via `fee_context_cache_enabled`; call-style simulations (base-fee check disabled)
+        // intentionally load end-of-block rates.
+        let use_fee_context_cache = self.fee_context_cache_enabled && base_fee_check_enabled;
+        let block_number = self.ctx().block.number;
+        if use_fee_context_cache
+            && self.inner.fee_currency_context.updated_at_block != Some(block_number)
+        {
+            let number: u64 = block_number.saturating_to();
+            // Genesis has no parent to key on, and block-0 state *is* block-start state, so the
+            // handler's fresh load is already correct.
+            if number > 0 {
+                match self.db_mut().block_hash(number - 1) {
+                    Ok(parent_hash) => {
+                        if let Some(context) = self.fee_context_cache.get(number, parent_hash) {
+                            // Memo hit; `load_fee_currency_context` then short-circuits.
+                            self.inner.fee_currency_context = context;
+                        } else if let Some(context) = self
+                            .context_resolver
+                            .as_ref()
+                            .and_then(|resolver| resolver.resolve(number, parent_hash))
+                        {
+                            // Miss: memoize the resolved context for the block's later per-tx
+                            // EVMs, then seed it.
+                            self.fee_context_cache.insert(number, parent_hash, context.clone());
+                            self.inner.fee_currency_context = context;
+                        } else {
+                            // No resolver, non-canonical/forged block, or pruned state: refuse
+                            // rather than trace against mid-block rates (see the module docs).
+                            return Err(EVMError::Custom(format!(
+                                "CIP-64 block-start fee context unresolved for block {number}: \
+                                 refusing to load current-state exchange rates (violates the \
+                                 block-start-rates rule); ensure the node has this block's \
+                                 canonical state and a fee-context resolver wired"
+                            )));
+                        }
+                    }
+                    Err(err) => {
+                        // Without the parent hash the block can be neither keyed nor resolved —
+                        // refuse rather than fall back to current-state rates.
+                        return Err(EVMError::Database(err));
+                    }
+                }
+            }
+        }
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
         // the sequencing path: `blocklist_enabled` is set on EVMs built via
         // `CeloEvmConfig::builder_for_next_block` (the payload builder) and left off for import /
@@ -467,7 +530,7 @@ where
 /// is owned by the EVM instance, not the factory, so two consumers (e.g. the main-chain
 /// executor and a re-executing ExEx) running through the same factory get independent
 /// slots and never overwrite each other's pending CIP-64 receipt data.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct CeloEvmFactory {
     /// Shared fee currency blocklist. EVMs created by this factory *populate* this blocklist
     /// when a CIP-64 fee-currency debit/credit fails during execution, but only on the sequencing
@@ -476,12 +539,41 @@ pub struct CeloEvmFactory {
     /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
     /// empty.
     pub blocklist: FeeCurrencyBlocklist,
+    /// Shared memo of block-start fee-currency contexts, filled from
+    /// [`context_resolver`](Self::context_resolver) on a miss. See [`fee_context_cache`].
+    /// An implementation detail, not configuration — `pub(crate)`, wired by `Default`.
+    pub(crate) fee_context_cache: FeeCurrencyContextCache,
+    /// Trusted resolver computing a block's block-start context from canonical state on a memo
+    /// miss. Wired via [`with_context_resolver`](Self::with_context_resolver) by the std-only
+    /// node layer (`celo-reth`); `None` on no-std consumers (kona).
+    pub(crate) context_resolver: Option<Arc<dyn FeeContextResolver>>,
+}
+
+impl core::fmt::Debug for CeloEvmFactory {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloEvmFactory")
+            .field("blocklist", &self.blocklist)
+            .field("fee_context_cache", &self.fee_context_cache)
+            .field(
+                "context_resolver",
+                &self.context_resolver.as_ref().map(|_| "<dyn FeeContextResolver>"),
+            )
+            .finish()
+    }
 }
 
 impl CeloEvmFactory {
     /// Sets the shared fee currency blocklist.
     pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
         self.blocklist = blocklist;
+        self
+    }
+
+    /// Installs the trusted block-start fee-context resolver, cloned into every EVM this factory
+    /// produces and consulted only by pinning-enabled EVMs on a memo miss. See
+    /// [`FeeContextResolver`].
+    pub fn with_context_resolver(mut self, resolver: Arc<dyn FeeContextResolver>) -> Self {
+        self.context_resolver = Some(resolver);
         self
     }
 }
@@ -507,6 +599,10 @@ fn make_test_evm(
         blocklist,
         // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
         blocklist_enabled: true,
+        fee_context_cache: FeeCurrencyContextCache::default(),
+        // Tests inject a resolver directly where they need one.
+        context_resolver: None,
+        fee_context_cache_enabled: true,
         // Default to the receipt-building executor path; loose-EVM tests build through the
         // factory instead (`make_loose_test_evm`).
         cip64_store_enabled: true,
@@ -591,6 +687,11 @@ impl CeloEvmFactory {
             // factory and must not touch the blocklist. Sequencing flips it on via
             // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
             blocklist_enabled: false,
+            fee_context_cache: self.fee_context_cache.clone(),
+            context_resolver: self.context_resolver.clone(),
+            // Loose RPC EVMs participate in pinning; consensus flips this off in
+            // `create_executor` (see the field docs).
+            fee_context_cache_enabled: true,
             // Off by default; `create_executor` flips it on for receipt-building executors.
             cip64_store_enabled: false,
         }
@@ -661,9 +762,40 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
     use alloy_evm::Evm;
-    use alloy_primitives::TxKind;
+    use alloy_primitives::{B256, TxKind};
     use celo_alloy_consensus::CeloTxType;
-    use op_revm::OpTransaction;
+    use op_revm::{OpTransaction, transaction::deposit::DEPOSIT_TRANSACTION_TYPE};
+
+    /// Test [`FeeContextResolver`] that returns a fixed context and counts calls, so a test can
+    /// assert both the resolved value and *whether* the resolver was consulted.
+    struct CountingResolver {
+        context: celo_revm::FeeCurrencyContext,
+        calls: Arc<spin::Mutex<u32>>,
+    }
+    impl FeeContextResolver for CountingResolver {
+        fn resolve(
+            &self,
+            _block_number: u64,
+            _parent_hash: B256,
+        ) -> Option<celo_revm::FeeCurrencyContext> {
+            *self.calls.lock() += 1;
+            Some(self.context.clone())
+        }
+    }
+
+    /// Builds a counting resolver returning `block_start_context(number, fc)`, plus its call
+    /// counter.
+    fn counting_resolver(
+        number: u64,
+        fc: Address,
+    ) -> (Arc<dyn FeeContextResolver>, Arc<spin::Mutex<u32>>) {
+        let calls = Arc::new(spin::Mutex::new(0u32));
+        let resolver = Arc::new(CountingResolver {
+            context: block_start_context(number, fc),
+            calls: calls.clone(),
+        });
+        (resolver, calls)
+    }
 
     /// Build a CIP-64 `CeloTransaction<TxEnv>` for testing.
     fn make_cip64_tx(fee_currency: Address) -> CeloTransaction<TxEnv> {
@@ -692,6 +824,204 @@ mod tests {
             cip64_tx_info: None,
             effective_gas_price: None,
         }
+    }
+
+    /// Build a deposit `CeloTransaction<TxEnv>` from the given caller. Used to drive a block's
+    /// block-start fee-context load with a transaction that succeeds regardless of fee currency.
+    fn make_deposit_tx(caller: Address) -> CeloTransaction<TxEnv> {
+        CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller,
+                    tx_type: DEPOSIT_TRANSACTION_TYPE,
+                    gas_limit: 1_000_000,
+                    ..Default::default()
+                },
+                enveloped_tx: None,
+                deposit: Default::default(),
+            },
+            fee_currency: None,
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        }
+    }
+
+    /// The parent hash `transact_raw` computes for a test EVM at block `number`:
+    /// `InMemoryDB` delegates `block_hash` to `EmptyDB`, which is deterministic.
+    fn test_db_parent_hash(number: u64) -> alloy_primitives::B256 {
+        revm::Database::block_hash(&mut revm::database::InMemoryDB::default(), number - 1).unwrap()
+    }
+
+    /// A `FeeCurrencyContext` as loaded at the start of block `number`, with `fc` registered.
+    /// The empty in-memory DB can never produce a registered currency, so observing `fc` in an
+    /// EVM's context proves it came from the cache.
+    fn block_start_context(number: u64, fc: Address) -> celo_revm::FeeCurrencyContext {
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            celo_revm::fee_currency_context::FeeCurrencyInfo {
+                exchange_rate: (U256::from(2), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        celo_revm::FeeCurrencyContext::new(currencies, Some(U256::from(number)))
+    }
+
+    /// `transact_raw` must seed the fee-currency context from the shared cache instead of
+    /// letting the handler re-load it from (mid-block) DB state. This is the fix for
+    /// `debug_traceBlock*` replaying each tx in a fresh EVM: without seeding, a CIP-64 tx
+    /// traced after an in-block rate update is validated at the wrong rate
+    /// ("max fee per gas less than block base fee").
+    #[test]
+    fn test_transact_raw_seeds_context_from_cache() {
+        let fc = Address::with_last_byte(0xAA);
+
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, test_db_parent_hash(5), block_start_context(5, fc));
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        evm.ctx_mut().block.number = U256::from(5);
+
+        // Outcome irrelevant: seeding happens before execution and must survive tx failure.
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+
+        assert_eq!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)),
+            Ok((U256::from(2), U256::from(1))),
+            "context must come from the cache, not a fresh load from the (empty) DB"
+        );
+    }
+
+    /// On a memo miss, `transact_raw` consults the trusted resolver, seeds its (canonical-derived)
+    /// context, and memoizes it so the block's later per-tx EVMs reuse it without re-consulting
+    /// the resolver.
+    #[test]
+    fn test_resolver_fills_memo_on_miss() {
+        let fc = Address::with_last_byte(0xAA);
+        let parent = test_db_parent_hash(5);
+        let (resolver, calls) = counting_resolver(5, fc);
+
+        // Empty memo -> resolver consulted, its context seeded and memoized.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.context_resolver = Some(resolver);
+        evm.ctx_mut().block.number = U256::from(5);
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert_eq!(*calls.lock(), 1, "resolver must be consulted on a memo miss");
+        assert_eq!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)),
+            Ok((U256::from(2), U256::from(1))),
+            "the resolver's block-start context must be seeded into the EVM"
+        );
+        assert_eq!(
+            evm.fee_context_cache.get(5, parent).expect("must be memoized").updated_at_block,
+            Some(U256::from(5)),
+        );
+
+        // A fresh per-tx EVM sharing the memo hits it -- resolver NOT consulted again.
+        let (resolver2, calls2) = counting_resolver(5, fc);
+        let mut evm2 = make_test_evm(FeeCurrencyBlocklist::default());
+        evm2.fee_context_cache = evm.fee_context_cache.clone();
+        evm2.context_resolver = Some(resolver2);
+        evm2.ctx_mut().block.number = U256::from(5);
+        let _ = evm2.transact_raw(make_cip64_tx(fc));
+        assert_eq!(*calls2.lock(), 0, "a memo hit must not re-consult the resolver");
+        assert_eq!(
+            evm2.inner.fee_currency_context.currency_exchange_rate(Some(fc)),
+            Ok((U256::from(2), U256::from(1))),
+        );
+    }
+
+    /// With no resolver wired (or one that returns `None`) and an empty memo, a pinning-enabled
+    /// EVM at block > 0 must REFUSE rather than fall back to current-state (mid-block) rates —
+    /// a `None` means a non-canonical/forged block, pruned state, or a misconfigured node, none
+    /// of which may silently trace against mid-block rates.
+    #[test]
+    fn test_unresolved_block_start_context_refuses() {
+        // `make_test_evm` wires no resolver and starts with an empty memo; base fee enabled,
+        // block > 0 -> the read path is unresolved.
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.ctx_mut().block.number = U256::from(5);
+        let result = evm.transact_raw(make_cip64_tx(Address::with_last_byte(0xAA)));
+        assert!(
+            matches!(result, Err(EVMError::Custom(_))),
+            "an unresolved block-start context must refuse, not load current-state rates; \
+             got {result:?}"
+        );
+    }
+
+    /// Consensus executors (import/derivation/sequencing/proofs) opt out via
+    /// `with_fee_context_cache_disabled` in `CeloBlockExecutorFactory::create_executor`: a
+    /// disabled EVM must neither read the memo nor consult the resolver.
+    #[test]
+    fn test_disabled_evm_bypasses_pinning() {
+        let fc = Address::with_last_byte(0xAA);
+        let parent = test_db_parent_hash(5);
+
+        // No read: a pre-memoized entry must not reach a disabled EVM.
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, parent, block_start_context(5, fc));
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        let mut evm = evm.with_fee_context_cache_disabled();
+        evm.ctx_mut().block.number = U256::from(5);
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)).is_err(),
+            "disabled EVM must load from its own DB state, not the shared memo"
+        );
+
+        // No resolve: a disabled EVM must not consult the resolver either.
+        let (resolver, calls) = counting_resolver(5, fc);
+        let mut evm =
+            make_test_evm(FeeCurrencyBlocklist::default()).with_fee_context_cache_disabled();
+        evm.context_resolver = Some(resolver);
+        evm.ctx_mut().block.number = U256::from(5);
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert_eq!(*calls.lock(), 0, "disabled EVM must not consult the resolver");
+    }
+
+    /// Call-style simulations (`eth_call`/`eth_estimateGas`/`debug_traceCall` set
+    /// `disable_base_fee`) run at end-of-block state where the rates they load are the intended
+    /// semantics — they must neither read block-start rates from the memo nor consult the resolver.
+    #[test]
+    fn test_call_style_simulation_bypasses_pinning() {
+        let fc = Address::with_last_byte(0xAA);
+
+        // No read: a memoized rate must not reach the EVM under disable_base_fee.
+        let cache = FeeCurrencyContextCache::default();
+        cache.insert(5, test_db_parent_hash(5), block_start_context(5, fc));
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.fee_context_cache = cache;
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.ctx_mut().cfg.disable_base_fee = true;
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert!(
+            evm.inner.fee_currency_context.currency_exchange_rate(Some(fc)).is_err(),
+            "call-style simulation must load from its own DB state, not the memo"
+        );
+
+        // No resolve: the resolver must not be consulted under disable_base_fee.
+        let (resolver, calls) = counting_resolver(5, fc);
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.context_resolver = Some(resolver);
+        evm.ctx_mut().block.number = U256::from(5);
+        evm.ctx_mut().cfg.disable_base_fee = true;
+        let _ = evm.transact_raw(make_cip64_tx(fc));
+        assert_eq!(*calls.lock(), 0, "call-style simulation must not consult the resolver");
+    }
+
+    /// Genesis has no parent to key on — pinning is skipped (the `number > 0` gate), so the
+    /// resolver is not consulted and the handler loads the context normally.
+    #[test]
+    fn test_genesis_block_skips_pinning() {
+        let (resolver, calls) = counting_resolver(0, Address::with_last_byte(0xAA));
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.context_resolver = Some(resolver);
+        // make_test_evm defaults to block 0.
+        evm.transact_raw(make_deposit_tx(Address::with_last_byte(0x01))).expect("deposit executes");
+        assert_eq!(*calls.lock(), 0, "resolver must not be consulted at genesis");
+        assert_eq!(evm.inner.fee_currency_context.updated_at_block, Some(U256::ZERO));
     }
 
     /// `transact_raw` must NOT reject a blocklisted currency: `base_fee_check_enabled`
