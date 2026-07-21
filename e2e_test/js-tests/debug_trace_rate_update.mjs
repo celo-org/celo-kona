@@ -84,14 +84,17 @@ async function unstickBatch(nonce, maxFeePerGas, serializedCipTxs) {
     maxFeePerGas: maxFeePerGas * 2n,
     maxPriorityFeePerGas: 10n ** 9n,
   });
-  for (const serializedTransaction of serializedCipTxs) {
-    // Already-known / replaced / mined txs are all fine here.
-    await walletClient.sendRawTransaction({ serializedTransaction }).catch(() => {});
-  }
   await publicClient.waitForTransactionReceipt({
     hash: resetHash,
     timeout: 30_000,
   });
+  // Only resubmit once the reset is mined: pool validation checks CIP-64 fee
+  // caps against the canonical rate, so before the reset these would be
+  // rejected as under-priced at 100:1.
+  for (const serializedTransaction of serializedCipTxs) {
+    // Already-known / replaced / mined txs are all fine here.
+    await walletClient.sendRawTransaction({ serializedTransaction }).catch(() => {});
+  }
   const target = nonce + 1 + CIP64_TX_COUNT;
   for (let i = 0; i < 30; i++) {
     const mined = await publicClient.getTransactionCount({
