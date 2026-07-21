@@ -4,10 +4,11 @@ set -eo pipefail
 source shared.sh
 source debug-fee-currency/lib.sh
 
-# Regression test for debug_trace* on blocks with CIP-64 transactions: a mid-block
-# rate update must not affect the replay (block-start rates are a CIP-64 consensus
-# rule), and replaying multiple CIP-64 transactions must not double-store receipt
-# data. See js-tests/debug_trace_rate_update.mjs for the scenario details.
+# Regression test for debug_trace* on blocks with CIP-64 transactions: block
+# replay and mid-block call simulation must use the block-start fee-currency
+# context (a CIP-64 consensus rule), and replaying multiple CIP-64 transactions
+# must not double-store receipt data. See js-tests/debug_trace_rate_update.mjs
+# for the three scenarios.
 #
 # The shared e2e node instamines one tx per block, so this test starts its own node
 # with interval mining (--dev.block-time) to land the rate update and the CIP-64
