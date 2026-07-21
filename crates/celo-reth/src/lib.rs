@@ -22,15 +22,16 @@ use {
     reth_tracing as _, reth_transaction_pool as _, tracing as _,
 };
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
+use core::any::Any;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
-    BlockExecutorForEvm, ConfigureEvm, Database, EvmEnv,
+    BlockExecutorForEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, EvmFor, InspectorFor,
     eth::NextEvmEnvAttributes,
     execute::{BasicBlockBuilder, BlockBuilder, BlockExecutor},
 };
@@ -90,7 +91,7 @@ use reth_optimism_primitives::DepositReceipt;
 
 #[cfg(feature = "std")]
 use {
-    reth_evm::{ConfigureEngineEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor},
+    reth_evm::{ConfigureEngineEvm, ExecutableTxIterator, ExecutionCtxFor},
     reth_optimism_payload_builder::OpExecData,
     reth_primitives_traits::TxTy,
 };
@@ -274,6 +275,38 @@ where
             self.chain_spec(),
             self.chain_spec().chain().id(),
         ))
+    }
+
+    /// Captures the block-start [`celo_revm::FeeCurrencyContext`] for mid-block call simulations.
+    ///
+    /// Fee-currency exchange rates are block-scoped consensus state: every transaction of a
+    /// block settles at the rates read from block-start state. Capturing the context here lets
+    /// the debug API seed it into call EVMs created over mid-block state (`debug_traceCall` with
+    /// a transaction index, `debug_traceCallMany`), which would otherwise re-load the rates from
+    /// the wrong state.
+    fn capture_block_replay_ctx<DB: Database>(
+        &self,
+        db: &mut DB,
+        evm_env: &EvmEnvFor<Self>,
+    ) -> Option<Box<dyn Any + Send>> {
+        let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
+        Some(Box::new(evm.create_fee_currency_context()))
+    }
+
+    /// Seeds a mid-block call simulation EVM with the captured block-start fee currency context.
+    ///
+    /// The context's `updated_at_block` stamp makes the CIP-64 handler skip its lazy per-block
+    /// load only while the EVM's block environment still matches the captured block, so
+    /// `debug_traceCallMany` bundles simulated as follow-up blocks fall back to loading their
+    /// context from the simulated state.
+    fn seed_block_replay_ctx<DB, I>(&self, evm: &mut EvmFor<Self, DB, I>, ctx: &(dyn Any + Send))
+    where
+        DB: Database,
+        I: InspectorFor<Self, DB>,
+    {
+        if let Some(fee_currency_context) = ctx.downcast_ref::<celo_revm::FeeCurrencyContext>() {
+            evm.set_fee_currency_context(fee_currency_context.clone());
+        }
     }
 
     fn context_for_block(
