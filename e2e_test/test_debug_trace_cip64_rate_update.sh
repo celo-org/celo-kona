@@ -19,9 +19,23 @@ if [[ ! -x "$CELO_RETH" ]]; then
     exit 1
 fi
 
-HTTP_PORT=8547
-AUTH_PORT=8653
-P2P_PORT=30305
+# Pick a free port for our own node rather than clearing a fixed one: a fixed
+# port could hold the runner's shared node (its HTTP_PORT is overridable), and
+# a foreign listener must not be killed nor answer our readiness probe.
+SHARED_PORT="${ETH_RPC_URL##*:}"
+HTTP_PORT=
+for candidate in 8547 8548 8549 8550; do
+    if [ "$candidate" != "$SHARED_PORT" ] && ! lsof -ti :"$candidate" &>/dev/null; then
+        HTTP_PORT=$candidate
+        break
+    fi
+done
+if [ -z "$HTTP_PORT" ]; then
+    echo "FAIL: no free HTTP port for the interval-mining node"
+    exit 1
+fi
+AUTH_PORT=$((HTTP_PORT + 200))
+P2P_PORT=$((HTTP_PORT + 22000))
 DATADIR=$(mktemp -d)
 NODE_LOG="$DATADIR/celo-reth.log"
 NODE_PID=
@@ -54,13 +68,13 @@ NODE_PID=$!
 
 export ETH_RPC_URL="http://127.0.0.1:$HTTP_PORT"
 for _ in {1..60}; do
-    if cast block-number &>/dev/null; then
-        break
-    fi
     if ! kill -0 "$NODE_PID" 2>/dev/null; then
         echo "FAIL: interval-mining celo-reth exited unexpectedly"
         tail -40 "$NODE_LOG"
         exit 1
+    fi
+    if cast block-number &>/dev/null; then
+        break
     fi
     sleep 0.5
 done
