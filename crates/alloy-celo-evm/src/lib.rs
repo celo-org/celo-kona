@@ -345,12 +345,12 @@ where
                 // receipt-building executors set `cip64_store_enabled` (see its field docs);
                 // confining the store to them keeps the slot-occupied panic in `store_cip64_info`
                 // a true signal of an executor double-store bug rather than a false positive on
-                // RPC replay. `base_fee_check_enabled` is redundant given that flag, but keeps a
-                // call-style simulation EVM (`disable_base_fee`) from storing should the flag ever
-                // be set on one.
+                // RPC replay. The store must NOT additionally require the base-fee check:
+                // `eth_simulateV1` (default `validation=false`) disables that check on a
+                // receipt-building executor, and `build_cip64_receipt` asserts that a successful
+                // CIP-64 tx has stored data — skipping the store there panics at receipt build.
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
-                if base_fee_check_enabled
-                    && self.cip64_store_enabled
+                if self.cip64_store_enabled
                     && let Some(cip64_info) = cip64_info
                 {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
@@ -504,13 +504,34 @@ fn make_test_evm(
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
-        // Tests here exercise the sequencing-path blocklist behaviour, so enable it. The
-        // RPC-simulation test additionally disables the base-fee check, which the
-        // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
+        // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
         blocklist_enabled: true,
         // Default to the receipt-building executor path; loose-EVM tests flip this off.
         cip64_store_enabled: true,
     }
+}
+
+/// Registers `fee_currency` in the EVM's fee-currency context at `rate` units per CELO.
+///
+/// Pinning `updated_at_block` to the EVM's block number keeps `load_fee_currency_context`
+/// from reloading the context from the (empty) test state on the first transaction.
+#[cfg(test)]
+fn register_fee_currency(
+    evm: &mut CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector>,
+    fee_currency: Address,
+    rate: u64,
+) {
+    let mut currencies = alloy_primitives::map::HashMap::default();
+    currencies.insert(
+        fee_currency,
+        celo_revm::fee_currency_context::FeeCurrencyInfo {
+            exchange_rate: (U256::from(rate), U256::from(1u64)),
+            intrinsic_gas: 0,
+        },
+    );
+    let block_number = evm.ctx().block.number;
+    evm.inner.fee_currency_context =
+        celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
 }
 
 impl CeloEvmFactory {
@@ -797,16 +818,19 @@ mod tests {
         assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
     }
 
-    /// Verify that base-fee-disabled RPC simulation (eth_call / eth_estimateGas) never stores
-    /// CIP-64 receipt data even on a store-enabled EVM: the `base_fee_check_enabled` guard in
-    /// `transact_raw` skips the store on those paths, which never build receipts. (The
-    /// trace/replay paths are covered by [`test_loose_evm_replays_cip64_txs_without_storing`].)
+    /// Regression: a store-enabled executor with the base-fee check DISABLED must still store
+    /// CIP-64 receipt data. This is the `eth_simulateV1` shape (default `validation=false`):
+    /// reth builds a receipt-building block executor via `create_block_builder` →
+    /// `create_executor` but sets `disable_base_fee`, and `build_cip64_receipt` asserts that a
+    /// successful CIP-64 tx has stored data — a base-fee conjunct on the store gate would panic
+    /// there. Call-style simulation (`eth_call` / `eth_estimateGas`) uses loose store-disabled
+    /// EVMs and is covered by [`test_loose_evm_replays_cip64_txs_without_storing`].
     ///
-    /// The handler still populates `cip64_tx_info` during simulation for
-    /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
-    /// `transact_raw`, not the handler.
+    /// The handler populates `cip64_tx_info` for native-fee CIP-64 txs
+    /// (`feeCurrency == 0x0`) even when the base fee is disabled, so the tx
+    /// below reaches the store gate.
     #[test]
-    fn test_cip64_info_not_stored_during_rpc_simulation() {
+    fn test_cip64_info_stored_when_base_fee_check_disabled() {
         use revm::state::AccountInfo;
 
         let blocklist = FeeCurrencyBlocklist::default();
@@ -819,21 +843,187 @@ mod tests {
             AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
         );
 
-        // RPC simulation mode.
+        // eth_simulateV1 validation=false mode.
         evm.ctx_mut().cfg.disable_base_fee = true;
 
-        // Native-fee CIP-64 tx (`fee_currency = 0x0`): the handler sets
-        // `cip64_tx_info = Some(..)` on this path even when base fee is
-        // disabled, so the only line of defense against polluting the slot is
-        // the `base_fee_check_enabled` gate in `transact_raw`.
         let mut tx = make_cip64_tx(Address::ZERO);
         tx.fee_currency = Some(Address::ZERO);
         let result = evm.transact_raw(tx);
         assert!(result.is_ok(), "simulated tx should succeed: {result:?}");
 
         assert!(
+            evm.cip64_storage.pop_cip64_receipt_data().is_some(),
+            "store-enabled simulate executor must store CIP-64 receipt data"
+        );
+    }
+
+    /// The same `eth_simulateV1` shape, but paying in a real ERC20 fee currency.
+    ///
+    /// Dropping the base-fee conjunct from the store gate is not enough on its own here:
+    /// disabling the base-fee check also disables the ERC20 debit, which is the only other
+    /// writer of `cip64_tx_info`, so the tx succeeded with `None` to store and
+    /// `build_cip64_receipt`'s "succeeded but no receipt data" assert panicked. The handler now
+    /// stores a minimal `Cip64Info` whenever the debit is skipped.
+    ///
+    /// Also pins the stored base fee to the *converted* rate rather than the native base fee.
+    #[test]
+    fn test_cip64_info_stored_for_erc20_fee_currency_when_base_fee_check_disabled() {
+        use revm::state::AccountInfo;
+
+        const BALANCE: u128 = 10u128.pow(20);
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(BALANCE), nonce: 0, ..Default::default() },
+        );
+
+        let fee_currency = Address::with_last_byte(0xAB);
+        register_fee_currency(&mut evm, fee_currency, 2);
+
+        const BASEFEE: u64 = 1_000_000_000;
+        evm.ctx_mut().block.basefee = BASEFEE;
+        // eth_simulateV1 validation=false mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        let mut tx = make_cip64_tx(fee_currency);
+        // Enough gas for the call to succeed: the receipt assert only fires on success.
+        tx.op_tx.base.gas_limit = 100_000;
+        let result = evm.transact_raw(tx).expect("simulated tx should not be rejected");
+        assert!(result.result.is_success(), "simulated tx should succeed: {:?}", result.result);
+
+        let stored = evm
+            .cip64_storage
+            .pop_cip64_receipt_data()
+            .expect("store-enabled simulate executor must store CIP-64 receipt data");
+        assert_eq!(stored.fee_currency, Some(fee_currency));
+        assert_eq!(
+            stored.cip64_info.base_fee_in_erc20,
+            Some(u128::from(BASEFEE) * 2),
+            "stored base fee must be denominated in the fee currency, not native CELO"
+        );
+
+        // The other half of the fix: the entry is the *minimal* one, written because the debit
+        // was skipped. If a future change lets the debit run on this path these stop being
+        // empty/zero — and the entry would then be the debit's, not this arm's.
+        let info = &stored.cip64_info;
+        assert!(
+            info.logs_pre.is_empty() && info.logs_post.is_empty(),
+            "no debit/credit system call ran, so there are no transfer logs to merge"
+        );
+        assert_eq!(
+            (
+                info.debit_gas_used,
+                info.debit_gas_refunded,
+                info.credit_gas_used,
+                info.credit_gas_refunded
+            ),
+            (0, 0, 0, 0),
+            "no debit/credit system call ran, so there is no system-call gas to account for"
+        );
+        // ...and the caller was not charged in CELO either: an ERC20-fee tx pays no native gas.
+        assert_eq!(
+            result.state.get(&caller).expect("caller is touched by the tx").info.balance,
+            U256::from(BALANCE),
+            "an ERC20-fee CIP-64 tx must not be charged native gas"
+        );
+    }
+
+    /// The debit is also what denominates `effective_gas_price`, so with it skipped `GASPRICE`
+    /// inside a simulated ERC20-fee tx used to read the *native* price while the receipt
+    /// reported a fee-currency base fee. The handler now sets the price too.
+    ///
+    /// `max_fee_per_gas` is raised above both base fees so the tip — not the cap — decides the
+    /// effective price; otherwise the native and fee-currency answers are both the cap and the
+    /// assertion could not tell them apart.
+    #[test]
+    fn test_erc20_fee_simulation_denominates_gasprice() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        const BASEFEE: u64 = 1_000_000_000;
+        const RATE: u64 = 2;
+        /// `make_cip64_tx`'s `gas_priority_fee`.
+        const PRIORITY_FEE: u128 = 100;
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        // A callee that returns GASPRICE: GASPRICE; PUSH0; MSTORE; PUSH1 0x20; PUSH0; RETURN.
+        // Not `make_cip64_tx`'s default 0x02 target — that address is the SHA-256 precompile,
+        // which shadows any code installed there.
+        let callee = Address::with_last_byte(0xC0);
+        let code =
+            Bytecode::new_raw(Bytes::from_static(&[0x3a, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]));
+        evm.db_mut().insert_account_info(
+            callee,
+            AccountInfo { code_hash: code.hash_slow(), code: Some(code), ..Default::default() },
+        );
+
+        let fee_currency = Address::with_last_byte(0xAB);
+        register_fee_currency(&mut evm, fee_currency, RATE);
+        evm.ctx_mut().block.basefee = BASEFEE;
+        // eth_simulateV1 validation=false mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        let mut tx = make_cip64_tx(fee_currency);
+        tx.op_tx.base.kind = TxKind::Call(callee);
+        tx.op_tx.base.gas_limit = 100_000;
+        tx.op_tx.base.gas_price = 10 * u128::from(BASEFEE);
+        let result = evm.transact_raw(tx).expect("simulated tx should not be rejected");
+        let output = result.result.output().expect("callee returns GASPRICE");
+
+        assert_eq!(
+            U256::from_be_slice(output),
+            U256::from(u128::from(BASEFEE) * u128::from(RATE) + PRIORITY_FEE),
+            "GASPRICE in an ERC20-fee simulation must be denominated in the fee currency"
+        );
+    }
+
+    /// The other shape reaching the minimal-`Cip64Info` arm with an ERC20 fee currency:
+    /// `eth_call` / `eth_estimateGas`. Those disable the base-fee check just like
+    /// `eth_simulateV1`, so the arm writes `cip64_tx_info` — but they run on loose,
+    /// store-disabled EVMs, where `transact_raw` takes the field and drops it.
+    ///
+    /// Pins that nothing reaches the single-slot `Cip64Storage`: two ERC20-fee CIP-64 calls
+    /// through one EVM would otherwise trip `store_cip64_info`'s slot-occupied panic.
+    /// [`test_loose_evm_replays_cip64_txs_without_storing`] covers the same invariant for
+    /// native-fee txs with the base-fee check left on.
+    #[test]
+    fn test_loose_evm_replays_erc20_fee_calls_without_storing() {
+        use revm::state::AccountInfo;
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.cip64_store_enabled = false; // loose RPC EVM (as `create_evm*` produces)
+
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        let fee_currency = Address::with_last_byte(0xAB);
+        register_fee_currency(&mut evm, fee_currency, 2);
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        // eth_call / eth_estimateGas mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        // `transact_raw` does not commit, so the nonce stays 0 and both nonce-0 txs validate —
+        // enough to attempt the store twice.
+        for i in 0..2 {
+            let mut tx = make_cip64_tx(fee_currency);
+            tx.op_tx.base.gas_limit = 100_000;
+            let result = evm.transact_raw(tx);
+            assert!(result.is_ok(), "call-shape tx {i} should succeed: {result:?}");
+        }
+
+        assert!(
             evm.cip64_storage.pop_cip64_receipt_data().is_none(),
-            "RPC simulation must not store CIP-64 receipt data"
+            "loose call EVM must not store CIP-64 receipt data"
         );
     }
 

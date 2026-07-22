@@ -923,8 +923,10 @@ where
 
         let ctx = evm.ctx();
 
-        let basefee = ctx.block().basefee() as u128;
+        let basefee = ctx.block().basefee();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let is_cip64 = CeloTxType::try_from(ctx.tx().tx_type()).ok() == Some(CeloTxType::Cip64);
+        let fee_currency = ctx.tx().fee_currency();
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let spec = *ctx.cfg().spec();
         let block_number = ctx.block().number();
@@ -964,31 +966,65 @@ where
             }
         }
 
-        // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
-        // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
-        // rather than `None`. Without this the receipt encoding would differ from
-        // the historical behavior and break receipt roots.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo {
-            let mut tx = evm.ctx().tx().clone();
-            tx.cip64_tx_info = Some(Cip64Info {
-                base_fee_in_erc20: Some(basefee),
-                ..Default::default()
-            });
-            evm.ctx().set_tx(tx);
-        }
-
         // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
-        // currency, and only when the base-fee / balance checks are enabled.
-        //
-        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
-        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
-        // rate. The GASPRICE opcode will therefore return native pricing instead of the
-        // ERC20-denominated price during simulations. This is a known limitation.
+        // currency, and only when the base-fee / balance checks are enabled. When it is
+        // skipped, the block below stands in for the two things it would have written:
+        // `cip64_tx_info` and `effective_gas_price`.
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
         let debit_erc20_fees =
             !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit;
+
+        // The debit is the only other writer of `cip64_tx_info`, so whenever it is skipped a
+        // CIP-64 tx would reach the receipt builder with nothing stored — and `build_cip64_receipt`
+        // asserts that every *successful* CIP-64 tx has receipt data. Store a minimal
+        // `Cip64Info` here so the receipt carries `base_fee: Some(..)` rather than `None`.
+        //
+        // Three shapes reach this branch:
+        //   - native-fee CIP-64 (`feeCurrency` unset / 0x0): always, block execution included.
+        //     Consensus-critical — without it the receipt encoding would differ from the
+        //     historical behavior and break receipt roots.
+        //   - ERC20-fee CIP-64 with the base-fee check off on a *receipt-building* executor:
+        //     `eth_simulateV1` (default `validation=false`). This is the shape that panicked
+        //     at receipt build.
+        //   - ERC20-fee CIP-64 with the base-fee check off on a *loose, store-disabled* EVM:
+        //     `eth_call` / `eth_estimateGas`. What we write is taken and dropped again by
+        //     `transact_raw`, so the store never sees it — noted so the condition is not
+        //     misread as reachable only from simulateV1.
+        // (The `is_balance_check_disabled` disjunct never fires in a shipped build: only
+        // celo-revm's `dev` feature turns on revm's `optional_balance_check`.)
+        // Both ERC20 shapes are simulation-only: during block execution the debit runs and
+        // supplies the real info, so neither can change consensus.
+        //
+        // `celo_to_currency` passes native amounts through unchanged, so one conversion covers
+        // all three. It cannot fail as NotRegistered here: `validate_celo_initial_tx_gas` already
+        // rejected unregistered currencies via `currency_intrinsic_gas_cost`. It *can* fail as
+        // "overflows u128" on an absurd registered rate (basefee * rate > 2^128), which turns a
+        // simulation that used to run into a rejection. That is deliberate — the same narrowing
+        // already guards the debit path, and a silently truncated gas price is the worse
+        // failure — but it is a behaviour change for `eth_call`, not just for simulateV1.
+        if is_cip64 && !debit_erc20_fees {
+            let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
+            let mut tx = evm.ctx().tx().clone();
+            tx.cip64_tx_info = Some(Cip64Info {
+                base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
+                ..Default::default()
+            });
+            if !fees_in_celo {
+                // The debit is also what pins `effective_gas_price` to the fee-currency rate.
+                // Without it `GASPRICE` inside a simulated ERC20-fee tx reads native while the
+                // receipt reports a fee-currency base fee — two denominations in one result.
+                // Same expression the debit uses, so a simulation sees the price execution
+                // would have produced.
+                //
+                // Only for the ERC20 shapes: this whole `if` also covers native-fee CIP-64 on
+                // the consensus path, where the price already *is* native and pinning the field
+                // would route `effective_balance_spending` — and with it the caller's native gas
+                // deduction — around revm's own computation.
+                let effective_gas_price = tx.effective_gas_price(base_fee_in_erc20.into_inner());
+                tx.effective_gas_price = Some(effective_gas_price);
+            }
+            evm.ctx().set_tx(tx);
+        }
 
         // The ERC20 debit (if any) plus the caller-state validation and native gas deduction
         // run as a single rollbackable unit: the debit's journal entries are bracketed by a
