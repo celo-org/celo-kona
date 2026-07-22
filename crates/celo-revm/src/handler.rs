@@ -923,8 +923,9 @@ where
 
         let ctx = evm.ctx();
 
-        let basefee = ctx.block().basefee() as u128;
+        let basefee = ctx.block().basefee();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let fee_currency = ctx.tx().fee_currency();
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let spec = *ctx.cfg().spec();
         let block_number = ctx.block().number();
@@ -964,21 +965,6 @@ where
             }
         }
 
-        // For native-fee CIP-64 transactions (fee_currency is None / ZERO), store
-        // a minimal Cip64Info so the receipt builder emits `base_fee: Some(basefee)`
-        // rather than `None`. Without this the receipt encoding would differ from
-        // the historical behavior and break receipt roots.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
-        if is_cip64 && fees_in_celo {
-            let mut tx = evm.ctx().tx().clone();
-            tx.cip64_tx_info = Some(Cip64Info {
-                base_fee_in_erc20: Some(basefee),
-                ..Default::default()
-            });
-            evm.ctx().set_tx(tx);
-        }
-
         // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
         // currency, and only when the base-fee / balance checks are enabled.
         //
@@ -989,6 +975,35 @@ where
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
         let debit_erc20_fees =
             !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit;
+
+        // The debit is the only other writer of `cip64_tx_info`, so whenever it is skipped a
+        // CIP-64 tx would reach the receipt builder with nothing stored — and `build_cip64_receipt`
+        // asserts that every *successful* CIP-64 tx has receipt data. Store a minimal
+        // `Cip64Info` here so the receipt carries `base_fee: Some(..)` rather than `None`.
+        //
+        // Two shapes reach this branch:
+        //   - native-fee CIP-64 (`feeCurrency` unset / 0x0): always, block execution included.
+        //     Consensus-critical — without it the receipt encoding would differ from the
+        //     historical behavior and break receipt roots.
+        //   - ERC20-fee CIP-64 with the debit disabled, i.e. `eth_simulateV1` (default
+        //     `validation=false` disables the base-fee check on a *receipt-building* executor).
+        //     Simulation-only: during block execution the debit runs and supplies the real info,
+        //     so this branch cannot change consensus.
+        //
+        // `celo_to_currency` passes native amounts through unchanged, so one conversion covers
+        // both. It cannot fail as NotRegistered here: `validate_celo_initial_tx_gas` already
+        // rejected unregistered currencies via `currency_intrinsic_gas_cost`.
+        let is_cip64 =
+            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
+        if is_cip64 && !debit_erc20_fees {
+            let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
+            let mut tx = evm.ctx().tx().clone();
+            tx.cip64_tx_info = Some(Cip64Info {
+                base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
+                ..Default::default()
+            });
+            evm.ctx().set_tx(tx);
+        }
 
         // The ERC20 debit (if any) plus the caller-state validation and native gas deduction
         // run as a single rollbackable unit: the debit's journal entries are bracketed by a

@@ -834,6 +834,62 @@ mod tests {
         );
     }
 
+    /// The same `eth_simulateV1` shape, but paying in a real ERC20 fee currency.
+    ///
+    /// Dropping the base-fee conjunct from the store gate is not enough on its own here:
+    /// disabling the base-fee check also disables the ERC20 debit, which is the only other
+    /// writer of `cip64_tx_info`, so the tx succeeded with `None` to store and
+    /// `build_cip64_receipt`'s "succeeded but no receipt data" assert panicked. The handler now
+    /// stores a minimal `Cip64Info` whenever the debit is skipped.
+    ///
+    /// Also pins the stored base fee to the *converted* rate rather than the native base fee.
+    #[test]
+    fn test_cip64_info_stored_for_erc20_fee_currency_when_base_fee_check_disabled() {
+        use revm::state::AccountInfo;
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        // Register the fee currency at 2 units per CELO. Pinning `updated_at_block` to the
+        // block number keeps `load_fee_currency_context` from reloading it from empty state.
+        let fee_currency = Address::with_last_byte(0xAB);
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fee_currency,
+            celo_revm::fee_currency_context::FeeCurrencyInfo {
+                exchange_rate: (U256::from(2u64), U256::from(1u64)),
+                intrinsic_gas: 0,
+            },
+        );
+        evm.inner.fee_currency_context =
+            celo_revm::FeeCurrencyContext::new(currencies, Some(U256::ZERO));
+
+        const BASEFEE: u64 = 1_000_000_000;
+        evm.ctx_mut().block.basefee = BASEFEE;
+        // eth_simulateV1 validation=false mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        let mut tx = make_cip64_tx(fee_currency);
+        // Enough gas for the call to succeed: the receipt assert only fires on success.
+        tx.op_tx.base.gas_limit = 100_000;
+        let result = evm.transact_raw(tx).expect("simulated tx should not be rejected");
+        assert!(result.result.is_success(), "simulated tx should succeed: {:?}", result.result);
+
+        let stored = evm
+            .cip64_storage
+            .pop_cip64_receipt_data()
+            .expect("store-enabled simulate executor must store CIP-64 receipt data");
+        assert_eq!(
+            stored.cip64_info.base_fee_in_erc20,
+            Some(u128::from(BASEFEE) * 2),
+            "stored base fee must be denominated in the fee currency, not native CELO"
+        );
+    }
+
     /// Regression: loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and reth's
     /// `replay_transactions_until` prefix replay — run many transactions through ONE EVM with the
     /// base-fee check ENABLED and never build receipts, so they must not store CIP-64 receipt
