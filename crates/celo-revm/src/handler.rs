@@ -925,6 +925,7 @@ where
 
         let basefee = ctx.block().basefee();
         let is_deposit = ctx.tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
+        let is_cip64 = CeloTxType::try_from(ctx.tx().tx_type()).ok() == Some(CeloTxType::Cip64);
         let fee_currency = ctx.tx().fee_currency();
         let fees_in_celo = ctx.tx().is_fee_in_celo();
         let spec = *ctx.cfg().spec();
@@ -993,8 +994,6 @@ where
         // `celo_to_currency` passes native amounts through unchanged, so one conversion covers
         // both. It cannot fail as NotRegistered here: `validate_celo_initial_tx_gas` already
         // rejected unregistered currencies via `currency_intrinsic_gas_cost`.
-        let is_cip64 =
-            CeloTxType::try_from(evm.ctx().tx().tx_type()).ok() == Some(CeloTxType::Cip64);
         if is_cip64 && !debit_erc20_fees {
             let base_fee_in_erc20 = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
             let mut tx = evm.ctx().tx().clone();
