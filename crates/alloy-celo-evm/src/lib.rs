@@ -511,6 +511,29 @@ fn make_test_evm(
     }
 }
 
+/// Registers `fee_currency` in the EVM's fee-currency context at `rate` units per CELO.
+///
+/// Pinning `updated_at_block` to the EVM's block number keeps `load_fee_currency_context`
+/// from reloading the context from the (empty) test state on the first transaction.
+#[cfg(test)]
+fn register_fee_currency(
+    evm: &mut CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector>,
+    fee_currency: Address,
+    rate: u64,
+) {
+    let mut currencies = alloy_primitives::map::HashMap::default();
+    currencies.insert(
+        fee_currency,
+        celo_revm::fee_currency_context::FeeCurrencyInfo {
+            exchange_rate: (U256::from(rate), U256::from(1u64)),
+            intrinsic_gas: 0,
+        },
+    );
+    let block_number = evm.ctx().block.number;
+    evm.inner.fee_currency_context =
+        celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+}
+
 impl CeloEvmFactory {
     /// Shared initialization for both `create_evm` and `create_evm_with_inspector`.
     fn build_evm<DB: Database, I: Inspector<CeloContext<DB>>>(
@@ -847,26 +870,17 @@ mod tests {
     fn test_cip64_info_stored_for_erc20_fee_currency_when_base_fee_check_disabled() {
         use revm::state::AccountInfo;
 
+        const BALANCE: u128 = 10u128.pow(20);
+
         let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
         let caller = Address::with_last_byte(0x01);
         evm.db_mut().insert_account_info(
             caller,
-            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+            AccountInfo { balance: U256::from(BALANCE), nonce: 0, ..Default::default() },
         );
 
-        // Register the fee currency at 2 units per CELO. Pinning `updated_at_block` to the
-        // block number keeps `load_fee_currency_context` from reloading it from empty state.
         let fee_currency = Address::with_last_byte(0xAB);
-        let mut currencies = alloy_primitives::map::HashMap::default();
-        currencies.insert(
-            fee_currency,
-            celo_revm::fee_currency_context::FeeCurrencyInfo {
-                exchange_rate: (U256::from(2u64), U256::from(1u64)),
-                intrinsic_gas: 0,
-            },
-        );
-        evm.inner.fee_currency_context =
-            celo_revm::FeeCurrencyContext::new(currencies, Some(U256::ZERO));
+        register_fee_currency(&mut evm, fee_currency, 2);
 
         const BASEFEE: u64 = 1_000_000_000;
         evm.ctx_mut().block.basefee = BASEFEE;
@@ -883,10 +897,79 @@ mod tests {
             .cip64_storage
             .pop_cip64_receipt_data()
             .expect("store-enabled simulate executor must store CIP-64 receipt data");
+        assert_eq!(stored.fee_currency, Some(fee_currency));
         assert_eq!(
             stored.cip64_info.base_fee_in_erc20,
             Some(u128::from(BASEFEE) * 2),
             "stored base fee must be denominated in the fee currency, not native CELO"
+        );
+
+        // The other half of the fix: the entry is the *minimal* one, written because the debit
+        // was skipped. If a future change lets the debit run on this path these stop being
+        // empty/zero — and the entry would then be the debit's, not this arm's.
+        let info = &stored.cip64_info;
+        assert!(
+            info.logs_pre.is_empty() && info.logs_post.is_empty(),
+            "no debit/credit system call ran, so there are no transfer logs to merge"
+        );
+        assert_eq!(
+            (
+                info.debit_gas_used,
+                info.debit_gas_refunded,
+                info.credit_gas_used,
+                info.credit_gas_refunded
+            ),
+            (0, 0, 0, 0),
+            "no debit/credit system call ran, so there is no system-call gas to account for"
+        );
+        // ...and the caller was not charged in CELO either: an ERC20-fee tx pays no native gas.
+        assert_eq!(
+            result.state.get(&caller).expect("caller is touched by the tx").info.balance,
+            U256::from(BALANCE),
+            "an ERC20-fee CIP-64 tx must not be charged native gas"
+        );
+    }
+
+    /// The other shape reaching the minimal-`Cip64Info` arm with an ERC20 fee currency:
+    /// `eth_call` / `eth_estimateGas`. Those disable the base-fee check just like
+    /// `eth_simulateV1`, so the arm writes `cip64_tx_info` — but they run on loose,
+    /// store-disabled EVMs, where `transact_raw` takes the field and drops it.
+    ///
+    /// Pins that nothing reaches the single-slot `Cip64Storage`: two ERC20-fee CIP-64 calls
+    /// through one EVM would otherwise trip `store_cip64_info`'s slot-occupied panic.
+    /// [`test_loose_evm_replays_cip64_txs_without_storing`] covers the same invariant for
+    /// native-fee txs with the base-fee check left on.
+    #[test]
+    fn test_loose_evm_replays_erc20_fee_calls_without_storing() {
+        use revm::state::AccountInfo;
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        evm.cip64_store_enabled = false; // loose RPC EVM (as `create_evm*` produces)
+
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        let fee_currency = Address::with_last_byte(0xAB);
+        register_fee_currency(&mut evm, fee_currency, 2);
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        // eth_call / eth_estimateGas mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        // `transact_raw` does not commit, so the nonce stays 0 and both nonce-0 txs validate —
+        // enough to attempt the store twice.
+        for i in 0..2 {
+            let mut tx = make_cip64_tx(fee_currency);
+            tx.op_tx.base.gas_limit = 100_000;
+            let result = evm.transact_raw(tx);
+            assert!(result.is_ok(), "call-shape tx {i} should succeed: {result:?}");
+        }
+
+        assert!(
+            evm.cip64_storage.pop_cip64_receipt_data().is_none(),
+            "loose call EVM must not store CIP-64 receipt data"
         );
     }
 
