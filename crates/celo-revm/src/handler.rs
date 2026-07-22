@@ -967,12 +967,9 @@ where
         }
 
         // The CIP-64 ERC20 fee debit runs only for a non-deposit tx paying in an ERC20 fee
-        // currency, and only when the base-fee / balance checks are enabled.
-        //
-        // NOTE: When is_base_fee_disabled is true (eth_call/eth_estimateGas), we skip the
-        // ERC20 debit, which also skips setting tx.effective_gas_price to the fee-currency
-        // rate. The GASPRICE opcode will therefore return native pricing instead of the
-        // ERC20-denominated price during simulations. This is a known limitation.
+        // currency, and only when the base-fee / balance checks are enabled. When it is
+        // skipped, the block below stands in for the two things it would have written:
+        // `cip64_tx_info` and `effective_gas_price`.
         let is_base_fee_disabled = evm.ctx().cfg().is_base_fee_check_disabled();
         let debit_erc20_fees =
             !is_balance_check_disabled && !is_base_fee_disabled && !fees_in_celo && !is_deposit;
@@ -1012,6 +1009,20 @@ where
                 base_fee_in_erc20: Some(base_fee_in_erc20.into_inner()),
                 ..Default::default()
             });
+            if !fees_in_celo {
+                // The debit is also what pins `effective_gas_price` to the fee-currency rate.
+                // Without it `GASPRICE` inside a simulated ERC20-fee tx reads native while the
+                // receipt reports a fee-currency base fee — two denominations in one result.
+                // Same expression the debit uses, so a simulation sees the price execution
+                // would have produced.
+                //
+                // Only for the ERC20 shapes: this whole `if` also covers native-fee CIP-64 on
+                // the consensus path, where the price already *is* native and pinning the field
+                // would route `effective_balance_spending` — and with it the caller's native gas
+                // deduction — around revm's own computation.
+                let effective_gas_price = tx.effective_gas_price(base_fee_in_erc20.into_inner());
+                tx.effective_gas_price = Some(effective_gas_price);
+            }
             evm.ctx().set_tx(tx);
         }
 

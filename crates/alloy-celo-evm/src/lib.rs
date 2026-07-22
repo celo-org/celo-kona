@@ -930,6 +930,60 @@ mod tests {
         );
     }
 
+    /// The debit is also what denominates `effective_gas_price`, so with it skipped `GASPRICE`
+    /// inside a simulated ERC20-fee tx used to read the *native* price while the receipt
+    /// reported a fee-currency base fee. The handler now sets the price too.
+    ///
+    /// `max_fee_per_gas` is raised above both base fees so the tip — not the cap — decides the
+    /// effective price; otherwise the native and fee-currency answers are both the cap and the
+    /// assertion could not tell them apart.
+    #[test]
+    fn test_erc20_fee_simulation_denominates_gasprice() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        const BASEFEE: u64 = 1_000_000_000;
+        const RATE: u64 = 2;
+        /// `make_cip64_tx`'s `gas_priority_fee`.
+        const PRIORITY_FEE: u128 = 100;
+
+        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+        let caller = Address::with_last_byte(0x01);
+        evm.db_mut().insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
+        );
+
+        // A callee that returns GASPRICE: GASPRICE; PUSH0; MSTORE; PUSH1 0x20; PUSH0; RETURN.
+        // Not `make_cip64_tx`'s default 0x02 target — that address is the SHA-256 precompile,
+        // which shadows any code installed there.
+        let callee = Address::with_last_byte(0xC0);
+        let code =
+            Bytecode::new_raw(Bytes::from_static(&[0x3a, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]));
+        evm.db_mut().insert_account_info(
+            callee,
+            AccountInfo { code_hash: code.hash_slow(), code: Some(code), ..Default::default() },
+        );
+
+        let fee_currency = Address::with_last_byte(0xAB);
+        register_fee_currency(&mut evm, fee_currency, RATE);
+        evm.ctx_mut().block.basefee = BASEFEE;
+        // eth_simulateV1 validation=false mode.
+        evm.ctx_mut().cfg.disable_base_fee = true;
+
+        let mut tx = make_cip64_tx(fee_currency);
+        tx.op_tx.base.kind = TxKind::Call(callee);
+        tx.op_tx.base.gas_limit = 100_000;
+        tx.op_tx.base.gas_price = 10 * u128::from(BASEFEE);
+        let result = evm.transact_raw(tx).expect("simulated tx should not be rejected");
+        let output = result.result.output().expect("callee returns GASPRICE");
+
+        assert_eq!(
+            U256::from_be_slice(output),
+            U256::from(u128::from(BASEFEE) * u128::from(RATE) + PRIORITY_FEE),
+            "GASPRICE in an ERC20-fee simulation must be denominated in the fee currency"
+        );
+    }
+
     /// The other shape reaching the minimal-`Cip64Info` arm with an ERC20 fee currency:
     /// `eth_call` / `eth_estimateGas`. Those disable the base-fee check just like
     /// `eth_simulateV1`, so the arm writes `cip64_tx_info` — but they run on loose,
