@@ -223,6 +223,16 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
 
+    /// Replaces the EVM's fee currency context, e.g. with a block-start context captured before
+    /// simulating a call at a mid-block position. The context's `updated_at_block` stamp makes
+    /// the handler skip its lazy per-block load as long as the block environment matches.
+    pub fn set_fee_currency_context(
+        &mut self,
+        fee_currency_context: celo_revm::FeeCurrencyContext,
+    ) {
+        self.inner.fee_currency_context = fee_currency_context;
+    }
+
     /// Provides a reference to the CIP-64 storage.
     pub const fn cip64_storage(&self) -> &Cip64Storage {
         &self.cip64_storage
