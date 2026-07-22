@@ -181,14 +181,15 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// transaction.
     ///
     /// The store hands a tx's pre/post transfer logs and `base_fee_in_erc20` to the receipt
-    /// builder, which pops exactly one entry per transaction in `build_receipt`. The slot holds
-    /// one entry and `store_cip64_info` panics on a second store, so only EVMs that build
+    /// builder, which pops exactly one entry per CIP-64 transaction in `build_receipt`. The slot
+    /// holds one entry and `store_cip64_info` panics on a second store, so only EVMs that build
     /// receipts may store.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
-    /// flipped to `true` only by
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), which every
-    /// receipt-building executor (import, derivation, sequencing, kona proofs) goes through. The
+    /// flipped to `true` only for receipt-building executors:
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
+    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
+    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
     /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
     /// `replay_transactions_until` — that run a whole block through one EVM without building
     /// receipts, and leave it off.
@@ -311,9 +312,9 @@ where
         let fee_currency = tx.fee_currency;
 
         // The base-fee check is enabled during replay-style execution — sequencing, block import
-        // / derivation re-execution, AND block tracing (`debug_trace*`, `trace_*`, `ots_*`) — and
-        // disabled during call-style RPC simulation (`eth_call`, `eth_estimateGas`,
-        // `debug_traceCall`).
+        // / derivation re-execution, AND block tracing (`debug_traceTransaction`,
+        // `debug_traceBlock*`, parity `trace_*`, `ots_*`) — and disabled during call-style RPC
+        // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
@@ -341,7 +342,7 @@ where
             Ok(_) => {
                 // CIP64 NOTE:
                 // Hand this tx's pre/post transfer logs and `base_fee_in_erc20` to the receipt
-                // builder, which pops one entry per transaction in `build_receipt`. Only
+                // builder, which pops one entry per CIP-64 transaction in `build_receipt`. Only
                 // receipt-building executors set `cip64_store_enabled` (see its field docs);
                 // confining the store to them keeps the slot-occupied panic in `store_cip64_info`
                 // a true signal of an executor double-store bug rather than a false positive on
@@ -506,9 +507,39 @@ fn make_test_evm(
         blocklist,
         // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
         blocklist_enabled: true,
-        // Default to the receipt-building executor path; loose-EVM tests flip this off.
+        // Default to the receipt-building executor path; loose-EVM tests build through the
+        // factory instead (`make_loose_test_evm`).
         cip64_store_enabled: true,
     }
+}
+
+/// Creates a loose RPC-style [`CeloEvm`] through the factory, the way reth's RPC layer does:
+/// non-inspecting via [`CeloEvmFactory::create_evm`] (the `replay_transactions_until` shape),
+/// inspecting via [`CeloEvmFactory::create_evm_with_inspector`] (the parity/ots trace EVM).
+///
+/// Asserts that the factory leaves the CIP-64 store off — the invariant the loose-EVM tests
+/// rest on. Were `build_evm` ever to default it on, hand-flagged test EVMs would keep passing
+/// while every production trace/replay double-stored; building through the factory pins the
+/// default itself.
+#[cfg(test)]
+fn make_loose_test_evm(
+    inspecting: bool,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector, PrecompilesMap> {
+    let factory = CeloEvmFactory::default();
+    let db = revm::database::InMemoryDB::default();
+    let mut env = EvmEnv::<OpSpecId>::default();
+    env.cfg_env.chain_id = 42220;
+    env.cfg_env.spec = OpSpecId::FJORD;
+    let evm = if inspecting {
+        factory.create_evm_with_inspector(db, env, revm::inspector::NoOpInspector {})
+    } else {
+        factory.create_evm(db, env)
+    };
+    assert!(
+        !evm.cip64_store_enabled,
+        "factory-built EVMs must leave CIP-64 receipt-data storage disabled"
+    );
+    evm
 }
 
 /// Registers `fee_currency` in the EVM's fee-currency context at `rate` units per CELO.
@@ -516,8 +547,8 @@ fn make_test_evm(
 /// Pinning `updated_at_block` to the EVM's block number keeps `load_fee_currency_context`
 /// from reloading the context from the (empty) test state on the first transaction.
 #[cfg(test)]
-fn register_fee_currency(
-    evm: &mut CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector>,
+fn register_fee_currency<P>(
+    evm: &mut CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector, P>,
     fee_currency: Address,
     rate: u64,
 ) {
@@ -997,8 +1028,7 @@ mod tests {
     fn test_loose_evm_replays_erc20_fee_calls_without_storing() {
         use revm::state::AccountInfo;
 
-        let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
-        evm.cip64_store_enabled = false; // loose RPC EVM (as `create_evm*` produces)
+        let mut evm = make_loose_test_evm(false);
 
         let caller = Address::with_last_byte(0x01);
         evm.db_mut().insert_account_info(
@@ -1038,9 +1068,7 @@ mod tests {
         use revm::state::AccountInfo;
 
         for inspecting in [false, true] {
-            let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
-            evm.cip64_store_enabled = false; // loose RPC EVM (as `create_evm*` produces)
-            evm.set_inspector_enabled(inspecting);
+            let mut evm = make_loose_test_evm(inspecting);
 
             let caller = Address::with_last_byte(0x01);
             evm.db_mut().insert_account_info(
