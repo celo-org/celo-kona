@@ -345,12 +345,12 @@ where
                 // receipt-building executors set `cip64_store_enabled` (see its field docs);
                 // confining the store to them keeps the slot-occupied panic in `store_cip64_info`
                 // a true signal of an executor double-store bug rather than a false positive on
-                // RPC replay. `base_fee_check_enabled` is redundant given that flag, but keeps a
-                // call-style simulation EVM (`disable_base_fee`) from storing should the flag ever
-                // be set on one.
+                // RPC replay. The store must NOT additionally require the base-fee check:
+                // `eth_simulateV1` (default `validation=false`) disables that check on a
+                // receipt-building executor, and `build_cip64_receipt` asserts that a successful
+                // CIP-64 tx has stored data — skipping the store there panics at receipt build.
                 let cip64_info = self.inner.inner.0.ctx.tx.cip64_tx_info.take();
-                if base_fee_check_enabled
-                    && self.cip64_store_enabled
+                if self.cip64_store_enabled
                     && let Some(cip64_info) = cip64_info
                 {
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
@@ -504,9 +504,7 @@ fn make_test_evm(
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
-        // Tests here exercise the sequencing-path blocklist behaviour, so enable it. The
-        // RPC-simulation test additionally disables the base-fee check, which the
-        // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
+        // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
         blocklist_enabled: true,
         // Default to the receipt-building executor path; loose-EVM tests flip this off.
         cip64_store_enabled: true,
@@ -797,16 +795,19 @@ mod tests {
         assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
     }
 
-    /// Verify that base-fee-disabled RPC simulation (eth_call / eth_estimateGas) never stores
-    /// CIP-64 receipt data even on a store-enabled EVM: the `base_fee_check_enabled` guard in
-    /// `transact_raw` skips the store on those paths, which never build receipts. (The
-    /// trace/replay paths are covered by [`test_loose_evm_replays_cip64_txs_without_storing`].)
+    /// Regression: a store-enabled executor with the base-fee check DISABLED must still store
+    /// CIP-64 receipt data. This is the `eth_simulateV1` shape (default `validation=false`):
+    /// reth builds a receipt-building block executor via `create_block_builder` →
+    /// `create_executor` but sets `disable_base_fee`, and `build_cip64_receipt` asserts that a
+    /// successful CIP-64 tx has stored data — a base-fee conjunct on the store gate would panic
+    /// there. Call-style simulation (`eth_call` / `eth_estimateGas`) uses loose store-disabled
+    /// EVMs and is covered by [`test_loose_evm_replays_cip64_txs_without_storing`].
     ///
-    /// The handler still populates `cip64_tx_info` during simulation for
-    /// native-fee CIP-64 txs (`feeCurrency == 0x0`), so this guard lives in
-    /// `transact_raw`, not the handler.
+    /// The handler populates `cip64_tx_info` for native-fee CIP-64 txs
+    /// (`feeCurrency == 0x0`) even when the base fee is disabled, so the tx
+    /// below reaches the store gate.
     #[test]
-    fn test_cip64_info_not_stored_during_rpc_simulation() {
+    fn test_cip64_info_stored_when_base_fee_check_disabled() {
         use revm::state::AccountInfo;
 
         let blocklist = FeeCurrencyBlocklist::default();
@@ -819,21 +820,17 @@ mod tests {
             AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
         );
 
-        // RPC simulation mode.
+        // eth_simulateV1 validation=false mode.
         evm.ctx_mut().cfg.disable_base_fee = true;
 
-        // Native-fee CIP-64 tx (`fee_currency = 0x0`): the handler sets
-        // `cip64_tx_info = Some(..)` on this path even when base fee is
-        // disabled, so the only line of defense against polluting the slot is
-        // the `base_fee_check_enabled` gate in `transact_raw`.
         let mut tx = make_cip64_tx(Address::ZERO);
         tx.fee_currency = Some(Address::ZERO);
         let result = evm.transact_raw(tx);
         assert!(result.is_ok(), "simulated tx should succeed: {result:?}");
 
         assert!(
-            evm.cip64_storage.pop_cip64_receipt_data().is_none(),
-            "RPC simulation must not store CIP-64 receipt data"
+            evm.cip64_storage.pop_cip64_receipt_data().is_some(),
+            "store-enabled simulate executor must store CIP-64 receipt data"
         );
     }
 
