@@ -50,6 +50,7 @@ GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
     --authrpc.port 0 \
     --port 0 \
     --disable-discovery \
+    --ipcdisable \
     --color never \
     >>"$NODE_LOG" 2>&1 &
 NODE_PID=$!
