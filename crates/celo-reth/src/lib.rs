@@ -296,9 +296,8 @@ where
     /// Seeds a mid-block call simulation EVM with the captured block-start fee currency context.
     ///
     /// The context's `updated_at_block` stamp makes the CIP-64 handler skip its lazy per-block
-    /// load only while the EVM's block environment still matches the captured block, so
-    /// `debug_traceCallMany` bundles simulated as follow-up blocks fall back to loading their
-    /// context from the simulated state.
+    /// load only while the EVM's block environment still matches the captured block; the debug
+    /// API re-captures per simulated block (e.g. per `debug_traceCallMany` bundle).
     fn seed_block_replay_ctx<DB, I>(&self, evm: &mut EvmFor<Self, DB, I>, ctx: &(dyn Any + Send))
     where
         DB: Database,
