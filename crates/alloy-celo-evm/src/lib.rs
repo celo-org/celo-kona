@@ -173,9 +173,9 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). It is flipped to `true` only by
-    /// `CeloEvmConfig::builder_for_next_block` — the one entry point reth routes sequencing
-    /// through (the payload builder), and which import/derivation deliberately bypass.
+    /// import/derivation executor and RPC). It is flipped to `true` only by the sequencing-side
+    /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
+    /// its dormant post-exec sibling — which import/derivation deliberately bypass.
     blocklist_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.

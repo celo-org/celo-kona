@@ -305,10 +305,11 @@ where
 
     /// Builds a block builder for the next block, i.e. the **sequencing** path: reth routes the
     /// payload builder through this method, while block import and derivation re-execution build
-    /// their EVMs directly via `evm_with_env` + `create_executor` and never reach it. This is the
-    /// one place that enables the fee currency blocklist (`CeloEvm::with_blocklist_enabled`), so
-    /// blocklist reads/writes are confined to sequencing — import and derivation leave the shared
-    /// blocklist untouched. Otherwise identical to the default `ConfigureEvm` implementation.
+    /// their EVMs directly via `evm_with_env` + `create_executor` and never reach it. Together
+    /// with the dormant `post_exec_builder_for_next_block`, this is where the fee currency
+    /// blocklist is enabled (`CeloEvm::with_blocklist_enabled`), so blocklist reads/writes are
+    /// confined to sequencing — import and derivation leave the shared blocklist untouched.
+    /// Otherwise identical to the default `ConfigureEvm` implementation.
     fn builder_for_next_block<'a, DB: Database + 'a>(
         &'a self,
         db: &'a mut revm::database::State<DB>,
