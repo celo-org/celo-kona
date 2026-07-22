@@ -20,23 +20,6 @@ if [[ ! -x "$CELO_RETH" ]]; then
     exit 1
 fi
 
-# Pick a free port for our own node rather than clearing a fixed one: a fixed
-# port could hold the runner's shared node (its HTTP_PORT is overridable), and
-# a foreign listener must not be killed nor answer our readiness probe.
-SHARED_PORT="${ETH_RPC_URL##*:}"
-HTTP_PORT=
-for candidate in 8547 8548 8549 8550; do
-    if [ "$candidate" != "$SHARED_PORT" ] && ! lsof -ti :"$candidate" &>/dev/null; then
-        HTTP_PORT=$candidate
-        break
-    fi
-done
-if [ -z "$HTTP_PORT" ]; then
-    echo "FAIL: no free HTTP port for the interval-mining node"
-    exit 1
-fi
-AUTH_PORT=$((HTTP_PORT + 200))
-P2P_PORT=$((HTTP_PORT + 22000))
 DATADIR=$(mktemp -d)
 NODE_LOG="$DATADIR/celo-reth.log"
 NODE_PID=
@@ -54,26 +37,44 @@ GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
 
 "$CELO_RETH" init --chain "$GENESIS_JSON" --datadir "$DATADIR" &>"$NODE_LOG"
 
+# All ports are OS-assigned (port 0), so this node cannot collide with the
+# runner's shared node or any other listener. The HTTP port is read back from
+# the node log.
 "$CELO_RETH" node --dev \
     --dev.block-time 2s \
     --chain "$GENESIS_JSON" \
     --datadir "$DATADIR" \
     --http \
-    --http.port "$HTTP_PORT" \
+    --http.port 0 \
     --http.api eth,web3,net,admin,debug \
-    --authrpc.port "$AUTH_PORT" \
-    --port "$P2P_PORT" \
+    --authrpc.port 0 \
+    --port 0 \
     --disable-discovery \
+    --color never \
     >>"$NODE_LOG" 2>&1 &
 NODE_PID=$!
 
-export ETH_RPC_URL="http://127.0.0.1:$HTTP_PORT"
+HTTP_PORT=
 for _ in {1..60}; do
     if ! kill -0 "$NODE_PID" 2>/dev/null; then
         echo "FAIL: interval-mining celo-reth exited unexpectedly"
         tail -40 "$NODE_LOG"
         exit 1
     fi
+    HTTP_PORT=$(grep -m1 'RPC HTTP server started' "$NODE_LOG" | grep -oE '[0-9]+$' || true)
+    if [ -n "$HTTP_PORT" ]; then
+        break
+    fi
+    sleep 0.5
+done
+if [ -z "$HTTP_PORT" ]; then
+    echo "FAIL: interval-mining celo-reth did not report its RPC port"
+    tail -40 "$NODE_LOG"
+    exit 1
+fi
+
+export ETH_RPC_URL="http://127.0.0.1:$HTTP_PORT"
+for _ in {1..60}; do
     if cast block-number &>/dev/null; then
         break
     fi
