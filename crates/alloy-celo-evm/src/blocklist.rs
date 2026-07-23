@@ -1,9 +1,11 @@
 //! Fee currency blocklist for CIP-64 transactions.
 //!
 //! Provides a thread-safe blocklist mechanism for fee currencies that cause execution
-//! errors. When a CIP-64 fee-currency debit/credit fails during execution, the currency
-//! is added here; the sequencing-time payload filter then skips transactions using that
-//! currency, avoiding repeated execution failures.
+//! errors. When a CIP-64 fee-currency debit/credit fails during execution with a
+//! *currency-level* fault (halt / EVM call failure — contract reverts are sender/state
+//! faults and never blocklist), the currency is added here; the sequencing-time payload
+//! filter then skips transactions using that currency, avoiding repeated execution
+//! failures.
 //!
 //! This is a *local sequencing heuristic*. It is populated inside `CeloEvm::transact_raw()`,
 //! but only for EVMs built on the sequencing path (`blocklist_enabled`); block import and
@@ -38,10 +40,12 @@ struct BlocklistState {
 
 /// Shared, thread-safe fee currency blocklist.
 ///
-/// When a CIP-64 transaction using a particular fee currency fails its fee-currency
-/// debit/credit during EVM execution on the sequencing path, the currency is added to the
-/// blocklist. The sequencing-time payload filter (`CeloFeeCurrencyFilter`) then skips
-/// subsequent transactions using that currency before they reach the executor.
+/// When a CIP-64 transaction's fee-currency debit/credit fails with a *currency-level*
+/// fault (halt / EVM call failure) during EVM execution on the sequencing path, the
+/// currency is added to the blocklist. Contract *reverts* (e.g. an underfunded sender's
+/// `ERC20: transfer amount exceeds balance`) are sender/state faults and never blocklist.
+/// The sequencing-time payload filter (`CeloFeeCurrencyFilter`) then skips subsequent
+/// transactions using a blocked currency before they reach the executor.
 #[derive(Debug, Clone, Default)]
 pub struct FeeCurrencyBlocklist {
     inner: Arc<Mutex<BlocklistState>>,

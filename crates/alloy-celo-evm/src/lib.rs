@@ -18,7 +18,8 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_DEBIT_ERROR_PREFIX,
+        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_CURRENCY_REVERT_MARKER,
+        FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
@@ -167,8 +168,10 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
     ///
     /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls failed while the node was building a block from its own mempool, so the sequencer
-    /// can skip them for a while. It must therefore only be touched on the sequencing path.
+    /// calls failed with a currency-level fault (halt / EVM call failure — contract *reverts*
+    /// are sender/state faults and never blocklist) while the node was building a block from
+    /// its own mempool, so the sequencer can skip them for a while. It must therefore only be
+    /// touched on the sequencing path.
     /// Block import and derivation re-execute already-canonical blocks and must produce identical
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
     ///
@@ -347,12 +350,39 @@ where
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
-                    tracing::warn!(
-                        target: "celo",
-                        "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
-                    );
-                    let block_timestamp: u64 = self.ctx().block.timestamp.to();
-                    self.blocklist.block_currency(fc, block_timestamp);
+                    if err_msg.contains(FEE_CURRENCY_REVERT_MARKER) {
+                        // The fee-currency contract *reverted* the debit/credit — a
+                        // sender/state fault, canonically `ERC20: transfer amount
+                        // exceeds balance` from an underfunded sender that slipped
+                        // past pool admission. The tx is dropped from the payload
+                        // either way; blocklisting here would let a single
+                        // underfunded sender suppress an entire healthy currency
+                        // for the whole eviction window. op-geth never blocklists
+                        // this case (its pool balance-filter keeps such txs from
+                        // the builder), so blocklisting broke sequencer parity.
+                        tracing::warn!(
+                            target: "celo",
+                            "fee-currency debit/credit reverted for {fc}: {e} — \
+                             dropping tx without blocklisting the currency"
+                        );
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "debit_credit_reverted"
+                        )
+                        .increment(1);
+                    } else {
+                        // Halt (e.g. the debit exhausted its gas budget) or an
+                        // EVM-level call failure — a genuine currency fault:
+                        // blocklist so the payload builder stops retrying every
+                        // tx of this currency.
+                        tracing::warn!(
+                            target: "celo",
+                            "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
+                        );
+                        let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                        self.blocklist.block_currency(fc, block_timestamp);
+                    }
                 } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
                     // The fee currency is not in the per-block fee-currency context: its
                     // directory config could not be read, so it was dropped while loading
@@ -712,6 +742,84 @@ mod tests {
         let result = evm.transact_raw(tx);
         assert!(result.is_err(), "Expected tx to fail");
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
+    }
+
+    /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
+    /// is registered in the per-block context and backed by `code` at the
+    /// token address, so the `debitGasFees` system call genuinely executes
+    /// that bytecode. Returns the resulting error, stringified.
+    fn transact_cip64_with_token_code(
+        blocklist: FeeCurrencyBlocklist,
+        fc: Address,
+        code: &'static [u8],
+    ) -> String {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+        use revm::state::{AccountInfo, Bytecode};
+
+        let mut evm = make_test_evm(blocklist);
+        // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(code))),
+        );
+        // Register the currency in the per-block fee-currency context, pinned
+        // to the current block so the handler uses it as-is instead of
+        // rebuilding it from (empty) directory state.
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(1), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        let block_number = evm.ctx_mut().block.number;
+        evm.inner.fee_currency_context =
+            celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+        let mut tx = make_cip64_tx(fc);
+        // Cover the standard intrinsic plus the currency's extra intrinsic gas.
+        tx.op_tx.base.gas_limit = 200_000;
+        let result = evm.transact_raw(tx);
+        format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
+    }
+
+    /// A fee-currency contract that *reverts* the debit — canonically an
+    /// underfunded sender's `ERC20: transfer amount exceeds balance` — is a
+    /// sender/state fault, not a currency fault. The tx is dropped from the
+    /// payload either way, but the currency must NOT be blocklisted:
+    /// otherwise a single underfunded sender suppresses every tx of a healthy
+    /// currency for the whole eviction window while this node sequences.
+    #[test]
+    fn test_debit_revert_does_not_blocklist_currency() {
+        let fc = Address::with_last_byte(0xD0);
+        let blocklist = FeeCurrencyBlocklist::default();
+        // PUSH1 0, PUSH1 0, REVERT — the debit call reverts.
+        let err =
+            transact_cip64_with_token_code(blocklist.clone(), fc, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert!(
+            !blocklist.is_blocked(fc),
+            "a debit revert is a sender/state fault and must not blocklist the currency; \
+             got error: {err}"
+        );
+    }
+
+    /// A fee-currency contract that *halts* the debit (burns through the
+    /// debit call's gas budget) is a genuine currency fault and must still be
+    /// blocklisted.
+    #[test]
+    fn test_debit_halt_still_blocklists_currency() {
+        let fc = Address::with_last_byte(0xD1);
+        let blocklist = FeeCurrencyBlocklist::default();
+        // JUMPDEST, PUSH1 0, JUMP — infinite loop, exhausts the debit budget → OOG halt.
+        let err = transact_cip64_with_token_code(blocklist.clone(), fc, &[0x5b, 0x60, 0x00, 0x56]);
+        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert!(
+            blocklist.is_blocked(fc),
+            "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
+        );
     }
 
     /// A CIP-64 tx in a fee currency missing from the per-block context fails
