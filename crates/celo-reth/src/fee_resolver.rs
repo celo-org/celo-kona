@@ -12,9 +12,13 @@
 //!   raw-RLP `debug_traceBlock` head extensions. The parent's post-state *is* such a block's
 //!   block-start state, so the context still derives purely from chain state; only the env is
 //!   synthesized, like the sequencer's next-block env, with the child timestamp guessed as parent +
-//!   1s (Celo's block time). The guess can only matter for spec and base-fee-floor selection
-//!   exactly at a hardfork boundary: exchange rates are contract state, and EIP-1559 base fees
-//!   don't depend on the child timestamp.
+//!   1s — exact for consensus children given Celo's 1s block time, so spec and base-fee selection
+//!   match the real header even at hardfork boundaries. The synthesized env also carries the
+//!   parent's `prevrandao`/`coinbase`/`gas_limit` rather than the child's; like the raw-post-state
+//!   caveat below, parity relies on the directory/oracle getters being storage-driven (true today —
+//!   they read no env opcodes). Note a fallback-resolved context is memoized under the same
+//!   `(number, parent)` key the canonical path uses, so once the child becomes canonical, traces
+//!   reuse it from the memo instead of re-resolving under the real header env.
 //!
 //! Anything else — unknown heights, forged `(number, parent)` pairs, parents whose state is
 //! unavailable (pruned, or a non-canonical sidechain block real providers serve no historical
@@ -42,7 +46,9 @@ use crate::celo_next_block_base_fee;
 ///
 /// Cheap to clone; wired onto the shared [`CeloEvmFactory`] at node build time. Memoizes nothing
 /// itself — `CeloEvm::transact_raw` caches each resolved context in the factory-shared memo, so
-/// `resolve` runs at most once per block per eviction window.
+/// `resolve` typically runs once per block; concurrent first-touch EVMs (e.g. prewarm workers)
+/// can race the memo and duplicate the work harmlessly (the value is a pure function of the
+/// key).
 #[derive(Debug, Clone)]
 pub struct ProviderFeeContextResolver<Provider, ChainSpec> {
     provider: Provider,
@@ -169,14 +175,15 @@ mod tests {
 
     /// Canonical path: a stored block at the height whose parent matches resolves, and the
     /// context is stamped with the requested block number (the property the memo key and the
-    /// handler's `updated_at_block` short-circuit both rest on).
+    /// handler's `updated_at_block` short-circuit both rest on). The parent deliberately lacks a
+    /// base fee, which makes the fallback unresolvable — so a successful resolve proves the
+    /// canonical branch ran, not the fallback (both stamp the same block number otherwise).
     #[test]
     fn canonical_block_resolves_under_its_own_env() {
         let child_hash = B256::repeat_byte(3);
-        let resolver = resolver_with_headers(&[
-            (PARENT, header(9, GRANDPARENT)),
-            (child_hash, header(10, PARENT)),
-        ]);
+        let mut parent = header(9, GRANDPARENT);
+        parent.base_fee_per_gas = None;
+        let resolver = resolver_with_headers(&[(PARENT, parent), (child_hash, header(10, PARENT))]);
         let ctx = resolver.resolve(10, PARENT).expect("canonical pair must resolve");
         assert_eq!(ctx.updated_at_block, Some(U256::from(10)));
     }
@@ -204,6 +211,16 @@ mod tests {
     fn parent_mismatch_refuses() {
         let child_hash = B256::repeat_byte(3);
         let resolver = resolver_with_headers(&[(child_hash, header(10, GRANDPARENT))]);
+        assert!(resolver.resolve(10, PARENT).is_none());
+    }
+
+    /// The fallback needs a computable next-block base fee: a parent without one (no canonical
+    /// child exists either) must refuse rather than resolve under a made-up env.
+    #[test]
+    fn fallback_refuses_without_computable_next_base_fee() {
+        let mut parent = header(9, GRANDPARENT);
+        parent.base_fee_per_gas = None;
+        let resolver = resolver_with_headers(&[(PARENT, parent)]);
         assert!(resolver.resolve(10, PARENT).is_none());
     }
 

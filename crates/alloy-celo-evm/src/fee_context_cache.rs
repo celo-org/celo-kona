@@ -57,7 +57,7 @@ use alloy_primitives::B256;
 use celo_revm::FeeCurrencyContext;
 use spin::Mutex;
 
-/// Resolves the block-start fee-currency context for a block from trusted (canonical-chain) state.
+/// Resolves the block-start fee-currency context for a block from chain state the node stores.
 ///
 /// Consulted by [`CeloEvm::transact_raw`](crate::CeloEvm) on a [`FeeCurrencyContextCache`] miss
 /// (see the module docs). Implementations **must** derive the returned context solely from
@@ -66,8 +66,8 @@ use spin::Mutex;
 /// (e.g. a forged `debug_traceBlock` payload).
 pub trait FeeContextResolver: Send + Sync {
     /// Returns the block-start [`FeeCurrencyContext`] for the block at `block_number` whose parent
-    /// is `parent_hash`, or `None` if it cannot be resolved from canonical state (unknown or
-    /// non-canonical block, pruned history, provider error).
+    /// is `parent_hash`, or `None` if it cannot be resolved from stored chain state (unknown
+    /// block or parent, pruned history, provider error).
     fn resolve(&self, block_number: u64, parent_hash: B256) -> Option<FeeCurrencyContext>;
 }
 

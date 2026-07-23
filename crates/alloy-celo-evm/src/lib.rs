@@ -380,8 +380,8 @@ where
                             return Err(EVMError::Custom(format!(
                                 "CIP-64 block-start fee context unresolved for block {number}: \
                                  refusing to load current-state exchange rates (violates the \
-                                 block-start-rates rule); ensure the node has this block's \
-                                 canonical state and a fee-context resolver wired"
+                                 block-start-rates rule); ensure the node stores this block's \
+                                 parent state and has a fee-context resolver wired"
                             )));
                         }
                     }
@@ -556,8 +556,8 @@ pub struct CeloEvmFactory {
     /// [`context_resolver`](Self::context_resolver) on a miss. See [`fee_context_cache`].
     /// An implementation detail, not configuration — `pub(crate)`, wired by `Default`.
     pub(crate) fee_context_cache: FeeCurrencyContextCache,
-    /// Trusted resolver computing a block's block-start context from canonical state on a memo
-    /// miss. Wired via [`with_context_resolver`](Self::with_context_resolver) by the std-only
+    /// Trusted resolver computing a block's block-start context from stored chain state on a
+    /// memo miss. Wired via [`with_context_resolver`](Self::with_context_resolver) by the std-only
     /// node layer (`celo-reth`); `None` on no-std consumers (kona).
     pub(crate) context_resolver: Option<Arc<dyn FeeContextResolver>>,
 }
@@ -965,9 +965,9 @@ mod tests {
         );
     }
 
-    /// On a memo miss, `transact_raw` consults the trusted resolver, seeds its (canonical-derived)
-    /// context, and memoizes it so the block's later per-tx EVMs reuse it without re-consulting
-    /// the resolver.
+    /// On a memo miss, `transact_raw` consults the trusted resolver, seeds its
+    /// (chain-state-derived) context, and memoizes it so the block's later per-tx EVMs reuse it
+    /// without re-consulting the resolver.
     #[test]
     fn test_resolver_fills_memo_on_miss() {
         let fc = Address::with_last_byte(0xAA);
@@ -1006,7 +1006,8 @@ mod tests {
 
     /// With no resolver wired (or one that returns `None`) and an empty memo, a pinning-enabled
     /// EVM at block > 0 must REFUSE rather than fall back to current-state (mid-block) rates —
-    /// a `None` means a non-canonical/forged block, pruned state, or a misconfigured node, none
+    /// a `None` means a forged/unknown `(number, parent)` pair, pruned state, or a misconfigured
+    /// node, none
     /// of which may silently trace against mid-block rates.
     #[test]
     fn test_unresolved_block_start_context_refuses() {

@@ -165,9 +165,10 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
     }
 
     /// Creates a new [`CeloEvmConfig`] with the given chain spec, shared fee currency blocklist,
-    /// and an optional block-start fee-context resolver (see [`crate::fee_resolver`]) letting
-    /// reth's per-tx `debug_trace*` replay EVMs pin CIP-64 fees to block-start rates. Consensus
-    /// never consults it; pass `None` for consumers that don't trace.
+    /// and an optional block-start fee-context resolver (see [`crate::fee_resolver`]) that lets
+    /// loose replay EVMs — `debug_trace*`/`trace_*` replay, engine-tree prewarming, next-block
+    /// simulations — pin CIP-64 fees to block-start rates. Consensus never consults it; pass
+    /// `None` for consumers that run no such EVMs (kona).
     pub fn celo_with_blocklist_and_resolver(
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,

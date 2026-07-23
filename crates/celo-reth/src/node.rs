@@ -555,8 +555,9 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        // Provider-backed resolver letting reth's per-tx `debug_trace*` replay EVMs pin CIP-64
-        // fees to block-start rates; consensus never consults it. See `crate::fee_resolver`.
+        // Provider-backed resolver pinning CIP-64 fees to block-start rates on loose replay
+        // EVMs: `debug_trace*`/`trace_*` replay, engine-tree prewarming, and next-block
+        // simulations; consensus never consults it. See `crate::fee_resolver`.
         let resolver: Arc<dyn FeeContextResolver> =
             Arc::new(ProviderFeeContextResolver::new(ctx.provider().clone(), ctx.chain_spec()));
         Ok(CeloEvmConfig::celo_with_blocklist_and_resolver(
