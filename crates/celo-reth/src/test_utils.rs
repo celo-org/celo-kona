@@ -11,9 +11,33 @@ use reth_transaction_pool::PoolTransaction;
 pub(crate) type TestInnerPoolTx =
     OpPooledTransaction<crate::primitives::CeloTransactionSigned, CeloPooledTransaction>;
 
-/// Create a test [`CeloPoolTx`] with configurable fields.
+/// Create a test [`CeloPoolTx`] with configurable fields and nonce 0.
 pub(crate) fn make_test_tx(
     fee_currency: Option<Address>,
+    gas_limit: u64,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+    sender: Address,
+) -> CeloPoolTx {
+    make_test_tx_with_nonce(
+        fee_currency,
+        0,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        sender,
+    )
+}
+
+/// Create a test [`CeloPoolTx`] with configurable fields.
+///
+/// The signature is a fixed constant (`Signature::test_signature`), so the tx
+/// hash is derived from the payload fields alone — two txs built with identical
+/// arguments collide; vary at least one field per tx when inserting several
+/// into one pool.
+pub(crate) fn make_test_tx_with_nonce(
+    fee_currency: Option<Address>,
+    nonce: u64,
     gas_limit: u64,
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
@@ -23,7 +47,7 @@ pub(crate) fn make_test_tx(
         || {
             let eip1559 = alloy_consensus::TxEip1559 {
                 chain_id: 42220,
-                nonce: 0,
+                nonce,
                 gas_limit,
                 max_fee_per_gas,
                 max_priority_fee_per_gas,
@@ -40,7 +64,7 @@ pub(crate) fn make_test_tx(
         |fc| {
             let cip64 = TxCip64 {
                 chain_id: 42220,
-                nonce: 0,
+                nonce,
                 gas_limit,
                 max_fee_per_gas,
                 max_priority_fee_per_gas,

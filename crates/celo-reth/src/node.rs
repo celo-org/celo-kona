@@ -3,7 +3,7 @@
 use crate::{
     CeloEvmConfig, celo_next_block_base_fee,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
-    pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, PendingFcCostsFn},
+    pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, PooledFcCostsFn},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
@@ -227,10 +227,10 @@ where
             celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
         let minimum_priority_fee = ctx.config().txpool.minimum_priority_fee.unwrap_or(1);
 
-        // The validator's live pending-expenditure reader. The validator is
+        // The validator's live pooled-expenditure reader. The validator is
         // constructed before the pool, so this is filled in right after the
         // pool exists below; the validator reads it through the `OnceLock`.
-        let pending_fc_costs: std::sync::Arc<std::sync::OnceLock<PendingFcCostsFn>> =
+        let pooled_fc_costs: std::sync::Arc<std::sync::OnceLock<PooledFcCostsFn>> =
             std::sync::Arc::new(std::sync::OnceLock::new());
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
@@ -332,7 +332,7 @@ where
                 spec_fn,
                 minimum_priority_fee,
                 tx_fee_cap,
-                pending_fc_costs.clone(),
+                pooled_fc_costs.clone(),
             )
         });
 
@@ -342,33 +342,10 @@ where
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
 
-        // Wire the validator's live pending-expenditure reader now that the pool
-        // exists. Mirrors op-geth's `ExistingExpenditure`/`ExistingCost`
-        // callbacks: sum the sender's pending same-currency FC costs, and report
-        // the cost of the pending tx at the validated tx's nonce so a
-        // replacement only counts its fee bump.
-        {
-            use alloy_consensus::Transaction as _;
-            use reth_transaction_pool::TransactionPool;
-            let pool = transaction_pool.clone();
-            let read: PendingFcCostsFn = std::sync::Arc::new(move |sender, fc, nonce| {
-                let mut spent = alloy_primitives::U256::ZERO;
-                let mut prev_at_nonce = alloy_primitives::U256::ZERO;
-                for pooled in pool.get_pending_transactions_by_sender(sender) {
-                    let tx = &pooled.transaction;
-                    if tx.fee_currency() == Some(fc) {
-                        let cost = tx.fc_gas_cost();
-                        spent = spent.saturating_add(cost);
-                        if tx.nonce() == nonce {
-                            prev_at_nonce = cost;
-                        }
-                    }
-                }
-                (spent, prev_at_nonce)
-            });
-            // Infallible: this is the only `set` call and it runs once.
-            let _ = pending_fc_costs.set(read);
-        }
+        // Wire the validator's live pooled-expenditure reader now that the pool
+        // exists (see `pooled_fc_costs_reader` for the accounting semantics).
+        // Infallible: this is the only `set` call and it runs once.
+        let _ = pooled_fc_costs.set(crate::pool::pooled_fc_costs_reader(transaction_pool.clone()));
 
         // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
         // is deregistered from the FeeCurrencyDirectory.
