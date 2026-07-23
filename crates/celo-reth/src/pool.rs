@@ -920,7 +920,8 @@ enum CeloPoolRejection {
         sender: Address,
         required: U256,
         balance: U256,
-        /// True when rejection is due to cumulative cost across pending txs.
+        /// True when rejection is due to cumulative cost across the sender's
+        /// pooled txs (all subpools; see [`PooledFcCostsFn`]).
         cumulative: bool,
     },
     /// The fee cap (in FC terms) is below the base fee floor converted to FC.
@@ -3056,8 +3057,10 @@ mod tests {
 
             pool.prune_transactions(vec![mined_hash]);
 
-            // The mined 10_000 no longer counts: 15_000 + 10_000 ≤ 25_000.
-            let tx = make_test_tx_with_nonce(Some(fc), 2, 100, 100, 10, sender);
+            // The mined 10_000 no longer counts: 15_000 + 9_000 ≤ 25_000.
+            // (gas 90, not 100, so this tx's hash differs from `blocked`'s —
+            // `make_test_tx_with_nonce` derives the hash from the fields alone.)
+            let tx = make_test_tx_with_nonce(Some(fc), 2, 90, 100, 10, sender);
             pool.add_transaction(TransactionOrigin::External, tx)
                 .await
                 .expect("tx must be admitted once the mined cost is freed");
@@ -3133,6 +3136,50 @@ mod tests {
 
             // While one that fits alongside it is admitted: 15_000 + 10_000 ≤ 25_000.
             let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            pool.add_transaction(TransactionOrigin::External, tx).await.expect("fits");
+        }
+
+        /// A base-fee-parked same-currency tx counts toward expenditure — the
+        /// motivation for summing all subpools: op-geth keeps below-base-fee
+        /// txs in the pending list its `TotalCostFor` sums, so a pending-only
+        /// read would let parked obligations go uncounted and over-admit.
+        #[tokio::test]
+        async fn basefee_parked_txs_count_toward_expenditure() {
+            use reth_transaction_pool::{BlockInfo, TransactionPoolExt};
+
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+
+            // Admit a tx (15_000) at max_fee 100, then raise the pool's
+            // enforced base fee above it: the tx is demoted to the basefee
+            // subpool.
+            let parked = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
+            pool.add_transaction(TransactionOrigin::External, parked).await.expect("admitted");
+            pool.set_block_info(BlockInfo {
+                last_seen_block_hash: B256::ZERO,
+                last_seen_block_number: 0,
+                block_gas_limit: 30_000_000,
+                pending_basefee: 1_000,
+                pending_blob_fee: None,
+            });
+            assert_eq!(
+                pool.pool_size().basefee,
+                1,
+                "tx must be parked in the basefee subpool for this test to mean anything"
+            );
+
+            // A tx clearing the base fee must still respect the parked
+            // obligation: 15_000 + 11_000 > 25_000.
+            let tx = make_test_tx_with_nonce(Some(fc), 1, 10, 1_100, 1_050, sender);
+            let err = pool
+                .add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect_err("base-fee-parked obligation must count toward expenditure");
+            assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
+
+            // While one that fits alongside it is admitted: 15_000 + 10_000 ≤ 25_000.
+            let tx = make_test_tx_with_nonce(Some(fc), 1, 10, 1_000, 950, sender);
             pool.add_transaction(TransactionOrigin::External, tx).await.expect("fits");
         }
     }
