@@ -16,11 +16,14 @@
 //! parent_hash)` and memoized in the [`FeeCurrencyContextCache`] (shared via
 //! [`CeloEvmFactory`](crate::CeloEvmFactory)) so the resolver runs once per block, not once per
 //! transaction. The resolver — wired only by the std-only node layer (`celo-reth`), backed by the
-//! state provider — computes the context **solely from canonical-chain state**: canonical header
-//! at `block_number`, parent verified, state loaded at `parent_hash`, directory/oracle view calls
-//! run under that block's env. Hence no RPC caller can influence a value (a forged
-//! `debug_traceBlock` body cannot change a rate), historical blocks resolve the same as recent
-//! ones, and — the resolver path being the memo's only writer — there is nothing to poison.
+//! state provider — computes the context **solely from stored chain state**: a canonical block at
+//! `block_number` with a matching parent resolves under its own env, and a not-yet-canonical
+//! *child of a known parent* (prewarming, next-block bundles, head-extension traces) resolves
+//! from that parent's post-state — which IS its block-start state — under a synthesized
+//! next-block env (see `celo-reth`'s `fee_resolver` docs). Hence no RPC caller can influence a
+//! value (a forged `debug_traceBlock` body cannot change a rate), historical blocks resolve the
+//! same as recent ones, and — the resolver path being the memo's only writer — there is nothing
+//! to poison.
 //!
 //! The key pairs the number with `parent_hash` (header fields like number/timestamp/prevrandao
 //! can collide across unsafe-head reorgs; reorg siblings get distinct keys), so an inconsistent
@@ -40,10 +43,10 @@
 //!   disabled): `eth_call`/`eth_estimateGas`/`debug_traceCall` run at end-of-block state where the
 //!   rates they load are the intended semantics.
 //! - **Unresolvable ⇒ refuse.** When the block-start context cannot be obtained — no resolver
-//!   wired, failing `Database::block_hash`, non-canonical/forged block, pruned state —
-//!   `transact_raw` errors rather than fall back to mid-block rates: the block-start-rates rule is
-//!   absolute and a mid-block per-tx EVM cannot reconstruct block-start rates from its own state.
-//!   Genesis is the one benign exception: block 0 carries no transactions, so its state *is*
+//!   wired, failing `Database::block_hash`, a forged/unknown `(number, parent)` pair, pruned state
+//!   — `transact_raw` errors rather than fall back to mid-block rates: the block-start-rates rule
+//!   is absolute and a mid-block per-tx EVM cannot reconstruct block-start rates from its own
+//!   state. Genesis is the one benign exception: block 0 carries no transactions, so its state *is*
 //!   block-start and the fresh load is already correct.
 //!
 //! The real fix is upstream — reth reusing one EVM per block in `debug_trace*` — after which the
@@ -58,9 +61,9 @@ use spin::Mutex;
 ///
 /// Consulted by [`CeloEvm::transact_raw`](crate::CeloEvm) on a [`FeeCurrencyContextCache`] miss
 /// (see the module docs). Implementations **must** derive the returned context solely from
-/// canonical-chain state for the given `(block_number, parent_hash)` — never from any
-/// caller-supplied block body — so that a value can never be influenced by an RPC caller (e.g. a
-/// forged `debug_traceBlock` payload).
+/// chain state the node already stores for the given `(block_number, parent_hash)` — never from
+/// any caller-supplied block body — so that a value can never be influenced by an RPC caller
+/// (e.g. a forged `debug_traceBlock` payload).
 pub trait FeeContextResolver: Send + Sync {
     /// Returns the block-start [`FeeCurrencyContext`] for the block at `block_number` whose parent
     /// is `parent_hash`, or `None` if it cannot be resolved from canonical state (unknown or

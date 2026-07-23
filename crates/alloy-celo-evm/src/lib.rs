@@ -374,8 +374,9 @@ where
                             self.fee_context_cache.insert(number, parent_hash, context.clone());
                             self.inner.fee_currency_context = context;
                         } else {
-                            // No resolver, non-canonical/forged block, or pruned state: refuse
-                            // rather than trace against mid-block rates (see the module docs).
+                            // No resolver, forged/unknown (number, parent) pair, or pruned
+                            // state: refuse rather than trace against mid-block rates (see the
+                            // module docs).
                             return Err(EVMError::Custom(format!(
                                 "CIP-64 block-start fee context unresolved for block {number}: \
                                  refusing to load current-state exchange rates (violates the \
