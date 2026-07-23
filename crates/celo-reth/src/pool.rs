@@ -965,17 +965,44 @@ impl std::fmt::Display for CeloPoolRejection {
 impl std::error::Error for CeloPoolRejection {}
 
 impl PoolTransactionError for CeloPoolRejection {
+    /// Whether the rejection marks the transaction as "bad" to the p2p layer.
+    ///
+    /// Returning `true` has fleet-wide blast radius: reth's transactions
+    /// manager caches the hash in its `bad_imports` set — future announcements
+    /// and broadcasts of that tx are refused even after the rejection reason
+    /// has passed — and docks the reputation of every peer that relayed it,
+    /// banning a peer after a handful of such reports. Upstream reserves
+    /// `true` for rejections that can never become valid; anything that
+    /// depends on chain state or exchange rates must return `false`, or
+    /// honest peers get banned for relaying txs that were valid when they
+    /// pooled them.
+    ///
+    /// The match is exhaustive on purpose: a new variant must make this
+    /// decision explicitly instead of inheriting a catch-all.
     fn is_bad_transaction(&self) -> bool {
         match self {
-            // Insufficient balance is transient — balance may change.
+            // Transient — the sender's balance may change.
             Self::InsufficientBalance { .. } => false,
-            // Debit simulation failure is transient — token state may change.
+            // Transient — token state (pause, blacklist) may change.
             Self::DebitSimulationFailed { .. } => false,
-            // A failed balanceOf query is treated as transient — the token/state may recover.
+            // Transient — the token/state may recover.
             Self::BalanceLookupFailed { .. } => false,
-            // Fee cap rejection is permanent — the tx's gas cost won't change.
-            Self::ExceedsFeeCap { .. } => true,
-            _ => true,
+            // Transient — depends on the live exchange rate and the per-block
+            // base fee floor: a sub-percent rate move flips a marginally
+            // priced tx across the floor and back.
+            Self::BelowBaseFeeFloor { .. } => false,
+            // Transient — the minimum tip is rate-converted the same way.
+            Self::BelowMinTip { .. } => false,
+            // Not protocol invalidity — the cap is node-local RPC config
+            // (`--rpc.txfeecap`); other nodes run other caps, so peers must
+            // not be penalized for relaying a tx that exceeds ours.
+            Self::ExceedsFeeCap { .. } => false,
+            // Permanent in practice — registration changes only by governance,
+            // and an unregistered currency cannot pay fees today.
+            Self::UnregisteredCurrency(_) => true,
+            // Permanent in practice — the gas limit is fixed in the tx and the
+            // fee currency's intrinsic-gas config changes only by governance.
+            Self::IntrinsicGasTooLow { .. } => true,
         }
     }
 
@@ -2147,6 +2174,64 @@ mod tests {
             SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_bad_transaction classification
+    // -----------------------------------------------------------------------
+
+    /// Pins the `is_bad_transaction` classification of every rejection
+    /// variant. `true` poisons the tx hash in reth's `bad_imports` set and
+    /// penalizes every relaying peer (a handful of reports bans a peer), so
+    /// state- and rate-dependent rejections must be `false` — a marginally
+    /// priced CIP-64 tx flips across the rate-converted base fee floor on
+    /// sub-percent rate moves, and the fee cap is node-local config other
+    /// peers don't share.
+    #[test]
+    fn test_is_bad_transaction_classification() {
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+
+        let transient = [
+            CeloPoolRejection::InsufficientBalance {
+                currency: fc,
+                sender,
+                required: U256::from(2),
+                balance: U256::from(1),
+                cumulative: false,
+            },
+            CeloPoolRejection::DebitSimulationFailed { currency: fc, sender },
+            CeloPoolRejection::BalanceLookupFailed { currency: fc, sender },
+            CeloPoolRejection::BelowBaseFeeFloor {
+                currency: fc,
+                max_fee_fc: 1,
+                base_fee_floor_fc: 2,
+            },
+            CeloPoolRejection::BelowMinTip { currency: fc, min_tip_fc: 2, actual: 1 },
+            CeloPoolRejection::ExceedsFeeCap {
+                max_tx_fee_wei: 2,
+                tx_fee_cap_wei: 1,
+                fee_currency: Some(fc),
+            },
+        ];
+        for rejection in &transient {
+            assert!(
+                !rejection.is_bad_transaction(),
+                "{rejection} must not poison the hash or penalize relaying peers"
+            );
+        }
+
+        let permanent = [
+            CeloPoolRejection::UnregisteredCurrency(fc),
+            CeloPoolRejection::IntrinsicGasTooLow {
+                currency: fc,
+                gas_limit: 21_000,
+                required: 101_000,
+            },
+        ];
+        for rejection in &permanent {
+            assert!(rejection.is_bad_transaction(), "{rejection} is expected to stay bad");
+        }
     }
 
     // -----------------------------------------------------------------------
