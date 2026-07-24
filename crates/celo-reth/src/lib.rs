@@ -321,12 +321,17 @@ where
         })
     }
 
-    /// Builds a block builder for the next block, i.e. the **sequencing** path: reth routes the
-    /// payload builder through this method, while block import and derivation re-execution build
-    /// their EVMs directly via `evm_with_env` + `create_executor` and never reach it. Together
-    /// with the dormant `post_exec_builder_for_next_block`, this is where the fee currency
-    /// blocklist is enabled (`CeloEvm::with_blocklist_enabled`), so blocklist reads/writes are
-    /// confined to sequencing — import and derivation leave the shared blocklist untouched.
+    /// Builds a block builder for the next block. Despite the name this is **not** the payload
+    /// builder's entry point — op-reth routes every payload build through
+    /// `post_exec_builder_for_next_block` below. Its caller in our stack is reth's
+    /// **pending-block builder** (`eth_call`/`eth_getBlockByNumber` with the `pending` tag),
+    /// which speculatively builds a block from the local pool: sequencing-like work over this
+    /// node's own mempool, so the fee currency blocklist is enabled here
+    /// (`CeloEvm::with_blocklist_enabled`) just as on the payload path, while block import and
+    /// derivation build their EVMs directly via `evm_with_env` + `create_executor` and leave the
+    /// shared blocklist untouched. The EVM flows through `create_block_builder` →
+    /// `create_executor` → `for_block_executor`, so block-start fee-context pinning is off (a
+    /// next-block EVM could not resolve the block being built) and CIP-64 receipt storage is on.
     /// Otherwise identical to the default `ConfigureEvm` implementation.
     fn builder_for_next_block<'a, DB: Database + 'a>(
         &'a self,
