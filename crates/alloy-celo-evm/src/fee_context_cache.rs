@@ -92,15 +92,20 @@ pub struct FeeCurrencyContextCache {
 impl FeeCurrencyContextCache {
     /// Returns the cached block-start context for the block `number` whose parent is
     /// `parent_hash`, if present.
-    pub fn get(&self, number: u64, parent_hash: B256) -> Option<FeeCurrencyContext> {
+    ///
+    /// `pub(crate)`: the memo's no-poisoning argument (see the module docs) rests on
+    /// `CeloEvm::transact_raw` being the only reader/writer, so the accessors stay confined to
+    /// this crate.
+    pub(crate) fn get(&self, number: u64, parent_hash: B256) -> Option<FeeCurrencyContext> {
         let key = (number, parent_hash);
         self.inner.lock().iter().find(|(k, _)| *k == key).map(|(_, ctx)| ctx.clone())
     }
 
     /// Memoizes the block-start context for `(number, parent_hash)`, evicting the oldest entry
     /// when full. Re-inserting an existing key replaces its value in place. The only caller is
-    /// `CeloEvm::transact_raw`, which inserts exactly what a [`FeeContextResolver`] returned.
-    pub fn insert(&self, number: u64, parent_hash: B256, context: FeeCurrencyContext) {
+    /// `CeloEvm::transact_raw`, which inserts exactly what a [`FeeContextResolver`] returned —
+    /// `pub(crate)` keeps it that way (see [`get`](Self::get)).
+    pub(crate) fn insert(&self, number: u64, parent_hash: B256, context: FeeCurrencyContext) {
         let key = (number, parent_hash);
         let mut entries = self.inner.lock();
         if let Some(entry) = entries.iter_mut().find(|(k, _)| *k == key) {
