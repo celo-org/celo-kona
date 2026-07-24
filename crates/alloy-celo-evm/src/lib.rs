@@ -18,8 +18,8 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_CURRENCY_REVERT_MARKER,
-        FEE_DEBIT_ERROR_PREFIX,
+        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
+        FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
@@ -168,9 +168,10 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
     ///
     /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls failed with a currency-level fault (halt / EVM call failure — contract *reverts*
-    /// are ambiguous, canonically an underfunded sender, and never blocklist) while the node was
-    /// building a block from its own mempool, so the sequencer can skip them for a while. It must
+    /// calls *halted* while the node was building a block from its own mempool, so the sequencer
+    /// can skip them for a while. Halts are the only failures that blocklist: contract *reverts*
+    /// are ambiguous (canonically an underfunded sender), and EVM-level call errors are the
+    /// node's own infrastructure faults — neither is evidence against the currency. It must
     /// therefore only be touched on the sequencing path.
     /// Block import and derivation re-execute already-canonical blocks and must produce identical
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
@@ -350,6 +351,14 @@ where
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
+                    // ORDER MATTERS: the revert arm must be checked first. A revert
+                    // message embeds attacker-controlled bytes (the decoded
+                    // `Error(string)` payload), so a sender could revert with the
+                    // literal halt-marker text; checking halt first would let that
+                    // spoof a "currency fault" and blocklist a healthy currency.
+                    // The genuine markers are prepended by `process_call_result`
+                    // before any contract output, and halt reasons carry no
+                    // attacker bytes, so revert-first is spoof-proof both ways.
                     if err_msg.contains(FEE_CURRENCY_REVERT_MARKER) {
                         // The fee-currency contract *reverted* the debit/credit.
                         // Canonically that is a sender (`ERC20: transfer amount
@@ -373,17 +382,36 @@ where
                             "reason" => "debit_credit_reverted"
                         )
                         .increment(1);
-                    } else {
-                        // Halt (e.g. the debit exhausted its gas budget) or an
-                        // EVM-level call failure — a genuine currency fault:
-                        // blocklist so the payload builder stops retrying every
-                        // tx of this currency.
+                    } else if err_msg.contains(FEE_CURRENCY_HALT_MARKER) {
+                        // Halt (e.g. the debit exhausted its gas budget, or the
+                        // contract executed invalid bytecode) — the one failure
+                        // that is unambiguously the currency's fault: blocklist
+                        // so the payload builder stops retrying every tx of this
+                        // currency.
                         tracing::warn!(
                             target: "celo",
-                            "fee-currency debit/credit failed for {fc}: {e} — blocklisting"
+                            "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
                         );
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
+                    } else {
+                        // Neither marker: the system call itself errored — an
+                        // EVM-infrastructure failure (`CoreContractError::Evm`,
+                        // e.g. a database read failing mid-call). That is this
+                        // node's fault, not the currency's; blocklisting here
+                        // would dark-list a healthy currency for 2h over a local
+                        // I/O hiccup.
+                        tracing::warn!(
+                            target: "celo",
+                            "fee-currency debit/credit failed with an EVM-level error for \
+                             {fc}: {e} — dropping tx without blocklisting the currency"
+                        );
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "debit_credit_evm_error"
+                        )
+                        .increment(1);
                     }
                 } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
                     // The fee currency is not in the per-block fee-currency context: its
@@ -491,13 +519,13 @@ impl CeloEvmFactory {
     }
 }
 
-/// Creates a [`CeloEvm`] for testing with an in-memory database.
+/// Creates a [`CeloEvm`] for testing over the given database.
 #[cfg(test)]
-fn make_test_evm(
+fn make_test_evm_with_db<DB: Database>(
+    db: DB,
     blocklist: FeeCurrencyBlocklist,
-) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+) -> CeloEvm<DB, revm::inspector::NoOpInspector> {
     let spec_id = OpSpecId::FJORD;
-    let db = revm::database::InMemoryDB::default();
     let mut cfg = revm::context::CfgEnv::<OpSpecId>::default();
     cfg.chain_id = 42220;
     CeloEvm {
@@ -515,6 +543,14 @@ fn make_test_evm(
         // `base_fee_check_enabled` guard in `transact_raw` still honours independently.
         blocklist_enabled: true,
     }
+}
+
+/// Creates a [`CeloEvm`] for testing with an in-memory database.
+#[cfg(test)]
+fn make_test_evm(
+    blocklist: FeeCurrencyBlocklist,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+    make_test_evm_with_db(revm::database::InMemoryDB::default(), blocklist)
 }
 
 impl CeloEvmFactory {
@@ -746,25 +782,21 @@ mod tests {
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
     }
 
-    /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
-    /// is registered in the per-block context and backed by `code` at the
-    /// token address, so the `debitGasFees` system call genuinely executes
-    /// that bytecode. Returns the resulting error, stringified.
-    fn transact_cip64_with_token_code(
-        blocklist: FeeCurrencyBlocklist,
+    /// Put the given sequencing-mode EVM in block-building mode, register `fc`
+    /// in the per-block fee-currency context, and run a CIP-64 tx through
+    /// `transact_raw`, driving the `debitGasFees` system call against whatever
+    /// state the EVM's database holds. Returns the resulting error, stringified.
+    fn run_cip64_debit<DB: Database>(
+        evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
         fc: Address,
-        code: &'static [u8],
-    ) -> String {
+    ) -> String
+    where
+        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
         use celo_revm::fee_currency_context::FeeCurrencyInfo;
-        use revm::state::{AccountInfo, Bytecode};
 
-        let mut evm = make_test_evm(blocklist);
         // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
         evm.ctx_mut().block.basefee = 1_000_000_000;
-        evm.db_mut().insert_account_info(
-            fc,
-            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(code))),
-        );
         // Register the currency in the per-block fee-currency context, pinned
         // to the current block so the handler uses it as-is instead of
         // rebuilding it from (empty) directory state.
@@ -787,6 +819,22 @@ mod tests {
         format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
     }
 
+    /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
+    /// is registered in the per-block context and backed by `code` at the
+    /// token address, so the `debitGasFees` system call genuinely executes
+    /// that bytecode. Returns the resulting error, stringified.
+    fn transact_cip64_with_token_code(
+        blocklist: FeeCurrencyBlocklist,
+        fc: Address,
+        code: Bytes,
+    ) -> String {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let mut evm = make_test_evm(blocklist);
+        evm.db_mut().insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+        run_cip64_debit(&mut evm, fc)
+    }
+
     /// A fee-currency contract that *reverts* the debit — canonically an
     /// underfunded sender's `ERC20: transfer amount exceeds balance` — is
     /// not sufficient evidence of a currency fault. The tx is dropped from
@@ -799,8 +847,11 @@ mod tests {
         let fc = Address::with_last_byte(0xD0);
         let blocklist = FeeCurrencyBlocklist::default();
         // PUSH1 0, PUSH1 0, REVERT — the debit call reverts.
-        let err =
-            transact_cip64_with_token_code(blocklist.clone(), fc, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]),
+        );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
         assert!(
             !blocklist.is_blocked(fc),
@@ -817,12 +868,173 @@ mod tests {
         let fc = Address::with_last_byte(0xD1);
         let blocklist = FeeCurrencyBlocklist::default();
         // JUMPDEST, PUSH1 0, JUMP — infinite loop, exhausts the debit budget → OOG halt.
-        let err = transact_cip64_with_token_code(blocklist.clone(), fc, &[0x5b, 0x60, 0x00, 0x56]);
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            Bytes::from_static(&[0x5b, 0x60, 0x00, 0x56]),
+        );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER), "expected a halt failure, got: {err}");
         assert!(
             blocklist.is_blocked(fc),
             "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
         );
+    }
+
+    /// A revert whose `Error(string)` payload contains the literal halt-marker
+    /// text must still classify as a revert and must NOT blocklist. The revert
+    /// message is the one attacker-controlled string in the flattened error, so
+    /// if the classifier checked the halt marker first, a sender could spoof a
+    /// "currency fault" and dark-list a healthy currency at will.
+    #[test]
+    fn test_spoofed_halt_marker_in_revert_does_not_blocklist() {
+        let fc = Address::with_last_byte(0xD3);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        // ABI-encode `Error(string)` carrying the halt-marker text as revert data.
+        let msg = FEE_CURRENCY_HALT_MARKER.as_bytes();
+        let mut revert_data = Vec::new();
+        revert_data.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) selector
+        revert_data.extend_from_slice(&U256::from(0x20).to_be_bytes::<32>()); // string offset
+        revert_data.extend_from_slice(&U256::from(msg.len()).to_be_bytes::<32>()); // string length
+        revert_data.extend_from_slice(msg);
+        revert_data.resize(revert_data.len().div_ceil(32) * 32, 0); // right-pad to a word
+
+        // CODECOPY the blob (at code offset 12, right after these 12 opcode bytes)
+        // into memory and REVERT with it.
+        let len = u8::try_from(revert_data.len()).expect("revert data fits one PUSH1");
+        let mut code = alloc::vec![
+            0x60, len, // PUSH1 len
+            0x60, 0x0c, // PUSH1 12 (data offset within the code)
+            0x60, 0x00, // PUSH1 0  (memory destination)
+            0x39, // CODECOPY
+            0x60, len, // PUSH1 len
+            0x60, 0x00, // PUSH1 0
+            0xfd, // REVERT
+        ];
+        code.extend_from_slice(&revert_data);
+
+        let err = transact_cip64_with_token_code(blocklist.clone(), fc, code.into());
+        assert!(
+            err.contains(FEE_CURRENCY_REVERT_MARKER),
+            "expected a genuine revert classification, got: {err}"
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_HALT_MARKER),
+            "the spoofed halt marker should survive into the decoded revert message: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "attacker-controlled revert text must not be able to spoof a halt and blocklist; \
+             got error: {err}"
+        );
+    }
+
+    /// A debit failure carrying neither the revert nor the halt marker is an
+    /// EVM-infrastructure error (`CoreContractError::Evm`, e.g. a database read
+    /// failing mid-call) — the node's fault, not the currency's — and must not
+    /// blocklist. It must instead be metered as
+    /// `celo_payload_skipped_total{reason=debit_credit_evm_error}`.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_debit_evm_error_does_not_blocklist_currency() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        use revm::state::{AccountInfo, Bytecode};
+
+        #[derive(Debug)]
+        struct TestDbError;
+        impl core::fmt::Display for TestDbError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("test db error")
+            }
+        }
+        impl core::error::Error for TestDbError {}
+        impl revm::database_interface::DBErrorMarker for TestDbError {}
+
+        /// Delegates to an [`revm::database::InMemoryDB`] but fails every storage
+        /// read of `fail_addr`, simulating a state-provider I/O error surfacing
+        /// mid-debit (and only there — unrelated reads keep working so the tx
+        /// genuinely reaches the debit system call).
+        #[derive(Debug)]
+        struct FailingStorageDb {
+            inner: revm::database::InMemoryDB,
+            fail_addr: Address,
+        }
+        impl revm::Database for FailingStorageDb {
+            type Error = TestDbError;
+            fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+                Ok(revm::Database::basic(&mut self.inner, address).unwrap())
+            }
+            fn code_by_hash(
+                &mut self,
+                code_hash: alloy_primitives::B256,
+            ) -> Result<Bytecode, Self::Error> {
+                Ok(revm::Database::code_by_hash(&mut self.inner, code_hash).unwrap())
+            }
+            fn storage(
+                &mut self,
+                address: Address,
+                index: revm::primitives::StorageKey,
+            ) -> Result<revm::primitives::StorageValue, Self::Error> {
+                if address == self.fail_addr {
+                    return Err(TestDbError);
+                }
+                Ok(revm::Database::storage(&mut self.inner, address, index).unwrap())
+            }
+            fn block_hash(&mut self, number: u64) -> Result<alloy_primitives::B256, Self::Error> {
+                Ok(revm::Database::block_hash(&mut self.inner, number).unwrap())
+            }
+        }
+
+        let fc = Address::with_last_byte(0xD2);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        // Token code: PUSH1 0, SLOAD, STOP — the debit call reads the token's
+        // storage, which the wrapper DB fails with a genuine database error.
+        let mut inner = revm::database::InMemoryDB::default();
+        inner.insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x54, 0x00,
+            ]))),
+        );
+
+        let err = metrics::with_local_recorder(&recorder, || {
+            let mut evm =
+                make_test_evm_with_db(FailingStorageDb { inner, fail_addr: fc }, blocklist.clone());
+            run_cip64_debit(&mut evm, fc)
+        });
+
+        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert!(
+            !err.contains(FEE_CURRENCY_REVERT_MARKER) && !err.contains(FEE_CURRENCY_HALT_MARKER),
+            "a database error must carry neither contract-fault marker, got: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "an EVM-infrastructure error is the node's fault and must not blocklist the \
+             currency; got error: {err}"
+        );
+
+        let skipped: u64 = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(ck, _, _, _)| {
+                ck.key().name() == "celo_payload_skipped_total"
+                    && ck
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "reason" && l.value() == "debit_credit_evm_error")
+            })
+            .map(|(_, _, _, v)| match v {
+                DebugValue::Counter(c) => c,
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
     }
 
     /// A CIP-64 tx in a fee currency missing from the per-block context fails

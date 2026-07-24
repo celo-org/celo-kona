@@ -1,11 +1,12 @@
 //! Fee currency blocklist for CIP-64 transactions.
 //!
 //! Provides a thread-safe blocklist mechanism for fee currencies that cause execution
-//! errors. When a CIP-64 fee-currency debit/credit fails during execution with a
-//! *currency-level* fault (halt / EVM call failure — contract reverts are ambiguous,
-//! canonically an underfunded sender, and never blocklist), the currency is added here;
-//! the sequencing-time payload filter then skips transactions using that currency,
-//! avoiding repeated execution failures.
+//! errors. When a CIP-64 fee-currency debit/credit *halts* during execution — the one
+//! failure that is unambiguously the currency's fault — the currency is added here; the
+//! sequencing-time payload filter then skips transactions using that currency, avoiding
+//! repeated execution failures. Contract reverts (ambiguous, canonically an underfunded
+//! sender) and EVM-level call errors (the node's own infrastructure faults) never
+//! blocklist.
 //!
 //! This is a *local sequencing heuristic*. It is populated inside `CeloEvm::transact_raw()`,
 //! but only for EVMs built on the sequencing path (`blocklist_enabled`); block import and
@@ -40,11 +41,12 @@ struct BlocklistState {
 
 /// Shared, thread-safe fee currency blocklist.
 ///
-/// When a CIP-64 transaction's fee-currency debit/credit fails with a *currency-level*
-/// fault (halt / EVM call failure) during EVM execution on the sequencing path, the
-/// currency is added to the blocklist. Contract *reverts* (e.g. an underfunded sender's
-/// `ERC20: transfer amount exceeds balance` — but a paused token reverts the same way)
-/// are ambiguous, insufficient evidence of a currency fault, and never blocklist.
+/// When a CIP-64 transaction's fee-currency debit/credit *halts* during EVM execution
+/// on the sequencing path, the currency is added to the blocklist. Contract *reverts*
+/// (e.g. an underfunded sender's `ERC20: transfer amount exceeds balance` — but a paused
+/// token reverts the same way) are ambiguous, insufficient evidence of a currency fault,
+/// and never blocklist; EVM-level call errors (e.g. a database read failing mid-call)
+/// are the node's own fault and never blocklist either.
 /// The sequencing-time payload filter (`CeloFeeCurrencyFilter`) then skips subsequent
 /// transactions using a blocked currency before they reach the executor.
 #[derive(Debug, Clone, Default)]
