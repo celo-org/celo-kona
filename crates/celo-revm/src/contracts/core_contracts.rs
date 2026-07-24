@@ -1044,4 +1044,52 @@ pub(crate) mod tests {
              not perform journal work (e.g. discard_tx)"
         );
     }
+
+    /// Pin [`process_call_result`]'s renderings to the classifier markers in
+    /// `constants.rs`. The sequencing blocklist (`alloy-celo-evm`) tells revert /
+    /// halt / EVM-infrastructure failures apart by matching
+    /// [`FEE_CURRENCY_REVERT_MARKER`] / [`FEE_CURRENCY_HALT_MARKER`] against the
+    /// flattened error string; neither construction site can reference the
+    /// constants (one lives in a `thiserror` attribute), so this test is what
+    /// keeps a format reword from silently breaking the classification.
+    #[test]
+    fn markers_match_process_call_result_renderings() {
+        use crate::constants::{FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_REVERT_MARKER};
+
+        let render = |result: ExecutionResult<OpHaltReason>| {
+            process_call_result::<CoreContractError>(Ok(result))
+                .expect_err("non-success results must map to an error")
+                .to_string()
+        };
+
+        let halt = render(ExecutionResult::Halt {
+            reason: OpHaltReason::Base(revm::context_interface::result::HaltReason::OutOfGas(
+                revm::context_interface::result::OutOfGasError::Basic,
+            )),
+            gas: Default::default(),
+            logs: Vec::new(),
+        });
+        assert!(
+            halt.contains(FEE_CURRENCY_HALT_MARKER),
+            "halt rendering drifted: {halt}"
+        );
+        assert!(
+            !halt.contains(FEE_CURRENCY_REVERT_MARKER),
+            "halt must not read as revert: {halt}"
+        );
+
+        let revert = render(ExecutionResult::Revert {
+            gas: Default::default(),
+            logs: Vec::new(),
+            output: Bytes::new(),
+        });
+        assert!(
+            revert.contains(FEE_CURRENCY_REVERT_MARKER),
+            "revert rendering drifted: {revert}"
+        );
+        assert!(
+            !revert.contains(FEE_CURRENCY_HALT_MARKER),
+            "revert must not read as halt: {revert}"
+        );
+    }
 }
