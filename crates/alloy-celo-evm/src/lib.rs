@@ -257,7 +257,8 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     }
 
     /// Configures this EVM for a receipt-building block executor — every consensus/replay path:
-    /// block import, derivation, sequencing, kona proofs, and the dormant post-exec builders.
+    /// block import, derivation, sequencing (op-reth routes every payload build through the
+    /// post-exec builder), kona proofs, and post-exec block replay.
     /// Disables the block-start fee-context cache and enables CIP-64 receipt storage.
     ///
     /// The two flags are a matched pair: disabling the cache without enabling the store would drop

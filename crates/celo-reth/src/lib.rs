@@ -383,7 +383,8 @@ where
         Self::Error,
     > {
         // Consensus-side executor built outside `create_executor` — mirror that choke point with
-        // `for_block_executor`. Dormant on Celo (SDM unscheduled), but keep the invariant.
+        // `for_block_executor`. Reachable via op-reth's post-exec block replay, so this is
+        // load-bearing, not dormant.
         let evm = self.evm_for_block(db, block.header())?.for_block_executor();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
         // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
@@ -409,9 +410,11 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        // Next-block (sequencing-side) builder: enable the blocklist like
-        // `builder_for_next_block` and mirror `create_executor` with `for_block_executor`.
-        // Dormant on Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
+        // Live sequencing path: op-reth's `OpPayloadBuilderCtx::block_builder` routes every
+        // payload build through here unconditionally (SDM only selects the `PostExecMode`).
+        // Enable the blocklist like `builder_for_next_block`; `for_block_executor` is
+        // load-bearing — a pinning-enabled EVM could not resolve the block being built and
+        // would refuse every tx.
         let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled().for_block_executor();
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
