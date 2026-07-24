@@ -27,9 +27,10 @@ pub const FEE_CURRENCY_NOT_REGISTERED_PREFIX: &str = "fee currency not registere
 /// `"core contract execution failed: "` prefix followed by the `"revert: …"`
 /// arm built in `process_call_result` (`contracts/core_contracts.rs`), nested
 /// under [`FEE_DEBIT_ERROR_PREFIX`]/[`FEE_CREDIT_ERROR_PREFIX`] by the
-/// handler. The sequencing blocklist matches this marker to tell sender/state
-/// faults (canonically `ERC20: transfer amount exceeds balance`) apart from
-/// genuine currency faults — only the latter blocklist the currency.
+/// handler. The sequencing blocklist matches this marker to tell ambiguous
+/// revert failures (canonically an underfunded sender's `ERC20: transfer
+/// amount exceeds balance`) apart from unambiguous currency faults — only the
+/// latter blocklist the currency.
 pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: revert:";
 
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).

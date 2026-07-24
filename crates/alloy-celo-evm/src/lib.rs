@@ -169,9 +169,9 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     ///
     /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
     /// calls failed with a currency-level fault (halt / EVM call failure — contract *reverts*
-    /// are sender/state faults and never blocklist) while the node was building a block from
-    /// its own mempool, so the sequencer can skip them for a while. It must therefore only be
-    /// touched on the sequencing path.
+    /// are ambiguous, canonically an underfunded sender, and never blocklist) while the node was
+    /// building a block from its own mempool, so the sequencer can skip them for a while. It must
+    /// therefore only be touched on the sequencing path.
     /// Block import and derivation re-execute already-canonical blocks and must produce identical
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
     ///
@@ -351,15 +351,17 @@ where
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
                     if err_msg.contains(FEE_CURRENCY_REVERT_MARKER) {
-                        // The fee-currency contract *reverted* the debit/credit — a
-                        // sender/state fault, canonically `ERC20: transfer amount
-                        // exceeds balance` from an underfunded sender that slipped
-                        // past pool admission. The tx is dropped from the payload
-                        // either way; blocklisting here would let a single
-                        // underfunded sender suppress an entire healthy currency
-                        // for the whole eviction window. op-geth never blocklists
-                        // this case (its pool balance-filter keeps such txs from
-                        // the builder), so blocklisting broke sequencer parity.
+                        // The fee-currency contract *reverted* the debit/credit.
+                        // Canonically that is a sender (`ERC20: transfer amount
+                        // exceeds balance`) who was funded at pool admission but
+                        // drained afterwards — but a paused or blacklisting token
+                        // reverts the same way, so a revert is ambiguous and
+                        // insufficient evidence to blocklist a whole currency.
+                        // The tx is dropped from the payload either way;
+                        // blocklisting here let a single underfunded sender
+                        // suppress an entire healthy currency until the
+                        // blocklist's timed expiry (`BLOCKLIST_EVICTION_SECONDS`,
+                        // 2h) or a manual `admin_unblockFeeCurrency`.
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit reverted for {fc}: {e} — \
@@ -786,11 +788,12 @@ mod tests {
     }
 
     /// A fee-currency contract that *reverts* the debit — canonically an
-    /// underfunded sender's `ERC20: transfer amount exceeds balance` — is a
-    /// sender/state fault, not a currency fault. The tx is dropped from the
-    /// payload either way, but the currency must NOT be blocklisted:
+    /// underfunded sender's `ERC20: transfer amount exceeds balance` — is
+    /// not sufficient evidence of a currency fault. The tx is dropped from
+    /// the payload either way, but the currency must NOT be blocklisted:
     /// otherwise a single underfunded sender suppresses every tx of a healthy
-    /// currency for the whole eviction window while this node sequences.
+    /// currency for the blocklist's whole 2h expiry period while this node
+    /// sequences.
     #[test]
     fn test_debit_revert_does_not_blocklist_currency() {
         let fc = Address::with_last_byte(0xD0);
@@ -801,8 +804,8 @@ mod tests {
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
         assert!(
             !blocklist.is_blocked(fc),
-            "a debit revert is a sender/state fault and must not blocklist the currency; \
-             got error: {err}"
+            "a debit revert is ambiguous (canonically a sender fault) and must not blocklist \
+             the currency; got error: {err}"
         );
     }
 
