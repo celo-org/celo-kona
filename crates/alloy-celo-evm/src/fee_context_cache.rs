@@ -16,9 +16,11 @@
 //! parent_hash)` and memoized in the [`FeeCurrencyContextCache`] (shared via
 //! [`CeloEvmFactory`](crate::CeloEvmFactory)) so the resolver runs once per block, not once per
 //! transaction. The resolver — wired only by the std-only node layer (`celo-reth`), backed by the
-//! state provider — computes the context **solely from canonical-chain state**: canonical header
-//! at `block_number`, parent verified, state loaded at `parent_hash`, directory/oracle view calls
-//! run under that block's env. Hence no RPC caller can influence a value (a forged
+//! state provider — computes the context **solely from canonical-chain state**: state loaded at
+//! the canonical parent `parent_hash`, directory/oracle view calls run under the block's env
+//! (from the canonical header at `block_number`, or synthesized from the parent when no such
+//! header exists — a block mid-validation, `eth_callBundle`, `debug_traceBadBlock`; see
+//! `celo-reth`'s `fee_resolver`). Hence no RPC caller can influence a value (a forged
 //! `debug_traceBlock` body cannot change a rate), historical blocks resolve the same as recent
 //! ones, and — the resolver path being the memo's only writer — there is nothing to poison.
 //!
@@ -40,10 +42,10 @@
 //!   disabled): `eth_call`/`eth_estimateGas`/`debug_traceCall` run at end-of-block state where the
 //!   rates they load are the intended semantics.
 //! - **Unresolvable ⇒ refuse.** When the block-start context cannot be obtained — no resolver
-//!   wired, failing `Database::block_hash`, non-canonical/forged block, pruned state —
-//!   `transact_raw` errors rather than fall back to mid-block rates: the block-start-rates rule is
-//!   absolute and a mid-block per-tx EVM cannot reconstruct block-start rates from its own state.
-//!   Genesis is the one benign exception: block 0 carries no transactions, so its state *is*
+//!   wired, failing `Database::block_hash`, unknown or wrong-height parent (forged block), pruned
+//!   state — `transact_raw` errors rather than fall back to mid-block rates: the block-start-rates
+//!   rule is absolute and a mid-block per-tx EVM cannot reconstruct block-start rates from its own
+//!   state. Genesis is the one benign exception: block 0 carries no transactions, so its state *is*
 //!   block-start and the fresh load is already correct.
 //!
 //! The real fix is upstream — reth reusing one EVM per block in `debug_trace*` — after which the
@@ -64,7 +66,7 @@ use spin::Mutex;
 pub trait FeeContextResolver: Send + Sync {
     /// Returns the block-start [`FeeCurrencyContext`] for the block at `block_number` whose parent
     /// is `parent_hash`, or `None` if it cannot be resolved from canonical state (unknown or
-    /// non-canonical block, pruned history, provider error).
+    /// wrong-height parent, pruned history, provider error).
     fn resolve(&self, block_number: u64, parent_hash: B256) -> Option<FeeCurrencyContext>;
 }
 
