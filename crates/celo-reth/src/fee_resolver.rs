@@ -245,8 +245,9 @@ impl<D: Database> Database for ErrorFlaggingDb<D> {
 mod tests {
     use super::*;
     use alloy_primitives::U256;
+    use celo_revm::test_utils::{TEST_FEE_CURRENCY, make_celo_test_db};
     use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
-    use reth_provider::test_utils::MockEthProvider;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 
     fn resolver(
         provider: MockEthProvider,
@@ -272,6 +273,77 @@ mod tests {
             timestamp: 10,
             ..Default::default()
         }
+    }
+
+    /// Loads the `celo-revm` directory/oracle state fixture (a registered fee currency at rate
+    /// 20/10 with 50k intrinsic gas) into `provider`, so a resolve produces a *populated*
+    /// context rather than the empty one MockEthProvider's default (empty) state yields.
+    fn add_celo_state(provider: &MockEthProvider) {
+        for (address, account) in make_celo_test_db().cache.accounts {
+            let mut ext = ExtendedAccount::new(account.info.nonce, account.info.balance)
+                .extend_storage(account.storage.into_iter().map(|(k, v)| (B256::from(k), v)));
+            if let Some(code) = account.info.code {
+                ext = ext.with_bytecode(code.original_bytes());
+            }
+            provider.add_account(address, ext);
+        }
+    }
+
+    /// The other resolver tests resolve over empty state, so they verify routing but not that
+    /// the parent state actually produced the block's rates. Resolve over a real directory
+    /// deployment and assert the context carries the fixture currency's config.
+    #[test]
+    fn canonical_pair_resolves_populated_context() {
+        let provider = MockEthProvider::default();
+        add_celo_state(&provider);
+        let parent_hash = B256::with_last_byte(1);
+        provider.add_header(B256::with_last_byte(2), Header { parent_hash, ..header_at(5) });
+
+        let context =
+            resolver(provider).resolve(5, parent_hash).expect("canonical pair must resolve");
+        assert_eq!(
+            context.currency_exchange_rate(Some(TEST_FEE_CURRENCY)),
+            Ok((U256::from(20), U256::from(10))),
+        );
+        assert_eq!(context.currency_intrinsic_gas_cost(Some(TEST_FEE_CURRENCY)), Ok(50_000));
+    }
+
+    /// Memo reuse across canonicalization rests on fallback-resolved ≡ canonical-resolved for
+    /// the same `(number, parent_hash)`: an entry resolved via the synthesized next-block env
+    /// (mid-validation) keeps being served after the block becomes canonical. Env-inertness is
+    /// what guarantees it — pin the equality over real directory state.
+    #[test]
+    fn fallback_resolution_matches_canonical() {
+        let parent_hash = B256::with_last_byte(1);
+
+        let canonical = MockEthProvider::default();
+        add_celo_state(&canonical);
+        canonical.add_header(B256::with_last_byte(2), Header { parent_hash, ..header_at(5) });
+        let canonical_ctx =
+            resolver(canonical).resolve(5, parent_hash).expect("canonical pair must resolve");
+
+        // Same pair, but no canonical header at the height: the parent-only fallback runs
+        // under a synthesized env (different base fee/timestamp than the real header above).
+        let fallback = MockEthProvider::default();
+        add_celo_state(&fallback);
+        fallback.add_header(parent_hash, header_at(4));
+        let fallback_ctx =
+            resolver(fallback).resolve(5, parent_hash).expect("canonical parent must resolve");
+
+        assert_eq!(canonical_ctx.updated_at_block, fallback_ctx.updated_at_block);
+        assert_eq!(
+            canonical_ctx.currency_exchange_rate(Some(TEST_FEE_CURRENCY)),
+            fallback_ctx.currency_exchange_rate(Some(TEST_FEE_CURRENCY)),
+        );
+        assert_eq!(
+            canonical_ctx.currency_intrinsic_gas_cost(Some(TEST_FEE_CURRENCY)),
+            fallback_ctx.currency_intrinsic_gas_cost(Some(TEST_FEE_CURRENCY)),
+        );
+        assert_eq!(
+            canonical_ctx.currency_exchange_rate(Some(TEST_FEE_CURRENCY)),
+            Ok((U256::from(20), U256::from(10))),
+            "both paths must resolve the populated fixture config, not two empty contexts"
+        );
     }
 
     #[test]
