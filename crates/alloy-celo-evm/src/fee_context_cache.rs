@@ -41,6 +41,14 @@
 //! - **Call-style simulations bypass** (`transact_raw` skips pinning when the base-fee check is
 //!   disabled): `eth_call`/`eth_estimateGas`/`debug_traceCall` run at end-of-block state where the
 //!   rates they load are the intended semantics.
+//! - **Known divergence — `trace_rawTransaction`:** reth builds its env via `evm_env_at`, not
+//!   `prepare_call_env`, so the base-fee check stays on and pinning participates: over `latest`
+//!   it serves tip block N's *start* rates while the tx executes on N's *end* state. A raw tx on
+//!   top of latest is conceptually block N+1's first tx, whose start rates are N's end rates —
+//!   what `eth_call` loads via the bypass — so for a CIP-64 tx whose fee currency was repriced
+//!   within block N the two endpoints disagree. Accepted deliberately: the window is one
+//!   endpoint × intra-block repricing, and excluding the endpoint would mean special-casing it
+//!   in reth's RPC layer.
 //! - **Unresolvable ⇒ refuse.** When the block-start context cannot be obtained — no resolver
 //!   wired, failing `Database::block_hash`, unknown or wrong-height parent (forged block), pruned
 //!   state — `transact_raw` errors rather than fall back to mid-block rates: the block-start-rates
