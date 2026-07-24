@@ -67,6 +67,10 @@ serde = [
 ]
 portable = ["revm/portable"]
 
+# Exposes the `test_utils` state fixtures (FeeCurrencyDirectory/MockOracle/ERC20 deployments)
+# for downstream crates' tests.
+test-utils = []
+
 dev = [
     "memory_limit",
     "optional_balance_check",

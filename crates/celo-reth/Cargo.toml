@@ -132,6 +132,7 @@ reth-cli-util.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+celo-revm = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 trybuild = "1"

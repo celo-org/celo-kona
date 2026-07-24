@@ -2,11 +2,13 @@
 
 use crate::{
     CeloEvmConfig, celo_next_block_base_fee,
+    fee_resolver::ProviderFeeContextResolver,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx},
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
+use alloy_celo_evm::fee_context_cache::FeeContextResolver;
 use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
@@ -544,7 +546,15 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(CeloEvmConfig::celo_with_blocklist(ctx.chain_spec(), self.blocklist))
+        // Provider-backed resolver letting reth's per-tx `debug_trace*` replay EVMs pin CIP-64
+        // fees to block-start rates; consensus never consults it. See `crate::fee_resolver`.
+        let resolver: Arc<dyn FeeContextResolver> =
+            Arc::new(ProviderFeeContextResolver::new(ctx.provider().clone(), ctx.chain_spec()));
+        Ok(CeloEvmConfig::celo_with_blocklist_and_resolver(
+            ctx.chain_spec(),
+            self.blocklist,
+            Some(resolver),
+        ))
     }
 }
 

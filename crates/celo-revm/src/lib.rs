@@ -21,6 +21,9 @@ pub mod precompiles;
 pub mod transaction;
 pub mod units;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+
 pub use api::{
     builder::CeloBuilder,
     default_ctx::{CELO_DEFAULT_SPEC, CeloContext, DefaultCelo},
