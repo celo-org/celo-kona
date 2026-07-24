@@ -23,13 +23,19 @@ use alloy_celo_evm::{CeloEvmFactory, fee_context_cache::FeeContextResolver};
 use alloy_consensus::Header;
 use alloy_evm::{EvmEnv, EvmFactory, eth::NextEvmEnvAttributes};
 use alloy_op_evm::{evm_env_for_op_block, evm_env_for_op_next_block};
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use celo_revm::FeeCurrencyContext;
+use core::sync::atomic::{AtomicBool, Ordering};
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
 use reth_optimism_forks::OpHardforks;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{HeaderProvider, StateProviderFactory};
+use revm::{
+    Database,
+    primitives::{StorageKey, StorageValue},
+    state::{AccountInfo, Bytecode},
+};
 
 use crate::celo_next_block_base_fee;
 
@@ -139,9 +145,23 @@ where
                 return None;
             }
         };
-        let db = StateProviderDatabase::new(state);
+        let saw_error = Arc::new(AtomicBool::new(false));
+        let db = ErrorFlaggingDb {
+            inner: StateProviderDatabase::new(state),
+            saw_error: Arc::clone(&saw_error),
+        };
         let mut evm = CeloEvmFactory::default().create_evm(db, env);
-        Some(evm.create_fee_currency_context())
+        let context = evm.create_fee_currency_context();
+        if saw_error.load(Ordering::Relaxed) {
+            tracing::warn!(
+                target: "celo::fee_resolver",
+                %parent_hash,
+                "state read failed while loading the fee-currency context (partial parent \
+                 state); refusing to resolve"
+            );
+            return None;
+        }
+        Some(context)
     }
 
     /// Env for a not-yet-canonical child of `parent`, built from parent-derived values only:
@@ -168,6 +188,56 @@ where
             &self.chain_spec,
             (*self.chain_spec).chain().id(),
         ))
+    }
+}
+
+/// Wraps the resolver's state DB and flags every read error.
+///
+/// The context load (`get_currency_info` in `celo-revm`) deliberately swallows per-currency read
+/// failures — a registered currency whose config can't be read is dropped from the context, the
+/// right consensus-side behavior. On the resolver path that would memoize an empty/partial
+/// context whenever the parent's state provider opens but its reads fail (e.g. partially pruned
+/// history), and every trace of the block would then get a wrong "fee currency not registered"
+/// error until eviction. The flag lets `context_from_parent_state` refuse instead.
+struct ErrorFlaggingDb<D> {
+    inner: D,
+    saw_error: Arc<AtomicBool>,
+}
+
+// Manual impl (`alloy_evm::Database` requires it): the inner state provider need not be `Debug`.
+impl<D> core::fmt::Debug for ErrorFlaggingDb<D> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ErrorFlaggingDb")
+            .field("saw_error", &self.saw_error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D: Database> Database for ErrorFlaggingDb<D> {
+    type Error = D::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.inner.basic(address).inspect_err(|_| self.saw_error.store(true, Ordering::Relaxed))
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.inner
+            .code_by_hash(code_hash)
+            .inspect_err(|_| self.saw_error.store(true, Ordering::Relaxed))
+    }
+
+    fn storage(
+        &mut self,
+        address: Address,
+        index: StorageKey,
+    ) -> Result<StorageValue, Self::Error> {
+        self.inner
+            .storage(address, index)
+            .inspect_err(|_| self.saw_error.store(true, Ordering::Relaxed))
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.inner.block_hash(number).inspect_err(|_| self.saw_error.store(true, Ordering::Relaxed))
     }
 }
 
@@ -240,6 +310,50 @@ mod tests {
         let parent_hash = B256::with_last_byte(1);
         provider.add_header(parent_hash, header_at(4));
         assert!(resolver(provider).resolve(10, parent_hash).is_none());
+    }
+
+    /// The invariant the partial-state refusal rests on: the context load swallows read errors
+    /// (dropping the affected currencies), so `ErrorFlaggingDb` must be what surfaces them —
+    /// otherwise an empty/partial context would be memoized and served until eviction.
+    #[test]
+    fn failing_state_read_sets_error_flag() {
+        #[derive(Debug)]
+        struct ReadError;
+        impl core::fmt::Display for ReadError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("state read failed")
+            }
+        }
+        impl core::error::Error for ReadError {}
+        impl revm::database_interface::DBErrorMarker for ReadError {}
+
+        struct FailingDb;
+        impl Database for FailingDb {
+            type Error = ReadError;
+
+            fn basic(&mut self, _: Address) -> Result<Option<AccountInfo>, Self::Error> {
+                Err(ReadError)
+            }
+            fn code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {
+                Err(ReadError)
+            }
+            fn storage(&mut self, _: Address, _: StorageKey) -> Result<StorageValue, Self::Error> {
+                Err(ReadError)
+            }
+            fn block_hash(&mut self, _: u64) -> Result<B256, Self::Error> {
+                Err(ReadError)
+            }
+        }
+
+        let saw_error = Arc::new(AtomicBool::new(false));
+        let db = ErrorFlaggingDb { inner: FailingDb, saw_error: Arc::clone(&saw_error) };
+        let mut evm = CeloEvmFactory::default().create_evm(db, EvmEnv::default());
+        let context = evm.create_fee_currency_context();
+        assert!(
+            saw_error.load(Ordering::Relaxed),
+            "a failing state read must set the flag; the load itself swallows the error \
+             (context resolved anyway: {context:?})"
+        );
     }
 
     #[test]
