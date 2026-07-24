@@ -22,7 +22,7 @@ jobs:
     name: test
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
@@ -42,7 +42,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
@@ -59,7 +59,7 @@ jobs:
     name: lint-${{ matrix.target }}
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           channel: stable
@@ -83,7 +83,7 @@ jobs:
     name: build-${{ matrix.target }}
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       # The full-workspace debug build plus the restored rust-cache exceeds
       # the ~14 GB free on standard runners. Reclaim ~25 GB of preinstalled
       # runner bloat first (same pattern as upstream kona; apt-installed
@@ -106,7 +106,7 @@ jobs:
     name: check-udeps
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       # Pin the nightly that cargo-udeps runs under. The floating `nightly`
       # channel rolled to a 2026-05-18 build that segfaults cargo-udeps during
@@ -125,7 +125,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - name: Install clang
         run: sudo apt install clang libclang-dev
@@ -139,15 +139,15 @@ jobs:
     name: e2e-tests
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           prefix-key: e2e
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1.4.0
+        uses: foundry-rs/foundry-toolchain@v1.9.0
         with:
           version: v1.1.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -156,7 +156,7 @@ jobs:
         run: e2e_test/run_all_tests.sh
       - name: Upload celo-reth log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: celo-reth-log
           path: e2e_test/celo-reth.log
@@ -166,7 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install mold linker
         uses: rui314/setup-mold@v1
       # `rust-toolchain.toml` pins the workspace to 1.94, so cargo auto-switches
@@ -190,7 +190,7 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - uses: EmbarkStudios/cargo-deny-action@v2
