@@ -9,7 +9,6 @@ use crate::{
     rpc::CeloEthApiBuilder,
 };
 use alloy_celo_evm::fee_context_cache::FeeContextResolver;
-use alloy_consensus::Header;
 use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
@@ -50,7 +49,6 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
-use reth_storage_api::{HeaderProvider, StateProviderFactory};
 use std::sync::Arc;
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
@@ -540,14 +538,7 @@ pub struct CeloExecutorBuilder {
 
 impl<Node> ExecutorBuilder<Node> for CeloExecutorBuilder
 where
-    Node: FullNodeTypes<
-        Types: NodeTypes<
-            ChainSpec: OpHardforks + Send + Sync + 'static,
-            Primitives = CeloPrimitives,
-        >,
-    >,
-    Node::Provider:
-        StateProviderFactory + HeaderProvider<Header = Header> + Clone + Send + Sync + 'static,
+    Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = CeloPrimitives>>,
 {
     type EVM = CeloEvmConfig<
         <Node::Types as NodeTypes>::ChainSpec,
