@@ -19,6 +19,36 @@ pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 /// layer matches this prefix to log and meter the otherwise-silent exclusion.
 pub const FEE_CURRENCY_NOT_REGISTERED_PREFIX: &str = "fee currency not registered";
 
+/// Marker present in the `Display` output of a debit/credit failure caused by
+/// the fee-currency contract *reverting* — as opposed to halting (e.g. running
+/// out of its gas budget) or an EVM-level call failure.
+///
+/// The full rendering is `CoreContractError::ExecutionFailed`'s
+/// `"core contract execution failed: "` prefix followed by the `"revert: …"`
+/// arm built in `process_call_result` (`contracts/core_contracts.rs`), nested
+/// under [`FEE_DEBIT_ERROR_PREFIX`]/[`FEE_CREDIT_ERROR_PREFIX`] by the
+/// handler. The sequencing blocklist matches this marker to tell ambiguous
+/// revert failures (canonically an underfunded sender's `ERC20: transfer
+/// amount exceeds balance`) apart from unambiguous currency faults — only the
+/// latter blocklist the currency.
+pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: revert:";
+
+/// Marker present in the `Display` output of a debit/credit failure caused by
+/// the fee-currency contract *halting* — e.g. exhausting the debit/credit
+/// call's gas budget or executing invalid bytecode.
+///
+/// The full rendering is `CoreContractError::ExecutionFailed`'s
+/// `"core contract execution failed: "` prefix followed by the `"halt: …"`
+/// arm built in `process_call_result` (`contracts/core_contracts.rs`), nested
+/// under [`FEE_DEBIT_ERROR_PREFIX`]/[`FEE_CREDIT_ERROR_PREFIX`] by the
+/// handler. The sequencing blocklist matches this marker to positively
+/// identify an unambiguous currency fault: only halts blocklist. Failures
+/// carrying neither this marker nor [`FEE_CURRENCY_REVERT_MARKER`] are
+/// EVM-infrastructure errors (e.g. a database read failing mid-call,
+/// `CoreContractError::Evm`) — the node's fault, not the currency's — and
+/// must not blocklist either.
+pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt:";
+
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///
 /// Applied as `max(computed_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR)` for blocks before
