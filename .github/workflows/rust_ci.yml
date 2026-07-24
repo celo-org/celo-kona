@@ -81,13 +81,19 @@ jobs:
       matrix:
         target: [ "native" ]
     name: build-${{ matrix.target }}
-    continue-on-error: true
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+      # The full-workspace debug build plus the restored rust-cache exceeds
+      # the ~14 GB free on standard runners. Reclaim ~25 GB of preinstalled
+      # runner bloat first (same pattern as upstream kona; apt-installed
+      # large packages stay because purging them is slow).
+      - name: Free disk space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          large-packages: false
       - uses: ./.github/actions/setup
         with:
-          channel: nightly
           prefix-key: ${{ matrix.target }}
       - name: build
         run: just build-${{ matrix.target }}
