@@ -76,7 +76,7 @@ Modules under `crates/celo-reth/src/`:
 
 - **`celo-revm`**: Low-level EVM modifications. Custom handler that intercepts CIP-64 txs to debit/credit fee currency via ERC20 calls. Contains the `FeeCurrencyContext`, contract ABIs for `FeeCurrencyDirectory`, and the transfer precompile. Must compile for `riscv32imac-unknown-none-elf` (no-std).
 
-- **`alloy-celo-evm`**: Wraps `celo-revm` into `alloy-evm`'s `Evm` trait (`CeloEvm`). Adds the fee currency blocklist (blocks currencies whose debit/credit calls fail during block building, with time-based eviction). Contains `CeloEvmFactory` and `Cip64Storage` for passing fee info to receipt builder.
+- **`alloy-celo-evm`**: Wraps `celo-revm` into `alloy-evm`'s `Evm` trait (`CeloEvm`). Adds the fee currency blocklist (blocks currencies whose debit/credit calls *halt* during block building, with time-based eviction; reverts and EVM-level errors drop the tx without blocklisting). Contains `CeloEvmFactory` and `Cip64Storage` for passing fee info to receipt builder.
 
 - **`celo-alloy`**: Consensus types (`CeloTxEnvelope`, `TxCip64`, `CeloReceipt`), network types, and RPC types. Workspace subcrates under `crates/celo-alloy/`.
 
@@ -96,7 +96,7 @@ Verify with `just hack`.
 
 1. **Pool entry** (`pool.rs`): `CeloExchangeRateApplier` looks up the exchange rate from `FeeCurrencyDirectory` contract, checks ERC20 balance, validates base fee floor and min tip, then overwrites `max_fee_per_gas`/`max_priority_fee_per_gas` with native equivalents.
 2. **Block building** (`payload.rs`): `CeloFeeCurrencyFilter` enforces per-currency gas limits (default 50% of block).
-3. **Execution** (`celo-revm` handler): Pre-tx debit of gas cost in fee currency, post-tx credit of refund. On failure, currency is added to the blocklist.
+3. **Execution** (`celo-revm` handler): Pre-tx debit of gas cost in fee currency, post-tx credit of refund. If the debit/credit *halts* (unambiguous currency fault), the currency is added to the blocklist; reverts and EVM-level errors just drop the tx.
 4. **Receipt** (`alloy-celo-evm`): `Cip64Storage` passes fee currency info from execution to receipt builder.
 
 ## E2E Tests

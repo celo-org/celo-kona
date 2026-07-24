@@ -392,6 +392,16 @@ where
                             target: "celo",
                             "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
                         );
+                        // The one arm that blocklists: meter it so a blocklist
+                        // addition is alertable on its own, not only via the
+                        // downstream `reason="blocklisted"` skips that fire
+                        // only while further txs of this currency arrive.
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "debit_credit_halted"
+                        )
+                        .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
                     } else {
@@ -878,6 +888,41 @@ mod tests {
         assert!(
             blocklist.is_blocked(fc),
             "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
+        );
+    }
+
+    /// A fee-currency contract that debits fine but *halts* the post-execution
+    /// `creditGasFees` refund is just as much a currency fault as a debit halt:
+    /// the credit failure must flatten through op-revm's error flow with the
+    /// credit prefix + halt marker and blocklist the currency. Pinned as a unit
+    /// test because the credit path re-enters via a different handler hook than
+    /// the debit — a revm/op-revm bump could break its error flattening while
+    /// the debit-path tests stay green.
+    #[test]
+    fn test_credit_halt_still_blocklists_currency() {
+        let fc = Address::with_last_byte(0xD4);
+        let blocklist = FeeCurrencyBlocklist::default();
+        // Branch on calldata size: `debitGasFees(address,uint256)` calls carry
+        // 68 bytes → STOP (debit succeeds); `creditGasFees` calls carry 260
+        // bytes → jump into an infinite loop → OOG halt on the credit.
+        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x08, JUMPI, STOP,
+        //   JUMPDEST, PUSH1 0x08, JUMP
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            Bytes::from_static(&[
+                0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x08, 0x56,
+            ]),
+        );
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
+        assert!(
+            !err.contains(FEE_DEBIT_ERROR_PREFIX),
+            "the debit must succeed so the failure is attributable to the credit: {err}"
+        );
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER), "expected a halt failure, got: {err}");
+        assert!(
+            blocklist.is_blocked(fc),
+            "a credit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
         );
     }
 
