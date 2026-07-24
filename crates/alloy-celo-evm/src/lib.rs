@@ -645,7 +645,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
+    use alloc::{string::String, vec::Vec};
     use alloy_evm::Evm;
     use alloy_primitives::TxKind;
     use celo_alloy_consensus::CeloTxType;
