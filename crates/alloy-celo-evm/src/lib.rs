@@ -380,12 +380,24 @@ where
                         } else {
                             // No resolver, unknown/wrong-height parent (forged block), or pruned
                             // state: refuse rather than trace against mid-block rates (see the
-                            // module docs).
+                            // module docs). The resolver (celo-reth's `fee_resolver`) logs the
+                            // specific cause; here we surface the refusal itself, mirroring the
+                            // blocklist branch below.
+                            tracing::warn!(
+                                target: "celo",
+                                block = number,
+                                %parent_hash,
+                                "refusing to replay: block-start fee-currency context unresolvable"
+                            );
+                            #[cfg(feature = "std")]
+                            metrics::counter!("celo_fee_context_refusal_total").increment(1);
                             return Err(EVMError::Custom(format!(
-                                "CIP-64 block-start fee context unresolved for block {number}: \
-                                 refusing to load current-state exchange rates (violates the \
-                                 block-start-rates rule); ensure the node has this block's \
-                                 canonical parent state and a fee-context resolver wired"
+                                "block-start fee-currency context unresolved for block {number} \
+                                 (parent {parent_hash}): replaying a block requires its parent's \
+                                 historical state to pin CIP-64 exchange rates at block-start \
+                                 values; likely causes: parent state pruned (non-archive node), \
+                                 unknown or non-canonical parent, or no fee-context resolver \
+                                 wired — refusing rather than serve mid-block rates"
                             )));
                         }
                     }

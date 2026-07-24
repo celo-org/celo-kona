@@ -60,19 +60,44 @@ where
     fn resolve(&self, block_number: u64, parent_hash: B256) -> Option<FeeCurrencyContext> {
         // Canonical block: the canonical header at this height matches the pair — run the view
         // calls under its real env.
-        if let Ok(Some(header)) = self.provider.header_by_number(block_number) &&
-            header.parent_hash == parent_hash
-        {
-            let env =
-                evm_env_for_op_block(&header, &self.chain_spec, (*self.chain_spec).chain().id());
-            return self.context_from_parent_state(parent_hash, env);
+        match self.provider.header_by_number(block_number) {
+            Ok(Some(header)) if header.parent_hash == parent_hash => {
+                let env = evm_env_for_op_block(
+                    &header,
+                    &self.chain_spec,
+                    (*self.chain_spec).chain().id(),
+                );
+                return self.context_from_parent_state(parent_hash, env);
+            }
+            // No canonical header at this height, or it has a different parent — fall through to
+            // the canonical-parent path.
+            Ok(_) => {}
+            // Provider error: the parent path below may still succeed, but don't swallow it.
+            Err(err) => tracing::warn!(
+                target: "celo::fee_resolver",
+                block = block_number,
+                %err,
+                "provider error reading canonical header while resolving fee context"
+            ),
         }
 
         // Canonical parent: the block itself has no canonical header (yet) — mid-validation
         // prewarm, `eth_callBundle`, `debug_traceBadBlock` — but its parent does, and parent
         // post-state is block-start state for any child. Refuse pairs whose parent is unknown or
         // at the wrong height (e.g. a fully forged `debug_traceBlock` body).
-        let parent = self.provider.header(parent_hash).ok().flatten()?;
+        let parent = match self.provider.header(parent_hash) {
+            // An unknown parent is an expected refusal (forged pair), not a provider fault.
+            Ok(parent) => parent?,
+            Err(err) => {
+                tracing::warn!(
+                    target: "celo::fee_resolver",
+                    %parent_hash,
+                    %err,
+                    "provider error reading parent header; refusing to resolve fee context"
+                );
+                return None;
+            }
+        };
         if Some(block_number) != parent.number.checked_add(1) {
             return None;
         }
@@ -100,7 +125,20 @@ where
         parent_hash: B256,
         env: EvmEnv<OpSpecId>,
     ) -> Option<FeeCurrencyContext> {
-        let state = self.provider.history_by_block_hash(parent_hash).ok()?;
+        let state = match self.provider.history_by_block_hash(parent_hash) {
+            Ok(state) => state,
+            Err(err) => {
+                // Pruned history (non-archive node), non-canonical hash, or IO fault — the
+                // ProviderError carries which; refusal itself is logged/counted at the EVM layer.
+                tracing::warn!(
+                    target: "celo::fee_resolver",
+                    %parent_hash,
+                    %err,
+                    "no historical state for parent; refusing to resolve fee context"
+                );
+                return None;
+            }
+        };
         let db = StateProviderDatabase::new(state);
         let mut evm = CeloEvmFactory::default().create_evm(db, env);
         Some(evm.create_fee_currency_context())
