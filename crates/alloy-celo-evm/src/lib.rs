@@ -1069,6 +1069,18 @@ mod tests {
         assert_eq!(*calls.lock(), 0, "disabled EVM must not consult the resolver");
     }
 
+    /// `for_block_executor` must flip BOTH flags — the matched-pair fold is the central safety
+    /// argument (see its docs): pinning off without the store on drops CIP-64 receipt data;
+    /// the store on without pinning off lets a consensus executor consult the RPC-writable memo.
+    #[test]
+    fn test_for_block_executor_sets_matched_flag_pair() {
+        let evm = make_loose_test_evm(false);
+        assert!(evm.fee_context_cache_enabled, "factory default: loose EVMs participate");
+        let evm = evm.for_block_executor();
+        assert!(!evm.fee_context_cache_enabled, "must disable block-start fee-context pinning");
+        assert!(evm.cip64_store_enabled, "must enable CIP-64 receipt-data storage");
+    }
+
     /// Call-style simulations (`eth_call`/`eth_estimateGas`/`debug_traceCall` set
     /// `disable_base_fee`) run at end-of-block state where the rates they load are the intended
     /// semantics — they must neither read block-start rates from the memo nor consult the resolver.
