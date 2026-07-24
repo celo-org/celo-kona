@@ -392,6 +392,16 @@ where
                             target: "celo",
                             "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
                         );
+                        // The one arm that blocklists: meter it so a blocklist
+                        // addition is alertable on its own, not only via the
+                        // downstream `reason="blocklisted"` skips that fire
+                        // only while further txs of this currency arrive.
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "debit_credit_halted"
+                        )
+                        .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
                     } else {
