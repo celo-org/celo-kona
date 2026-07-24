@@ -344,7 +344,10 @@ where
         // / derivation re-execution, AND block tracing (`debug_traceTransaction`,
         // `debug_traceBlock*`, parity `trace_*`, `ots_*`) — and disabled during call-style RPC
         // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`). It gates participation
-        // in the block-start fee-context cache below.
+        // in the block-start fee-context cache below. Note: `is_base_fee_check_disabled` only
+        // reflects `cfg.disable_base_fee` while revm's `optional_no_base_fee` cargo feature is
+        // enabled (it is, transitively, today) — without it the method is constant `false` and
+        // the call-style bypass would silently vanish.
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
         // Block-start fee-context pinning for reth's per-tx `debug_trace*` replay EVMs (see the

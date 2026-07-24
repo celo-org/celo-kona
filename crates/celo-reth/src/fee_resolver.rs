@@ -37,7 +37,8 @@ use crate::celo_next_block_base_fee;
 ///
 /// Cheap to clone; wired onto the shared [`CeloEvmFactory`] at node build time. Memoizes nothing
 /// itself — `CeloEvm::transact_raw` caches each resolved context in the factory-shared memo, so
-/// `resolve` runs at most once per block per eviction window.
+/// `resolve` runs roughly once per block per eviction window (concurrent tracers racing the same
+/// miss may each run it; the duplicate work is benign and all store the same value).
 #[derive(Debug, Clone)]
 pub struct ProviderFeeContextResolver<Provider, ChainSpec> {
     provider: Provider,
@@ -108,9 +109,10 @@ where
     /// Env for a not-yet-canonical child of `parent`, built from parent-derived values only:
     /// number `parent.number + 1`, timestamp `parent.timestamp + 1` (Celo's 1s cadence; selects
     /// the hardfork spec), the parent's beneficiary/prevrandao/gas limit, and the Celo next-block
-    /// base fee. The directory/oracle view calls read contract storage, not these env fields, so
-    /// a synthesized value differing from the real child header doesn't change the resolved
-    /// context — and nothing caller-forgeable enters.
+    /// base fee. The directory/oracle view calls read contract storage, not these env fields —
+    /// the copied-from-parent ones the real child header would diverge on are exactly what
+    /// `COINBASE`, `PREVRANDAO`, and `GASLIMIT` expose — so a synthesized value differing from
+    /// the real child doesn't change the resolved context, and nothing caller-forgeable enters.
     fn next_block_env(&self, parent: &Header) -> Option<EvmEnv<OpSpecId>> {
         let timestamp = parent.timestamp.saturating_add(1);
         let base_fee = celo_next_block_base_fee(&self.chain_spec, parent, timestamp)?;
