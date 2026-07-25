@@ -176,6 +176,13 @@ impl CeloBootInfo {
     }
 }
 
+// The baked constants below duplicate `celo_espresso_params.json` (this directory), the canonical
+// per-chain Espresso parameters shared with the Go op-node: celo-org/optimism embeds a
+// byte-identical copy at `op-node/rollup/celo_espresso_params.json` and rejects at startup any
+// rollup config that diverges from it. `baked_espresso_matches_canonical_params_file` asserts the
+// constants match the file, so op-node and this program cannot drift apart silently. When
+// scheduling Espresso on a chain, update the constants and the file in both repositories together.
+
 /// Celo Espresso batch-authentication settings for Celo Mainnet.
 // TODO(espresso): set `espresso_time` + `batch_authenticator_address` when Espresso activation is
 // scheduled for Celo Mainnet. `None` keeps vanilla OP Stack sender-based batch authorization.
@@ -263,6 +270,40 @@ mod tests {
         let mut cfg = RollupConfig { fjord_max_sequencer_drift: 1800, ..Default::default() };
         enforce_celo_fjord_sequencer_drift(&mut cfg, 10);
         assert_eq!(cfg.fjord_max_sequencer_drift, 1800);
+    }
+
+    /// The canonical per-chain Espresso parameters. Byte-identical to the copy embedded by the
+    /// Go op-node (celo-org/optimism, `op-node/rollup/celo_espresso_params.json`), which
+    /// validates its runtime rollup config against the same values.
+    const CELO_ESPRESSO_PARAMS_JSON: &str = include_str!("celo_espresso_params.json");
+
+    #[test]
+    fn baked_espresso_matches_canonical_params_file() {
+        use alloc::{
+            collections::BTreeMap,
+            string::{String, ToString},
+        };
+
+        let canonical: BTreeMap<String, CeloEspressoConfig> =
+            serde_json::from_str(CELO_ESPRESSO_PARAMS_JSON)
+                .expect("canonical celo_espresso_params.json must parse");
+        let baked = [
+            (42220u64, CELO_MAINNET_ESPRESSO),
+            (11142220u64, CELO_SEPOLIA_ESPRESSO),
+            (11162320u64, CELO_CHAOS_ESPRESSO),
+        ];
+        assert_eq!(
+            canonical.len(),
+            baked.len(),
+            "every chain in celo_espresso_params.json must have a baked constant wired into enforce_celo_espresso",
+        );
+        for (chain_id, constant) in baked {
+            assert_eq!(
+                canonical.get(&chain_id.to_string()),
+                Some(&constant),
+                "chain {chain_id}: baked Espresso constant diverges from celo_espresso_params.json",
+            );
+        }
     }
 
     #[test]
