@@ -17,6 +17,9 @@ just test                  # Run all tests with nextest (alias: just t)
 just lint-native           # Format check + clippy + doc lint (alias: just l)
 just fmt-native-fix        # Fix formatting with nightly (alias: just f)
 just hack                  # cargo hack check --no-default-features (verifies no-std builds)
+just setup                 # Install the pre-commit nightly-fmt hook
+just test-trybuild         # Compile-fail guard for celo_revm::units (slow, split out of `just test`)
+just check-udeps           # Unused-dependency check (nightly; CI pins CELO_UDEPS_TOOLCHAIN)
 cargo test -p <crate>      # Test single crate
 cargo build -p celo-reth   # Build single crate
 ```
@@ -34,7 +37,7 @@ The workspace `default-members` are the three binaries in `bin/` — a bare
 ### Crate Dependency Flow
 
 ```
-bin/celo-reth (L2 execution node binary)
+celo-reth (L2 execution node binary, at crates/celo-reth/src/bin/celo_reth.rs)
   └── crates/celo-reth (reth node configuration)
         ├── alloy-celo-evm (alloy-evm wrapper)
         │     └── celo-revm (revm fork with Celo handlers)
@@ -49,6 +52,10 @@ bin/host, bin/client (FPVM proof host + client)
 bin/execution-verifier
   └── crates/kona/executor
 ```
+
+### Upstream Pins
+
+`kona-*` and `reth-optimism-*` come from the [Optimism monorepo](https://github.com/ethereum-optimism/optimism) at tag `op-reth/v2.3.1` (kona and op-reth both live under `rust/` there now, not in `op-rs/kona`). Plain `reth-*` crates come from a pinned `paradigmxyz/reth` revision. `op-alloy-*` / `op-revm` are patched to the monorepo's in-tree copies. When tracing behaviour into upstream, read the source at that tag, not `develop`.
 
 ### Binaries (`bin/`)
 
@@ -71,10 +78,15 @@ Modules under `crates/celo-reth/src/`:
 - **`rpc.rs`** — `CeloRpcTypes`, `CeloReceiptConverter`, `CeloEthApiBuilder` (Celo equivalents of op-reth's `Optimism`/`OpReceiptConverter`/`OpEthApiBuilder`). Custom `eth_gasPrice` returns the 25 Gwei floor; CIP-64 receipts surface `feeCurrency`, `baseFeeInFeeCurrency`, etc.
 - **`chainspec/`** — Celo chain spec parser. Embeds zstd-compressed `mainnet.json.zst`/`sepolia.json.zst` (shared dictionary from `celo-org/superchain-registry`) plus `mainnet.toml`/`sepolia.toml` for post-snapshot forks (Holocene, Isthmus, Jovian). Adds `Gingerbread` and `Cel2` hardforks the upstream OP parser drops.
 - **`primitives.rs`** / **`signed_tx.rs`** / **`receipt.rs`** / **`receipts.rs`** — Node primitives: `CeloPrimitives`, `CeloTransactionSigned`, `CeloConsensusTx`, bloomless `CeloReceipt`, `CeloRethReceiptBuilder` (consumes `Cip64Storage`).
+- **`state_import.rs`** / **`snapshot_manifest.rs`** / **`download_repair.rs`** / **`celo_migrate_v2.rs`** — Datadir lifecycle for a *migrated* chain. Celo Mainnet blocks `1..CEL2_MIGRATION_BLOCK_NUMBER` are header-only dummy placeholders imported by `import-celo-state`; they have no bodies, so any upstream code path that rebuilds an index by iterating from block 1 dies with `BlockBodyIndicesNotFound(1)`. Each module wraps the corresponding upstream command and reconciles stage checkpoints (mostly `TransactionLookup`) across the migration boundary. `celo_reth.rs` intercepts these subcommands in `CELO_SUBCOMMANDS` so they dispatch against `CeloNode`, not `OpNode`.
+
+`celo-reth` also has its own multi-stage `Dockerfile` (cargo-chef, frame pointers for profiling) separate from the repo-root one, which builds the fault-proof binaries.
 
 ### Other Key Crates
 
 - **`celo-revm`**: Low-level EVM modifications. Custom handler that intercepts CIP-64 txs to debit/credit fee currency via ERC20 calls. Contains the `FeeCurrencyContext`, contract ABIs for `FeeCurrencyDirectory`, and the transfer precompile. Must compile for `riscv32imac-unknown-none-elf` (no-std).
+
+  `units.rs` holds newtypes for the two fee denominations (native CELO vs fee currency). Mixing them is a recurring bug class, so the types make it a compile error; the `units_compile_fail` trybuild suite guards the defenses and runs via `just test-trybuild`, not `just test`.
 
 - **`alloy-celo-evm`**: Wraps `celo-revm` into `alloy-evm`'s `Evm` trait (`CeloEvm`). Adds the fee currency blocklist (blocks currencies whose debit/credit calls *halt* during block building, with time-based eviction; reverts and EVM-level errors drop the tx without blocklisting). Contains `CeloEvmFactory` and `Cip64Storage` for passing fee info to receipt builder.
 
@@ -82,7 +94,7 @@ Modules under `crates/celo-reth/src/`:
 
 - **`celo-otel`**: Shared OpenTelemetry setup (tracing-subscriber + OTLP exporter, metrics, resource detection). Used by the binaries for logging/telemetry; not pulled into the no-std crates.
 
-- **`kona`**: Celo-specific wrappers around Kona's `driver`, `executor`, `genesis`, `proof`, `protocol`, and `registry` crates for ZK proof generation. Each lives at `crates/kona/<name>/`.
+- **`kona`**: Celo-specific wrappers around Kona's `derive`, `driver`, `executor`, `genesis`, `proof`, `protocol`, and `registry` crates for ZK proof generation. Each lives at `crates/kona/<name>/`. `derive` is the newest: it duplicates kona's `EthereumDataSource` as `CeloEthereumDataSource` and adds Espresso event-based batch authentication, gated on the Espresso hardfork with a grace period (`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`).
 
 ### No-std Support
 
