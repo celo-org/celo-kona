@@ -31,6 +31,18 @@
 //    state instead of the target block's start, and each simulated bundle did
 //    not reliably keep one block-start context across all of its calls.
 //
+// 6. Call overrides. State and block overrides must be applied before the
+//    block context is captured. An unrelated state override must not disable
+//    context pinning, while an oracle override must define the pinned rate.
+//
+// 7. trace_callMany. Although it intentionally creates a fresh inspector and
+//    EVM for every call, every call in the sequence must use the context
+//    captured before the first call mutates state.
+//
+// 8. eth_callMany. Each bundle is a simulated block. It must capture context
+//    after that bundle's overrides, then seed the same context into every
+//    fresh call EVM in the bundle.
+//
 // The script lands, in the SAME block, an oracle rate update (2:1 -> 100:1)
 // followed by three CIP-64 transactions with limited fee headroom (valid at
 // 2:1, invalid at 100:1), then asserts that debug_traceBlockByNumber and
@@ -47,6 +59,12 @@ import { publicClient, walletClient, account } from "./viem_setup.mjs";
 
 const [feeCurrency, oracle, directory] = process.argv.slice(2);
 const CIP64_TX_COUNT = 3;
+const UNRELATED_ACCOUNT = "0x00000000000000000000000000000000000000d0";
+// Runtime returns GASPRICE followed by NUMBER as two ABI words.
+const CONTEXT_PROBE_INIT_CODE =
+  "0x600d600c600039600d6000f33a6000524360205260406000f3";
+const PRIORITY_FEE = 100n;
+let contextProbe;
 
 const oracleAbi = parseAbi([
   "function setExchangeRate(address token, uint256 numerator, uint256 denominator)",
@@ -60,6 +78,83 @@ const directoryAbi = parseAbi([
 function fail(message) {
   console.log(JSON.stringify({ success: false, error: message }));
   process.exit(1);
+}
+
+function word(value) {
+  return numberToHex(value, { size: 32 });
+}
+
+function oracleRateOverrides(numerator, denominator) {
+  return {
+    [oracle]: {
+      stateDiff: {
+        [word(0n)]: word(parseEther(numerator)),
+        [word(1n)]: word(parseEther(denominator)),
+      },
+    },
+  };
+}
+
+function setRateCall(numerator, denominator = "1") {
+  return {
+    from: account.address,
+    to: oracle,
+    data: encodeFunctionData({
+      abi: oracleAbi,
+      functionName: "setExchangeRate",
+      args: [
+        feeCurrency,
+        parseEther(numerator),
+        parseEther(denominator),
+      ],
+    }),
+    gas: numberToHex(200000n),
+  };
+}
+
+function feeCurrencyProbe(baseFeePerGas) {
+  return {
+    from: account.address,
+    to: contextProbe,
+    feeCurrency,
+    maxFeePerGas: numberToHex(baseFeePerGas * 200n),
+    maxPriorityFeePerGas: numberToHex(PRIORITY_FEE),
+    gas: numberToHex(100000n),
+  };
+}
+
+function assertProbeOutput(
+  name,
+  output,
+  expectedGasPrice,
+  expectedBlockNumber,
+) {
+  if (!output || output.length !== 130) {
+    fail(`${name}: expected two ABI words, got ${output}`);
+  }
+  const gasPrice = BigInt(`0x${output.slice(2, 66)}`);
+  const blockNumber = BigInt(`0x${output.slice(66, 130)}`);
+  if (gasPrice !== expectedGasPrice || blockNumber !== expectedBlockNumber) {
+    fail(
+      `${name}: expected GASPRICE=${expectedGasPrice}, NUMBER=${expectedBlockNumber}; got GASPRICE=${gasPrice}, NUMBER=${blockNumber}`,
+    );
+  }
+}
+
+async function deployContextProbe() {
+  const hash = await walletClient.sendTransaction({
+    account,
+    data: CONTEXT_PROBE_INIT_CODE,
+    gas: 100000n,
+  });
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+    timeout: 30_000,
+  });
+  if (receipt.status !== "success" || !receipt.contractAddress) {
+    fail("could not deploy the GASPRICE/NUMBER context probe");
+  }
+  return receipt.contractAddress;
 }
 
 async function setRate(numerator, nonce) {
@@ -196,6 +291,7 @@ async function sendBatchInOneBlock() {
 }
 
 async function main() {
+  contextProbe = await deployContextProbe();
   const { rateReceipt, cipReceipts, cipHashes, maxFeePerGas } =
     await sendBatchInOneBlock();
   if ([rateReceipt, ...cipReceipts].some((r) => r.status !== "success")) {
@@ -256,7 +352,10 @@ async function main() {
   }
 
   await traceParityAndOtterscan(cipHashes.at(-1));
+  await debugTraceCallManyWithOverrides(blockNumber, block.baseFeePerGas);
   await traceCallAfterMidBlockRemoval();
+  await ethCallMany(blockNumber, block.baseFeePerGas);
+  await traceParityCallMany(blockNumber, block.baseFeePerGas);
 
   console.log(JSON.stringify({ success: true, error: null }));
 }
@@ -303,6 +402,175 @@ async function traceParityAndOtterscan(txHash) {
   if (!otsRoot || otsRoot.from?.toLowerCase() !== account.address.toLowerCase()) {
     fail(`ots_traceTransaction: unexpected result ${JSON.stringify(ots)}`);
   }
+}
+
+// The relevant oracle override defines the bundle-start rate as 1:2. The first
+// call changes the database back to 100:1, but the second call must still see
+// the captured 1:2 rate. The block-number override also has to be applied
+// before capture so the context stamp matches the call EVM.
+async function debugTraceCallManyWithOverrides(blockNumber, baseFeePerGas) {
+  const overriddenNumber = blockNumber + 1000n;
+  let traces;
+  try {
+    traces = await publicClient.request({
+      method: "debug_traceCallMany",
+      params: [
+        [
+          {
+            transactions: [
+              setRateCall("100"),
+              feeCurrencyProbe(baseFeePerGas),
+            ],
+            blockOverride: { number: numberToHex(overriddenNumber) },
+          },
+        ],
+        { blockNumber: numberToHex(blockNumber) },
+        {
+          tracer: "callTracer",
+          stateOverrides: oracleRateOverrides("1", "2"),
+        },
+      ],
+    });
+  } catch (e) {
+    fail(
+      `debug_traceCallMany with overrides failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+
+  if (!Array.isArray(traces) || traces.length !== 1 || traces[0]?.length !== 2) {
+    fail(
+      `debug_traceCallMany with overrides: unexpected shape ${JSON.stringify(traces)}`,
+    );
+  }
+  for (const [txIndex, result] of traces[0].entries()) {
+    if (result.error) {
+      fail(
+        `debug_traceCallMany with overrides: tx ${txIndex} failed: ${result.error}`,
+      );
+    }
+  }
+  assertProbeOutput(
+    "debug_traceCallMany with overrides",
+    traces[0][1].output,
+    baseFeePerGas / 2n + PRIORITY_FEE,
+    overriddenNumber,
+  );
+}
+
+// trace_callMany executes calls sequentially on the target block's final
+// state, whose canonical oracle rate is now 100:1. The first call changes the
+// database to 1:2. The second fresh EVM must still use the sequence-start
+// 100:1 context.
+async function traceParityCallMany(blockNumber, baseFeePerGas) {
+  let traces;
+  try {
+    traces = await publicClient.request({
+      method: "trace_callMany",
+      params: [
+        [
+          [setRateCall("1", "2"), ["trace"]],
+          [feeCurrencyProbe(baseFeePerGas), ["trace"]],
+        ],
+        numberToHex(blockNumber),
+      ],
+    });
+  } catch (e) {
+    fail(
+      `trace_callMany failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+
+  if (!Array.isArray(traces) || traces.length !== 2) {
+    fail(`trace_callMany: unexpected shape ${JSON.stringify(traces)}`);
+  }
+  for (const [txIndex, result] of traces.entries()) {
+    const root = result.trace?.find(
+      (trace) =>
+        Array.isArray(trace.traceAddress) && trace.traceAddress.length === 0,
+    );
+    if (!root || root.error) {
+      fail(`trace_callMany: tx ${txIndex} failed: ${JSON.stringify(result)}`);
+    }
+  }
+  // Celo's call-request conversion currently caps the effective price at the
+  // native base fee plus priority before fee-currency conversion. Rates above
+  // 1 therefore return this cap, while the 1:2 override remains distinguishable.
+  assertProbeOutput(
+    "trace_callMany",
+    traces[1].output,
+    baseFeePerGas + PRIORITY_FEE,
+    blockNumber,
+  );
+}
+
+// The top-level override makes the first bundle start at 1:2. Bundle 1 changes
+// the database to 100:1, but its probe must remain at 1:2. Bundle 2 captures
+// the newly committed 100:1 context, then changes the database to 1:2; its
+// probe must remain at 100:1. The same probe verifies that each bundle's block
+// override is present in every call EVM.
+async function ethCallMany(blockNumber, baseFeePerGas) {
+  const firstNumber = blockNumber + 2000n;
+  const secondNumber = blockNumber + 2001n;
+  let results;
+  try {
+    results = await publicClient.request({
+      method: "eth_callMany",
+      params: [
+        [
+          {
+            transactions: [
+              setRateCall("100"),
+              feeCurrencyProbe(baseFeePerGas),
+            ],
+            blockOverride: { number: numberToHex(firstNumber) },
+          },
+          {
+            transactions: [
+              setRateCall("1", "2"),
+              feeCurrencyProbe(baseFeePerGas),
+            ],
+            blockOverride: { number: numberToHex(secondNumber) },
+          },
+        ],
+        { blockNumber: numberToHex(blockNumber) },
+        oracleRateOverrides("1", "2"),
+      ],
+    });
+  } catch (e) {
+    fail(
+      `eth_callMany failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+
+  if (
+    !Array.isArray(results) ||
+    results.length !== 2 ||
+    results[0]?.length !== 2 ||
+    results[1]?.length !== 2
+  ) {
+    fail(`eth_callMany: unexpected shape ${JSON.stringify(results)}`);
+  }
+  for (const [bundleIndex, bundle] of results.entries()) {
+    for (const [txIndex, result] of bundle.entries()) {
+      if (result.error || !result.value) {
+        fail(
+          `eth_callMany: bundle ${bundleIndex} tx ${txIndex} failed: ${JSON.stringify(result)}`,
+        );
+      }
+    }
+  }
+  assertProbeOutput(
+    "eth_callMany bundle 0",
+    results[0][1].value,
+    baseFeePerGas / 2n + PRIORITY_FEE,
+    firstNumber,
+  );
+  assertProbeOutput(
+    "eth_callMany bundle 1",
+    results[1][1].value,
+    baseFeePerGas + PRIORITY_FEE,
+    secondNumber,
+  );
 }
 
 // Lands a directory removal of the fee currency and a plain transfer in one
@@ -386,28 +654,28 @@ async function traceCallAfterMidBlockRemoval() {
   const { baseFeePerGas } = await publicClient.getBlock({
     blockNumber: removalReceipt.blockNumber,
   });
-  let trace;
+  let trace, traceWithUnrelatedOverride;
+  const request = {
+    from: account.address,
+    to: "0x00000000000000000000000000000000DeaDBeef",
+    value: "0x1",
+    feeCurrency,
+    // 200x: above the converted base fee even at the 100:1 rate still
+    // active from the rate-update scenario, so the trace outcome hinges
+    // only on the directory membership of the fee currency.
+    maxFeePerGas: numberToHex(baseFeePerGas * 200n),
+    maxPriorityFeePerGas: "0x64",
+    gas: numberToHex(90000n),
+  };
+  const block = numberToHex(removalReceipt.blockNumber);
+  const txIndex = numberToHex(followUpReceipt.transactionIndex);
   try {
     trace = await publicClient.request({
       method: "debug_traceCall",
       params: [
-        {
-          from: account.address,
-          to: "0x00000000000000000000000000000000DeaDBeef",
-          value: "0x1",
-          feeCurrency,
-          // 200x: above the converted base fee even at the 100:1 rate still
-          // active from the rate-update scenario, so the trace outcome hinges
-          // only on the directory membership of the fee currency.
-          maxFeePerGas: numberToHex(baseFeePerGas * 200n),
-          maxPriorityFeePerGas: "0x64",
-          gas: numberToHex(90000n),
-        },
-        numberToHex(removalReceipt.blockNumber),
-        {
-          tracer: "callTracer",
-          txIndex: numberToHex(followUpReceipt.transactionIndex),
-        },
+        request,
+        block,
+        { tracer: "callTracer", txIndex },
       ],
     });
   } catch (e) {
@@ -415,8 +683,37 @@ async function traceCallAfterMidBlockRemoval() {
       `debug_traceCall(txIndex) after mid-block removal failed: ${e.details ?? e.shortMessage ?? e.message}`,
     );
   }
+  try {
+    traceWithUnrelatedOverride = await publicClient.request({
+      method: "debug_traceCall",
+      params: [
+        request,
+        block,
+        {
+          tracer: "callTracer",
+          txIndex,
+          stateOverrides: {
+            [UNRELATED_ACCOUNT]: { balance: "0x1" },
+          },
+        },
+      ],
+    });
+  } catch (e) {
+    fail(
+      `debug_traceCall(txIndex) with unrelated override failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
   if (trace.error || trace.from?.toLowerCase() !== account.address.toLowerCase()) {
     fail(`debug_traceCall(txIndex): unexpected result ${JSON.stringify(trace)}`);
+  }
+  if (
+    traceWithUnrelatedOverride.error ||
+    traceWithUnrelatedOverride.from?.toLowerCase() !==
+      account.address.toLowerCase()
+  ) {
+    fail(
+      `debug_traceCall(txIndex) with unrelated override: unexpected result ${JSON.stringify(traceWithUnrelatedOverride)}`,
+    );
   }
 
   await traceCallManyAfterRemoval(removalReceipt, baseFeePerGas);
@@ -465,45 +762,62 @@ async function traceCallManyAfterRemoval(removalReceipt, baseFeePerGas) {
     gas: numberToHex(200000n),
   };
 
-  let traces;
-  try {
-    traces = await publicClient.request({
-      method: "debug_traceCallMany",
-      params: [
-        [
-          { transactions: [setCurrencyConfig, call] },
-          { transactions: [removeCurrency, call] },
-        ],
-        { blockNumber: numberToHex(removalReceipt.blockNumber) },
-        { tracer: "callTracer" },
-      ],
-    });
-  } catch (e) {
-    fail(
-      `debug_traceCallMany after removal failed: ${e.details ?? e.shortMessage ?? e.message}`,
-    );
-  }
+  const optionSets = [
+    ["without overrides", { tracer: "callTracer" }],
+    [
+      "with unrelated override",
+      {
+        tracer: "callTracer",
+        stateOverrides: {
+          [UNRELATED_ACCOUNT]: { balance: "0x1" },
+        },
+      },
+    ],
+  ];
 
-  if (
-    !Array.isArray(traces) ||
-    traces.length !== 2 ||
-    traces[0]?.length !== 2 ||
-    traces[1]?.length !== 2
-  ) {
-    fail(`debug_traceCallMany: unexpected bundle shape ${JSON.stringify(traces)}`);
-  }
-  for (const [bundleIndex, bundle] of traces.entries()) {
-    for (const [txIndex, result] of bundle.entries()) {
-      if (result.error) {
+  for (const [variant, options] of optionSets) {
+    let traces;
+    try {
+      traces = await publicClient.request({
+        method: "debug_traceCallMany",
+        params: [
+          [
+            { transactions: [setCurrencyConfig, call] },
+            { transactions: [removeCurrency, call] },
+          ],
+          { blockNumber: numberToHex(removalReceipt.blockNumber) },
+          options,
+        ],
+      });
+    } catch (e) {
+      fail(
+        `debug_traceCallMany ${variant} after removal failed: ${e.details ?? e.shortMessage ?? e.message}`,
+      );
+    }
+
+    if (
+      !Array.isArray(traces) ||
+      traces.length !== 2 ||
+      traces[0]?.length !== 2 ||
+      traces[1]?.length !== 2
+    ) {
+      fail(
+        `debug_traceCallMany ${variant}: unexpected bundle shape ${JSON.stringify(traces)}`,
+      );
+    }
+    for (const [bundleIndex, bundle] of traces.entries()) {
+      for (const [txIndex, result] of bundle.entries()) {
+        if (result.error) {
+          fail(
+            `debug_traceCallMany ${variant}: bundle ${bundleIndex} tx ${txIndex} failed: ${result.error}`,
+          );
+        }
+      }
+      if (bundle[1].from?.toLowerCase() !== account.address.toLowerCase()) {
         fail(
-          `debug_traceCallMany: bundle ${bundleIndex} tx ${txIndex} failed: ${result.error}`,
+          `debug_traceCallMany ${variant}: unexpected CIP-64 sender ${bundle[1].from}`,
         );
       }
-    }
-    if (bundle[1].from?.toLowerCase() !== account.address.toLowerCase()) {
-      fail(
-        `debug_traceCallMany: unexpected CIP-64 sender ${bundle[1].from}`,
-      );
     }
   }
 }
