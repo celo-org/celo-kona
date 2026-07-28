@@ -62,17 +62,20 @@ impl Default for FeeCurrencyLimits {
 impl FeeCurrencyLimits {
     /// Returns the built-in per-currency gas limit defaults for the given chain.
     ///
-    /// Celo Mainnet matches op-geth's `miner/celo_defaults.go`. Celo Sepolia
-    /// ships the same fractions for the equivalent stablecoins on the testnet.
-    /// Other chains get an empty map and fall back to `default_limit` for
-    /// every currency.
+    /// Keys must be addresses the chain's `FeeCurrencyDirectory` registers, since that is what a
+    /// CIP-64 transaction carries in `feeCurrency`. USDT and USDC are 6-decimal and Celo prices
+    /// gas in 18 decimals, so the directory registers a scaling *adapter* for each and the token
+    /// address itself is never a valid `feeCurrency`. The cStables are 18-decimal and are
+    /// registered directly. The fractions match op-geth's `miner/celo_defaults.go`.
+    ///
+    /// Other chains get an empty map and fall back to `default_limit` for every currency.
     pub fn defaults_for_chain(chain_id: u64) -> HashMap<Address, f64> {
         use alloy_primitives::address;
         match chain_id {
             celo_revm::constants::CELO_MAINNET_CHAIN_ID => HashMap::from([
                 (address!("765DE816845861e75A25fCA122bb6898B8B1282a"), 0.9), // cUSD
-                (address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e"), 0.9), // USDT
-                (address!("cebA9300f2b948710d2653dD7B07f33A8B32118C"), 0.9), // USDC
+                (address!("0E2A3e05bc9A16F5292A6170456A710cb89C6f72"), 0.9), // USDT adapter
+                (address!("2F25deB3848C207fc8E0c34035B3Ba7fC157602B"), 0.9), // USDC adapter
                 (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
                 (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
             ]),
@@ -262,6 +265,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::address;
 
     #[test]
     fn test_parse_limits() {
@@ -370,45 +374,61 @@ mod tests {
         assert!(defaults.is_empty(), "Unknown chains should fall back to default_limit");
     }
 
-    #[test]
-    fn test_celo_sepolia_defaults() {
-        let defaults =
-            FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_SEPOLIA_CHAIN_ID);
-        assert_eq!(defaults.len(), 5);
+    /// Asserts `defaults_for_chain` returns exactly `expected`, address by address.
+    fn assert_chain_defaults(chain_id: u64, expected: &[(Address, f64)]) {
+        let defaults = FeeCurrencyLimits::defaults_for_chain(chain_id);
+        assert_eq!(defaults.len(), expected.len(), "chain {chain_id}: wrong number of defaults");
+        for (addr, fraction) in expected {
+            assert_eq!(
+                defaults.get(addr),
+                Some(fraction),
+                "chain {chain_id}: wrong limit for {addr}"
+            );
+        }
     }
 
     #[test]
+    fn test_celo_sepolia_defaults() {
+        assert_chain_defaults(
+            celo_revm::constants::CELO_SEPOLIA_CHAIN_ID,
+            &[
+                (address!("EF4d55D6dE8e8d73232827Cd1e9b2F2dBb45bC80"), 0.9), // cUSD
+                (address!("e19447B12cb0d0220B2a501D8382be2f61CcF92a"), 0.9), // USDT
+                (address!("bf1441Ea57f43f35f713431001f35742c88071c7"), 0.9), // USDC
+                (address!("6B172e333e2978484261D7eCC3DE491E79764BbC"), 0.5), // cEUR
+                (address!("13d68A1Bf4a8cB7d9feF54EF70401871b666269c"), 0.5), // cREAL
+            ],
+        );
+    }
+
+    /// Mainnet USDT and USDC are reachable only through their `FeeCurrencyDirectory` adapters,
+    /// so those are the addresses that must carry the 0.9 fraction.
+    #[test]
     fn test_celo_mainnet_defaults() {
+        assert_chain_defaults(
+            celo_revm::constants::CELO_MAINNET_CHAIN_ID,
+            &[
+                (address!("765DE816845861e75A25fCA122bb6898B8B1282a"), 0.9), // cUSD
+                (address!("0E2A3e05bc9A16F5292A6170456A710cb89C6f72"), 0.9), // USDT adapter
+                (address!("2F25deB3848C207fc8E0c34035B3Ba7fC157602B"), 0.9), // USDC adapter
+                (address!("D8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73"), 0.5), // cEUR
+                (address!("e8537a3d056DA446677B9E9d6c5dB704EaAb4787"), 0.5), // cREAL
+            ],
+        );
+
+        // The underlying token addresses never appear in `feeCurrency`, so they must stay
+        // absent from the map and fall back to the default limit.
         let defaults =
             FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_MAINNET_CHAIN_ID);
-        assert_eq!(defaults.len(), 5);
-        // cUSD, USDT, USDC = 0.9
-        assert_eq!(
-            defaults[&"0x765DE816845861e75A25fCA122bb6898B8B1282a".parse::<Address>().unwrap()],
-            0.9,
-            "cUSD should be 0.9"
-        );
-        assert_eq!(
-            defaults[&"0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e".parse::<Address>().unwrap()],
-            0.9,
-            "USDT should be 0.9"
-        );
-        assert_eq!(
-            defaults[&"0xcebA9300f2b948710d2653dD7B07f33A8B32118C".parse::<Address>().unwrap()],
-            0.9,
-            "USDC should be 0.9"
-        );
-        // cEUR, cREAL = 0.5
-        assert_eq!(
-            defaults[&"0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73".parse::<Address>().unwrap()],
-            0.5,
-            "cEUR should be 0.5"
-        );
-        assert_eq!(
-            defaults[&"0xe8537a3d056DA446677B9E9d6c5dB704EaAb4787".parse::<Address>().unwrap()],
-            0.5,
-            "cREAL should be 0.5"
-        );
+        for (name, token) in [
+            ("USDT", address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e")),
+            ("USDC", address!("cebA9300f2b948710d2653dD7B07f33A8B32118C")),
+        ] {
+            assert!(
+                !defaults.contains_key(&token),
+                "{name} token address must take the default limit, not a keyed one"
+            );
+        }
     }
 
     #[test]
