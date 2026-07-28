@@ -72,6 +72,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
+    "https://github.com/celo-org/reth",
     "https://github.com/Layr-Labs/hokulea",
     "https://github.com/sp1-patches/bn",
     # celo-org fork at seolaoh/v2.3.1-on-upstream while a compatible hokulea release is in flight.
