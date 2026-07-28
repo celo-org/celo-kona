@@ -1,6 +1,7 @@
 //! Celo reth node binary.
 
 use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
+use alloy_primitives::Address;
 use celo_reth::{
     CeloEvmConfig,
     celo_migrate_v2::CeloMigrateV2Command,
@@ -52,7 +53,7 @@ use reth_optimism_trie::{
 use reth_rpc_server_types::RethRpcModule;
 use reth_tasks::TaskExecutor;
 use reth_tracing::{FileWorkerGuard, Layers};
-use std::{ffi::OsString, sync::Arc, time::Duration};
+use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -231,6 +232,17 @@ pub struct CeloArgs {
     pub fee_currency_default: f64,
 }
 
+/// Renders fee currency limits as `address=fraction,...`, sorted by address.
+///
+/// Sorted because `HashMap` iteration order is nondeterministic. The output uses the syntax
+/// [`FeeCurrencyLimits::parse_limits`] accepts, so a logged value pastes back into
+/// `--celo.feecurrency.limits`.
+fn render_fee_currency_limits(limits: &HashMap<Address, f64>) -> String {
+    let mut entries: Vec<(&Address, &f64)> = limits.iter().collect();
+    entries.sort_unstable_by_key(|(addr, _)| *addr);
+    entries.iter().map(|(addr, frac)| format!("{addr}={frac}")).collect::<Vec<_>>().join(",")
+}
+
 /// Augment reth's version metadata with the celo-kona git SHA so `celo-reth --version` shows
 /// both the upstream reth commit and the celo-kona commit that built the binary.
 ///
@@ -310,7 +322,7 @@ fn main() {
 
             // Parse fee currency limits from CLI args.
             // If no explicit limits are provided, fall back to the chain's
-            // built-in defaults (op-geth-matching for mainnet; empty elsewhere).
+            // built-in defaults (mainnet and Celo Sepolia; empty elsewhere).
             let chain_id = builder.config().chain.chain().id();
             let limits = celo_args.fee_currency_limits.as_deref().map_or_else(
                 || FeeCurrencyLimits::defaults_for_chain(chain_id),
@@ -318,6 +330,25 @@ fn main() {
             );
             let fee_currency_limits =
                 FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
+
+            // A registered currency missing from this map takes `default_limit` with no other
+            // signal, and a key that names no registered currency is inert. Both are easy to
+            // cause: `--celo.feecurrency.limits` replaces the chain defaults rather than merging
+            // into them, and drops malformed entries silently. Log the resolved map so the
+            // operator can see what actually took effect.
+            let limits_source = if celo_args.fee_currency_limits.is_some() {
+                "--celo.feecurrency.limits"
+            } else {
+                "chain defaults"
+            };
+            info!(
+                target: "celo::payload",
+                chain_id,
+                source = limits_source,
+                default_limit = fee_currency_limits.default_limit,
+                limits = %render_fee_currency_limits(&fee_currency_limits.limits),
+                "Resolved fee currency block space limits"
+            );
 
             // Snapshot the historical-proofs fields before we move rollup_args
             // into CeloNode::new. Mirrors the OP launcher pattern in
@@ -708,5 +739,24 @@ mod tests {
     fn celo_download_source_derives_celo_snapshot_api() {
         let defaults = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL);
         assert_eq!(defaults.snapshot_api_url.as_ref(), "https://snapshots.celo.org/api/snapshots");
+    }
+
+    #[test]
+    fn render_fee_currency_limits_is_sorted_and_reparsable() {
+        let limits =
+            FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_MAINNET_CHAIN_ID);
+        let rendered = render_fee_currency_limits(&limits);
+
+        let addrs: Vec<Address> =
+            rendered.split(',').map(|e| e.split_once('=').unwrap().0.parse().unwrap()).collect();
+        assert_eq!(addrs.len(), 5);
+        assert!(addrs.windows(2).all(|w| w[0] < w[1]), "not sorted by address: {rendered}");
+
+        assert_eq!(FeeCurrencyLimits::parse_limits(&rendered), limits);
+    }
+
+    #[test]
+    fn render_fee_currency_limits_of_an_empty_map_is_empty() {
+        assert_eq!(render_fee_currency_limits(&HashMap::new()), "");
     }
 }
