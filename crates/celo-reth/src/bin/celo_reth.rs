@@ -729,13 +729,13 @@ mod tests {
     /// snapshots from `snapshots.celo.org` instead of the upstream Ethereum-only
     /// `snapshots.reth.rs`.
     #[test]
-    fn celo_download_source_derives_celo_snapshot_api() {
+    fn test_celo_download_source_derives_celo_snapshot_api() {
         let defaults = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL);
         assert_eq!(defaults.snapshot_api_url.as_ref(), "https://snapshots.celo.org/api/snapshots");
     }
 
     #[test]
-    fn render_fee_currency_limits_is_sorted_and_reparsable() {
+    fn test_render_fee_currency_limits_is_sorted_and_reparsable() {
         let limits =
             FeeCurrencyLimits::defaults_for_chain(celo_revm::constants::CELO_MAINNET_CHAIN_ID);
         let rendered = render_fee_currency_limits(&limits);
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn render_fee_currency_limits_of_an_empty_map_is_empty() {
+    fn test_render_fee_currency_limits_of_an_empty_map_is_empty() {
         assert_eq!(render_fee_currency_limits(&HashMap::new()), "");
     }
 }
