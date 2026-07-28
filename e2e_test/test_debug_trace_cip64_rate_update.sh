@@ -8,7 +8,7 @@ source debug-fee-currency/lib.sh
 # replay and mid-block call simulation must use the block-start fee-currency
 # context (a CIP-64 consensus rule), and replaying multiple CIP-64 transactions
 # must not double-store receipt data. See js-tests/debug_trace_rate_update.mjs
-# for the three scenarios.
+# for the covered scenarios.
 #
 # The shared e2e node instamines one tx per block, so this test starts its own node
 # with interval mining (--dev.block-time) to land the rate update and the CIP-64
@@ -46,7 +46,7 @@ GENESIS_JSON="$SCRIPT_DIR/celo-dev-genesis.json"
     --datadir "$DATADIR" \
     --http \
     --http.port 0 \
-    --http.api eth,web3,net,admin,debug \
+    --http.api eth,web3,net,admin,debug,trace,ots \
     --authrpc.port 0 \
     --port 0 \
     --disable-discovery \

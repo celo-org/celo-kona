@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regression test for three debug_trace* replay bugs on CIP-64 blocks, all
+// Regression test for block-scoped tracing and call simulation on CIP-64 blocks, all
 // violations of one invariant: replay and simulation must use the fee-currency
 // context (exchange rates, directory membership) from block-start state, like
 // transactions actually included in the block do.
@@ -23,6 +23,14 @@
 //    transaction at that position would see. Fixed by the
 //    capture/seed_block_replay_ctx hook (same reth branch + celo-kona impl).
 //
+// 4. Transaction-level parity and Otterscan tracing. Their shared replay path
+//    also split the prefix and target across EVMs, so late CIP-64 transactions
+//    re-loaded a mid-block rate.
+//
+// 5. debug_traceCallMany. Its default All position captured from block-final
+//    state instead of the target block's start, and each simulated bundle did
+//    not reliably keep one block-start context across all of its calls.
+//
 // The script lands, in the SAME block, an oracle rate update (2:1 -> 100:1)
 // followed by three CIP-64 transactions with limited fee headroom (valid at
 // 2:1, invalid at 100:1), then asserts that debug_traceBlockByNumber and
@@ -34,7 +42,7 @@
 // removal: only with block-start context is the currency still registered.
 //
 // args: feeCurrency oracle directory
-import { numberToHex, parseAbi, parseEther } from "viem";
+import { encodeFunctionData, numberToHex, parseAbi, parseEther } from "viem";
 import { publicClient, walletClient, account } from "./viem_setup.mjs";
 
 const [feeCurrency, oracle, directory] = process.argv.slice(2);
@@ -247,9 +255,54 @@ async function main() {
     fail(`debug_traceTransaction: unexpected result ${JSON.stringify(single)}`);
   }
 
+  await traceParityAndOtterscan(cipHashes.at(-1));
   await traceCallAfterMidBlockRemoval();
 
   console.log(JSON.stringify({ success: true, error: null }));
+}
+
+// The parity and Otterscan transaction endpoints share reth's generic
+// transaction-in-block replay path. The target must run on the same EVM as its
+// prefix so the late CIP-64 transaction keeps the block-start rate.
+async function traceParityAndOtterscan(txHash) {
+  let parity, ots;
+  try {
+    parity = await publicClient.request({
+      method: "trace_transaction",
+      params: [txHash],
+    });
+    ots = await publicClient.request({
+      method: "ots_traceTransaction",
+      params: [txHash],
+    });
+  } catch (e) {
+    fail(
+      `transaction trace endpoint failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+
+  if (!Array.isArray(parity) || parity.length === 0) {
+    fail("trace_transaction returned no traces");
+  }
+  const parityRoot = parity.find(
+    (trace) => Array.isArray(trace.traceAddress) && trace.traceAddress.length === 0,
+  );
+  if (
+    !parityRoot ||
+    parityRoot.error ||
+    parityRoot.transactionHash?.toLowerCase() !== txHash.toLowerCase() ||
+    parityRoot.action?.from?.toLowerCase() !== account.address.toLowerCase()
+  ) {
+    fail(`trace_transaction: unexpected result ${JSON.stringify(parity)}`);
+  }
+
+  if (!Array.isArray(ots) || ots.length === 0) {
+    fail("ots_traceTransaction returned no traces");
+  }
+  const otsRoot = ots.find((trace) => trace.depth === 0);
+  if (!otsRoot || otsRoot.from?.toLowerCase() !== account.address.toLowerCase()) {
+    fail(`ots_traceTransaction: unexpected result ${JSON.stringify(ots)}`);
+  }
 }
 
 // Lands a directory removal of the fee currency and a plain transfer in one
@@ -364,6 +417,94 @@ async function traceCallAfterMidBlockRemoval() {
   }
   if (trace.error || trace.from?.toLowerCase() !== account.address.toLowerCase()) {
     fail(`debug_traceCall(txIndex): unexpected result ${JSON.stringify(trace)}`);
+  }
+
+  await traceCallManyAfterRemoval(removalReceipt, baseFeePerGas);
+}
+
+// At TransactionIndex::All, execution starts from the removal block's final
+// state while the first bundle still uses that block's block-start fee context.
+// Bundle 1 can therefore re-register the removed currency and execute CIP-64.
+// Bundle 2 removes it again, then proves every call in that bundle keeps the
+// context captured before the removal.
+async function traceCallManyAfterRemoval(removalReceipt, baseFeePerGas) {
+  const currencies = await publicClient.readContract({
+    address: directory,
+    abi: directoryAbi,
+    functionName: "getCurrencies",
+    blockNumber: removalReceipt.blockNumber,
+  });
+  const restoredIndex = BigInt(currencies.length);
+  const call = {
+    from: account.address,
+    to: "0x00000000000000000000000000000000DeaDBeef",
+    value: "0x1",
+    feeCurrency,
+    maxFeePerGas: numberToHex(baseFeePerGas * 200n),
+    maxPriorityFeePerGas: "0x64",
+    gas: numberToHex(90000n),
+  };
+  const setCurrencyConfig = {
+    from: account.address,
+    to: directory,
+    data: encodeFunctionData({
+      abi: directoryAbi,
+      functionName: "setCurrencyConfig",
+      args: [feeCurrency, oracle, 60000n],
+    }),
+    gas: numberToHex(200000n),
+  };
+  const removeCurrency = {
+    from: account.address,
+    to: directory,
+    data: encodeFunctionData({
+      abi: directoryAbi,
+      functionName: "removeCurrencies",
+      args: [feeCurrency, restoredIndex],
+    }),
+    gas: numberToHex(200000n),
+  };
+
+  let traces;
+  try {
+    traces = await publicClient.request({
+      method: "debug_traceCallMany",
+      params: [
+        [
+          { transactions: [setCurrencyConfig, call] },
+          { transactions: [removeCurrency, call] },
+        ],
+        { blockNumber: numberToHex(removalReceipt.blockNumber) },
+        { tracer: "callTracer" },
+      ],
+    });
+  } catch (e) {
+    fail(
+      `debug_traceCallMany after removal failed: ${e.details ?? e.shortMessage ?? e.message}`,
+    );
+  }
+
+  if (
+    !Array.isArray(traces) ||
+    traces.length !== 2 ||
+    traces[0]?.length !== 2 ||
+    traces[1]?.length !== 2
+  ) {
+    fail(`debug_traceCallMany: unexpected bundle shape ${JSON.stringify(traces)}`);
+  }
+  for (const [bundleIndex, bundle] of traces.entries()) {
+    for (const [txIndex, result] of bundle.entries()) {
+      if (result.error) {
+        fail(
+          `debug_traceCallMany: bundle ${bundleIndex} tx ${txIndex} failed: ${result.error}`,
+        );
+      }
+    }
+    if (bundle[1].from?.toLowerCase() !== account.address.toLowerCase()) {
+      fail(
+        `debug_traceCallMany: unexpected CIP-64 sender ${bundle[1].from}`,
+      );
+    }
   }
 }
 
