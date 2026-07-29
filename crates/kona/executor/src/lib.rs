@@ -8,7 +8,7 @@ extern crate alloc;
 extern crate tracing;
 
 mod builder;
-pub use builder::{CeloBlockBuildingOutcome, CeloStatelessL2Builder, compute_receipts_root};
+pub use builder::{CeloBlockBuildingOutcome, CeloStatelessL2Builder};
 
 // Re-export CeloEvmFactory for convenience
 pub use alloy_celo_evm::CeloEvmFactory;
