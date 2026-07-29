@@ -64,8 +64,10 @@ impl CeloGasFiller {
             None => provider.estimate_gas(tx.clone()).await?,
         };
 
+        let preset_max_fee = tx.inner.as_ref().max_fee_per_gas;
+        let preset_tip = tx.inner.as_ref().max_priority_fee_per_gas;
         if let (Some(max_fee_per_gas), Some(max_priority_fee_per_gas)) =
-            (tx.inner.as_ref().max_fee_per_gas, tx.inner.as_ref().max_priority_fee_per_gas)
+            (preset_max_fee, preset_tip)
         {
             return Ok(CeloGasFillable::Cip64 {
                 gas_limit,
@@ -74,14 +76,35 @@ impl CeloGasFiller {
             });
         }
 
-        // Fee-currency-denominated suggestions from the node. `eth_gasPrice [feeCurrency]`
-        // returns base fee + tip scaled to the fee currency, `eth_maxPriorityFeePerGas
-        // [feeCurrency]` the scaled tip (both supported by celo-reth and Celo op-geth).
-        let tip: U256 =
+        // Fee-currency-denominated suggestions from the node (both methods take an optional
+        // feeCurrency parameter on celo-reth and Celo op-geth). A caller-provided field is
+        // preserved; only the missing ones are filled — mirroring the node's own
+        // `fill_cip64_fee_defaults`.
+        //
+        // The suggested tip is needed even when the caller set one: `eth_gasPrice
+        // [feeCurrency]` returns base fee + suggested tip, so deriving the base fee for the
+        // max-fee default requires the node's own tip suggestion, not the caller's.
+        let suggested_tip: U256 =
             provider.raw_request("eth_maxPriorityFeePerGas".into(), (fee_currency,)).await?;
-        let price: U256 = provider.raw_request("eth_gasPrice".into(), (fee_currency,)).await?;
 
-        let max_fee = cip64_max_fee(price, tip);
+        // A missing tip takes the suggestion, clamped to a caller-provided max fee so it
+        // never invalidates the request (tip > max fee).
+        let tip = preset_tip.map_or_else(
+            || {
+                preset_max_fee
+                    .map_or(suggested_tip, |max_fee| suggested_tip.min(U256::from(max_fee)))
+            },
+            U256::from,
+        );
+
+        let max_fee = match preset_max_fee {
+            Some(max_fee) => U256::from(max_fee),
+            None => {
+                let price: U256 =
+                    provider.raw_request("eth_gasPrice".into(), (fee_currency,)).await?;
+                cip64_max_fee(price, suggested_tip, tip)
+            }
+        };
 
         let to_u128 = |value: U256, field: &'static str| -> TransportResult<u128> {
             u128::try_from(value).map_err(|_| {
@@ -100,14 +123,15 @@ impl CeloGasFiller {
 }
 
 /// Computes the CIP-64 `max_fee_per_gas` suggestion from the node's fee-currency
-/// denominated `eth_gasPrice` and `eth_maxPriorityFeePerGas` suggestions.
+/// denominated `eth_gasPrice` and `eth_maxPriorityFeePerGas` suggestions plus the tip the
+/// transaction will actually use (caller-provided or suggested).
 ///
 /// Mirrors the node's own fee defaults (`2·baseFee + tip`, in fee-currency units):
-/// `gasPrice ≈ baseFee + tip`, so `maxFee = 2·(gasPrice − tip) + tip`. Falls back to
-/// `2·gasPrice` if the node ever reports a tip above its gas price.
-fn cip64_max_fee(price: U256, tip: U256) -> U256 {
-    if price > tip {
-        (price - tip).saturating_mul(U256::from(2)).saturating_add(tip)
+/// `gasPrice ≈ baseFee + suggestedTip`, so `maxFee = 2·(gasPrice − suggestedTip) + tip`.
+/// Falls back to `2·gasPrice` if the node ever reports a tip above its gas price.
+fn cip64_max_fee(price: U256, suggested_tip: U256, tip: U256) -> U256 {
+    if price > suggested_tip {
+        (price - suggested_tip).saturating_mul(U256::from(2)).saturating_add(tip)
     } else {
         price.saturating_mul(U256::from(2))
     }
@@ -167,27 +191,33 @@ mod tests {
 
     #[test]
     fn max_fee_doubles_base_fee_and_adds_tip() {
-        // gasPrice = baseFee (100) + tip (7) => maxFee = 2*100 + 7.
-        assert_eq!(cip64_max_fee(U256::from(107), U256::from(7)), U256::from(207));
+        // gasPrice = baseFee (100) + suggested tip (7) => maxFee = 2*100 + 7.
+        assert_eq!(cip64_max_fee(U256::from(107), U256::from(7), U256::from(7)), U256::from(207));
+    }
+
+    #[test]
+    fn max_fee_uses_caller_tip_over_suggestion() {
+        // Caller preset a tip of 3; base fee still derives from the suggested tip (7).
+        assert_eq!(cip64_max_fee(U256::from(107), U256::from(7), U256::from(3)), U256::from(203));
     }
 
     #[test]
     fn max_fee_with_zero_tip_doubles_gas_price() {
-        assert_eq!(cip64_max_fee(U256::from(100), U256::ZERO), U256::from(200));
+        assert_eq!(cip64_max_fee(U256::from(100), U256::ZERO, U256::ZERO), U256::from(200));
     }
 
     #[test]
     fn max_fee_falls_back_when_tip_exceeds_gas_price() {
         // Nonsensical node response (tip > gasPrice): still produce a usable cap.
-        assert_eq!(cip64_max_fee(U256::from(5), U256::from(9)), U256::from(10));
+        assert_eq!(cip64_max_fee(U256::from(5), U256::from(9), U256::from(9)), U256::from(10));
         // tip == gasPrice hits the same fallback.
-        assert_eq!(cip64_max_fee(U256::from(5), U256::from(5)), U256::from(10));
+        assert_eq!(cip64_max_fee(U256::from(5), U256::from(5), U256::from(5)), U256::from(10));
     }
 
     #[test]
     fn max_fee_saturates_instead_of_overflowing() {
         let max = U256::MAX;
-        assert_eq!(cip64_max_fee(max, U256::ZERO), max);
-        assert_eq!(cip64_max_fee(max, U256::from(1)), max);
+        assert_eq!(cip64_max_fee(max, U256::ZERO, U256::ZERO), max);
+        assert_eq!(cip64_max_fee(max, U256::from(1), U256::from(1)), max);
     }
 }
