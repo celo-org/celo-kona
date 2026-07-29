@@ -10,7 +10,8 @@ pub use receipt::CeloTransactionReceipt;
 
 mod transaction;
 pub use transaction::{
-    CeloTransaction, CeloTransactionInfo, CeloTransactionRequest, cip64_effective_gas_price,
+    CeloTransaction, CeloTransactionInfo, CeloTransactionRequest, Cip64Conflict,
+    check_cip64_compatibility, cip64_effective_gas_price,
 };
 
 #[cfg(feature = "reth")]
