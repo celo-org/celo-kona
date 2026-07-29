@@ -1,0 +1,78 @@
+name: Reth fork tests
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/reth-fork-tests.yml
+  push:
+    branches:
+      - main
+      - celo/reth-v1.0
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/reth-fork-tests.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scoped-tests:
+    name: reth fork scoped tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout celo-kona
+        uses: actions/checkout@v7
+
+      - name: Resolve pinned reth fork revision
+        id: reth-rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          revs="$(
+            sed -n \
+              's/.*git = "https:\/\/github.com\/celo-org\/reth".*rev = "\([0-9a-f]\{40\}\)".*/\1/p' \
+              Cargo.toml |
+              sort -u
+          )"
+          count="$(printf '%s\n' "$revs" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [[ "$count" != "1" ]]; then
+            echo "expected one celo-org/reth revision, found $count" >&2
+            exit 1
+          fi
+          echo "rev=$revs" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned reth fork
+        uses: actions/checkout@v7
+        with:
+          repository: celo-org/reth
+          ref: ${{ steps.reth-rev.outputs.rev }}
+          path: reth-fork
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: rui314/setup-mold@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reth-fork -> target
+          cache-on-failure: true
+
+      - name: Run scoped fork tests
+        working-directory: reth-fork
+        run: |
+          cargo nextest run \
+            --locked \
+            --no-fail-fast \
+            -p reth-rpc \
+            -p reth-rpc-eth-api \
+            -p reth-provider
