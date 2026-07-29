@@ -41,7 +41,9 @@ impl Network for Celo {
 }
 
 /// Fields that cannot coexist with CIP-64, which is EIP-1559-based. Reporting them rather
-/// than dropping the offending field mirrors celo-reth's `Cip64Conflict` handling.
+/// than dropping the offending field matches
+/// [`Cip64Conflict`](celo_alloy_rpc_types::Cip64Conflict), which the node applies to the same
+/// request type.
 pub(crate) fn cip64_conflicts(request: &CeloTransactionRequest) -> Vec<&'static str> {
     let mut errors = Vec::new();
     if request.as_ref().gas_price.is_some() {
