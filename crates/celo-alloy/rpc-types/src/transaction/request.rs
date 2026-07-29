@@ -229,8 +229,8 @@ impl CeloTransactionRequest {
             });
         }
 
-        // Rejecting the conflicting shapes rather than dropping their fields mirrors
-        // celo-reth's `Cip64Conflict` handling.
+        // Rejecting the conflicting shapes rather than dropping their fields matches
+        // [`Cip64Conflict`], which the node applies to this same type.
         match tx {
             TypedTransaction::Eip1559(tx) => Ok(CeloTypedTransaction::Cip64(TxCip64 {
                 chain_id: tx.chain_id,
@@ -567,7 +567,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Serde: same wire contract as celo-reth's server-side request type.
+    // Serde: the wire contract celo-reth's RPC server parses requests with.
     // -----------------------------------------------------------------------
 
     #[test]
