@@ -240,6 +240,12 @@ where
         // Celo requires a minimum priority fee of 1 wei (matching op-geth's
         // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
         .with_minimum_priority_fee(Some(minimum_priority_fee))
+        // Wire the configured --rpc.txfeecap into the inner validator's own
+        // local-only fee cap check, which otherwise stays at its hardcoded
+        // 1-CELO default and would undercut the configured value for local
+        // native txs. The CIP-64-aware cap check (native-equivalent fee) lives
+        // in CeloExchangeRateApplier and reads the same flag.
+        .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
         .with_additional_tasks(
             pool_config_overrides
                 .additional_validation_tasks

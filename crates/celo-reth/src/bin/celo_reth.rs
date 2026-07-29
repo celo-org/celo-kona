@@ -201,6 +201,17 @@ fn celo_cli_command() -> clap::Command {
         })
 }
 
+/// Build the upstream op-reth clap [`Command`] with Celo-specific argument defaults applied.
+///
+/// `--rpc.txfeecap` defaults to 1000 CELO (matching op-geth's Celo fork) instead of upstream's
+/// 1: at Celo gas prices a full-block tx costs several CELO, so the upstream default would
+/// reject legitimate locally signed txs. The flag stays fully overridable, including `0` to
+/// disable the cap.
+fn upstream_cli_command() -> clap::Command {
+    Cli::<CeloChainSpecParser, CeloArgs>::command()
+        .mut_subcommand("node", |sub| sub.mut_arg("rpc_tx_fee_cap", |a| a.default_value("1000")))
+}
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -304,83 +315,85 @@ fn main() {
         Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
-    if let Err(err) =
-        Cli::<CeloChainSpecParser, CeloArgs>::parse().run(async move |builder, celo_args| {
-            let rollup_args = celo_args.rollup;
+    let upstream_matches = upstream_cli_command().get_matches_from(&argv);
+    let upstream_cli = Cli::<CeloChainSpecParser, CeloArgs>::from_arg_matches(&upstream_matches)
+        .unwrap_or_else(|err| err.exit());
+    if let Err(err) = upstream_cli.run(async move |builder, celo_args| {
+        let rollup_args = celo_args.rollup;
 
-            // Parse fee currency limits from CLI args.
-            // If no explicit limits are provided, fall back to the chain's
-            // built-in defaults (op-geth-matching for mainnet; empty elsewhere).
-            let chain_id = builder.config().chain.chain().id();
-            let limits = celo_args.fee_currency_limits.as_deref().map_or_else(
-                || FeeCurrencyLimits::defaults_for_chain(chain_id),
-                FeeCurrencyLimits::parse_limits,
-            );
-            let fee_currency_limits =
-                FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
+        // Parse fee currency limits from CLI args.
+        // If no explicit limits are provided, fall back to the chain's
+        // built-in defaults (op-geth-matching for mainnet; empty elsewhere).
+        let chain_id = builder.config().chain.chain().id();
+        let limits = celo_args.fee_currency_limits.as_deref().map_or_else(
+            || FeeCurrencyLimits::defaults_for_chain(chain_id),
+            FeeCurrencyLimits::parse_limits,
+        );
+        let fee_currency_limits =
+            FeeCurrencyLimits { limits, default_limit: celo_args.fee_currency_default };
 
-            // Snapshot the historical-proofs fields before we move rollup_args
-            // into CeloNode::new. Mirrors the OP launcher pattern in
-            // ethereum-optimism/optimism @ kona-node/v1.5.1:
-            //   rust/op-reth/crates/node/src/proof_history.rs
-            let RollupArgs {
-                proofs_history,
-                proofs_history_storage_path,
-                proofs_history_window,
-                proofs_history_verification_interval,
-                proofs_history_storage_version,
-                ..
-            } = rollup_args.clone();
+        // Snapshot the historical-proofs fields before we move rollup_args
+        // into CeloNode::new. Mirrors the OP launcher pattern in
+        // ethereum-optimism/optimism @ kona-node/v1.5.1:
+        //   rust/op-reth/crates/node/src/proof_history.rs
+        let RollupArgs {
+            proofs_history,
+            proofs_history_storage_path,
+            proofs_history_window,
+            proofs_history_verification_interval,
+            proofs_history_storage_version,
+            ..
+        } = rollup_args.clone();
 
-            let blocklist = FeeCurrencyBlocklist::default();
-            let node = CeloNode::new(rollup_args)
-                .with_blocklist(blocklist.clone())
-                .with_fee_currency_limits(fee_currency_limits);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let node = CeloNode::new(rollup_args)
+            .with_blocklist(blocklist.clone())
+            .with_fee_currency_limits(fee_currency_limits);
 
-            // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
-            // set, dispatch on the on-disk schema version (--proofs-history.storage-version)
-            // and hand the matching MDBX store to `launch_celo_node`. When it is unset we
-            // still go through `launch_celo_node` (with `None`), so the Celo RPC modules
-            // are wired identically on every path — the `::<MdbxProofsStorage>` turbofish
-            // there only pins the otherwise-unused store type parameter.
-            if proofs_history {
-                let path = proofs_history_storage_path.ok_or_else(|| {
-                    eyre::eyre!(
-                        "--proofs-history.storage-path is required when --proofs-history is set"
-                    )
-                })?;
-                match proofs_history_storage_version {
-                    ProofsStorageVersion::V1 => {
-                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v1)");
-                        let mdbx =
-                            Arc::new(MdbxProofsStorage::new(&path).map_err(|e| {
-                                eyre::eyre!("Failed to create MdbxProofsStorage: {e}")
-                            })?);
-                        let proofs = ProofsHistoryConfig {
-                            mdbx,
-                            window: proofs_history_window,
-                            verification_interval: proofs_history_verification_interval,
-                        };
-                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
-                    }
-                    ProofsStorageVersion::V2 => {
-                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v2)");
-                        let mdbx = Arc::new(MdbxProofsStorageV2::new(&path).map_err(|e| {
+        // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
+        // set, dispatch on the on-disk schema version (--proofs-history.storage-version)
+        // and hand the matching MDBX store to `launch_celo_node`. When it is unset we
+        // still go through `launch_celo_node` (with `None`), so the Celo RPC modules
+        // are wired identically on every path — the `::<MdbxProofsStorage>` turbofish
+        // there only pins the otherwise-unused store type parameter.
+        if proofs_history {
+            let path = proofs_history_storage_path.ok_or_else(|| {
+                eyre::eyre!(
+                    "--proofs-history.storage-path is required when --proofs-history is set"
+                )
+            })?;
+            match proofs_history_storage_version {
+                ProofsStorageVersion::V1 => {
+                    info!(target: "reth::cli", "Using on-disk storage for proofs history (v1)");
+                    let mdbx = Arc::new(
+                        MdbxProofsStorage::new(&path)
+                            .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                    );
+                    let proofs = ProofsHistoryConfig {
+                        mdbx,
+                        window: proofs_history_window,
+                        verification_interval: proofs_history_verification_interval,
+                    };
+                    launch_celo_node(builder, node, blocklist, Some(proofs)).await
+                }
+                ProofsStorageVersion::V2 => {
+                    info!(target: "reth::cli", "Using on-disk storage for proofs history (v2)");
+                    let mdbx =
+                        Arc::new(MdbxProofsStorageV2::new(&path).map_err(|e| {
                             eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}")
                         })?);
-                        let proofs = ProofsHistoryConfig {
-                            mdbx,
-                            window: proofs_history_window,
-                            verification_interval: proofs_history_verification_interval,
-                        };
-                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
-                    }
+                    let proofs = ProofsHistoryConfig {
+                        mdbx,
+                        window: proofs_history_window,
+                        verification_interval: proofs_history_verification_interval,
+                    };
+                    launch_celo_node(builder, node, blocklist, Some(proofs)).await
                 }
-            } else {
-                launch_celo_node::<MdbxProofsStorage>(builder, node, blocklist, None).await
             }
-        })
-    {
+        } else {
+            launch_celo_node::<MdbxProofsStorage>(builder, node, blocklist, None).await
+        }
+    }) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
@@ -708,5 +721,38 @@ mod tests {
     fn celo_download_source_derives_celo_snapshot_api() {
         let defaults = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL);
         assert_eq!(defaults.snapshot_api_url.as_ref(), "https://snapshots.celo.org/api/snapshots");
+    }
+
+    /// `node`'s `--rpc.txfeecap` must default to 1000 CELO (op-geth Celo fork parity) instead
+    /// of upstream's 1 — at Celo gas prices a full-block tx costs several CELO, so the
+    /// upstream default would reject legitimate locally signed txs.
+    #[test]
+    fn upstream_cli_defaults_txfeecap_to_1000_celo() {
+        let matches = upstream_cli_command()
+            .try_get_matches_from(["celo-reth", "node"])
+            .expect("bare `node` must parse");
+        let node = matches.subcommand_matches("node").expect("node subcommand");
+        assert_eq!(
+            node.get_one::<u128>("rpc_tx_fee_cap").copied(),
+            Some(1_000_000_000_000_000_000_000u128),
+            "default cap must be 1000 CELO in wei"
+        );
+    }
+
+    /// An explicit `--rpc.txfeecap` must still override the raised default, including `0`
+    /// (cap disabled).
+    #[test]
+    fn upstream_cli_txfeecap_flag_overrides_default() {
+        for (value, expected_wei) in [("2", 2_000_000_000_000_000_000u128), ("0", 0)] {
+            let matches = upstream_cli_command()
+                .try_get_matches_from(["celo-reth", "node", "--rpc.txfeecap", value])
+                .expect("explicit flag must parse");
+            let node = matches.subcommand_matches("node").expect("node subcommand");
+            assert_eq!(
+                node.get_one::<u128>("rpc_tx_fee_cap").copied(),
+                Some(expected_wei),
+                "--rpc.txfeecap {value} must override the default"
+            );
+        }
     }
 }
