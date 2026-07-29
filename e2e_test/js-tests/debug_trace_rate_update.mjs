@@ -504,10 +504,11 @@ async function traceParityCallMany(blockNumber, baseFeePerGas) {
 }
 
 // The top-level override makes the first bundle start at 1:2. Bundle 1 changes
-// the database to 100:1, but its probe must remain at 1:2. Bundle 2 captures
-// the newly committed 100:1 context, then changes the database to 1:2; its
-// probe must remain at 100:1. The same probe verifies that each bundle's block
-// override is present in every call EVM.
+// the database to 1:4, but its probe must remain at 1:2. Bundle 2 captures the
+// newly committed 1:4 context, then changes the database to 1:2; its probe must
+// remain at 1:4. Both rates are below 1 so the call-request native-fee cap
+// cannot make an incorrect rate look correct. The same probe verifies that
+// each bundle's block override is present in every call EVM.
 async function ethCallMany(blockNumber, baseFeePerGas) {
   const firstNumber = blockNumber + 2000n;
   const secondNumber = blockNumber + 2001n;
@@ -519,7 +520,7 @@ async function ethCallMany(blockNumber, baseFeePerGas) {
         [
           {
             transactions: [
-              setRateCall("100"),
+              setRateCall("1", "4"),
               feeCurrencyProbe(baseFeePerGas),
             ],
             blockOverride: { number: numberToHex(firstNumber) },
@@ -568,7 +569,7 @@ async function ethCallMany(blockNumber, baseFeePerGas) {
   assertProbeOutput(
     "eth_callMany bundle 1",
     results[1][1].value,
-    baseFeePerGas + PRIORITY_FEE,
+    baseFeePerGas / 4n + PRIORITY_FEE,
     secondNumber,
   );
 }
