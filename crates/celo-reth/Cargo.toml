@@ -59,7 +59,6 @@ alloy-consensus.workspace = true
 alloy-op-evm.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
-alloy-network.workspace = true
 op-alloy-consensus.workspace = true
 op-alloy-rpc-types.workspace = true
 op-alloy-rpc-types-engine.workspace = true
@@ -132,6 +131,7 @@ reth-cli-util.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+alloy-network.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 trybuild = "1"
