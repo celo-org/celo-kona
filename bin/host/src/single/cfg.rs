@@ -1,6 +1,6 @@
 //! This module contains all CLI-specific code for the single chain entrypoint.
 
-use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler};
+use crate::single::{CeloConfigBackend, CeloSingleChainHintHandler, CeloVerifyingPreimageFetcher};
 use alloy_provider::RootProvider;
 use backon::{ExponentialBuilder, Retryable};
 use celo_alloy_network::Celo;
@@ -91,10 +91,10 @@ impl CeloSingleChainHost {
                 PreimageServer::new(
                     OracleServer::new(preimage),
                     HintReader::new(hint),
-                    Arc::new(CeloConfigBackend::new(
+                    Arc::new(CeloVerifyingPreimageFetcher::new(CeloConfigBackend::new(
                         OfflineHostBackend::new(kv_store),
                         rollup_config_json,
-                    )),
+                    ))),
                 )
                 .start()
                 .await
@@ -102,16 +102,16 @@ impl CeloSingleChainHost {
             })
         } else {
             let providers = self.create_providers().await?;
-            let backend = CeloConfigBackend::new(
+            let backend = CeloVerifyingPreimageFetcher::new(CeloConfigBackend::new(
                 OnlineHostBackend::new(
                     self.clone(),
                     kv_store.clone(),
                     providers,
                     CeloSingleChainHintHandler,
                 )
-                .with_proactive_hint(proactive_hint_type()),
+                .with_high_level_hint(high_level_hint_type()),
                 rollup_config_json,
-            );
+            ));
 
             task::spawn(async {
                 PreimageServer::new(
@@ -298,15 +298,15 @@ impl OnlineHostBackendCfg for CeloSingleChainHost {
     type Providers = CeloSingleChainProviders;
 }
 
-/// Returns the proactive hint type for the host backend.
+/// Returns the high-level hint type for the host backend.
 #[cfg(feature = "eigenda")]
-const fn proactive_hint_type() -> ExtendedHintType {
+const fn high_level_hint_type() -> ExtendedHintType {
     ExtendedHintType::Original(HintType::L2PayloadWitness)
 }
 
-/// Returns the proactive hint type for the host backend.
+/// Returns the high-level hint type for the host backend.
 #[cfg(not(feature = "eigenda"))]
-const fn proactive_hint_type() -> HintType {
+const fn high_level_hint_type() -> HintType {
     HintType::L2PayloadWitness
 }
 

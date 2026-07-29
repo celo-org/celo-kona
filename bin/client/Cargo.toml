@@ -48,7 +48,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 kona-preimage = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["full"] }
 
 [features]
 default = ["client-tracing", "eigenda"]
