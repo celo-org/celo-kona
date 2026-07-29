@@ -303,13 +303,14 @@ op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-ret
 # 1. Single-EVM transaction replay for tracing RPCs (paradigmxyz/reth#26523).
 # 2. Celo's block-context capture/seed hook and its fresh-call integrations
 #    (`debug_traceCall`, `debug_traceCallMany`, `trace_callMany`, and
-#    `eth_callMany`).
+#    `eth_callMany`), including the call-many bundle-boundary, override, and
+#    empty-bundle plumbing required to preserve capture/seed semantics.
 # On a reth upgrade that includes #26523, rebuild the fork from the new reth
 # revision without the duplicate single-EVM commits, then port only the
-# capture/seed hook and fresh-call integrations. Preserve the upstream
-# stateful-EVM and inspector-fusing regression tests. Do not remove this patch
-# merely because #26523 landed; it is still needed until the capture/seed path
-# is upstream or no longer required by Celo.
+# capture/seed hook, fresh-call integrations, and Celo-specific call-many
+# plumbing. Preserve the upstream stateful-EVM and inspector-fusing regression
+# tests. Do not remove this patch merely because #26523 landed; it is still
+# needed until the capture/seed path is upstream or no longer required by Celo.
 # The patch must cover every reth crate in the graph so the op-reth git deps
 # unify with the fork. On a rev bump, regenerate this list from the reth
 # packages Cargo.lock resolves from this git source.

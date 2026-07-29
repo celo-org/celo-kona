@@ -72,6 +72,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/paradigmxyz/reth",
+    # Temporary fork for single-EVM tracing replay and Celo block-context capture/seed support.
     "https://github.com/celo-org/reth",
     "https://github.com/Layr-Labs/hokulea",
     "https://github.com/sp1-patches/bn",
