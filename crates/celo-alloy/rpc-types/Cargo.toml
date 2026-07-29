@@ -33,6 +33,9 @@ alloy-primitives = { workspace = true, features = ["map", "rlp", "serde"] }
 # Reth
 reth-rpc-traits = { workspace = true, optional = true }
 
+# Telemetry (used by the `reth` request-signing impls)
+tracing = { workspace = true, optional = true }
+
 # Serde
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -59,9 +62,16 @@ std = [
     "alloy-rpc-types-eth/std",
     "celo-alloy-consensus/std",
     "op-alloy-consensus/std",
+    "op-alloy-rpc-types/std",
     "reth-rpc-traits?/std",
+    "tracing?/std",
 ]
-reth = ["dep:reth-rpc-traits"]
+reth = [
+    "dep:reth-rpc-traits",
+    "dep:tracing",
+    "dep:alloy-network",
+    "op-alloy-rpc-types/reth",
+]
 arbitrary = [
     "std",
     "dep:arbitrary",
