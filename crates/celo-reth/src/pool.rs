@@ -22,16 +22,22 @@ use reth_optimism_txpool::{
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
-    EthBlobTransactionSidecar, EthPoolTransaction, PoolTransaction, TransactionPool,
-    TransactionValidationOutcome, TransactionValidator, ValidPoolTransaction,
+    AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
+    BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
+    GetPooledTransactionLimit, NewTransactionEvent, PoolResult, PoolSize, PoolTransaction,
+    PropagatedTransactions, TransactionEvents, TransactionListenerKind, TransactionOrigin,
+    TransactionPool, TransactionPoolExt, TransactionValidationOutcome, TransactionValidator,
+    ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolTransactionError},
 };
 use revm::{interpreter::gas::calculate_initial_tx_gas, primitives::hardfork::SpecId};
 use std::{
     borrow::Cow,
+    collections::HashMap,
     fmt::Debug,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
+use tokio::sync::mpsc::Receiver;
 
 // ---------------------------------------------------------------------------
 // Metrics
@@ -536,6 +542,9 @@ pub(crate) struct FcLookupResult {
     pub(crate) rate: Option<ExchangeRate>,
     /// Raw ERC20 balance of the sender. `None` if the query failed or was not requested.
     pub(crate) balance: Option<U256>,
+    /// Sender nonce from the same latest state used for the fee-currency
+    /// lookups. `None` if it was not requested or the account read failed.
+    pub(crate) state_nonce: Option<u64>,
     pub(crate) debit_ok: Option<bool>,
     /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`), added on
     /// top of the standard intrinsic gas at block-build time. `None` if the rate
@@ -639,11 +648,26 @@ fn lookup_rate_and_balance_impl(
             return FcLookupResult {
                 rate: None,
                 balance: None,
+                state_nonce: None,
                 debit_ok: None,
                 intrinsic_gas: None,
             };
         }
     };
+    use reth_storage_api::AccountReader;
+    let state_nonce =
+        balance_check.as_ref().and_then(|(sender, _)| match state.basic_account(sender) {
+            Ok(account) => Some(account.unwrap_or_default().nonce),
+            Err(e) => {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    ?sender,
+                    "Failed to read sender nonce for cumulative fee-currency validation"
+                );
+                None
+            }
+        });
     let db = StateProviderDatabase::new(state);
     let mut evm = build_pool_evm(db, spec);
 
@@ -680,7 +704,13 @@ fn lookup_rate_and_balance_impl(
     // regardless of balance/debit — skip the remaining EVM calls to avoid wasted
     // work (and adversarial-tx DoS amplification).
     if rate.is_none() {
-        return FcLookupResult { rate, balance: None, debit_ok: None, intrinsic_gas: None };
+        return FcLookupResult {
+            rate,
+            balance: None,
+            state_nonce,
+            debit_ok: None,
+            intrinsic_gas: None,
+        };
     }
 
     // 1b. Fetch the fee currency's extra intrinsic gas (getCurrencyConfig).
@@ -775,7 +805,7 @@ fn lookup_rate_and_balance_impl(
         }
     });
 
-    FcLookupResult { rate, balance, debit_ok, intrinsic_gas }
+    FcLookupResult { rate, balance, state_nonce, debit_ok, intrinsic_gas }
 }
 
 // ---------------------------------------------------------------------------
@@ -797,7 +827,8 @@ pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
 /// Reads a sender's already-committed fee-currency expenditure from the live
 /// pool at validation time.
 ///
-/// Arguments are `(sender, fee_currency, nonce)`; returns `(spent, prev_at_nonce)`:
+/// Arguments are `(sender, fee_currency, nonce, state_nonce)`; returns
+/// `(spent, prev_at_nonce)`:
 ///
 /// - `spent`: total FC cost (`gas_limit × FC max fee`) of the sender's pooled txs that pay in
 ///   `fee_currency`.
@@ -810,50 +841,369 @@ pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
 /// — instead of a validator-side reservation cache — means replaced or
 /// evicted txs can never inflate the total and falsely reject payable txs
 /// (issue #250).
-pub type PooledFcCostsFn = Arc<dyn Fn(Address, Address, u64) -> (U256, U256) + Send + Sync>;
+pub type PooledFcCostsFn = Arc<dyn Fn(Address, Address, u64, u64) -> (U256, U256) + Send + Sync>;
 
-/// Sum `txs` (one sender's pooled transactions) into the [`PooledFcCostsFn`]
-/// result for `fee_currency` and `nonce`: total same-currency FC cost, and the
-/// cost of the same-currency tx at `nonce` (the replacement credit).
+/// Sum the nonce-contiguous prefix of `txs` into the [`PooledFcCostsFn`] result
+/// for `fee_currency` and `nonce`: total same-currency FC cost, and the cost of
+/// the same-currency tx at `nonce` (the replacement credit).
 pub(crate) fn sum_pooled_fc_costs(
     txs: &[Arc<ValidPoolTransaction<CeloPoolTx>>],
     fee_currency: Address,
     nonce: u64,
+    state_nonce: u64,
 ) -> (U256, U256) {
     let mut spent = U256::ZERO;
     let mut prev_at_nonce = U256::ZERO;
-    for pooled in txs {
+    let mut expected_nonce = state_nonce;
+    let mut ordered: Vec<_> = txs.iter().collect();
+    ordered.sort_unstable_by_key(|pooled| pooled.transaction.nonce());
+    for pooled in ordered {
         let tx = &pooled.transaction;
+        let tx_nonce = tx.nonce();
+        if tx_nonce < expected_nonce {
+            continue;
+        }
+        if tx_nonce > expected_nonce {
+            break;
+        }
         if tx.fee_currency() == Some(fee_currency) {
             let cost = tx.fc_gas_cost();
             spent = spent.saturating_add(cost);
-            if tx.nonce() == nonce {
+            if tx_nonce == nonce {
                 prev_at_nonce = cost;
             }
         }
+        let Some(next_nonce) = expected_nonce.checked_add(1) else {
+            break;
+        };
+        expected_nonce = next_nonce;
     }
     (spent, prev_at_nonce)
 }
 
 /// Builds the [`PooledFcCostsFn`] over a live pool handle.
 ///
-/// Sums *all* of the sender's pooled txs (pending, base-fee-parked, and
-/// queued), not just the pending subpool: op-geth's pending list — the set its
-/// `TotalCostFor` sums — keeps txs priced below the current base fee, which
-/// reth parks in the base-fee subpool, so a pending-only read would let a
-/// sender's parked obligations go uncounted and over-admit. Queued
-/// (nonce-gapped) txs are counted too, which op-geth does not do; that errs
-/// towards rejection, and only for senders whose own pooled txs already exceed
-/// their balance — over-admission is the costlier failure, since a tx whose
-/// `debitGasFees` fails at block building gets its whole currency blocklisted
-/// for sequencing.
-pub fn pooled_fc_costs_reader<P>(pool: P) -> PooledFcCostsFn
+/// Reads all subpools, then sums only the nonce-contiguous prefix starting at
+/// `state_nonce`. This includes base-fee-parked obligations, matching the
+/// pending list that op-geth's `TotalCostFor` sums, while excluding
+/// nonce-gapped queued transactions that cannot execute yet.
+///
+/// A queued transaction can become executable later without pool
+/// revalidation when its gap closes. Excluding it here deliberately matches
+/// op-geth and ensures that a future transaction cannot block the earlier
+/// transaction needed to close its own gap.
+pub fn pooled_fc_costs_reader<P>(pool: Arc<P>) -> PooledFcCostsFn
 where
     P: TransactionPool<Transaction = CeloPoolTx> + 'static,
 {
-    Arc::new(move |sender, fee_currency, nonce| {
-        sum_pooled_fc_costs(&pool.get_transactions_by_sender(sender), fee_currency, nonce)
+    let pool = Arc::downgrade(&pool);
+    Arc::new(move |sender, fee_currency, nonce, state_nonce| {
+        let Some(pool) = pool.upgrade() else {
+            return (U256::ZERO, U256::ZERO);
+        };
+        sum_pooled_fc_costs(
+            &pool.get_transactions_by_sender(sender),
+            fee_currency,
+            nonce,
+            state_nonce,
+        )
     })
+}
+
+/// Per-sender admission locks shared by all [`CeloTransactionPool`] clones.
+///
+/// The registry stores weak handles so inactive senders do not accumulate.
+#[derive(Debug, Default)]
+struct SenderAdmissionLocks {
+    locks: Mutex<HashMap<Address, Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl SenderAdmissionLocks {
+    fn lock(self: &Arc<Self>, sender: Address) -> SenderAdmissionLock {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+            locks.get(&sender).and_then(Weak::upgrade).unwrap_or_else(|| {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(sender, Arc::downgrade(&lock));
+                lock
+            })
+        };
+        SenderAdmissionLock { sender, lock, registry: self.clone() }
+    }
+}
+
+/// Strong handle to one sender's admission lock.
+///
+/// Dropping the final handle removes its weak registry entry. This also runs
+/// when an admission future is cancelled while waiting for or holding the
+/// async lock.
+#[derive(Debug)]
+struct SenderAdmissionLock {
+    sender: Address,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    registry: Arc<SenderAdmissionLocks>,
+}
+
+impl Drop for SenderAdmissionLock {
+    fn drop(&mut self) {
+        let mut locks = self.registry.locks.lock().unwrap_or_else(|e| e.into_inner());
+        let owns_entry =
+            locks.get(&self.sender).is_some_and(|entry| entry.ptr_eq(&Arc::downgrade(&self.lock)));
+        if owns_entry && Arc::strong_count(&self.lock) == 1 {
+            locks.remove(&self.sender);
+        }
+    }
+}
+
+/// Celo transaction pool wrapper that serializes admission per sender.
+///
+/// The raw reth pool validates a batch before inserting any of its
+/// transactions. Without this wrapper, same-sender CIP-64 transactions in one
+/// batch can all observe the same pre-batch expenditure and collectively
+/// exceed the sender's fee-currency balance in normal nonce order. Holding the
+/// sender lock across the raw pool's complete `validate -> insert` future makes
+/// each later admission observe the prior insertion, while unrelated senders
+/// remain concurrent.
+///
+/// Batch methods preserve input order and process each sender's transactions
+/// sequentially while processing different senders concurrently. Each item
+/// uses the raw pool's single-transaction path because its batch path validates
+/// every item before inserting any of them. Consequently, capacity enforcement
+/// and insertion events occur per item, as they do for sequential single
+/// submissions. If a batch future is cancelled, items whose single-transaction
+/// futures already completed remain inserted.
+#[derive(Clone, Debug)]
+pub struct CeloTransactionPool<P>
+where
+    P: TransactionPool<Transaction = CeloPoolTx>,
+{
+    inner: Arc<P>,
+    sender_locks: Arc<SenderAdmissionLocks>,
+}
+
+impl<P> CeloTransactionPool<P>
+where
+    P: TransactionPool<Transaction = CeloPoolTx>,
+{
+    /// Wrap a raw reth pool.
+    pub fn new(inner: Arc<P>) -> Self {
+        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()) }
+    }
+
+    async fn with_sender_lock<T>(
+        &self,
+        sender: Address,
+        future: impl core::future::Future<Output = T>,
+    ) -> T {
+        let sender_lock = self.sender_locks.lock(sender);
+        let _guard = sender_lock.lock.lock().await;
+        future.await
+    }
+
+    async fn add_grouped_transactions(
+        &self,
+        transactions: Vec<(TransactionOrigin, CeloPoolTx)>,
+    ) -> Vec<PoolResult<reth_transaction_pool::pool::AddedTransactionOutcome>>
+    where
+        P: 'static,
+    {
+        let result_count = transactions.len();
+        let mut sender_groups: HashMap<Address, Vec<(usize, TransactionOrigin, CeloPoolTx)>> =
+            HashMap::new();
+        for (index, (origin, transaction)) in transactions.into_iter().enumerate() {
+            sender_groups.entry(transaction.sender()).or_default().push((
+                index,
+                origin,
+                transaction,
+            ));
+        }
+
+        let mut indexed_results: Vec<_> = futures_util::future::join_all(
+            sender_groups.into_iter().map(|(sender, group)| async move {
+                let sender_lock = self.sender_locks.lock(sender);
+                let _guard = sender_lock.lock.lock().await;
+                let mut results = Vec::with_capacity(group.len());
+                for (index, origin, transaction) in group {
+                    let result = self.inner.add_transaction(origin, transaction).await;
+                    results.push((index, result));
+                }
+                results
+            }),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
+        debug_assert_eq!(indexed_results.len(), result_count);
+        indexed_results.sort_unstable_by_key(|(index, _)| *index);
+        indexed_results.into_iter().map(|(_, result)| result).collect()
+    }
+}
+
+/// Convenience macro for delegating [`TransactionPool`] methods to the raw
+/// pool. Kept in sync with the pinned op-reth `OpPool` delegation pattern.
+macro_rules! delegate_pool {
+    (fn $name:ident(&self) -> $ret:ty) => {
+        fn $name(&self) -> $ret {
+            self.inner.$name()
+        }
+    };
+    (fn $name:ident(&self, $arg:ident : $arg_ty:ty) -> $ret:ty) => {
+        fn $name(&self, $arg: $arg_ty) -> $ret {
+            self.inner.$name($arg)
+        }
+    };
+    (fn $name:ident(&self, $a1:ident : $a1_ty:ty, $a2:ident : $a2_ty:ty) -> $ret:ty) => {
+        fn $name(&self, $a1: $a1_ty, $a2: $a2_ty) -> $ret {
+            self.inner.$name($a1, $a2)
+        }
+    };
+    (
+        fn
+        $name:ident(&self, $a1:ident : $a1_ty:ty, $a2:ident : $a2_ty:ty, $a3:ident : $a3_ty:ty) ->
+        $ret:ty
+    ) => {
+        fn $name(&self, $a1: $a1_ty, $a2: $a2_ty, $a3: $a3_ty) -> $ret {
+            self.inner.$name($a1, $a2, $a3)
+        }
+    };
+    (fn $name:ident(&self)) => {
+        fn $name(&self) {
+            self.inner.$name()
+        }
+    };
+    (fn $name:ident(&self, $arg:ident : $arg_ty:ty)) => {
+        fn $name(&self, $arg: $arg_ty) {
+            self.inner.$name($arg)
+        }
+    };
+}
+
+impl<P> TransactionPool for CeloTransactionPool<P>
+where
+    P: TransactionPool<Transaction = CeloPoolTx> + 'static,
+{
+    type Transaction = CeloPoolTx;
+
+    async fn add_transaction_and_subscribe(
+        &self,
+        origin: TransactionOrigin,
+        transaction: Self::Transaction,
+    ) -> PoolResult<TransactionEvents> {
+        let sender = transaction.sender();
+        self.with_sender_lock(sender, self.inner.add_transaction_and_subscribe(origin, transaction))
+            .await
+    }
+
+    async fn add_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: Self::Transaction,
+    ) -> PoolResult<reth_transaction_pool::pool::AddedTransactionOutcome> {
+        let sender = transaction.sender();
+        self.with_sender_lock(sender, self.inner.add_transaction(origin, transaction)).await
+    }
+
+    async fn add_transactions(
+        &self,
+        origin: TransactionOrigin,
+        transactions: Vec<Self::Transaction>,
+    ) -> Vec<PoolResult<reth_transaction_pool::pool::AddedTransactionOutcome>> {
+        self.add_grouped_transactions(
+            transactions.into_iter().map(|transaction| (origin, transaction)).collect(),
+        )
+        .await
+    }
+
+    async fn add_transactions_with_origins(
+        &self,
+        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+    ) -> Vec<PoolResult<reth_transaction_pool::pool::AddedTransactionOutcome>> {
+        self.add_grouped_transactions(transactions).await
+    }
+
+    delegate_pool!(fn pool_size(&self) -> PoolSize);
+    delegate_pool!(fn block_info(&self) -> BlockInfo);
+    delegate_pool!(fn transaction_event_listener(&self, tx_hash: TxHash) -> Option<TransactionEvents>);
+    delegate_pool!(fn all_transactions_event_listener(&self) -> AllTransactionsEvents<Self::Transaction>);
+    delegate_pool!(fn pending_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<TxHash>);
+    delegate_pool!(fn blob_transaction_sidecars_listener(&self) -> Receiver<reth_transaction_pool::NewBlobSidecar>);
+    delegate_pool!(fn new_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<NewTransactionEvent<Self::Transaction>>);
+    delegate_pool!(fn pooled_transaction_hashes(&self) -> Vec<TxHash>);
+    delegate_pool!(fn pooled_transaction_hashes_max(&self, max: usize) -> Vec<TxHash>);
+    delegate_pool!(fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn pooled_transactions_max(&self, max: usize) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_pooled_transaction_elements(&self, tx_hashes: Vec<TxHash>, limit: GetPooledTransactionLimit) -> Vec<<Self::Transaction as PoolTransaction>::Pooled>);
+    delegate_pool!(fn get_pooled_transaction_element(&self, tx_hash: TxHash) -> Option<Recovered<<Self::Transaction as PoolTransaction>::Pooled>>);
+    delegate_pool!(fn best_transactions(&self) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>>);
+    delegate_pool!(fn best_transactions_with_attributes(&self, best_transactions_attributes: BestTransactionsAttributes) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>>);
+    delegate_pool!(fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn pending_transactions_max(&self, max: usize) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn queued_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn pending_and_queued_txn_count(&self) -> (usize, usize));
+    delegate_pool!(fn all_transactions(&self) -> AllPoolTransactions<Self::Transaction>);
+    delegate_pool!(fn all_transaction_hashes(&self) -> Vec<TxHash>);
+    delegate_pool!(fn remove_transactions(&self, hashes: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn remove_transactions_and_descendants(&self, hashes: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn remove_transactions_by_sender(&self, sender: Address) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn prune_transactions(&self, hashes: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+
+    fn retain_unknown<A>(&self, announcement: &mut A)
+    where
+        A: reth_eth_wire_types::HandleMempoolData,
+    {
+        self.inner.retain_unknown(announcement)
+    }
+
+    delegate_pool!(fn get(&self, tx_hash: &TxHash) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_all(&self, txs: Vec<TxHash>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn on_propagated(&self, txs: PropagatedTransactions));
+    delegate_pool!(fn get_transactions_by_sender(&self, sender: Address) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+
+    fn get_pending_transactions_with_predicate(
+        &self,
+        predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.inner.get_pending_transactions_with_predicate(predicate)
+    }
+
+    delegate_pool!(fn get_pending_transactions_by_sender(&self, sender: Address) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_queued_transactions_by_sender(&self, sender: Address) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_highest_transaction_by_sender(&self, sender: Address) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_highest_consecutive_transaction_by_sender(&self, sender: Address, on_chain_nonce: u64) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_transaction_by_sender_and_nonce(&self, sender: Address, nonce: u64) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_transactions_by_origin(&self, origin: TransactionOrigin) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn get_pending_transactions_by_origin(&self, origin: TransactionOrigin) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
+    delegate_pool!(fn unique_senders(&self) -> alloy_primitives::map::AddressSet);
+    delegate_pool!(fn get_blob(&self, tx_hash: TxHash) -> Result<Option<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>);
+    delegate_pool!(fn get_all_blobs(&self, tx_hashes: Vec<TxHash>) -> Result<Vec<(TxHash, Arc<BlobTransactionSidecarVariant>)>, BlobStoreError>);
+    delegate_pool!(fn get_all_blobs_exact(&self, tx_hashes: Vec<TxHash>) -> Result<Vec<Arc<BlobTransactionSidecarVariant>>, BlobStoreError>);
+    delegate_pool!(fn get_blobs_for_versioned_hashes_v1(&self, versioned_hashes: &[B256]) -> Result<Vec<Option<alloy_eips::eip4844::BlobAndProofV1>>, BlobStoreError>);
+    delegate_pool!(fn get_blobs_for_versioned_hashes_v2(&self, versioned_hashes: &[B256]) -> Result<Option<Vec<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
+    delegate_pool!(fn get_blobs_for_versioned_hashes_v3(&self, versioned_hashes: &[B256]) -> Result<Vec<Option<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
+    delegate_pool!(fn get_blobs_for_versioned_hashes_v4(&self, versioned_hashes: &[B256], indices_bitarray: alloy_primitives::B128) -> Result<Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>, BlobStoreError>);
+}
+
+impl<P> TransactionPoolExt for CeloTransactionPool<P>
+where
+    P: TransactionPoolExt<Transaction = CeloPoolTx> + 'static,
+{
+    type Block = P::Block;
+
+    delegate_pool!(fn set_block_info(&self, info: BlockInfo));
+
+    fn on_canonical_state_change(
+        &self,
+        update: reth_transaction_pool::CanonicalStateUpdate<'_, Self::Block>,
+    ) {
+        self.inner.on_canonical_state_change(update)
+    }
+
+    delegate_pool!(fn update_accounts(&self, accounts: Vec<reth_execution_types::ChangedAccount>));
+    delegate_pool!(fn delete_blob(&self, tx: B256));
+    delegate_pool!(fn delete_blobs(&self, txs: Vec<B256>));
+    delegate_pool!(fn cleanup_blobs(&self));
 }
 
 /// Wraps a [`TransactionValidator`] and applies fee-currency exchange rates
@@ -1119,7 +1469,7 @@ fn apply_exchange_rates_to_pool_tx(
     base_fee_floor: u64,
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
-    pooled_fc_costs: &dyn Fn(Address, Address, u64) -> (U256, U256),
+    pooled_fc_costs: &dyn Fn(Address, Address, u64, u64) -> (U256, U256),
     eth_spec: SpecId,
 ) -> Result<(), CeloPoolRejection> {
     if let Some(fc) = tx.fee_currency() {
@@ -1268,39 +1618,39 @@ fn apply_exchange_rates_to_pool_tx(
             }
 
             // Cumulative balance check (op-geth parity, issue #250): together
-            // with the sender's pooled txs in this currency, this tx must stay
-            // within balance. Expenditure is read from the live pool at
-            // validation time — never cached — so replaced or evicted txs
-            // cannot inflate it. When this tx replaces a pooled tx at the same
-            // nonce, only the fee *bump* counts (op-geth's `ExistingCost`
-            // credit).
+            // with the sender's nonce-contiguous pooled txs in this currency,
+            // this tx must stay within balance. Basefee-parked transactions
+            // remain in that contiguous prefix, while nonce-gapped queued
+            // transactions do not reserve balance needed by their gap fillers.
             //
-            // Concurrent validations of the same sender cannot see each other
-            // (neither tx is in the pool yet), so a same-instant burst can
-            // overdraft within a few-ms window. op-geth accepts the equivalent
-            // exposure (a sender can drain its balance right after admission);
-            // the block builder skips such txs when the debit fails.
-            let (spent_fc, prev_at_nonce_fc) = pooled_fc_costs(sender, fc, tx.nonce());
-            let needed_fc = spent_fc.saturating_add(required_fc).saturating_sub(prev_at_nonce_fc);
-            if needed_fc > balance {
-                tracing::warn!(
-                    target: "celo::pool",
-                    ?fc,
-                    ?sender,
-                    ?required_fc,
-                    spent = %spent_fc,
-                    replaced = %prev_at_nonce_fc,
-                    ?balance,
-                    "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
-                );
-                CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
-                return Err(CeloPoolRejection::InsufficientBalance {
-                    currency: fc,
-                    sender,
-                    required: needed_fc,
-                    balance,
-                    cumulative: true,
-                });
+            // The node's CeloTransactionPool wrapper serializes validation and
+            // insertion per sender, so this live read also includes earlier
+            // transactions from the same incoming batch.
+            if let Some(state_nonce) = result.state_nonce {
+                let (spent_fc, prev_at_nonce_fc) =
+                    pooled_fc_costs(sender, fc, tx.nonce(), state_nonce);
+                let needed_fc =
+                    spent_fc.saturating_add(required_fc).saturating_sub(prev_at_nonce_fc);
+                if needed_fc > balance {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        ?fc,
+                        ?sender,
+                        ?required_fc,
+                        spent = %spent_fc,
+                        replaced = %prev_at_nonce_fc,
+                        ?balance,
+                        "Rejecting CIP-64 tx: cumulative fee currency cost exceeds balance"
+                    );
+                    CeloPoolMetrics::cip64_rejection("cumulative_balance_exceeded");
+                    return Err(CeloPoolRejection::InsufficientBalance {
+                        currency: fc,
+                        sender,
+                        required: needed_fc,
+                        balance,
+                        cumulative: true,
+                    });
+                }
             }
         } else {
             // The currency is registered (rate found) and a balance check was requested, so a
@@ -1409,10 +1759,10 @@ where
             base_fee_floor,
             self.minimum_priority_fee,
             self.tx_fee_cap,
-            &|sender, fc, nonce| {
+            &|sender, fc, nonce, state_nonce| {
                 pooled_fc_costs
                     .as_ref()
-                    .map_or((U256::ZERO, U256::ZERO), |read| read(sender, fc, nonce))
+                    .map_or((U256::ZERO, U256::ZERO), |read| read(sender, fc, nonce, state_nonce))
             },
             eth_spec,
         );
@@ -1943,6 +2293,7 @@ mod tests {
             FcLookupResult {
                 rate: self.rate,
                 balance: self.balance,
+                state_nonce: Some(0),
                 debit_ok: self.debit_ok,
                 intrinsic_gas: self.intrinsic_gas,
             }
@@ -1950,7 +2301,12 @@ mod tests {
     }
 
     /// No pooled expenditure — the default for single-tx admission tests.
-    fn no_pooled_txs(_sender: Address, _fc: Address, _nonce: u64) -> (U256, U256) {
+    fn no_pooled_txs(
+        _sender: Address,
+        _fc: Address,
+        _nonce: u64,
+        _state_nonce: u64,
+    ) -> (U256, U256) {
         (U256::ZERO, U256::ZERO)
     }
 
@@ -2654,7 +3010,7 @@ mod tests {
         };
 
         // Pooled expenditure 10_000, nothing at this tx's nonce.
-        let pooled = |_: Address, _: Address, _: u64| (U256::from(10_000u64), U256::ZERO);
+        let pooled = |_: Address, _: Address, _: u64, _: u64| (U256::from(10_000u64), U256::ZERO);
 
         // gas=100, max_fee=100 → required_fc = 10_000; 10_000 + 10_000 > 15_000 → reject
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
@@ -2701,33 +3057,35 @@ mod tests {
             debit_ok: Some(true),
             intrinsic_gas: None,
         };
-        let validate = |max_fee: u128, pooled: &dyn Fn(Address, Address, u64) -> (U256, U256)| {
-            let mut tx = make_test_tx(Some(fc), 21_000, max_fee, 1, sender);
-            apply_exchange_rates_to_pool_tx(
-                &mock,
-                &mut tx,
-                Address::ZERO,
-                0,
-                0,
-                None,
-                pooled,
-                SpecId::PRAGUE,
-            )
-        };
+        let validate =
+            |max_fee: u128, pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
+                let mut tx = make_test_tx(Some(fc), 21_000, max_fee, 1, sender);
+                apply_exchange_rates_to_pool_tx(
+                    &mock,
+                    &mut tx,
+                    Address::ZERO,
+                    0,
+                    0,
+                    None,
+                    pooled,
+                    SpecId::PRAGUE,
+                )
+            };
 
         // 1. Empty pool.
         let r1 = validate(100, &no_pooled_txs);
         assert!(r1.is_ok(), "tx1 must be admitted; got {r1:?}");
         // 2. Replacement: the pool holds tx1 (2_100_000) at the same nonce, so only the fee bump
         //    counts.
-        let pool_holds_tx1 =
-            |_: Address, _: Address, _: u64| (U256::from(2_100_000u64), U256::from(2_100_000u64));
+        let pool_holds_tx1 = |_: Address, _: Address, _: u64, _: u64| {
+            (U256::from(2_100_000u64), U256::from(2_100_000u64))
+        };
         let r2 = validate(120, &pool_holds_tx1);
         assert!(r2.is_ok(), "tx2 (replacement) must be admitted; got {r2:?}");
         // 3. The pool replaced tx1 with tx2 — only tx2 is outstanding, at a different nonce than
         //    tx3.
         let pool_holds_tx2 =
-            |_: Address, _: Address, _: u64| (U256::from(2_520_000u64), U256::ZERO);
+            |_: Address, _: Address, _: u64, _: u64| (U256::from(2_520_000u64), U256::ZERO);
         let r3 = validate(100, &pool_holds_tx2);
         assert!(r3.is_ok(), "tx3 is payable and must be admitted; got {r3:?}");
     }
@@ -2752,7 +3110,7 @@ mod tests {
             debit_ok: Some(true),
             intrinsic_gas: None,
         };
-        let validate = |pooled: &dyn Fn(Address, Address, u64) -> (U256, U256)| {
+        let validate = |pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
             let mut tx = make_test_tx(Some(fc), 21_000, 120, 1, sender);
             apply_exchange_rates_to_pool_tx(
                 &mock,
@@ -2766,12 +3124,14 @@ mod tests {
             )
         };
 
-        let replacing =
-            |_: Address, _: Address, _: u64| (U256::from(4_200_000u64), U256::from(2_100_000u64));
+        let replacing = |_: Address, _: Address, _: u64, _: u64| {
+            (U256::from(4_200_000u64), U256::from(2_100_000u64))
+        };
         let r = validate(&replacing);
         assert!(r.is_ok(), "replacement must only pay its fee bump; got {r:?}");
 
-        let not_replacing = |_: Address, _: Address, _: u64| (U256::from(4_200_000u64), U256::ZERO);
+        let not_replacing =
+            |_: Address, _: Address, _: u64, _: u64| (U256::from(4_200_000u64), U256::ZERO);
         let r = validate(&not_replacing);
         assert!(
             matches!(r, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
@@ -2796,8 +3156,8 @@ mod tests {
         };
 
         let queried = std::cell::Cell::new(None);
-        let pooled = |sender: Address, fc: Address, nonce: u64| {
-            queried.set(Some((sender, fc, nonce)));
+        let pooled = |sender: Address, fc: Address, nonce: u64, state_nonce: u64| {
+            queried.set(Some((sender, fc, nonce, state_nonce)));
             (U256::ZERO, U256::ZERO)
         };
 
@@ -2816,8 +3176,8 @@ mod tests {
         assert!(r.is_ok(), "tx should be admitted; got {r:?}");
         assert_eq!(
             queried.get(),
-            Some((sender, fc, expected_nonce)),
-            "pooled expenditure must be queried with the tx's sender, currency, and nonce"
+            Some((sender, fc, expected_nonce, 0)),
+            "pooled expenditure must be queried with the tx and state nonces"
         );
     }
 
@@ -2835,7 +3195,7 @@ mod tests {
             debit_ok: Some(true),
             intrinsic_gas: None,
         };
-        let pooled = |_: Address, _: Address, _: u64| (U256::from(15_000u64), U256::ZERO);
+        let pooled = |_: Address, _: Address, _: u64, _: u64| (U256::from(15_000u64), U256::ZERO);
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
         let r = apply_exchange_rates_to_pool_tx(
@@ -2888,7 +3248,7 @@ mod tests {
         ];
 
         // Nonce 99 matches nothing — no replacement credit.
-        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 99);
+        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 99, 0);
         assert_eq!(spent, U256::from(30_000u64), "only same-currency txs count");
         assert_eq!(prev, U256::ZERO, "no pooled tx at the queried nonce");
     }
@@ -2905,7 +3265,7 @@ mod tests {
 
         // Querying at nonce 1 credits that tx's cost (200*100) while it still
         // counts in `spent` — the caller nets it out (spent + required − prev).
-        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 1);
+        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 1, 0);
         assert_eq!(spent, U256::from(30_000u64));
         assert_eq!(prev, U256::from(20_000u64), "same-nonce same-currency tx must be credited");
     }
@@ -2924,7 +3284,7 @@ mod tests {
             pooled_entry(make_test_tx_with_nonce(Some(other_fc), 1, 200, 100, 10, sender)),
         ];
 
-        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 1);
+        let (spent, prev) = sum_pooled_fc_costs(&txs, fc, 1, 0);
         assert_eq!(spent, U256::from(10_000u64), "other-currency tx not in the sum");
         assert_eq!(prev, U256::ZERO, "other-currency tx at the nonce must not be credited");
     }
@@ -2932,7 +3292,7 @@ mod tests {
     #[test]
     fn test_sum_pooled_fc_costs_empty() {
         let fc = Address::with_last_byte(0xAA);
-        assert_eq!(sum_pooled_fc_costs(&[], fc, 0), (U256::ZERO, U256::ZERO));
+        assert_eq!(sum_pooled_fc_costs(&[], fc, 0, 0), (U256::ZERO, U256::ZERO));
     }
 
     /// Test that the eviction filter logic in `on_new_block` correctly
@@ -3018,7 +3378,8 @@ mod tests {
             validate::ValidTransaction,
         };
 
-        type TestPool = Pool<StubValidator, CoinbaseTipOrdering<CeloPoolTx>, NoopBlobStore>;
+        type RawTestPool = Pool<StubValidator, CoinbaseTipOrdering<CeloPoolTx>, NoopBlobStore>;
+        type TestPool = CeloTransactionPool<RawTestPool>;
 
         /// Runs the real CIP-64 admission logic (`apply_exchange_rates_to_pool_tx`)
         /// with a mocked EVM lookup, skipping the inner eth validator's
@@ -3051,10 +3412,10 @@ mod tests {
                     0,
                     0,
                     None,
-                    &|sender, fc, nonce| {
-                        pooled_fc_costs
-                            .as_ref()
-                            .map_or((U256::ZERO, U256::ZERO), |read| read(sender, fc, nonce))
+                    &|sender, fc, nonce, state_nonce| {
+                        pooled_fc_costs.as_ref().map_or((U256::ZERO, U256::ZERO), |read| {
+                            read(sender, fc, nonce, state_nonce)
+                        })
                     },
                     SpecId::PRAGUE,
                 );
@@ -3090,14 +3451,94 @@ mod tests {
                 },
                 pooled_fc_costs: slot.clone(),
             };
-            let pool = Pool::new(
+            let raw_pool = Arc::new(Pool::new(
                 validator,
                 CoinbaseTipOrdering::default(),
                 NoopBlobStore::default(),
                 PoolConfig::default(),
+            ));
+            let _ = slot.set(pooled_fc_costs_reader(raw_pool.clone()));
+            CeloTransactionPool::new(raw_pool)
+        }
+
+        /// A sender's transactions must observe earlier transactions from the
+        /// same admission batch. The raw reth pool validates the whole batch
+        /// before inserting any result, so without Celo-side serialization both
+        /// 15_000-cost transactions see zero existing expenditure and over-admit
+        /// against a 25_000 balance.
+        #[tokio::test]
+        async fn batch_admission_respects_cumulative_fc_balance() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let txs = vec![
+                make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender),
+                make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, sender),
+            ];
+
+            let results = pool.add_transactions(TransactionOrigin::External, txs).await;
+
+            assert!(results[0].is_ok(), "the first transaction fits the balance");
+            let err = results[1]
+                .as_ref()
+                .expect_err("the second transaction must observe the first transaction");
+            assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
+        }
+
+        /// A per-item rejection must not abort the rest of a sender group, and
+        /// results must stay aligned with the input order.
+        #[tokio::test]
+        async fn batch_admission_continues_after_rejection_in_input_order() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let valid_first = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let invalid_middle = make_test_tx_with_nonce(Some(fc), 1, 300, 100, 10, sender);
+            let valid_last = make_test_tx_with_nonce(Some(fc), 2, 100, 100, 10, sender);
+
+            let results = pool
+                .add_transactions(
+                    TransactionOrigin::External,
+                    vec![valid_first, invalid_middle, valid_last],
+                )
+                .await;
+
+            assert!(results[0].is_ok(), "the first transaction must be admitted");
+            assert!(results[1].is_err(), "the middle transaction must be rejected");
+            assert!(results[2].is_ok(), "a rejection must not abort later transactions");
+            assert_eq!(pool.pool_size().total, 2, "both valid transactions must remain pooled");
+        }
+
+        /// The expenditure callback must not own the raw pool that owns its
+        /// validator. Otherwise `pool -> validator -> callback -> pool` keeps
+        /// the full pool alive after every external owner is dropped.
+        #[test]
+        fn pooled_cost_reader_does_not_keep_pool_alive() {
+            let slot: Arc<OnceLock<PooledFcCostsFn>> = Arc::new(OnceLock::new());
+            let validator = StubValidator {
+                lookup: MockFcLookup {
+                    rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+                    balance: Some(U256::from(25_000)),
+                    debit_ok: Some(true),
+                    intrinsic_gas: None,
+                },
+                pooled_fc_costs: slot.clone(),
+            };
+            let raw_pool = Arc::new(Pool::new(
+                validator,
+                CoinbaseTipOrdering::default(),
+                NoopBlobStore::default(),
+                PoolConfig::default(),
+            ));
+            let weak_pool = Arc::downgrade(&raw_pool);
+            let _ = slot.set(pooled_fc_costs_reader(raw_pool.clone()));
+
+            drop(raw_pool);
+
+            assert!(
+                weak_pool.upgrade().is_none(),
+                "the expenditure reader must not keep its owning pool alive"
             );
-            let _ = slot.set(pooled_fc_costs_reader(pool.clone()));
-            pool
         }
 
         /// End-to-end regression for issue #250: a replaced tx's cost must not
@@ -3253,36 +3694,27 @@ mod tests {
                 .expect_err("fc_a overdraft must still be rejected");
         }
 
-        /// A nonce-gapped (queued) same-currency tx counts toward expenditure.
-        /// Deliberate divergence from op-geth, whose `TotalCostFor` sums only
-        /// the executable pending list: a queued tx is still a real future
-        /// obligation, and over-admission is the costlier failure — a tx whose
-        /// `debitGasFees` fails at block building gets its whole currency
-        /// blocklisted for sequencing.
+        /// A nonce-gapped transaction must not consume the balance needed by
+        /// an earlier transaction that fills its gap. Counting nonce 5 before
+        /// nonce 0 can strand both transactions permanently.
         #[tokio::test]
-        async fn queued_txs_count_toward_expenditure() {
+        async fn nonce_gapped_tx_does_not_block_gap_filler() {
             let fc = Address::with_last_byte(0xAA);
             let sender = Address::with_last_byte(1);
             let pool = test_pool(25_000);
 
-            // Nonce 5 against state nonce 0: parked as queued, 15_000 committed.
+            // Nonce 5 against state nonce 0 is parked as queued.
             let gapped = make_test_tx_with_nonce(Some(fc), 5, 150, 100, 10, sender);
             pool.add_transaction(TransactionOrigin::External, gapped)
                 .await
                 .expect("nonce-gapped tx is admitted (queued)");
 
-            // A pending-eligible tx must still respect the queued obligation:
-            // 15_000 + 15_000 > 25_000.
-            let tx = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
-            let err = pool
-                .add_transaction(TransactionOrigin::External, tx)
+            // The 15_000-cost gap filler fits by itself. The future nonce 5
+            // transaction must not make it look like a 30_000 obligation.
+            let gap_filler = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
+            pool.add_transaction(TransactionOrigin::External, gap_filler)
                 .await
-                .expect_err("queued obligation must count toward expenditure");
-            assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
-
-            // While one that fits alongside it is admitted: 15_000 + 10_000 ≤ 25_000.
-            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
-            pool.add_transaction(TransactionOrigin::External, tx).await.expect("fits");
+                .expect("nonce-gapped tx must not block its own gap filler");
         }
 
         /// A base-fee-parked same-currency tx counts toward expenditure — the

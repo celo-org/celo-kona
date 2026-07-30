@@ -2394,6 +2394,7 @@ dependencies = [
  "reth-db-api",
  "reth-db-common",
  "reth-engine-local",
+ "reth-eth-wire-types",
  "reth-evm",
  "reth-execution-types",
  "reth-fs-util",

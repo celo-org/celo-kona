@@ -3,7 +3,10 @@
 use crate::{
     CeloEvmConfig, celo_next_block_base_fee,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
-    pool::{CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, PooledFcCostsFn},
+    pool::{
+        CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, CeloTransactionPool,
+        PooledFcCostsFn,
+    },
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
@@ -205,15 +208,17 @@ where
     Node::Provider: core::fmt::Debug + Send + Sync + 'static,
     Evm: reth_evm::ConfigureEvm<Primitives = CeloPrimitives> + Clone + 'static,
 {
-    type Pool = reth_transaction_pool::Pool<
-        reth_transaction_pool::TransactionValidationTaskExecutor<
-            CeloExchangeRateApplier<
-                reth_optimism_txpool::OpTransactionValidator<Node::Provider, CeloPoolTx, Evm>,
-                Node::Provider,
+    type Pool = CeloTransactionPool<
+        reth_transaction_pool::Pool<
+            reth_transaction_pool::TransactionValidationTaskExecutor<
+                CeloExchangeRateApplier<
+                    reth_optimism_txpool::OpTransactionValidator<Node::Provider, CeloPoolTx, Evm>,
+                    Node::Provider,
+                >,
             >,
+            reth_transaction_pool::CoinbaseTipOrdering<CeloPoolTx>,
+            reth_transaction_pool::blobstore::DiskFileBlobStore,
         >,
-        reth_transaction_pool::CoinbaseTipOrdering<CeloPoolTx>,
-        reth_transaction_pool::blobstore::DiskFileBlobStore,
     >;
 
     async fn build_pool(
@@ -338,14 +343,25 @@ where
 
         let final_pool_config = pool_config_overrides.apply(ctx.pool_config());
 
-        let transaction_pool = reth_node_builder::components::TxPoolBuilder::new(ctx)
+        let raw_pool = reth_node_builder::components::TxPoolBuilder::new(ctx)
             .with_validator(validator)
-            .build_and_spawn_maintenance_task(blob_store, final_pool_config)?;
+            .build(blob_store, final_pool_config.clone());
+        let raw_pool = Arc::new(raw_pool);
 
         // Wire the validator's live pooled-expenditure reader now that the pool
         // exists (see `pooled_fc_costs_reader` for the accounting semantics).
         // Infallible: this is the only `set` call and it runs once.
-        let _ = pooled_fc_costs.set(crate::pool::pooled_fc_costs_reader(transaction_pool.clone()));
+        let _ = pooled_fc_costs.set(crate::pool::pooled_fc_costs_reader(raw_pool.clone()));
+
+        // All insertions, including backup reloads and canonical-chain
+        // reinjections, must pass through the Celo wrapper so same-sender
+        // validation and insertion stay serialized.
+        let transaction_pool = CeloTransactionPool::new(raw_pool);
+        reth_node_builder::components::spawn_maintenance_tasks(
+            ctx,
+            transaction_pool.clone(),
+            &final_pool_config,
+        )?;
 
         // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
         // is deregistered from the FeeCurrencyDirectory.
