@@ -9,7 +9,7 @@ on:
   push:
     branches:
       - main
-      - celo/reth-v1.0
+      - "celo/reth-v[0-9]*"
     paths:
       - Cargo.toml
       - Cargo.lock
