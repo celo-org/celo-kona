@@ -153,16 +153,27 @@ impl CeloTransactionRequest {
         self
     }
 
+    /// Whether this request builds a CIP-64 (type `0x7b`) transaction: either a fee
+    /// currency is set, or the caller explicitly tagged the type. The explicit tag covers
+    /// the valid native-fee CIP-64 shape (`fee_currency = None`), which would otherwise be
+    /// indistinguishable from an EIP-1559 request and silently rebuild as one — with a
+    /// different signing hash.
+    pub fn is_cip64(&self) -> bool {
+        self.fee_currency.is_some()
+            || self.inner.as_ref().transaction_type
+                == Some(celo_alloy_consensus::CeloTxType::Cip64 as u8)
+    }
+
     /// Builds [`CeloTypedTransaction`] from this builder. See
     /// [`TransactionRequest::build_typed_tx`] for more info.
     ///
     /// Note that EIP-4844 transactions are not supported by Celo and will be converted into
     /// EIP-1559 transactions (or CIP-64 when a fee currency is set).
     ///
-    /// When `fee_currency` is set, only EIP-1559-shaped requests build; they become
-    /// [`CeloTypedTransaction::Cip64`]. Requests that resolve to legacy or EIP-2930 (both
-    /// imply `gasPrice`) or EIP-7702 (authorization list) conflict with CIP-64 and return
-    /// `Err`.
+    /// When the request is CIP-64 (see [`Self::is_cip64`]), only EIP-1559-shaped requests
+    /// build; they become [`CeloTypedTransaction::Cip64`]. Requests that resolve to legacy
+    /// or EIP-2930 (both imply `gasPrice`) or EIP-7702 (authorization list) conflict with
+    /// CIP-64 and return `Err`.
     #[allow(clippy::result_large_err)]
     pub fn build_typed_tx(self) -> Result<CeloTypedTransaction, Self> {
         let Ok(tx) = self.inner.as_ref().clone().build_typed_tx() else {
@@ -188,7 +199,7 @@ impl CeloTransactionRequest {
             tx => tx,
         };
 
-        let Some(fee_currency) = self.fee_currency else {
+        if !self.is_cip64() {
             return Ok(match tx {
                 TypedTransaction::Legacy(tx) => CeloTypedTransaction::Legacy(tx),
                 TypedTransaction::Eip2930(tx) => CeloTypedTransaction::Eip2930(tx),
@@ -196,7 +207,7 @@ impl CeloTransactionRequest {
                 TypedTransaction::Eip7702(tx) => CeloTypedTransaction::Eip7702(tx),
                 TypedTransaction::Eip4844(_) => unreachable!("downgraded to EIP-1559 above"),
             });
-        };
+        }
 
         // CIP-64 is EIP-1559-based: legacy/EIP-2930 (`gasPrice`) and EIP-7702
         // (`authorizationList`) requests conflict with a fee currency. Rejecting instead of
@@ -211,7 +222,7 @@ impl CeloTransactionRequest {
                 to: tx.to,
                 value: tx.value,
                 access_list: tx.access_list,
-                fee_currency: Some(fee_currency),
+                fee_currency: self.fee_currency,
                 input: tx.input,
             })),
             _ => Err(self),
@@ -600,6 +611,40 @@ mod tests {
         // And it still builds back into a CIP-64 tx.
         let rebuilt = req.build_typed_tx().expect("round-trip should build");
         assert!(matches!(rebuilt, CeloTypedTransaction::Cip64(_)));
+    }
+
+    #[test]
+    fn native_fee_cip64_roundtrips_as_cip64() {
+        // `TxCip64 { fee_currency: None }` is a valid native-fee CIP-64 shape. The inner
+        // conversion tags the request with type 0x7b, and the round-trip must rebuild the
+        // same type — not silently downgrade to EIP-1559 with a different signing hash.
+        let CeloTypedTransaction::Cip64(mut tx) = cip64_request().build_typed_tx().unwrap() else {
+            panic!("expected CIP-64");
+        };
+        tx.fee_currency = None;
+        let req: CeloTransactionRequest = CeloTypedTransaction::Cip64(tx).into();
+        assert!(req.is_cip64(), "0x7b tag must mark the request as CIP-64");
+        let rebuilt = req.build_typed_tx().expect("round-trip should build");
+        let CeloTypedTransaction::Cip64(rebuilt) = rebuilt else {
+            panic!("expected CIP-64, got {rebuilt:?}");
+        };
+        assert_eq!(rebuilt.fee_currency, None);
+    }
+
+    #[test]
+    fn explicit_type_tag_builds_native_fee_cip64() {
+        let req = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .nonce(7)
+            .gas_limit(100_000)
+            .max_fee_per_gas(2_000_000)
+            .max_priority_fee_per_gas(1_000)
+            .transaction_type(0x7b);
+        let tx = req.build_typed_tx().expect("should build");
+        let CeloTypedTransaction::Cip64(tx) = tx else {
+            panic!("expected CIP-64, got {tx:?}");
+        };
+        assert_eq!(tx.fee_currency, None);
     }
 
     #[test]

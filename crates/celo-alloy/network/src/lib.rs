@@ -83,7 +83,7 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
 
     #[doc(alias = "output_transaction_type")]
     fn output_tx_type(&self) -> CeloTxType {
-        if self.fee_currency.is_some() {
+        if self.is_cip64() {
             return CeloTxType::Cip64;
         }
         match NetworkTransactionBuilder::<Ethereum>::output_tx_type(self.as_ref()) {
@@ -96,8 +96,12 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
 
     #[doc(alias = "output_transaction_type_checked")]
     fn output_tx_type_checked(&self) -> Option<CeloTxType> {
-        if self.fee_currency.is_some() {
-            return Some(CeloTxType::Cip64);
+        if self.is_cip64() {
+            // The checked variant must return `None` unless the builder is ready to build
+            // (same readiness gate as `build_unsigned`).
+            return NetworkTransactionBuilder::<Celo>::complete_type(self, CeloTxType::Cip64)
+                .is_ok()
+                .then_some(CeloTxType::Cip64);
         }
         NetworkTransactionBuilder::<Ethereum>::output_tx_type_checked(self.as_ref()).map(|tx_ty| {
             match tx_ty {
@@ -110,14 +114,17 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
     }
 
     fn prep_for_submission(&mut self) {
+        // Capture before delegating: the Ethereum impl overwrites `transaction_type` with
+        // its preferred type, which would erase an explicit CIP-64 tag.
+        let is_cip64 = self.is_cip64();
         NetworkTransactionBuilder::<Ethereum>::prep_for_submission(self.as_mut());
-        if self.fee_currency.is_some() {
+        if is_cip64 {
             self.as_mut().transaction_type = Some(CeloTxType::Cip64 as u8);
         }
     }
 
     fn build_unsigned(self) -> BuildResult<CeloTypedTransaction, Celo> {
-        if self.fee_currency.is_some() {
+        if self.is_cip64() {
             // `missing_keys` runs on the inner request and cannot see the fee currency, so
             // the CIP-64 checks (EIP-1559 keys + conflict rejection) live in
             // `complete_type`.
@@ -179,6 +186,22 @@ mod tests {
             NetworkTransactionBuilder::<Celo>::output_tx_type_checked(&req),
             Some(CeloTxType::Cip64)
         );
+    }
+
+    #[test]
+    fn output_tx_type_checked_is_none_for_incomplete_cip64() {
+        // The checked variant must not claim readiness: fee/gas keys are missing here.
+        let req = CeloTransactionRequest::default().to(Address::ZERO).fee_currency(sample_fc());
+        assert_eq!(NetworkTransactionBuilder::<Celo>::output_tx_type_checked(&req), None);
+        // The unchecked variant still reports the type that would be attempted.
+        assert_eq!(NetworkTransactionBuilder::<Celo>::output_tx_type(&req), CeloTxType::Cip64);
+    }
+
+    #[test]
+    fn output_tx_type_checked_is_none_for_conflicted_cip64() {
+        let mut req = cip64_request();
+        req.as_mut().gas_price = Some(1);
+        assert_eq!(NetworkTransactionBuilder::<Celo>::output_tx_type_checked(&req), None);
     }
 
     #[test]
