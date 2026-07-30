@@ -58,10 +58,18 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
                         "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList",
                     );
                 }
-                if let Err(missing) = NetworkTransactionBuilder::<Ethereum>::complete_type(
-                    self.as_ref(),
-                    TxType::Eip1559,
-                ) {
+                // The build path resolves the inner request's preferred type, so readiness
+                // must check that type's keys: blob fields make it EIP-4844 (downgraded to
+                // the EIP-1559 shape after building), which additionally requires the blob
+                // keys. Checking only the EIP-1559 keys would report ready for a request
+                // the inner build rejects.
+                let inner_ty = match self.as_ref().preferred_type() {
+                    TxType::Eip4844 => TxType::Eip4844,
+                    _ => TxType::Eip1559,
+                };
+                if let Err(missing) =
+                    NetworkTransactionBuilder::<Ethereum>::complete_type(self.as_ref(), inner_ty)
+                {
                     errors.extend(missing);
                 }
                 if errors.is_empty() { Ok(()) } else { Err(errors) }
@@ -78,6 +86,12 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
     }
 
     fn can_build(&self) -> bool {
+        if self.is_cip64() {
+            // Same readiness gate as `build_unsigned` and `output_tx_type_checked`: the
+            // inner check cannot see the CIP-64 conflicts (`gasPrice`, `authorizationList`).
+            return NetworkTransactionBuilder::<Celo>::complete_type(self, CeloTxType::Cip64)
+                .is_ok();
+        }
         NetworkTransactionBuilder::<Ethereum>::can_build(self.as_ref())
     }
 
@@ -138,7 +152,10 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
                 .into_unbuilt(self));
             }
         } else if let Err((tx_type, missing)) = self.as_ref().missing_keys() {
-            let tx_type = CeloTxType::try_from(tx_type as u8).unwrap();
+            // Celo has no EIP-4844; blob-shaped requests build as their EIP-1559
+            // downgrade, so report their missing keys against that type instead of
+            // panicking on the unrepresentable tx type.
+            let tx_type = CeloTxType::try_from(tx_type as u8).unwrap_or(CeloTxType::Eip1559);
             return Err(TransactionBuilderError::InvalidTransactionRequest(tx_type, missing)
                 .into_unbuilt(self));
         }
@@ -202,6 +219,75 @@ mod tests {
         let mut req = cip64_request();
         req.as_mut().gas_price = Some(1);
         assert_eq!(NetworkTransactionBuilder::<Celo>::output_tx_type_checked(&req), None);
+    }
+
+    #[test]
+    fn can_build_gates_on_cip64_readiness() {
+        assert!(NetworkTransactionBuilder::<Celo>::can_build(&cip64_request()));
+
+        // A gasPrice conflict makes the inner request a complete legacy shape, but the
+        // CIP-64 build would reject it — `can_build` must agree with `build_unsigned`.
+        let mut conflicted = cip64_request();
+        conflicted.as_mut().gas_price = Some(1);
+        assert!(!NetworkTransactionBuilder::<Celo>::can_build(&conflicted));
+
+        let incomplete =
+            CeloTransactionRequest::default().to(Address::ZERO).fee_currency(sample_fc());
+        assert!(!NetworkTransactionBuilder::<Celo>::can_build(&incomplete));
+    }
+
+    #[test]
+    fn cip64_incomplete_blob_shape_is_unready_and_errors_cleanly() {
+        // Blob fields make the inner request prefer EIP-4844, whose completeness needs
+        // the blob keys too. Passing only the EIP-1559 check would report ready for a
+        // request the inner build rejects — and panic in `build_unsigned`.
+        let mut req = cip64_request();
+        req.as_mut().blob_versioned_hashes = Some(vec![alloy_primitives::B256::ZERO]);
+        assert!(!NetworkTransactionBuilder::<Celo>::can_build(&req));
+        assert_eq!(NetworkTransactionBuilder::<Celo>::output_tx_type_checked(&req), None);
+
+        let err = NetworkTransactionBuilder::<Celo>::build_unsigned(req).unwrap_err();
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, missing) = err.error else {
+            panic!("unexpected error: {:?}", err.error);
+        };
+        assert_eq!(tx_type, CeloTxType::Cip64);
+        assert!(missing.iter().any(|k| k.contains("sidecar")), "got: {missing:?}");
+    }
+
+    #[test]
+    fn cip64_complete_blob_shape_builds_downgraded() {
+        // A complete EIP-4844 shape with a fee currency still builds: the blob parts are
+        // dropped by the documented 4844 → 1559 downgrade and the result is CIP-64.
+        let mut req = cip64_request();
+        req.as_mut().sidecar = Some(Default::default());
+        req.as_mut().max_fee_per_blob_gas = Some(1);
+        assert!(NetworkTransactionBuilder::<Celo>::can_build(&req));
+
+        let tx = NetworkTransactionBuilder::<Celo>::build_unsigned(req).expect("should build");
+        let CeloTypedTransaction::Cip64(tx) = tx else {
+            panic!("expected CIP-64, got {tx:?}");
+        };
+        assert_eq!(tx.fee_currency, Some(sample_fc()));
+    }
+
+    #[test]
+    fn non_cip64_incomplete_blob_shape_errors_cleanly() {
+        // Without CIP-64 intent, `missing_keys` reports EIP-4844 — unrepresentable in
+        // `CeloTxType`. This must surface as a build error, not a panic.
+        let mut req = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .nonce(1)
+            .gas_limit(100_000)
+            .max_fee_per_gas(2_000_000)
+            .max_priority_fee_per_gas(1_000);
+        req.as_mut().blob_versioned_hashes = Some(vec![alloy_primitives::B256::ZERO]);
+
+        let err = NetworkTransactionBuilder::<Celo>::build_unsigned(req).unwrap_err();
+        let TransactionBuilderError::InvalidTransactionRequest(tx_type, missing) = err.error else {
+            panic!("unexpected error: {:?}", err.error);
+        };
+        assert_eq!(tx_type, CeloTxType::Eip1559);
+        assert!(missing.iter().any(|k| k.contains("sidecar")), "got: {missing:?}");
     }
 
     #[test]
