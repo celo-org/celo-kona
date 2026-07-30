@@ -314,6 +314,10 @@ op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-ret
 # The patch must cover every reth crate in the graph so the op-reth git deps
 # unify with the fork. On a rev bump, regenerate this list from the reth
 # packages Cargo.lock resolves from this git source.
+# Keep the pinned SHA reachable via the
+# `celo-kona/reth-v1.0-tracing-context-v1` tag in celo-org/reth, and protect
+# that tag from updates and deletion. The scoped fork-test workflow verifies
+# that the tag still resolves to this exact rev.
 [patch."https://github.com/paradigmxyz/reth"]
 reth-basic-payload-builder = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d19755fe0865e7df2c95e4fbb097389" }
 reth-chain-state = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d19755fe0865e7df2c95e4fbb097389" }
