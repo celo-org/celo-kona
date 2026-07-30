@@ -55,7 +55,7 @@ bin/execution-verifier
 
 ### Upstream Pins
 
-`kona-*` and `reth-optimism-*` come from the [Optimism monorepo](https://github.com/ethereum-optimism/optimism) (kona and op-reth both live under `rust/` there now, not in `op-rs/kona`). Plain `reth-*` crates come from a pinned `paradigmxyz/reth` revision. `op-alloy-*` / `op-revm` are patched to the monorepo's in-tree copies. When tracing behaviour into upstream, read the source at that tag, not `develop`.
+`kona-*` and `reth-optimism-*` come from the [Optimism monorepo](https://github.com/ethereum-optimism/optimism) (kona and op-reth both live under `rust/` there now, not in `op-rs/kona`). Plain `reth-*` crates are declared against `paradigmxyz/reth` but are currently patched to a pinned `celo-org/reth` revision. `op-alloy-*` / `op-revm` are patched to the monorepo's in-tree copies. When tracing behaviour into upstream, follow the resolved source and exact ref in `Cargo.lock` rather than reading `develop`.
 
 ### Binaries (`bin/`)
 
