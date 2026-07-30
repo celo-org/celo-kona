@@ -254,20 +254,56 @@ impl From<Sealed<TxDeposit>> for CeloTransactionRequest {
     }
 }
 
-impl<T> From<Signed<T, Signature>> for CeloTransactionRequest
+/// Shared body for the `From<Signed<...>>` impls below. Not a blanket `impl<T> From` —
+/// that would be public API through which `Signed<TxCip64>` loses its fee currency (the
+/// inner `TxCip64 → TransactionRequest` conversion structurally drops it), and coherence
+/// forbids specializing a blanket impl for one `T`.
+fn from_signed<T>(value: Signed<T, Signature>) -> CeloTransactionRequest
 where
     T: SignableTransaction<Signature> + Into<TransactionRequest>,
 {
-    fn from(value: Signed<T, Signature>) -> Self {
-        #[cfg(feature = "k256")]
-        let from = value.recover_signer().ok();
-        #[cfg(not(feature = "k256"))]
-        let from = None;
+    #[cfg(feature = "k256")]
+    let from = value.recover_signer().ok();
+    #[cfg(not(feature = "k256"))]
+    let from = None;
 
-        let mut inner: TransactionRequest = value.strip_signature().into();
-        inner.from = from;
+    let mut inner: TransactionRequest = value.strip_signature().into();
+    inner.from = from;
 
-        inner.into()
+    inner.into()
+}
+
+impl From<Signed<alloy_consensus::TxLegacy>> for CeloTransactionRequest {
+    fn from(value: Signed<alloy_consensus::TxLegacy>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<alloy_consensus::TxEip2930>> for CeloTransactionRequest {
+    fn from(value: Signed<alloy_consensus::TxEip2930>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<TxEip1559>> for CeloTransactionRequest {
+    fn from(value: Signed<TxEip1559>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<alloy_consensus::TxEip7702>> for CeloTransactionRequest {
+    fn from(value: Signed<alloy_consensus::TxEip7702>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<TxCip64>> for CeloTransactionRequest {
+    fn from(value: Signed<TxCip64>) -> Self {
+        // Extract before the inner conversion drops it.
+        let fee_currency = value.tx().fee_currency;
+        let mut req = from_signed(value);
+        req.fee_currency = fee_currency;
+        req
     }
 }
 
@@ -312,14 +348,7 @@ impl From<CeloTxEnvelope> for CeloTransactionRequest {
             CeloTxEnvelope::Eip2930(tx) => tx.into(),
             CeloTxEnvelope::Eip1559(tx) => tx.into(),
             CeloTxEnvelope::Eip7702(tx) => tx.into(),
-            CeloTxEnvelope::Cip64(tx) => {
-                // The generic `Signed<T>` conversion above loses `fee_currency` (see the
-                // typed-transaction arm); extract it before converting and re-inject.
-                let fee_currency = tx.tx().fee_currency;
-                let mut req: Self = tx.into();
-                req.fee_currency = fee_currency;
-                req
-            }
+            CeloTxEnvelope::Cip64(tx) => tx.into(),
             CeloTxEnvelope::Deposit(tx) => tx.into(),
         }
     }
@@ -645,6 +674,18 @@ mod tests {
             panic!("expected CIP-64, got {tx:?}");
         };
         assert_eq!(tx.fee_currency, None);
+    }
+
+    #[test]
+    fn from_signed_cip64_keeps_fee_currency() {
+        // The direct `Signed<TxCip64>` conversion (not via the envelope) must also carry
+        // the fee currency — a token-fee tx must not become a native-fee request.
+        let CeloTypedTransaction::Cip64(tx) = cip64_request().build_typed_tx().unwrap() else {
+            panic!("expected CIP-64");
+        };
+        let signed = tx.into_signed(Signature::test_signature());
+        let req: CeloTransactionRequest = signed.into();
+        assert_eq!(req.fee_currency, Some(sample_fc()));
     }
 
     #[test]
