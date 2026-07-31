@@ -6,6 +6,9 @@ name: Linker Benchmark
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - palango/linker-benchmark
 
 jobs:
   linker-bench:
