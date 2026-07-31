@@ -177,6 +177,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
             blocklist: self.blocklist.clone(),
             block_gas_limit,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         }
     }
 }
@@ -184,6 +185,15 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
 // ---------------------------------------------------------------------------
 // CeloFeeCurrencyFilter — PayloadTransactions wrapper
 // ---------------------------------------------------------------------------
+
+/// Gas reservation for the most recently yielded fee-currency transaction.
+#[derive(Debug, Clone, Copy)]
+struct PendingFeeCurrencyCharge {
+    sender: Address,
+    nonce: u64,
+    fee_currency: Address,
+    gas_limit: u64,
+}
 
 /// Wraps a [`PayloadTransactions`] iterator and enforces per-fee-currency gas limits.
 ///
@@ -199,6 +209,9 @@ struct CeloFeeCurrencyFilter<I> {
     block_gas_limit: u64,
     /// Cumulative gas used per fee currency address.
     gas_used_per_currency: HashMap<Address, u64>,
+    /// Gas reservation for the most recently yielded fee-currency transaction. A following
+    /// `next` call commits it, while a matching `mark_invalid` rolls it back.
+    pending_charge: Option<PendingFeeCurrencyCharge>,
 }
 
 impl<I> PayloadTransactions for CeloFeeCurrencyFilter<I>
@@ -208,6 +221,10 @@ where
     type Transaction = CeloPoolTx;
 
     fn next(&mut self, ctx: ()) -> Option<Self::Transaction> {
+        // The payload builder requests the next transaction only after accepting the previously
+        // yielded one. Reaching this point therefore commits its fee-currency gas reservation.
+        self.pending_charge = None;
+
         loop {
             let tx = self.inner.next(ctx)?;
             let fee_currency = tx.fee_currency();
@@ -250,6 +267,12 @@ where
                 }
                 // Track gas usage for this currency
                 *self.gas_used_per_currency.entry(fc).or_insert(0) += tx.gas_limit();
+                self.pending_charge = Some(PendingFeeCurrencyCharge {
+                    sender: tx.sender(),
+                    nonce: tx.nonce(),
+                    fee_currency: fc,
+                    gas_limit: tx.gas_limit(),
+                });
             }
             // Native CELO (fee_currency = None): no limit applied
 
@@ -258,6 +281,18 @@ where
     }
 
     fn mark_invalid(&mut self, sender: Address, nonce: u64) {
+        if let Some(charge) =
+            self.pending_charge.take_if(|charge| charge.sender == sender && charge.nonce == nonce) &&
+            let std::collections::hash_map::Entry::Occupied(mut entry) =
+                self.gas_used_per_currency.entry(charge.fee_currency)
+        {
+            let remaining = entry.get().saturating_sub(charge.gas_limit);
+            if remaining == 0 {
+                entry.remove();
+            } else {
+                *entry.get_mut() = remaining;
+            }
+        }
         self.inner.mark_invalid(sender, nonce);
     }
 }
@@ -503,6 +538,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         assert!(filter.next(()).is_some());
@@ -524,6 +560,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
         assert!(filter.next(()).is_some(), "native CELO must bypass the per-currency cap");
         assert!(filter.next(()).is_none());
@@ -552,6 +589,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
         let t1 = filter.next(()).unwrap();
         assert_eq!(t1.fee_currency(), Some(fc_a), "fc_a 20M is under its 27M (0.9) cap");
@@ -572,6 +610,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         assert!(filter.next(()).is_none());
@@ -598,6 +637,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         // First two should pass (different currencies)
@@ -625,6 +665,7 @@ mod tests {
             blocklist,
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         assert!(filter.next(()).is_none());
@@ -644,6 +685,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         assert!(filter.next(()).is_some(), "Tx using exactly the gas limit should pass");
@@ -669,6 +711,7 @@ mod tests {
             blocklist: FeeCurrencyBlocklist::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         let tx1 = filter.next(()).expect("sender_a tx should pass");
@@ -701,8 +744,118 @@ mod tests {
             blocklist,
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
         };
 
         assert!(filter.next(()).is_some(), "Tx should pass after blocklist eviction");
+    }
+
+    #[test]
+    fn filter_rolls_back_rejected_fee_currency_charge() {
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc), 10_000_000, sender_a),
+                    make_test_tx(Some(fc), 8_000_000, sender_b),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        };
+
+        let rejected = filter.next(()).expect("first tx should fit");
+        filter.mark_invalid(rejected.sender(), rejected.nonce());
+
+        let next = filter.next(()).expect("rejected tx should release its 10M reservation");
+        assert_eq!(next.sender(), sender_b);
+        assert_eq!(next.fee_currency(), Some(fc));
+    }
+
+    #[test]
+    fn filter_mismatched_invalidation_keeps_fee_currency_charge() {
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let unrelated_sender = Address::with_last_byte(3);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc), 10_000_000, sender_a),
+                    make_test_tx(Some(fc), 8_000_000, sender_b),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        };
+
+        assert_eq!(filter.next(()).unwrap().sender(), sender_a);
+        filter.mark_invalid(unrelated_sender, 0);
+
+        assert!(
+            filter.next(()).is_none(),
+            "unrelated invalidation must not release sender A's gas"
+        );
+        assert_eq!(filter.inner.invalid.last(), Some(&(sender_b, 0)));
+    }
+
+    #[test]
+    fn filter_continued_iteration_commits_fee_currency_charge() {
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(Some(fc), 10_000_000, sender_a),
+                    make_test_tx(Some(fc), 8_000_000, sender_b),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        };
+
+        assert_eq!(filter.next(()).unwrap().sender(), sender_a);
+        assert!(filter.next(()).is_none(), "continuing iteration commits sender A's reservation");
+    }
+
+    #[test]
+    fn filter_native_rejection_does_not_change_fee_currency_charge() {
+        let native_sender = Address::with_last_byte(1);
+        let fee_currency_sender = Address::with_last_byte(2);
+        let fc = fc_addr(10);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions {
+                txs: vec![
+                    make_test_tx(None, 30_000_000, native_sender),
+                    make_test_tx(Some(fc), 15_000_000, fee_currency_sender),
+                ],
+                invalid: vec![],
+            },
+            limits: FeeCurrencyLimits::default(),
+            blocklist: FeeCurrencyBlocklist::default(),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        };
+
+        let rejected = filter.next(()).expect("native tx should bypass the fee-currency cap");
+        filter.mark_invalid(rejected.sender(), rejected.nonce());
+
+        assert_eq!(filter.next(()).unwrap().sender(), fee_currency_sender);
     }
 }
