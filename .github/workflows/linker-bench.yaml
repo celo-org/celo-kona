@@ -1,0 +1,101 @@
+# Temporary, dispatch-only benchmark. Measures what the mold linker saves on
+# the CI runners and whether the setup-mold /usr/bin/ld symlink (used by
+# .github/actions/setup) still takes effect now that Rust >= 1.90 links
+# x86_64-linux with self-contained rust-lld by default.
+name: Linker Benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  linker-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+      - name: Free disk space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          large-packages: false
+      - name: Install mold without the ld symlink
+        uses: rui314/setup-mold@v1
+        with:
+          make-default: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          prefix-key: native
+          save-if: false
+
+      - name: Identify linkers on a hello-world
+        run: |
+          echo 'fn main() {}' > /tmp/hello.rs
+          rustc /tmp/hello.rs -o /tmp/hello-default
+          echo "--- default linker .comment:"
+          readelf -p .comment /tmp/hello-default
+          mold -run rustc /tmp/hello.rs -o /tmp/hello-moldrun
+          echo "--- mold -run .comment:"
+          readelf -p .comment /tmp/hello-moldrun
+
+      - name: Build celo-reth (debug)
+        run: cargo build -p celo-reth --bin celo-reth
+
+      - name: Bench bin relink — default linker (rust-lld)
+        run: |
+          for i in 1 2 3; do
+            touch crates/celo-reth/src/bin/celo_reth.rs
+            start=$(date +%s.%N)
+            cargo build -q -p celo-reth --bin celo-reth
+            end=$(date +%s.%N)
+            awk "BEGIN{printf \"RESULT bin-relink default rep$i: %.1fs\n\", $end - $start}"
+          done
+          readelf -p .comment target/debug/celo-reth | tail -3
+
+      - name: Bench bin relink — mold -run
+        run: |
+          for i in 1 2 3; do
+            touch crates/celo-reth/src/bin/celo_reth.rs
+            start=$(date +%s.%N)
+            mold -run cargo build -q -p celo-reth --bin celo-reth
+            end=$(date +%s.%N)
+            awk "BEGIN{printf \"RESULT bin-relink mold-run rep$i: %.1fs\n\", $end - $start}"
+          done
+          readelf -p .comment target/debug/celo-reth | tail -3
+
+      - name: Build celo-reth tests (debug)
+        run: cargo test -p celo-reth --no-run
+
+      - name: Bench test-binary relink — default vs mold -run
+        run: |
+          for cfg in default mold-run default mold-run; do
+            touch crates/celo-reth/src/lib.rs
+            start=$(date +%s.%N)
+            if [ "$cfg" = mold-run ]; then
+              mold -run cargo test -q -p celo-reth --no-run
+            else
+              cargo test -q -p celo-reth --no-run
+            fi
+            end=$(date +%s.%N)
+            awk "BEGIN{printf \"RESULT test-relink $cfg: %.1fs\n\", $end - $start}"
+          done
+
+      # Last because the symlink cannot easily be undone: it overwrites the
+      # resolved target of /usr/bin/ld, exactly like setup-mold's default mode.
+      - name: Bench bin relink — setup-mold ld symlink (current CI mechanism)
+        run: |
+          sudo ln -sf /usr/local/bin/mold "$(realpath /usr/bin/ld)"
+          rustc /tmp/hello.rs -o /tmp/hello-symlink
+          echo "--- ld-symlink hello .comment:"
+          readelf -p .comment /tmp/hello-symlink
+          for i in 1 2 3; do
+            touch crates/celo-reth/src/bin/celo_reth.rs
+            start=$(date +%s.%N)
+            cargo build -q -p celo-reth --bin celo-reth
+            end=$(date +%s.%N)
+            awk "BEGIN{printf \"RESULT bin-relink ld-symlink rep$i: %.1fs\n\", $end - $start}"
+          done
+          readelf -p .comment target/debug/celo-reth | tail -3
