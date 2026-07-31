@@ -28,6 +28,7 @@ reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-db-common.workspace = true
 reth-engine-local.workspace = true
+reth-eth-wire-types.workspace = true
 reth-evm.workspace = true
 reth-execution-types.workspace = true
 reth-fs-util.workspace = true
