@@ -33,7 +33,7 @@ use reth_transaction_pool::{
 use revm::{interpreter::gas::calculate_initial_tx_gas, primitives::hardfork::SpecId};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     sync::{Arc, Mutex, OnceLock, Weak},
 };
@@ -1843,17 +1843,59 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// CeloPoolMaintainer — evict CIP-64 txs when fee currency is deregistered
+// CeloPoolMaintainer — revalidate pooled CIP-64 txs on canonical updates
 // ---------------------------------------------------------------------------
 
+/// Find pooled CIP-64 transactions that the sender can no longer afford after a canonical state
+/// update. Balances are cached per sender and fee currency so multiple nonces share one lookup.
+///
+/// A failed lookup is returned to the caller and deliberately retains every transaction for the
+/// affected pair. The maintainer is a cleanup path, so uncertain state must not become an eviction.
+fn txs_with_insufficient_fee_currency_balance<'a>(
+    transactions: impl IntoIterator<Item = &'a CeloPoolTx>,
+    registered_currencies: &HashSet<Address>,
+    mut balance_of: impl FnMut(Address, Address) -> Option<U256>,
+) -> (Vec<TxHash>, Vec<(Address, Address)>) {
+    let mut balances = HashMap::<(Address, Address), Option<U256>>::new();
+    let mut lookup_failures = Vec::new();
+    let mut to_evict = Vec::new();
+
+    for tx in transactions {
+        let Some(fee_currency) = tx.fee_currency() else {
+            continue;
+        };
+        if !registered_currencies.contains(&fee_currency) {
+            continue;
+        }
+
+        let key = (tx.sender(), fee_currency);
+        let balance = balances.get(&key).copied().unwrap_or_else(|| {
+            let balance = balance_of(key.0, key.1);
+            if balance.is_none() {
+                lookup_failures.push(key);
+            }
+            balances.insert(key, balance);
+            balance
+        });
+
+        if balance.is_some_and(|balance| balance < tx.fc_gas_cost()) {
+            to_evict.push(*tx.hash());
+        }
+    }
+
+    (to_evict, lookup_failures)
+}
+
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
-/// whose fee currency has been deregistered from the `FeeCurrencyDirectory`.
+/// whose fee currency has been deregistered or whose sender can no longer afford their maximum
+/// fee-currency gas cost.
 #[derive(Debug)]
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
     provider: P,
     fee_currency_directory: Address,
-    /// Cached set of registered currencies. Only scan pool when this changes.
+    /// Cached set of registered currencies. Deregistration checks only need a full pool scan when
+    /// this changes; canonical balance checks still run after every successful registry query.
     ///
     /// `None` means the maintainer has never observed a successful query,
     /// so no diff baseline exists yet. Diffing against an empty baseline
@@ -1875,46 +1917,75 @@ where
     P: StateProviderFactory,
 {
     /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
-    fn query_registered_currencies(&self) -> Option<std::collections::HashSet<Address>> {
+    fn query_registered_currencies<DB>(
+        &self,
+        evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+    ) -> Option<HashSet<Address>>
+    where
+        DB: revm::Database,
+    {
         use alloy_sol_types::SolCall;
-        use celo_revm::contracts::core_contracts::getCurrenciesCall;
-        use reth_revm::database::StateProviderDatabase;
-        use revm::context_interface::result::ExecutionResult;
-
-        let state = self.provider.latest().inspect_err(|e| {
-            tracing::warn!(target: "celo::pool", %e, "Failed to get latest state for currency query");
-        }).ok()?;
-        let db = StateProviderDatabase::new(state);
-        // The FeeCurrencyDirectory is legacy bytecode and this read-only
-        // `getCurrencies` query has no fork-gated semantics, so the Celo default
-        // spec suffices (and stays forward-compatible if the directory is ever
-        // redeployed with PUSH0-emitting bytecode). The maintainer never rejects
-        // txs, so unlike the validator it needs no per-head spec tracking.
-        let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
+        use celo_revm::contracts::core_contracts::{call_read_only, getCurrenciesCall};
 
         let calldata = getCurrenciesCall {}.abi_encode();
-        let result = evm
-            .transact_system_call_with_gas_limit(
-                self.fee_currency_directory,
-                calldata.into(),
-                POOL_SYSTEM_CALL_GAS_LIMIT,
-            )
-            .inspect_err(|e| {
-                tracing::warn!(target: "celo::pool", %e, "EVM system call failed querying fee currencies");
-            })
-            .ok()?;
+        let output = call_read_only(
+            evm,
+            self.fee_currency_directory,
+            calldata.into(),
+            Some(POOL_SYSTEM_CALL_GAS_LIMIT),
+        )
+        .inspect_err(|e| {
+            tracing::warn!(
+                target: "celo::pool",
+                %e,
+                "Read-only EVM call failed querying fee currencies"
+            );
+        })
+        .ok()?
+        .0;
 
-        match result {
-            ExecutionResult::Success { output, .. } => {
-                let currencies: Vec<Address> =
-                    getCurrenciesCall::abi_decode_returns(&output.into_data()).ok()?;
-                Some(currencies.into_iter().collect())
-            }
-            other => {
-                tracing::warn!(target: "celo::pool", ?other, "Fee currency query returned non-success");
-                None
-            }
-        }
+        let currencies: Vec<Address> = getCurrenciesCall::abi_decode_returns(&output).ok()?;
+        Some(currencies.into_iter().collect())
+    }
+
+    /// Query a sender's current ERC20 balance for one registered fee currency.
+    fn query_fee_currency_balance<DB>(
+        evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+        sender: Address,
+        fee_currency: Address,
+    ) -> Option<U256>
+    where
+        DB: revm::Database,
+    {
+        use alloy_sol_types::SolCall;
+        use celo_revm::contracts::{core_contracts::call_read_only, erc20::IFeeCurrencyERC20};
+
+        let calldata = IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
+        let output =
+            call_read_only(evm, fee_currency, calldata.into(), Some(POOL_SYSTEM_CALL_GAS_LIMIT))
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        ?sender,
+                        ?fee_currency,
+                        "Read-only EVM call failed during canonical balance revalidation"
+                    );
+                })
+                .ok()?
+                .0;
+
+        IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output)
+            .inspect_err(|e| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    ?sender,
+                    ?fee_currency,
+                    "Failed to decode canonical fee-currency balance"
+                );
+            })
+            .ok()
     }
 
     /// Run the maintainer, listening for canonical state changes.
@@ -1951,15 +2022,34 @@ where
         }
     }
 
-    /// Handle a new canonical block: check if registered currencies changed
-    /// and evict CIP-64 txs with deregistered currencies.
+    /// Handle a new canonical block: evict CIP-64 txs that are no longer valid against canonical
+    /// fee-currency registration and balance state.
     fn on_new_block(&mut self) {
-        let Some(new_currencies) = self.query_registered_currencies() else {
+        use reth_revm::database::StateProviderDatabase;
+
+        let state = match self.provider.latest() {
+            Ok(state) => state,
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure();
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    "Failed to get latest state for canonical fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        let db = StateProviderDatabase::new(state);
+        // The directory and token balance reads have no fork-gated semantics. Use one EVM over one
+        // canonical state snapshot for every query in this pass so all decisions are consistent.
+        let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
+
+        let Some(new_currencies) = self.query_registered_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure();
             return;
         };
 
-        let to_evict: Vec<TxHash> = match self.registered_currencies.as_ref() {
+        let unregistered: Vec<TxHash> = match self.registered_currencies.as_ref() {
             // Cache is up to date — nothing to evict.
             Some(old) if *old == new_currencies => Vec::new(),
             Some(old) => {
@@ -1983,14 +2073,37 @@ where
             None => self.pool_txs_with_currency(|fc| !new_currencies.contains(fc)),
         };
 
+        let all_txs = self.pool.all_transactions();
+        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            all_txs.pending.iter().chain(all_txs.queued.iter()).map(|vtx| &vtx.transaction),
+            &new_currencies,
+            |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
+        );
+        for (sender, fee_currency) in lookup_failures {
+            CeloPoolMetrics::maintainer_failure();
+            tracing::warn!(
+                target: "celo::pool",
+                ?sender,
+                ?fee_currency,
+                "Retaining pooled CIP-64 txs after canonical balance lookup failure"
+            );
+        }
+
+        let insufficient_balance_count = insufficient_balance.len();
+        let unregistered_count = unregistered.len();
+        let mut to_evict: HashSet<TxHash> = unregistered.into_iter().collect();
+        to_evict.extend(insufficient_balance);
+
         if !to_evict.is_empty() {
             CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
             tracing::info!(
                 target: "celo::pool",
                 count = to_evict.len(),
-                "Evicting CIP-64 txs with unregistered fee currencies"
+                unregistered = unregistered_count,
+                insufficient_balance = insufficient_balance_count,
+                "Evicting invalid CIP-64 txs after canonical state update"
             );
-            self.pool.remove_transactions(to_evict);
+            self.pool.remove_transactions(to_evict.into_iter().collect());
         }
 
         self.registered_currencies = Some(new_currencies);
@@ -3995,6 +4108,75 @@ mod tests {
             let tx = make_test_tx_with_nonce(Some(fc), 1, 10, 1_000, 950, sender);
             pool.add_transaction(TransactionOrigin::External, tx).await.expect("fits");
         }
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_uses_original_fee_currency_cost() {
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let mut tx = make_test_tx(Some(fc), 100, 200, 10, sender);
+
+        tx.apply_exchange_rate(ExchangeRate { numerator: 2, denominator: 1 });
+
+        assert_eq!(tx.max_fee_per_gas(), 100, "pool fee accessor should be native-equivalent");
+        assert_eq!(
+            tx.fc_gas_cost(),
+            U256::from(20_000u64),
+            "canonical balance checks must use the original fee-currency fee cap"
+        );
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_is_cached_isolated_and_fail_open() {
+        use reth_transaction_pool::PoolTransaction;
+        use std::{cell::RefCell, collections::HashSet};
+
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let fc_unregistered = Address::with_last_byte(0xC0);
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+
+        let exact_balance = make_test_tx(Some(fc_a), 100, 100, 10, sender_a);
+        let same_pair_unaffordable = make_test_tx(Some(fc_a), 101, 100, 10, sender_a);
+        let different_sender_unaffordable = make_test_tx(Some(fc_a), 100, 100, 10, sender_b);
+        let failed_lookup = make_test_tx(Some(fc_b), 100, 100, 10, sender_a);
+        let failed_lookup_again = make_test_tx(Some(fc_b), 101, 100, 10, sender_a);
+        let unregistered = make_test_tx(Some(fc_unregistered), 100, 100, 10, sender_a);
+        let native = make_test_tx(None, 100, 100, 10, sender_a);
+        let txs = [
+            &exact_balance,
+            &same_pair_unaffordable,
+            &different_sender_unaffordable,
+            &failed_lookup,
+            &failed_lookup_again,
+            &unregistered,
+            &native,
+        ];
+        let registered = HashSet::from([fc_a, fc_b]);
+        let calls = RefCell::new(HashMap::new());
+
+        let (to_evict, lookup_failures) =
+            txs_with_insufficient_fee_currency_balance(txs, &registered, |sender, fee_currency| {
+                *calls.borrow_mut().entry((sender, fee_currency)).or_insert(0usize) += 1;
+                match (sender, fee_currency) {
+                    (sender, fc) if sender == sender_a && fc == fc_a => Some(U256::from(10_000u64)),
+                    (sender, fc) if sender == sender_b && fc == fc_a => Some(U256::from(9_999u64)),
+                    (sender, fc) if sender == sender_a && fc == fc_b => None,
+                    pair => panic!("unexpected balance lookup for {pair:?}"),
+                }
+            });
+
+        assert_eq!(
+            HashSet::<TxHash>::from_iter(to_evict),
+            HashSet::from([*same_pair_unaffordable.hash(), *different_sender_unaffordable.hash(),])
+        );
+        assert_eq!(lookup_failures, vec![(sender_a, fc_b)]);
+        assert_eq!(
+            calls.into_inner(),
+            HashMap::from([((sender_a, fc_a), 1), ((sender_b, fc_a), 1), ((sender_a, fc_b), 1),]),
+            "each registered sender/currency pair should be queried once"
+        );
     }
 }
 
