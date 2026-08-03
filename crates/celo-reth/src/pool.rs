@@ -21,6 +21,7 @@ use reth_optimism_txpool::{
 };
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
 use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
     BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
@@ -37,7 +38,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, Mutex, OnceLock, Weak},
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc::Receiver, watch};
 
 // ---------------------------------------------------------------------------
 // Metrics
@@ -988,6 +989,7 @@ where
 {
     inner: Arc<P>,
     sender_locks: Arc<SenderAdmissionLocks>,
+    canonical_updates: watch::Sender<u64>,
 }
 
 impl<P> CeloTransactionPool<P>
@@ -996,7 +998,13 @@ where
 {
     /// Wrap a raw reth pool.
     pub fn new(inner: Arc<P>) -> Self {
-        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()) }
+        let (canonical_updates, _) = watch::channel(0);
+        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()), canonical_updates }
+    }
+
+    /// Subscribe to canonical pool updates after the wrapped reth pool has applied them.
+    pub fn subscribe_to_canonical_updates(&self) -> watch::Receiver<u64> {
+        self.canonical_updates.subscribe()
     }
 
     async fn with_sender_lock<T>(
@@ -1206,7 +1214,8 @@ where
         &self,
         update: reth_transaction_pool::CanonicalStateUpdate<'_, Self::Block>,
     ) {
-        self.inner.on_canonical_state_change(update)
+        self.inner.on_canonical_state_change(update);
+        self.canonical_updates.send_modify(|version| *version = version.wrapping_add(1));
     }
 
     delegate_pool!(fn update_accounts(&self, accounts: Vec<reth_execution_types::ChangedAccount>));
@@ -1955,6 +1964,17 @@ fn txs_with_insufficient_fee_currency_balance<'a>(
     (to_evict, lookup_failures)
 }
 
+/// Return only transactions executable against the pool's current canonical state.
+///
+/// Balance maintenance intentionally follows op-geth's pending-list scan. Parked transactions are
+/// reconsidered after reth promotes them during a later canonical pool update.
+fn balance_revalidation_candidates<Pool>(pool: &Pool) -> Vec<Arc<ValidPoolTransaction<CeloPoolTx>>>
+where
+    Pool: TransactionPool<Transaction = CeloPoolTx>,
+{
+    pool.pending_transactions()
+}
+
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
 /// whose fee currency has been deregistered or whose sender can no longer afford their maximum
 /// fee-currency gas cost.
@@ -2068,38 +2088,36 @@ where
             .ok()
     }
 
-    /// Run the maintainer, listening for canonical state changes.
-    pub async fn run(
-        mut self,
-        mut events: reth_provider::CanonStateNotifications<crate::primitives::CeloPrimitives>,
-    ) {
+    /// Run the maintainer after canonical pool updates.
+    pub async fn run(mut self, mut events: watch::Receiver<u64>, executor: TaskExecutor)
+    where
+        Self: Send + 'static,
+    {
         // Try to seed the cache. If this fails, [`Self::on_new_block`]
         // detects the uninitialized state on its first successful query
         // and scans the full pool against the freshly observed registry.
-        self.on_new_block();
+        self = self.on_new_block_blocking(&executor).await;
 
-        loop {
-            match events.recv().await {
-                Ok(_notification) => {
-                    self.on_new_block();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(
-                        target: "celo::pool",
-                        skipped,
-                        "Celo pool maintainer lagged, checking currencies"
-                    );
-                    self.on_new_block();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    tracing::warn!(
-                        target: "celo::pool",
-                        "Canonical state stream closed, stopping Celo pool maintainer"
-                    );
-                    break;
-                }
-            }
+        while events.changed().await.is_ok() {
+            // Mark the newest version observed before starting the scan. Updates arriving while
+            // the blocking task runs are coalesced and cause one immediate follow-up pass.
+            let _latest_version = *events.borrow_and_update();
+            self = self.on_new_block_blocking(&executor).await;
         }
+    }
+
+    /// Run the synchronous provider and EVM work outside the async runtime's worker threads.
+    async fn on_new_block_blocking(mut self, executor: &TaskExecutor) -> Self
+    where
+        Self: Send + 'static,
+    {
+        executor
+            .spawn_blocking(move || {
+                self.on_new_block();
+                self
+            })
+            .await
+            .expect("Celo pool fee-currency maintenance task panicked")
     }
 
     /// Handle a new canonical block: evict CIP-64 txs that are no longer valid against canonical
@@ -2174,9 +2192,9 @@ where
             None => self.pool_txs_with_currency(|fc| !new_currencies.contains(fc)),
         };
 
-        let all_txs = self.pool.all_transactions();
+        let balance_candidates = balance_revalidation_candidates(&self.pool);
         let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
-            all_txs.pending.iter().chain(all_txs.queued.iter()).map(|vtx| &vtx.transaction),
+            balance_candidates.iter().map(|vtx| &vtx.transaction),
             &new_currencies,
             |sender| {
                 state
@@ -3878,6 +3896,63 @@ mod tests {
             let state_nonce = Arc::new(AtomicU64::new(0));
             let pool = test_pool_with_controls(balance, state_nonce.clone(), None);
             (pool, state_nonce)
+        }
+
+        /// Canonical maintenance must wake the Celo maintainer only after the wrapped reth pool
+        /// has processed the update. The watch channel keeps only the newest version, so multiple
+        /// heads received during one balance scan require only one follow-up scan.
+        #[tokio::test]
+        async fn canonical_updates_coalesce_to_the_latest_pool_update() {
+            use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
+
+            let pool = test_pool(25_000);
+            let mut updates = pool.subscribe_to_canonical_updates();
+            let tip = SealedBlock::seal_slow(crate::primitives::CeloBlock::default());
+
+            for _ in 0..2 {
+                pool.on_canonical_state_change(CanonicalStateUpdate {
+                    new_tip: &tip,
+                    pending_block_base_fee: 0,
+                    pending_block_blob_fee: None,
+                    changed_accounts: Vec::new(),
+                    mined_transactions: Vec::new(),
+                    update_kind: PoolUpdateKind::Commit,
+                });
+            }
+
+            updates.changed().await.expect("canonical update sender must remain open");
+            assert_eq!(*updates.borrow_and_update(), 2, "both updates must reach the latest value");
+            assert!(
+                !updates.has_changed().expect("canonical update sender must remain open"),
+                "the two updates must coalesce into one wake-up"
+            );
+        }
+
+        /// Balance maintenance follows op-geth's executable-list behavior: nonce-gapped queued
+        /// transactions remain parked and are not queried on every canonical head.
+        #[tokio::test]
+        async fn balance_revalidation_candidates_exclude_queued_transactions() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let pending = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let queued = make_test_tx_with_nonce(Some(fc), 2, 100, 100, 10, sender);
+            let pending_hash = *pending.hash();
+            let queued_hash = *queued.hash();
+
+            pool.add_transaction(TransactionOrigin::External, pending)
+                .await
+                .expect("nonce-zero transaction must be admitted");
+            pool.add_transaction(TransactionOrigin::External, queued)
+                .await
+                .expect("nonce-gapped transaction must be admitted");
+            assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+
+            let candidates = balance_revalidation_candidates(&pool);
+
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(*candidates[0].hash(), pending_hash);
+            assert!(candidates.iter().all(|tx| *tx.hash() != queued_hash));
         }
 
         /// A sender's transactions must observe earlier transactions from the

@@ -366,17 +366,17 @@ where
         // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is deregistered
         // or their sender no longer covers the nonce-contiguous cumulative fee-currency cost.
         {
-            use reth_provider::CanonStateSubscriptions;
-            let events = ctx.provider().subscribe_to_canonical_state();
+            let events = transaction_pool.subscribe_to_canonical_updates();
             let maintainer = CeloPoolMaintainer::new(
                 transaction_pool.clone(),
                 ctx.provider().clone(),
                 fee_currency_directory,
                 spec_fn,
             );
+            let task_executor = ctx.task_executor().clone();
             ctx.task_executor().spawn_critical_task(
                 "celo pool fee currency maintainer",
-                Box::pin(maintainer.run(events)),
+                Box::pin(maintainer.run(events, task_executor)),
             );
         }
 
