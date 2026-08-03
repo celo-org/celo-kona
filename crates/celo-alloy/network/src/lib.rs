@@ -40,24 +40,26 @@ impl Network for Celo {
         alloy_rpc_types_eth::Block<Self::TransactionResponse, Self::HeaderResponse>;
 }
 
+/// Fields that cannot coexist with CIP-64, which is EIP-1559-based: `gasPrice` is legacy and
+/// `authorizationList` is EIP-7702. Reporting them instead of silently dropping the offending
+/// field mirrors celo-reth's `Cip64Conflict` handling.
+fn cip64_conflicts(request: &CeloTransactionRequest) -> Vec<&'static str> {
+    let mut errors = Vec::new();
+    if request.as_ref().gas_price.is_some() {
+        errors.push("CIP-64 is not compatible with legacy gasPrice");
+    }
+    if request.as_ref().authorization_list.is_some() {
+        errors.push("CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList");
+    }
+    errors
+}
+
 impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
     fn complete_type(&self, ty: CeloTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             CeloTxType::Deposit => Err(vec!["not implemented for deposit tx"]),
             CeloTxType::Cip64 => {
-                // CIP-64 is EIP-1559-based: it needs the EIP-1559 keys, and `gasPrice` /
-                // `authorizationList` conflict with a fee currency. Rejecting the conflicts
-                // instead of silently dropping the fields mirrors celo-reth's
-                // `Cip64Conflict` handling.
-                let mut errors = Vec::new();
-                if self.as_ref().gas_price.is_some() {
-                    errors.push("CIP-64 is not compatible with legacy gasPrice");
-                }
-                if self.as_ref().authorization_list.is_some() {
-                    errors.push(
-                        "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList",
-                    );
-                }
+                let mut errors = cip64_conflicts(self);
                 // The build path resolves the inner request's preferred type, so readiness
                 // must check that type's keys: blob fields make it EIP-4844 (downgraded to
                 // the EIP-1559 shape after building), which additionally requires the blob
@@ -82,6 +84,15 @@ impl NetworkTransactionBuilder<Celo> for CeloTransactionRequest {
     }
 
     fn can_submit(&self) -> bool {
+        // Unlike `can_build`, completeness is not required: the node populates the missing
+        // nonce and gas fields of an `eth_sendTransaction`. A self-contradicting request is
+        // another matter — `prep_for_submission` delegates the trim to the Ethereum impl,
+        // which cannot see the fee currency and so leaves the conflicting field in the
+        // submitted JSON for the node to reject. Report that here instead, since dropping the
+        // field would silently change fees the caller set.
+        if self.is_cip64() && !cip64_conflicts(self).is_empty() {
+            return false;
+        }
         NetworkTransactionBuilder::<Ethereum>::can_submit(self.as_ref())
     }
 
@@ -327,6 +338,43 @@ mod tests {
         let errors =
             NetworkTransactionBuilder::<Celo>::complete_type(&req, CeloTxType::Cip64).unwrap_err();
         assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn can_submit_rejects_cip64_conflicts() {
+        // `prep_for_submission` cannot drop the conflicting field without silently changing
+        // the fees the caller set, so the contradiction has to surface before submission
+        // rather than as a node-side rejection after the fillers have run.
+        let mut gas_price = cip64_request().from(Address::repeat_byte(2));
+        gas_price.as_mut().gas_price = Some(1);
+        assert!(!NetworkTransactionBuilder::<Celo>::can_submit(&gas_price));
+
+        let mut authorization = cip64_request().from(Address::repeat_byte(2));
+        authorization.as_mut().authorization_list = Some(vec![]);
+        assert!(!NetworkTransactionBuilder::<Celo>::can_submit(&authorization));
+    }
+
+    #[test]
+    fn can_submit_allows_incomplete_cip64() {
+        // The node fills nonce and the gas fields for an unlocked-account
+        // `eth_sendTransaction`, so — unlike `can_build` — missing keys must not block
+        // submission. Only `from` is required.
+        let req = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .fee_currency(sample_fc())
+            .from(Address::repeat_byte(2));
+        assert!(!NetworkTransactionBuilder::<Celo>::can_build(&req));
+        assert!(NetworkTransactionBuilder::<Celo>::can_submit(&req));
+    }
+
+    #[test]
+    fn can_submit_ignores_conflicts_without_cip64_intent() {
+        // A plain legacy request legitimately carries `gasPrice`; the CIP-64 gate must not
+        // reject it.
+        let mut req =
+            CeloTransactionRequest::default().to(Address::ZERO).from(Address::repeat_byte(2));
+        req.as_mut().gas_price = Some(1);
+        assert!(NetworkTransactionBuilder::<Celo>::can_submit(&req));
     }
 
     #[test]
