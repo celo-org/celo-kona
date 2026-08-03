@@ -237,6 +237,10 @@ where
         // pool exists below; the validator reads it through the `OnceLock`.
         let pooled_fc_costs: std::sync::Arc<std::sync::OnceLock<PooledFcCostsFn>> =
             std::sync::Arc::new(std::sync::OnceLock::new());
+        let cs_spec = ctx.chain_spec();
+        let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
+            reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
+        });
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
         let validator = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
@@ -317,10 +321,6 @@ where
             // check track fork activations automatically. The block builder derives
             // its spec the same way, so there is no hardcoded spec to update on a
             // future hardfork.
-            let cs_spec = ctx.chain_spec();
-            let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
-                reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
-            });
             let spec = match ctx.provider().latest_header() {
                 Ok(Some(header)) => spec_fn(header.timestamp().saturating_add(1)),
                 // Fresh chain / read error: use the newest configured fork;
@@ -334,7 +334,7 @@ where
                 base_fee_floor,
                 base_fee_floor_fn,
                 spec,
-                spec_fn,
+                spec_fn.clone(),
                 minimum_priority_fee,
                 tx_fee_cap,
                 pooled_fc_costs.clone(),
@@ -372,6 +372,7 @@ where
                 transaction_pool.clone(),
                 ctx.provider().clone(),
                 fee_currency_directory,
+                spec_fn,
             );
             ctx.task_executor().spawn_critical_task(
                 "celo pool fee currency maintainer",

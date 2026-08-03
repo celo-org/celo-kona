@@ -6,7 +6,7 @@
 //! that pay fees in non-native currencies.
 
 use crate::primitives::CeloTransactionSigned;
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader, Header, Transaction};
 use alloy_eips::{
     Typed2718, eip2930::AccessList, eip4844::BlobTransactionValidationError,
     eip7594::BlobTransactionSidecarVariant,
@@ -20,7 +20,7 @@ use reth_optimism_txpool::{
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
 };
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
-use reth_storage_api::{AccountReader, StateProviderFactory};
+use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
     BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
@@ -823,6 +823,11 @@ pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> 
 /// `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the CIP-64
 /// intrinsic-gas admission check.
 pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
+
+/// Derive the EVM spec for the block built on a canonical parent.
+fn spec_for_next_block(spec_fn: &SpecFn, parent_timestamp: u64) -> OpSpecId {
+    spec_fn(parent_timestamp.saturating_add(1))
+}
 
 /// Reads a sender's already-committed fee-currency expenditure from the live
 /// pool at validation time.
@@ -1953,11 +1958,11 @@ fn txs_with_insufficient_fee_currency_balance<'a>(
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
 /// whose fee currency has been deregistered or whose sender can no longer afford their maximum
 /// fee-currency gas cost.
-#[derive(Debug)]
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
     provider: P,
     fee_currency_directory: Address,
+    spec_fn: SpecFn,
     /// Cached set of registered currencies. Deregistration checks only need a full pool scan when
     /// this changes; canonical balance checks still run after every successful registry query.
     ///
@@ -1968,17 +1973,28 @@ pub struct CeloPoolMaintainer<Pool, P> {
     registered_currencies: Option<std::collections::HashSet<Address>>,
 }
 
+impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloPoolMaintainer")
+            .field("pool", &self.pool)
+            .field("provider", &self.provider)
+            .field("fee_currency_directory", &self.fee_currency_directory)
+            .field("registered_currencies", &self.registered_currencies)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<Pool, P> CeloPoolMaintainer<Pool, P> {
     /// Create a new [`CeloPoolMaintainer`].
-    pub const fn new(pool: Pool, provider: P, fee_currency_directory: Address) -> Self {
-        Self { pool, provider, fee_currency_directory, registered_currencies: None }
+    pub fn new(pool: Pool, provider: P, fee_currency_directory: Address, spec_fn: SpecFn) -> Self {
+        Self { pool, provider, fee_currency_directory, spec_fn, registered_currencies: None }
     }
 }
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P>
 where
     Pool: reth_transaction_pool::TransactionPool<Transaction = CeloPoolTx>,
-    P: StateProviderFactory,
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
 {
     /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
     fn query_registered_currencies<DB>(
@@ -2091,22 +2107,43 @@ where
     fn on_new_block(&mut self) {
         use reth_revm::database::StateProviderDatabase;
 
-        let state = match self.provider.latest() {
+        let header = match self.provider.latest_header() {
+            Ok(Some(header)) => header,
+            Ok(None) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    "Skipping canonical fee-currency revalidation without a canonical header"
+                );
+                return;
+            }
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure();
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    "Failed to get latest header for canonical fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        let state = match self.provider.state_by_block_hash(header.hash()) {
             Ok(state) => state,
             Err(e) => {
                 CeloPoolMetrics::maintainer_failure();
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
-                    "Failed to get latest state for canonical fee-currency revalidation"
+                    block_hash = ?header.hash(),
+                    "Failed to get canonical state for fee-currency revalidation"
                 );
                 return;
             }
         };
+        let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
         let db = StateProviderDatabase::new(state.as_ref());
-        // The directory and token balance reads have no fork-gated semantics. Use one EVM over one
-        // canonical state snapshot for every query in this pass so all decisions are consistent.
-        let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
+        // Use one EVM over one canonical state snapshot, at the fork active for the next block, so
+        // every query in this pass observes consistent state and opcode semantics.
+        let mut evm = build_pool_evm(db, spec);
 
         let Some(new_currencies) = self.query_registered_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure();
@@ -2256,6 +2293,17 @@ mod tests {
             matches!(at_isthmus, Ok(ExecutionResult::Success { .. })),
             "PUSH0 must execute at the active spec, got {at_isthmus:?}",
         );
+    }
+
+    #[test]
+    fn maintainer_spec_uses_next_block_timestamp() {
+        let activation_timestamp = 100;
+        let spec_fn: SpecFn = Arc::new(move |timestamp| {
+            if timestamp >= activation_timestamp { OpSpecId::ISTHMUS } else { OpSpecId::BEDROCK }
+        });
+
+        assert_eq!(spec_for_next_block(&spec_fn, activation_timestamp - 2), OpSpecId::BEDROCK);
+        assert_eq!(spec_for_next_block(&spec_fn, activation_timestamp - 1), OpSpecId::ISTHMUS);
     }
 
     #[test]
