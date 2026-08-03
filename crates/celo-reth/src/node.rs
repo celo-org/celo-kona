@@ -5,7 +5,7 @@ use crate::{
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{
         CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, CeloTransactionPool,
-        PooledFcCostsFn,
+        NextBlockBaseFeeFn, PooledFcCostsFn,
     },
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
@@ -241,6 +241,11 @@ where
         let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
             reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
         });
+        let cs_base_fee = ctx.chain_spec();
+        let next_block_base_fee_fn: NextBlockBaseFeeFn =
+            std::sync::Arc::new(move |parent: &alloy_consensus::Header, next_ts: u64| {
+                celo_next_block_base_fee(&cs_base_fee, parent, next_ts).unwrap_or_default()
+            });
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
         let validator = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
@@ -335,6 +340,7 @@ where
                 base_fee_floor_fn,
                 spec,
                 spec_fn.clone(),
+                next_block_base_fee_fn.clone(),
                 minimum_priority_fee,
                 tx_fee_cap,
                 pooled_fc_costs.clone(),
@@ -372,6 +378,7 @@ where
                 ctx.provider().clone(),
                 fee_currency_directory,
                 spec_fn,
+                next_block_base_fee_fn,
             );
             let task_executor = ctx.task_executor().clone();
             ctx.task_executor().spawn_critical_task(

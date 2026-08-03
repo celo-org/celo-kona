@@ -570,11 +570,13 @@ pub(crate) trait FcLookup {
 
 /// Couples a [`StateProviderFactory`] with the chain's active [`OpSpecId`] so the
 /// pool's system-call EVM runs fee-currency bytecode at the right fork (see
-/// `build_pool_evm`). Holds the provider by reference; constructed per
-/// validation from the spec cached on [`CeloExchangeRateApplier`].
+/// `build_pool_evm`) and next-block base fee. Holds the provider by reference;
+/// constructed per validation from the spec and derivation function held by
+/// [`CeloExchangeRateApplier`].
 pub(crate) struct ProviderFcLookup<'a, P> {
     pub(crate) provider: &'a P,
     pub(crate) spec: OpSpecId,
+    pub(crate) next_block_base_fee_fn: &'a NextBlockBaseFeeFn,
 }
 
 impl<P> FcLookup for ProviderFcLookup<'_, P>
@@ -593,6 +595,7 @@ where
             fee_currency_directory,
             balance_check,
             self.spec,
+            self.next_block_base_fee_fn,
         )
     }
 }
@@ -610,8 +613,8 @@ where
 /// ERC20 transfers.
 const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 
-/// Build the pool's system-call EVM over `db`, configured at chain fork `spec` and the block
-/// environment captured from `header`.
+/// Build the pool's system-call EVM over parent post-state in `db`, configured at chain fork
+/// `spec` and the next block environment derived from `parent`.
 ///
 /// The spec MUST be the chain's active fork rather than a context-free default:
 /// fee-currency contracts compiled with a recent Solidity emit post-Merge opcodes
@@ -624,20 +627,28 @@ const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 fn build_pool_evm<DB: revm::Database>(
     db: DB,
     spec: OpSpecId,
-    header: &Header,
+    parent: &Header,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
 ) -> celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector> {
     use celo_revm::{CeloBuilder, DefaultCelo};
     use revm::Context;
 
     Context::celo()
         .with_db(db)
-        .with_block(pool_block_env(header, spec))
+        .with_block(pool_block_env(parent, spec, next_block_base_fee_fn))
         .modify_cfg_chained(|cfg| cfg.spec = spec)
         .build_celo()
 }
 
-/// Build the block environment observed by fee-currency system calls.
-fn pool_block_env(header: &Header, spec: OpSpecId) -> revm::context::BlockEnv {
+/// Build the next block environment observed by fee-currency system calls over parent post-state.
+///
+/// Number, timestamp, and base fee are deterministic for Celo's next block. Fields supplied only
+/// with payload attributes use the parent's values as the best available estimate at pool time.
+fn pool_block_env(
+    parent: &Header,
+    spec: OpSpecId,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
+) -> revm::context::BlockEnv {
     use revm::{
         context::BlockEnv, context_interface::block::BlobExcessGasAndPrice,
         primitives::hardfork::SpecId,
@@ -648,15 +659,17 @@ fn pool_block_env(header: &Header, spec: OpSpecId) -> revm::context::BlockEnv {
     let blob_excess_gas_and_price = eth_spec
         .is_enabled_in(SpecId::CANCUN)
         .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
+    let next_timestamp = parent.timestamp.saturating_add(1);
+    let next_base_fee = next_block_base_fee_fn(parent, next_timestamp);
 
     BlockEnv {
-        number: U256::from(header.number),
-        beneficiary: header.beneficiary,
-        timestamp: U256::from(header.timestamp),
-        gas_limit: header.gas_limit,
-        basefee: header.base_fee_per_gas.unwrap_or_default(),
-        difficulty: if post_merge { U256::ZERO } else { header.difficulty },
-        prevrandao: post_merge.then_some(header.mix_hash),
+        number: U256::from(parent.number.saturating_add(1)),
+        beneficiary: parent.beneficiary,
+        timestamp: U256::from(next_timestamp),
+        gas_limit: parent.gas_limit,
+        basefee: next_base_fee,
+        difficulty: if post_merge { U256::ZERO } else { parent.difficulty },
+        prevrandao: post_merge.then_some(parent.mix_hash),
         blob_excess_gas_and_price,
         slot_num: 0,
     }
@@ -668,6 +681,7 @@ fn lookup_rate_and_balance_impl<P>(
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
     spec: OpSpecId,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
 ) -> FcLookupResult
 where
     P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
@@ -726,7 +740,7 @@ where
             }
         });
     let db = StateProviderDatabase::new(state);
-    let mut evm = build_pool_evm(db, spec, &header);
+    let mut evm = build_pool_evm(db, spec, header.header(), next_block_base_fee_fn);
 
     // 1. Look up exchange rate
     let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
@@ -871,6 +885,9 @@ where
 
 /// Type alias for the base fee floor computation closure.
 pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> u64 + Send + Sync>;
+
+/// Computes the next block's actual Celo base fee from its canonical parent and timestamp.
+pub type NextBlockBaseFeeFn = Arc<dyn Fn(&Header, u64) -> u64 + Send + Sync>;
 
 /// Computes the [`OpSpecId`] for the next block from the chain spec, given the
 /// estimated next-block timestamp. Refreshed each head block (like
@@ -1305,6 +1322,8 @@ pub struct CeloExchangeRateApplier<V, P> {
     next_block_spec: Arc<Mutex<OpSpecId>>,
     /// Computes the next-block [`OpSpecId`] from the chain spec. See [`SpecFn`].
     spec_fn: SpecFn,
+    /// Computes the next block's Celo base fee from the same parent used for state lookup.
+    next_block_base_fee_fn: NextBlockBaseFeeFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
@@ -1339,6 +1358,7 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         base_fee_floor_fn: BaseFeeFloorFn,
         spec: OpSpecId,
         spec_fn: SpecFn,
+        next_block_base_fee_fn: NextBlockBaseFeeFn,
         minimum_priority_fee: u128,
         tx_fee_cap: Option<u128>,
         pooled_fc_costs: Arc<OnceLock<PooledFcCostsFn>>,
@@ -1351,6 +1371,7 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             base_fee_floor_fn,
             next_block_spec: Arc::new(Mutex::new(spec)),
             spec_fn,
+            next_block_base_fee_fn,
             minimum_priority_fee,
             tx_fee_cap,
             pooled_fc_costs,
@@ -1862,7 +1883,11 @@ where
         // admission check (via its eth-spec projection).
         let spec = *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner());
         let eth_spec = spec.into_eth_spec();
-        let lookup = ProviderFcLookup { provider: &self.provider, spec };
+        let lookup = ProviderFcLookup {
+            provider: &self.provider,
+            spec,
+            next_block_base_fee_fn: &self.next_block_base_fee_fn,
+        };
         let pooled_fc_costs = self
             .pooled_fc_costs
             .get()
@@ -2044,6 +2069,7 @@ pub struct CeloPoolMaintainer<Pool, P> {
     provider: P,
     fee_currency_directory: Address,
     spec_fn: SpecFn,
+    next_block_base_fee_fn: NextBlockBaseFeeFn,
     /// Cached set of registered currencies. Deregistration checks only need a full pool scan when
     /// this changes; canonical balance checks still run after every successful registry query.
     ///
@@ -2067,8 +2093,21 @@ impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P> {
     /// Create a new [`CeloPoolMaintainer`].
-    pub fn new(pool: Pool, provider: P, fee_currency_directory: Address, spec_fn: SpecFn) -> Self {
-        Self { pool, provider, fee_currency_directory, spec_fn, registered_currencies: None }
+    pub fn new(
+        pool: Pool,
+        provider: P,
+        fee_currency_directory: Address,
+        spec_fn: SpecFn,
+        next_block_base_fee_fn: NextBlockBaseFeeFn,
+    ) -> Self {
+        Self {
+            pool,
+            provider,
+            fee_currency_directory,
+            spec_fn,
+            next_block_base_fee_fn,
+            registered_currencies: None,
+        }
     }
 }
 
@@ -2222,7 +2261,7 @@ where
         let db = StateProviderDatabase::new(state.as_ref());
         // Use one EVM over one canonical state snapshot, at the fork active for the next block, so
         // every query in this pass observes consistent state and opcode semantics.
-        let mut evm = build_pool_evm(db, spec, &header);
+        let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
 
         let Some(new_currencies) = self.query_registered_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure();
@@ -2370,7 +2409,9 @@ mod tests {
 
         // BEDROCK maps to SpecId::MERGE (pre-Shanghai): PUSH0 is not activated.
         let header = Header::default();
-        let mut bedrock = build_pool_evm(make_db(), OpSpecId::BEDROCK, &header);
+        let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+        let mut bedrock =
+            build_pool_evm(make_db(), OpSpecId::BEDROCK, &header, &next_block_base_fee_fn);
         let at_bedrock = bedrock.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2382,7 +2423,8 @@ mod tests {
         );
 
         // Isthmus maps to SpecId::PRAGUE: the same bytecode runs to completion.
-        let mut isthmus = build_pool_evm(make_db(), OpSpecId::ISTHMUS, &header);
+        let mut isthmus =
+            build_pool_evm(make_db(), OpSpecId::ISTHMUS, &header, &next_block_base_fee_fn);
         let at_isthmus = isthmus.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2395,12 +2437,10 @@ mod tests {
     }
 
     #[test]
-    fn build_pool_evm_uses_canonical_header_block_environment() {
-        use revm::{context_interface::ContextTr, database::InMemoryDB, handler::EvmTr};
-
+    fn pool_block_env_uses_next_block_fields() {
         let beneficiary = Address::with_last_byte(0x42);
         let prevrandao = B256::with_last_byte(0x77);
-        let header = Header {
+        let parent = Header {
             number: 123,
             beneficiary,
             timestamp: 456,
@@ -2409,16 +2449,20 @@ mod tests {
             mix_hash: prevrandao,
             ..Default::default()
         };
+        let next_base_fee = 26_000_000_000;
+        let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(move |seen_parent, next_ts| {
+            assert_eq!(seen_parent.number, 123);
+            assert_eq!(next_ts, 457);
+            next_base_fee
+        });
 
-        let mut evm = build_pool_evm(InMemoryDB::default(), OpSpecId::ISTHMUS, &header);
-        let context = evm.ctx();
-        let block = context.block();
+        let block = pool_block_env(&parent, OpSpecId::ISTHMUS, &next_block_base_fee_fn);
 
-        assert_eq!(block.number, U256::from(123));
+        assert_eq!(block.number, U256::from(124));
         assert_eq!(block.beneficiary, beneficiary);
-        assert_eq!(block.timestamp, U256::from(456));
+        assert_eq!(block.timestamp, U256::from(457));
         assert_eq!(block.gas_limit, 30_000_000);
-        assert_eq!(block.basefee, 25_000_000_000);
+        assert_eq!(block.basefee, next_base_fee);
         assert_eq!(block.prevrandao, Some(prevrandao));
     }
 
