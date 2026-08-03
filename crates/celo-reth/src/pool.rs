@@ -20,7 +20,7 @@ use reth_optimism_txpool::{
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
 };
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{AccountReader, StateProviderFactory};
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
     BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
@@ -1848,38 +1848,102 @@ where
 
 /// Find pooled CIP-64 transactions that the sender can no longer afford after a canonical state
 /// update. Balances are cached per sender and fee currency so multiple nonces share one lookup.
+/// Like reth's native-balance maintenance, the nonce-contiguous prefix starting at the canonical
+/// nonce is checked against cumulative expenditure. The first transaction that exceeds a fee
+/// currency balance is evicted, which parks its descendants behind the resulting nonce gap.
 ///
 /// A failed lookup is returned to the caller and deliberately retains every transaction for the
 /// affected pair. The maintainer is a cleanup path, so uncertain state must not become an eviction.
 fn txs_with_insufficient_fee_currency_balance<'a>(
     transactions: impl IntoIterator<Item = &'a CeloPoolTx>,
     registered_currencies: &HashSet<Address>,
+    mut state_nonce: impl FnMut(Address) -> Option<u64>,
     mut balance_of: impl FnMut(Address, Address) -> Option<U256>,
 ) -> (Vec<TxHash>, Vec<(Address, Address)>) {
     let mut balances = HashMap::<(Address, Address), Option<U256>>::new();
     let mut lookup_failures = Vec::new();
     let mut to_evict = Vec::new();
+    let mut evicted = HashSet::new();
+    let mut by_sender = HashMap::<Address, Vec<&'a CeloPoolTx>>::new();
 
     for tx in transactions {
-        let Some(fee_currency) = tx.fee_currency() else {
-            continue;
-        };
-        if !registered_currencies.contains(&fee_currency) {
+        by_sender.entry(tx.sender()).or_default().push(tx);
+    }
+
+    for (sender, mut transactions) in by_sender {
+        if !transactions
+            .iter()
+            .any(|tx| tx.fee_currency().is_some_and(|fc| registered_currencies.contains(&fc)))
+        {
             continue;
         }
+        transactions.sort_unstable_by_key(|tx| <CeloPoolTx as Transaction>::nonce(*tx));
+        let mut expected_nonce = state_nonce(sender);
+        let mut cumulative_costs = HashMap::<Address, U256>::new();
 
-        let key = (tx.sender(), fee_currency);
-        let balance = balances.get(&key).copied().unwrap_or_else(|| {
-            let balance = balance_of(key.0, key.1);
-            if balance.is_none() {
-                lookup_failures.push(key);
+        for tx in transactions {
+            let fee_currency = tx.fee_currency();
+            let balance =
+                fee_currency.filter(|fc| registered_currencies.contains(fc)).and_then(|fc| {
+                    let key = (sender, fc);
+                    balances.get(&key).copied().unwrap_or_else(|| {
+                        let balance = balance_of(key.0, key.1);
+                        if balance.is_none() {
+                            lookup_failures.push(key);
+                        }
+                        balances.insert(key, balance);
+                        balance
+                    })
+                });
+
+            let individually_unaffordable =
+                balance.is_some_and(|balance| balance < tx.fc_gas_cost());
+            if individually_unaffordable && evicted.insert(*tx.hash()) {
+                to_evict.push(*tx.hash());
             }
-            balances.insert(key, balance);
-            balance
-        });
 
-        if balance.is_some_and(|balance| balance < tx.fc_gas_cost()) {
-            to_evict.push(*tx.hash());
+            let Some(current_nonce) = expected_nonce else {
+                continue;
+            };
+            if tx.nonce() < current_nonce {
+                continue;
+            }
+            if tx.nonce() > current_nonce {
+                expected_nonce = None;
+                continue;
+            }
+            expected_nonce = current_nonce.checked_add(1);
+
+            let Some(fee_currency) = fee_currency else {
+                continue;
+            };
+            if !registered_currencies.contains(&fee_currency) {
+                // The registration pass removes this transaction, so its descendants will no
+                // longer form an executable prefix in this canonical state.
+                expected_nonce = None;
+                continue;
+            }
+            let Some(balance) = balance else {
+                // Fail open for this sender/currency pair while still allowing other currencies
+                // in the same nonce-contiguous prefix to be checked.
+                continue;
+            };
+
+            let cumulative = cumulative_costs
+                .get(&fee_currency)
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(tx.fc_gas_cost());
+            if cumulative > balance {
+                if evicted.insert(*tx.hash()) {
+                    to_evict.push(*tx.hash());
+                }
+                // Removing the first overcommitted transaction parks every descendant, matching
+                // the effect of reth clearing ENOUGH_BALANCE on the executable prefix.
+                expected_nonce = None;
+            } else {
+                cumulative_costs.insert(fee_currency, cumulative);
+            }
         }
     }
 
@@ -2039,7 +2103,7 @@ where
                 return;
             }
         };
-        let db = StateProviderDatabase::new(state);
+        let db = StateProviderDatabase::new(state.as_ref());
         // The directory and token balance reads have no fork-gated semantics. Use one EVM over one
         // canonical state snapshot for every query in this pass so all decisions are consistent.
         let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
@@ -2077,6 +2141,21 @@ where
         let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
             all_txs.pending.iter().chain(all_txs.queued.iter()).map(|vtx| &vtx.transaction),
             &new_currencies,
+            |sender| {
+                state
+                    .basic_account(&sender)
+                    .map(|account| account.map_or(0, |account| account.nonce))
+                    .inspect_err(|e| {
+                        CeloPoolMetrics::maintainer_failure();
+                        tracing::warn!(
+                            target: "celo::pool",
+                            %e,
+                            ?sender,
+                            "Retaining nonce-contiguous pooled CIP-64 txs after canonical nonce lookup failure"
+                        );
+                    })
+                    .ok()
+            },
             |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
         );
         for (sender, fee_currency) in lookup_failures {
@@ -4127,6 +4206,59 @@ mod tests {
     }
 
     #[test]
+    fn canonical_balance_revalidation_uses_nonce_contiguous_cumulative_costs() {
+        use reth_transaction_pool::PoolTransaction;
+
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let first = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+        let second = make_test_tx_with_nonce(Some(fc), 1, 100, 100, 10, sender);
+        let registered = HashSet::from([fc]);
+
+        // Each tx costs 10_000 and is individually affordable, but the nonce-contiguous
+        // prefix costs 20_000 against a balance of 15_000. Input order must not matter.
+        let (to_evict, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            [&second, &first],
+            &registered,
+            |_| Some(0),
+            |_, _| Some(U256::from(15_000u64)),
+        );
+
+        assert_eq!(to_evict, vec![*second.hash()]);
+        assert!(lookup_failures.is_empty());
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_starts_at_state_nonce_and_stops_at_gaps() {
+        use reth_transaction_pool::PoolTransaction;
+
+        let fc_a = Address::with_last_byte(0xAA);
+        let fc_b = Address::with_last_byte(0xBB);
+        let sender = Address::with_last_byte(1);
+        let stale = make_test_tx_with_nonce(Some(fc_a), 0, 100, 100, 10, sender);
+        let first = make_test_tx_with_nonce(Some(fc_a), 1, 100, 100, 10, sender);
+        let other_currency = make_test_tx_with_nonce(Some(fc_b), 2, 100, 100, 10, sender);
+        let native = make_test_tx_with_nonce(None, 3, 100, 100, 10, sender);
+        let overcommitted = make_test_tx_with_nonce(Some(fc_a), 4, 60, 100, 10, sender);
+        let after_gap = make_test_tx_with_nonce(Some(fc_a), 6, 100, 100, 10, sender);
+        let registered = HashSet::from([fc_a, fc_b]);
+
+        let (to_evict, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            [&after_gap, &native, &stale, &overcommitted, &other_currency, &first],
+            &registered,
+            |_| Some(1),
+            |_, fee_currency| match fee_currency {
+                fc if fc == fc_a => Some(U256::from(15_000u64)),
+                fc if fc == fc_b => Some(U256::from(10_000u64)),
+                fc => panic!("unexpected fee currency {fc:?}"),
+            },
+        );
+
+        assert_eq!(to_evict, vec![*overcommitted.hash()]);
+        assert!(lookup_failures.is_empty());
+    }
+
+    #[test]
     fn canonical_balance_revalidation_is_cached_isolated_and_fail_open() {
         use reth_transaction_pool::PoolTransaction;
         use std::{cell::RefCell, collections::HashSet};
@@ -4156,8 +4288,11 @@ mod tests {
         let registered = HashSet::from([fc_a, fc_b]);
         let calls = RefCell::new(HashMap::new());
 
-        let (to_evict, lookup_failures) =
-            txs_with_insufficient_fee_currency_balance(txs, &registered, |sender, fee_currency| {
+        let (to_evict, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            txs,
+            &registered,
+            |_| Some(0),
+            |sender, fee_currency| {
                 *calls.borrow_mut().entry((sender, fee_currency)).or_insert(0usize) += 1;
                 match (sender, fee_currency) {
                     (sender, fc) if sender == sender_a && fc == fc_a => Some(U256::from(10_000u64)),
@@ -4165,7 +4300,8 @@ mod tests {
                     (sender, fc) if sender == sender_a && fc == fc_b => None,
                     pair => panic!("unexpected balance lookup for {pair:?}"),
                 }
-            });
+            },
+        );
 
         assert_eq!(
             HashSet::<TxHash>::from_iter(to_evict),

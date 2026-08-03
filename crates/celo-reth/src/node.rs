@@ -363,8 +363,8 @@ where
             &final_pool_config,
         )?;
 
-        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
-        // is deregistered from the FeeCurrencyDirectory.
+        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is deregistered
+        // or their sender no longer covers the nonce-contiguous cumulative fee-currency cost.
         {
             use reth_provider::CanonStateSubscriptions;
             let events = ctx.provider().subscribe_to_canonical_state();
