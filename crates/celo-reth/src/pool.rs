@@ -4355,12 +4355,21 @@ mod tests {
             assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
         }
 
-        /// Separate same-sender admission futures must not validate against the
-        /// same pre-insertion pool snapshot. The first validation is held after
-        /// its cumulative check so the second future can prove it waits at the
-        /// sender lock rather than entering the raw validator.
+        /// Concurrent same-sender admissions must not validate against the same
+        /// pre-insertion pool snapshot, whichever entry points they arrive on.
+        ///
+        /// The two entry points take *different* guards: a batch runs inside
+        /// `add_grouped_transactions`'s group future, while a single admission
+        /// goes through `with_sender_lock`. Mixing them here covers both, and
+        /// both are live in production: the network manager drives one import
+        /// future per peer message (batch) while RPC submits per connection
+        /// (single), so two peers relaying one sender hit exactly this pairing.
+        ///
+        /// Holding the batch admission at the validation gate must therefore
+        /// block the single admission. Deleting either guard lets the second
+        /// validator run early and fails the `entered` assertions below.
         #[tokio::test]
-        async fn concurrent_same_sender_admissions_are_serialized() {
+        async fn concurrent_batch_and_single_admissions_are_serialized() {
             let fc = Address::with_last_byte(0xAA);
             let sender = Address::with_last_byte(1);
             let barrier = Arc::new(Barrier::new(2));
@@ -4371,32 +4380,33 @@ mod tests {
                 Some(ValidationGate { barrier: barrier.clone(), entered: entered.clone() }),
             );
 
-            let first_tx = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
-            let second_tx = make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, sender);
+            let batched_tx = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
+            let single_tx = make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, sender);
 
-            let first = pool.add_transaction(TransactionOrigin::External, first_tx);
-            tokio::pin!(first);
-            assert!(first.as_mut().now_or_never().is_none());
+            let batch = pool.add_transactions(TransactionOrigin::External, vec![batched_tx]);
+            tokio::pin!(batch);
+            assert!(batch.as_mut().now_or_never().is_none());
             assert_eq!(entered.load(AtomicOrdering::SeqCst), 1);
 
-            let second = pool.add_transaction(TransactionOrigin::External, second_tx);
-            tokio::pin!(second);
+            let single = pool.add_transaction(TransactionOrigin::External, single_tx);
+            tokio::pin!(single);
             assert!(
-                second.as_mut().now_or_never().is_none(),
-                "the second admission must wait on the sender lock"
+                single.as_mut().now_or_never().is_none(),
+                "the single admission must wait on the batch's sender lock"
             );
             assert_eq!(
                 entered.load(AtomicOrdering::SeqCst),
                 1,
-                "the second validator must not run before the first insertion completes"
+                "the single validator must not run before the batch insertion completes"
             );
 
             barrier.wait().await;
-            first.as_mut().await.expect("the first transaction must be admitted");
+            let batch_results = batch.as_mut().await;
+            assert!(batch_results[0].is_ok(), "the batched transaction must be admitted");
 
-            let (second_result, _) = tokio::join!(second.as_mut(), barrier.wait());
-            let err = second_result
-                .expect_err("the second transaction must observe the first expenditure");
+            let (single_result, _) = tokio::join!(single.as_mut(), barrier.wait());
+            let err = single_result
+                .expect_err("the single admission must observe the batch's expenditure");
             assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
             assert_eq!(entered.load(AtomicOrdering::SeqCst), 2);
         }
