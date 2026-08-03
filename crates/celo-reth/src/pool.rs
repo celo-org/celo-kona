@@ -577,7 +577,10 @@ pub(crate) struct ProviderFcLookup<'a, P> {
     pub(crate) spec: OpSpecId,
 }
 
-impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
+impl<P> FcLookup for ProviderFcLookup<'_, P>
+where
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
+{
     fn lookup_rate_and_balance(
         &self,
         fee_currency: Address,
@@ -607,7 +610,8 @@ impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
 /// ERC20 transfers.
 const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 
-/// Build the pool's system-call EVM over `db`, configured at chain fork `spec`.
+/// Build the pool's system-call EVM over `db`, configured at chain fork `spec` and the block
+/// environment captured from `header`.
 ///
 /// The spec MUST be the chain's active fork rather than a context-free default:
 /// fee-currency contracts compiled with a recent Solidity emit post-Merge opcodes
@@ -620,20 +624,54 @@ const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 fn build_pool_evm<DB: revm::Database>(
     db: DB,
     spec: OpSpecId,
+    header: &Header,
 ) -> celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector> {
     use celo_revm::{CeloBuilder, DefaultCelo};
     use revm::Context;
 
-    Context::celo().with_db(db).modify_cfg_chained(|cfg| cfg.spec = spec).build_celo()
+    Context::celo()
+        .with_db(db)
+        .with_block(pool_block_env(header, spec))
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
+        .build_celo()
 }
 
-fn lookup_rate_and_balance_impl(
-    provider: &dyn StateProviderFactory,
+/// Build the block environment observed by fee-currency system calls.
+fn pool_block_env(header: &Header, spec: OpSpecId) -> revm::context::BlockEnv {
+    use revm::{
+        context::BlockEnv, context_interface::block::BlobExcessGasAndPrice,
+        primitives::hardfork::SpecId,
+    };
+
+    let eth_spec = spec.into_eth_spec();
+    let post_merge = eth_spec.is_enabled_in(SpecId::MERGE);
+    let blob_excess_gas_and_price = eth_spec
+        .is_enabled_in(SpecId::CANCUN)
+        .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
+
+    BlockEnv {
+        number: U256::from(header.number),
+        beneficiary: header.beneficiary,
+        timestamp: U256::from(header.timestamp),
+        gas_limit: header.gas_limit,
+        basefee: header.base_fee_per_gas.unwrap_or_default(),
+        difficulty: if post_merge { U256::ZERO } else { header.difficulty },
+        prevrandao: post_merge.then_some(header.mix_hash),
+        blob_excess_gas_and_price,
+        slot_num: 0,
+    }
+}
+
+fn lookup_rate_and_balance_impl<P>(
+    provider: &P,
     fee_currency: Address,
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
     spec: OpSpecId,
-) -> FcLookupResult {
+) -> FcLookupResult
+where
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
+{
     use alloy_sol_types::SolCall;
     use celo_revm::contracts::{
         core_contracts::{getCurrencyConfigCall, getExchangeRateCall},
@@ -642,17 +680,35 @@ fn lookup_rate_and_balance_impl(
     use reth_revm::database::StateProviderDatabase;
     use revm::context_interface::result::ExecutionResult;
 
-    let state = match provider.latest() {
-        Ok(s) => s,
+    let unavailable = || FcLookupResult {
+        rate: None,
+        balance: None,
+        state_nonce: None,
+        debit_ok: None,
+        intrinsic_gas: None,
+    };
+    let header = match provider.latest_header() {
+        Ok(Some(header)) => header,
+        Ok(None) => {
+            tracing::warn!(target: "celo::pool", ?fee_currency, "Failed to get latest header for FC lookup");
+            return unavailable();
+        }
         Err(e) => {
-            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest state for FC lookup");
-            return FcLookupResult {
-                rate: None,
-                balance: None,
-                state_nonce: None,
-                debit_ok: None,
-                intrinsic_gas: None,
-            };
+            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest header for FC lookup");
+            return unavailable();
+        }
+    };
+    let state = match provider.state_by_block_hash(header.hash()) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!(
+                target: "celo::pool",
+                %e,
+                ?fee_currency,
+                block_hash = ?header.hash(),
+                "Failed to get header-matched state for FC lookup"
+            );
+            return unavailable();
         }
     };
     use reth_storage_api::AccountReader;
@@ -670,7 +726,7 @@ fn lookup_rate_and_balance_impl(
             }
         });
     let db = StateProviderDatabase::new(state);
-    let mut evm = build_pool_evm(db, spec);
+    let mut evm = build_pool_evm(db, spec, &header);
 
     // 1. Look up exchange rate
     let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
@@ -1784,7 +1840,7 @@ fn apply_exchange_rates_to_pool_tx(
 impl<V, P> TransactionValidator for CeloExchangeRateApplier<V, P>
 where
     V: TransactionValidator<Transaction = CeloPoolTx>,
-    P: StateProviderFactory + Debug + Send + Sync + 'static,
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header> + Debug + Send + Sync + 'static,
 {
     type Transaction = CeloPoolTx;
     type Block = V::Block;
@@ -1975,6 +2031,11 @@ where
     pool.pending_transactions()
 }
 
+/// Return whether a fee-currency revalidation result still matches the canonical head.
+fn revalidation_head_is_current(scanned_hash: B256, latest_hash: Option<B256>) -> bool {
+    latest_hash == Some(scanned_hash)
+}
+
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
 /// whose fee currency has been deregistered or whose sender can no longer afford their maximum
 /// fee-currency gas cost.
@@ -2161,7 +2222,7 @@ where
         let db = StateProviderDatabase::new(state.as_ref());
         // Use one EVM over one canonical state snapshot, at the fork active for the next block, so
         // every query in this pass observes consistent state and opcode semantics.
-        let mut evm = build_pool_evm(db, spec);
+        let mut evm = build_pool_evm(db, spec, &header);
 
         let Some(new_currencies) = self.query_registered_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure();
@@ -2177,11 +2238,6 @@ where
                 if removed.is_empty() {
                     Vec::new()
                 } else {
-                    tracing::info!(
-                        target: "celo::pool",
-                        ?removed,
-                        "Detected deregistered fee currencies"
-                    );
                     self.pool_txs_with_currency(|fc| removed.contains(fc))
                 }
             }
@@ -2213,6 +2269,35 @@ where
             },
             |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
         );
+
+        let insufficient_balance_count = insufficient_balance.len();
+        let unregistered_count = unregistered.len();
+        let mut to_evict: HashSet<TxHash> = unregistered.into_iter().collect();
+        to_evict.extend(insufficient_balance);
+
+        let latest_hash = match self.provider.latest_header() {
+            Ok(latest) => latest.map(|latest| latest.hash()),
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure();
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    scanned_hash = ?header.hash(),
+                    "Failed to confirm canonical head after fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        if !revalidation_head_is_current(header.hash(), latest_hash) {
+            tracing::debug!(
+                target: "celo::pool",
+                scanned_hash = ?header.hash(),
+                ?latest_hash,
+                "Discarding stale fee-currency revalidation result"
+            );
+            return;
+        }
+
         for (sender, fee_currency) in lookup_failures {
             CeloPoolMetrics::maintainer_failure();
             tracing::warn!(
@@ -2222,11 +2307,6 @@ where
                 "Retaining pooled CIP-64 txs after canonical balance lookup failure"
             );
         }
-
-        let insufficient_balance_count = insufficient_balance.len();
-        let unregistered_count = unregistered.len();
-        let mut to_evict: HashSet<TxHash> = unregistered.into_iter().collect();
-        to_evict.extend(insufficient_balance);
 
         if !to_evict.is_empty() {
             CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
@@ -2289,7 +2369,8 @@ mod tests {
         };
 
         // BEDROCK maps to SpecId::MERGE (pre-Shanghai): PUSH0 is not activated.
-        let mut bedrock = build_pool_evm(make_db(), OpSpecId::BEDROCK);
+        let header = Header::default();
+        let mut bedrock = build_pool_evm(make_db(), OpSpecId::BEDROCK, &header);
         let at_bedrock = bedrock.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2301,7 +2382,7 @@ mod tests {
         );
 
         // Isthmus maps to SpecId::PRAGUE: the same bytecode runs to completion.
-        let mut isthmus = build_pool_evm(make_db(), OpSpecId::ISTHMUS);
+        let mut isthmus = build_pool_evm(make_db(), OpSpecId::ISTHMUS, &header);
         let at_isthmus = isthmus.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2311,6 +2392,43 @@ mod tests {
             matches!(at_isthmus, Ok(ExecutionResult::Success { .. })),
             "PUSH0 must execute at the active spec, got {at_isthmus:?}",
         );
+    }
+
+    #[test]
+    fn build_pool_evm_uses_canonical_header_block_environment() {
+        use revm::{context_interface::ContextTr, database::InMemoryDB, handler::EvmTr};
+
+        let beneficiary = Address::with_last_byte(0x42);
+        let prevrandao = B256::with_last_byte(0x77);
+        let header = Header {
+            number: 123,
+            beneficiary,
+            timestamp: 456,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(25_000_000_000),
+            mix_hash: prevrandao,
+            ..Default::default()
+        };
+
+        let mut evm = build_pool_evm(InMemoryDB::default(), OpSpecId::ISTHMUS, &header);
+        let context = evm.ctx();
+        let block = context.block();
+
+        assert_eq!(block.number, U256::from(123));
+        assert_eq!(block.beneficiary, beneficiary);
+        assert_eq!(block.timestamp, U256::from(456));
+        assert_eq!(block.gas_limit, 30_000_000);
+        assert_eq!(block.basefee, 25_000_000_000);
+        assert_eq!(block.prevrandao, Some(prevrandao));
+    }
+
+    #[test]
+    fn stale_revalidation_head_is_rejected() {
+        let scanned = B256::with_last_byte(1);
+
+        assert!(revalidation_head_is_current(scanned, Some(scanned)));
+        assert!(!revalidation_head_is_current(scanned, Some(B256::with_last_byte(2))));
+        assert!(!revalidation_head_is_current(scanned, None));
     }
 
     #[test]
