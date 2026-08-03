@@ -15,6 +15,7 @@
 //!
 //! Run against the e2e dev node: `e2e_test/test_rust_client_cip64.sh`.
 
+use alloy_consensus::Transaction as _;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
@@ -78,6 +79,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     println!("feeCurrency: {fee_currency}");
+
+    // The filler must take its suggestions from the fee-currency-parameterized `eth_gasPrice`
+    // and `eth_maxPriorityFeePerGas`; filling from the native ones instead would be off by the
+    // currency's exchange rate. Correct filling caps at `2·baseFee + tip` in fee-currency
+    // units, so the cap is at least twice the receipt's fee-currency base fee, while native
+    // suggestions land near the base fee itself. Requiring 1.5x separates the two and still
+    // tolerates a base fee that rose between filling and inclusion.
+    let max_fee = tx.max_fee_per_gas();
+    if max_fee.saturating_mul(2) < base_fee.saturating_mul(3) {
+        return Err(format!(
+            "maxFeePerGas {max_fee} is too close to the fee-currency baseFee {base_fee}; \
+             the fees look native-denominated"
+        )
+        .into());
+    }
+    println!("maxFeePerGas: {max_fee} (fee-currency units)");
 
     Ok(())
 }

@@ -64,7 +64,7 @@ impl CeloGasFiller {
     ) -> TransportResult<CeloGasFillable> {
         let gas_limit = match tx.inner.as_ref().gas {
             Some(gas_limit) => gas_limit,
-            None => provider.estimate_gas(tx.clone()).await?,
+            None => provider.estimate_gas(estimation_request(tx, fee_currency)).await?,
         };
 
         let preset_max_fee = tx.inner.as_ref().max_fee_per_gas;
@@ -131,6 +131,25 @@ impl CeloGasFiller {
             max_priority_fee_per_gas: to_u128(tip, "maxPriorityFeePerGas")?,
         })
     }
+}
+
+/// Builds the request used to estimate a CIP-64 transaction's gas limit.
+///
+/// A fee-currency transaction's fee fields are denominated in that currency, but the node
+/// validates them against the *native* block base fee before it simulates, so forwarding them
+/// would fail the estimate: for a six-decimal currency the cap sits far below the native base
+/// fee. Gas does not depend on the fee fields, so they are dropped. `fee_currency` stays on the
+/// request — that is what makes the node's estimate include the CIP-64 intrinsic surcharge.
+fn estimation_request(
+    tx: &CeloTransactionRequest,
+    fee_currency: Option<Address>,
+) -> CeloTransactionRequest {
+    let mut request = tx.clone();
+    if fee_currency.is_some() {
+        request.as_mut().max_fee_per_gas = None;
+        request.as_mut().max_priority_fee_per_gas = None;
+    }
+    request
 }
 
 /// Computes the CIP-64 `max_fee_per_gas` suggestion from the node's fee-currency
@@ -276,6 +295,118 @@ mod tests {
         // from it: 2·(107 − 7) + 30.
         assert_eq!(max_priority_fee_per_gas, 30);
         assert_eq!(max_fee_per_gas, 230);
+    }
+
+    #[test]
+    fn estimation_request_drops_fee_currency_denominated_fees() {
+        let tx = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .max_fee_per_gas(200)
+            .max_priority_fee_per_gas(30)
+            .fee_currency(Address::repeat_byte(1));
+
+        let request = estimation_request(&tx, tx.fee_currency);
+
+        // The node would check these against the native base fee and reject the estimate.
+        assert_eq!(request.as_ref().max_fee_per_gas, None);
+        assert_eq!(request.as_ref().max_priority_fee_per_gas, None);
+        // The fee currency must survive, or the estimate misses the intrinsic surcharge.
+        assert_eq!(request.fee_currency, Some(Address::repeat_byte(1)));
+    }
+
+    #[test]
+    fn estimation_request_keeps_native_fees() {
+        // Without a fee currency the fees are already native-denominated, so a caller's cap
+        // is meaningful to the node and is left in place.
+        let tx = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .max_fee_per_gas(200)
+            .max_priority_fee_per_gas(30);
+
+        let request = estimation_request(&tx, None);
+
+        assert_eq!(request.as_ref().max_fee_per_gas, Some(200));
+        assert_eq!(request.as_ref().max_priority_fee_per_gas, Some(30));
+    }
+
+    #[tokio::test]
+    async fn cip64_fills_fee_currency_denominated_fees() {
+        let asserter = Asserter::new();
+        // In call order: the gas estimate, then the fee-currency denominated tip and gas
+        // price suggestions.
+        asserter.push_success(&U256::from(71_000u64));
+        asserter.push_success(&U256::from(7u64));
+        asserter.push_success(&U256::from(107u64));
+        let provider = mocked_provider(asserter);
+
+        let tx = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .fee_currency(Address::repeat_byte(1));
+
+        let fillable = TxFiller::<Celo>::prepare(&CeloGasFiller::default(), &provider, &tx)
+            .await
+            .expect("prepare should succeed");
+        let CeloGasFillable::Cip64 { gas_limit, max_fee_per_gas, max_priority_fee_per_gas } =
+            fillable
+        else {
+            panic!("expected a CIP-64 fillable, got {fillable:?}");
+        };
+        assert_eq!(gas_limit, 71_000);
+        assert_eq!(max_priority_fee_per_gas, 7);
+        // 2·(107 − 7) + 7, every term in fee-currency units.
+        assert_eq!(max_fee_per_gas, 207);
+    }
+
+    #[tokio::test]
+    async fn cip64_clamps_filled_tip_to_caller_max_fee() {
+        let asserter = Asserter::new();
+        // Only the tip suggestion is fetched; the caller's max fee short-circuits eth_gasPrice.
+        asserter.push_success(&U256::from(9u64));
+        let provider = mocked_provider(asserter);
+
+        let tx = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .gas_limit(50_000)
+            .max_fee_per_gas(5)
+            .fee_currency(Address::repeat_byte(1));
+
+        let fillable = TxFiller::<Celo>::prepare(&CeloGasFiller::default(), &provider, &tx)
+            .await
+            .expect("prepare should succeed");
+        let CeloGasFillable::Cip64 { gas_limit, max_fee_per_gas, max_priority_fee_per_gas } =
+            fillable
+        else {
+            panic!("expected a CIP-64 fillable, got {fillable:?}");
+        };
+        // Suggested tip 9 exceeds the caller's cap of 5, so it is clamped; left unclamped the
+        // request would carry a tip above its own fee cap and be rejected by the pool.
+        assert_eq!((gas_limit, max_fee_per_gas, max_priority_fee_per_gas), (50_000, 5, 5));
+    }
+
+    #[tokio::test]
+    async fn cip64_reads_suggestions_in_fee_currency_units() {
+        // `Asserter` returns responses by position and never sees the method name, so the
+        // queue alone cannot pin *which* suggestion was fetched. A value above `u128::MAX`
+        // can: only the fee-currency requests deserialize into `U256` and reach the range
+        // check below, whereas the native suggestions are `u128` and fail to deserialize.
+        // This also covers the overflow guard itself.
+        let asserter = Asserter::new();
+        asserter.push_success(&U256::MAX);
+        asserter.push_success(&U256::from(107u64));
+        let provider = mocked_provider(asserter);
+
+        let tx = CeloTransactionRequest::default()
+            .to(Address::ZERO)
+            .gas_limit(50_000)
+            .fee_currency(Address::repeat_byte(1));
+
+        let err = TxFiller::<Celo>::prepare(&CeloGasFiller::default(), &provider, &tx)
+            .await
+            .expect_err("a suggestion above u128::MAX must not be truncated");
+        assert!(
+            err.to_string().contains("fee-currency maxFeePerGas suggestion"),
+            "expected the fee-currency overflow error, got: {err}"
+        );
     }
 
     #[tokio::test]
