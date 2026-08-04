@@ -593,23 +593,39 @@ pub(crate) trait FcLookup {
     ) -> FcLookupResult;
 }
 
-/// Decode a positive exchange rate supported by the pool's fixed-width fee arithmetic.
-fn decode_exchange_rate(output: &[u8]) -> Option<ExchangeRate> {
+/// Decode an exchange-rate response, distinguishing malformed output from a successfully decoded
+/// rate that the pool's fixed-width arithmetic cannot support.
+fn try_decode_exchange_rate(output: &[u8]) -> Result<Option<ExchangeRate>, alloy_sol_types::Error> {
     use alloy_sol_types::SolCall;
     use celo_revm::contracts::core_contracts::getExchangeRateCall;
 
-    let rate = getExchangeRateCall::abi_decode_returns(output).ok()?;
-    let numerator = u128::try_from(rate.numerator).ok()?;
-    let denominator = u128::try_from(rate.denominator).ok()?;
-    (numerator != 0 && denominator != 0).then_some(ExchangeRate { numerator, denominator })
+    let rate = getExchangeRateCall::abi_decode_returns(output)?;
+    let Ok(numerator) = u128::try_from(rate.numerator) else {
+        return Ok(None);
+    };
+    let Ok(denominator) = u128::try_from(rate.denominator) else {
+        return Ok(None);
+    };
+    Ok((numerator != 0 && denominator != 0).then_some(ExchangeRate { numerator, denominator }))
+}
+
+/// Decode a usable exchange rate for admission, where any unavailable rate rejects the tx.
+fn decode_exchange_rate(output: &[u8]) -> Option<ExchangeRate> {
+    try_decode_exchange_rate(output).ok().flatten()
 }
 
 /// Keep registered currencies whose exchange rate is currently usable by pool validation.
-fn usable_fee_currencies(
+fn usable_fee_currencies<E>(
     currencies: impl IntoIterator<Item = Address>,
-    mut exchange_rate: impl FnMut(Address) -> Option<ExchangeRate>,
-) -> HashSet<Address> {
-    currencies.into_iter().filter(|currency| exchange_rate(*currency).is_some()).collect()
+    mut exchange_rate: impl FnMut(Address) -> Result<Option<ExchangeRate>, E>,
+) -> Result<HashSet<Address>, E> {
+    let mut usable = HashSet::new();
+    for currency in currencies {
+        if exchange_rate(currency)?.is_some() {
+            usable.insert(currency);
+        }
+    }
+    Ok(usable)
 }
 
 /// Couples a [`StateProviderFactory`] with the chain's spec derivation so the pool's system-call
@@ -2131,25 +2147,37 @@ where
         .0;
 
         let currencies: Vec<Address> = getCurrenciesCall::abi_decode_returns(&output).ok()?;
-        Some(usable_fee_currencies(currencies, |fee_currency| {
+        usable_fee_currencies(currencies, |fee_currency| {
             let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
-            let output = call_read_only(
+            let output = match call_read_only(
                 evm,
                 self.fee_currency_directory,
                 calldata.into(),
                 Some(POOL_SYSTEM_CALL_GAS_LIMIT),
-            )
-            .inspect_err(|e| {
-                tracing::warn!(
-                    target: "celo::pool",
-                    %e,
-                    ?fee_currency,
-                    "Read-only EVM call failed querying fee-currency exchange rate"
-                );
-            })
-            .ok()?
-            .0;
-            let rate = decode_exchange_rate(&output);
+            ) {
+                Ok(output) => output.0,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        ?fee_currency,
+                        "Read-only EVM call failed querying fee-currency exchange rate"
+                    );
+                    return Err(());
+                }
+            };
+            let rate = match try_decode_exchange_rate(&output) {
+                Ok(rate) => rate,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        ?fee_currency,
+                        "Failed to decode fee-currency exchange rate"
+                    );
+                    return Err(());
+                }
+            };
             if rate.is_none() {
                 tracing::warn!(
                     target: "celo::pool",
@@ -2157,8 +2185,9 @@ where
                     "Excluding fee currency without a usable exchange rate"
                 );
             }
-            rate
-        }))
+            Ok(rate)
+        })
+        .ok()
     }
 
     /// Query a sender's current ERC20 balance for one registered fee currency.
@@ -4051,10 +4080,38 @@ mod tests {
         let missing_rate = Address::with_last_byte(0xB0);
 
         let currencies = usable_fee_currencies([usable, missing_rate], |currency| {
-            (currency == usable).then_some(ExchangeRate { numerator: 1, denominator: 1 })
-        });
+            Ok::<_, ()>(
+                (currency == usable).then_some(ExchangeRate { numerator: 1, denominator: 1 }),
+            )
+        })
+        .expect("unsupported rates are not lookup failures");
 
         assert_eq!(currencies, HashSet::from([usable]));
+    }
+
+    #[test]
+    fn usable_fee_currency_lookup_error_aborts_scan() {
+        let usable = Address::with_last_byte(0xA0);
+        let lookup_failed = Address::with_last_byte(0xB0);
+        let not_visited = Address::with_last_byte(0xC0);
+        let mut visited = Vec::new();
+
+        let result = usable_fee_currencies([usable, lookup_failed, not_visited], |currency| {
+            visited.push(currency);
+            if currency == lookup_failed {
+                Err("rate lookup failed")
+            } else {
+                Ok(Some(ExchangeRate { numerator: 1, denominator: 1 }))
+            }
+        });
+
+        assert_eq!(result, Err("rate lookup failed"));
+        assert_eq!(visited, vec![usable, lookup_failed], "the scan must stop at the first error");
+    }
+
+    #[test]
+    fn malformed_exchange_rate_is_a_lookup_error() {
+        assert!(try_decode_exchange_rate(&[]).is_err());
     }
 
     // -----------------------------------------------------------------------
