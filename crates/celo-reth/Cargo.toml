@@ -136,6 +136,7 @@ zstd.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 trybuild = "1"
+metrics-util = "0.20"
 reth-provider = { workspace = true, features = ["test-utils"] }
 reth-basic-payload-builder.workspace = true
 tempfile.workspace = true
