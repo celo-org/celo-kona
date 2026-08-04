@@ -307,13 +307,22 @@ rpc_expect_same estimateGas_cip64_lowercase_key_matches_canonical \
 
 # `eth_gasPrice` and `eth_maxPriorityFeePerGas` take no block argument; they are
 # pinned here because no block has been mined yet, so the head is still genesis.
+#
+# Both genesis fee currencies are covered: this is the only read-only surface
+# where the exchange rate itself is observable. The trace and call goldens all
+# render a CIP-64 call as an ordinary call frame with no fee-currency data in
+# it, so a wrong rate does not move any of them.
 rpc_golden_json gas_price_at_genesis "$(jq -n \
     --arg native "$(rpc_call eth_gasPrice '[]' | jq -r '.result')" \
     --arg fc "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY\"]" | jq -r '.result')" \
+    --arg fc2 "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY2\"]" | jq -r '.result')" \
     --arg tip "$(rpc_call eth_maxPriorityFeePerGas '[]' | jq -r '.result')" \
     --arg fc_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY\"]" | jq -r '.result')" \
+    --arg fc2_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY2\"]" | jq -r '.result')" \
     '{gasPrice: $native, gasPriceInFeeCurrency: $fc,
-      maxPriorityFeePerGas: $tip, maxPriorityFeePerGasInFeeCurrency: $fc_tip}')"
+      gasPriceInFeeCurrency2: $fc2,
+      maxPriorityFeePerGas: $tip, maxPriorityFeePerGasInFeeCurrency: $fc_tip,
+      maxPriorityFeePerGasInFeeCurrency2: $fc2_tip}')"
 
 # ---------------------------------------------------------------------------
 # Phase 2 — refusals. An error is the contract for each of these, and the exact
