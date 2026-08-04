@@ -2347,26 +2347,36 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // A CIP-64 tx rejected by a state check that runs *after* the ERC20 fee debit must
-    // leak no debit into the block: the rollbackable debit is reverted with the tx.
+    // leave no debit in the journal: the rollbackable debit is reverted with the tx.
     //
     // The debit runs first (early), charging the sender's fee-currency balance, and only
     // then does `validate_against_state_and_deduct_caller` run the nonce / EIP-3607 /
     // affordability checks. Because the debit is bracketed by a journal checkpoint
-    // (`cip64_rollbackable_debit_and_deduct_caller`), a rejection here reverts it. If the
-    // debit instead committed irreversibly (the pre-fix behavior), the block builder —
-    // which reuses one journal across the block, skips the invalid tx, and finalizes once —
-    // would seal the orphaned debit, while a validator re-executing only the *included* txs
-    // never applies it: the fee-currency balance (hence the state root) diverges — a
-    // consensus split. This test rejects a nonce-too-low CIP-64 tx and asserts nothing is
-    // debited.
+    // (`cip64_rollbackable_debit_and_deduct_caller`), a rejection here reverts it. This test
+    // rejects a nonce-too-low CIP-64 tx and asserts nothing is debited.
     //
-    // Driven through the bare handler (`handler.run` + a manual `finalize`), then asserting the
-    // finalized fee-currency balance. On the rejection path op-revm's `catch_error` override
-    // does no journal work for these non-deposit txs — it neither commits nor discards — so what
-    // reaches `finalize` is whatever the debit left in the journal. Against a committing debit,
-    // `commit_tx` already folded the charge into state and cleared the revert log, so the
-    // rejected tx leaks the debit. The rollbackable (non-committing) debit keeps its revert-log
-    // entries and `checkpoint_revert` unwinds them on the Err arm of
+    // What this does NOT claim is that a committing debit would reach the block. The builder
+    // does *not* reuse one journal across the block and finalize once: `OpBlockExecutor` runs
+    // one `Evm::transact` per transaction, and revm's default `ExecuteEvm::transact`
+    // (`revm-handler`'s `api.rs`) calls `finalize()` unconditionally *before* propagating the
+    // error, so a rejected tx's journal is drained and the state dropped; the executor commits
+    // to `State<DB>` only on the `Ok` arm. An irreversibly committed debit on a rejected tx is
+    // therefore discarded upstream today rather than sealed into the block.
+    //
+    // The rollback is what makes that a celo-revm invariant instead of a bet on upstream.
+    // revm's sibling `InspectEvm::inspect_tx` (`revm-inspector`'s `inspect.rs`) returns on the
+    // error arm *before* `finalize()`, and so does our own `ExecuteEvm::replay` in
+    // `api/exec.rs` — on either, the orphaned state survives for whatever runs next on the same
+    // EVM. Keeping the debit revertable means no caller has to pick the right entry point.
+    //
+    // Driven through the bare handler (`handler.run` + a manual `finalize`) so the assertion
+    // reads the journal the rejection left behind — going through `Evm::transact` would drain
+    // the leak before it could be observed. On the rejection path op-revm's `catch_error`
+    // override does no journal work for these non-deposit txs — it neither commits nor
+    // discards — so what reaches `finalize` is whatever the debit left in the journal. Against
+    // a committing debit, `commit_tx` already folded the charge into state and cleared the
+    // revert log, so the rejected tx leaks the debit. The rollbackable (non-committing) debit
+    // keeps its revert-log entries and `checkpoint_revert` unwinds them on the Err arm of
     // `cip64_rollbackable_debit_and_deduct_caller`, so nothing is debited.
     #[test]
     fn rejected_cip64_tx_reverts_the_fee_debit() {
@@ -2401,8 +2411,10 @@ mod tests {
             1,
         );
 
-        // Mirror the builder: run the (rejected) tx through the handler, then finalize the
-        // journal (the builder reuses one journal across the block and finalizes once).
+        // Run the (rejected) tx through the bare handler, then finalize by hand: this observes
+        // the journal the rejection left behind, which is the invariant under test. It is
+        // deliberately *not* the builder's path — `Evm::transact` finalizes before returning
+        // the error, so it would drain the leak before it could be asserted on.
         let mut handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         let err = handler
