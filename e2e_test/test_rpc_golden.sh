@@ -392,7 +392,14 @@ for i in "${!LABELS[@]}"; do
     hash=$(jq -r '.hash' <<<"${TXS[$i]}")
     raw=$(jq -r '.raw' <<<"${TXS[$i]}")
 
-    if [[ "$(send_raw "$label" "$raw")" != "$hash" ]]; then
+    # An empty $sent means send_raw already reported the rejection. A
+    # *different* hash is an encoding change in the signer or in CIP-64
+    # serialization; without a failure of its own it only shows up several
+    # phases later, as this label's goldens being reported unread.
+    sent=$(send_raw "$label" "$raw")
+    if [[ "$sent" != "$hash" ]]; then
+        [[ -n "$sent" ]] &&
+            _rpc_fail "send_$label" "node returned $sent, signed hash is $hash"
         continue
     fi
     if ! receipt=$(wait_receipt "$hash"); then
@@ -644,7 +651,10 @@ cip64_after=$(sign_tx --nonce $((RATE_NONCE + 2)) --to "$DEAD" --value 1 \
 before_block= ; after_block=
 for tx in "$cip64_before" "$rate_change" "$cip64_after"; do
     hash=$(jq -r '.hash' <<<"$tx")
-    if [[ "$(send_raw rate_sequence "$(jq -r '.raw' <<<"$tx")")" != "$hash" ]]; then
+    sent=$(send_raw rate_sequence "$(jq -r '.raw' <<<"$tx")")
+    if [[ "$sent" != "$hash" ]]; then
+        [[ -n "$sent" ]] &&
+            _rpc_fail send_rate_sequence "node returned $sent, signed hash is $hash"
         break
     fi
     if ! receipt=$(wait_receipt "$hash"); then
