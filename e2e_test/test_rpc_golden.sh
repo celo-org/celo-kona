@@ -448,6 +448,12 @@ else
         [[ "$(jq -r '.blockNumber' <<<"$rcpt")" == "$BATCH_BLOCK" ]] || same_block=no
     done
     rpc_expect_eq batch_shares_one_block "$same_block" "yes"
+fi
+
+# Everything below is pinned against the four-transaction block. A split batch
+# is a promotion race, not a regression in any of these surfaces, so report it
+# once above and skip rather than emit eight unexplained golden diffs.
+if [[ "${same_block:-no}" == yes ]]; then
     # Index 0 is the block's L1-attributes deposit transaction, so the last
     # CIP-64 transaction sits at index 4 behind three CIP-64 predecessors.
     rpc_expect_eq batch_last_tx_index \
