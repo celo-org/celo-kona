@@ -2358,16 +2358,18 @@ mod tests {
     // What this does NOT claim is that a committing debit would reach the block. The builder
     // does *not* reuse one journal across the block and finalize once: `OpBlockExecutor` runs
     // one `Evm::transact` per transaction, and revm's default `ExecuteEvm::transact`
-    // (`revm-handler`'s `api.rs`) calls `finalize()` unconditionally *before* propagating the
-    // error, so a rejected tx's journal is drained and the state dropped; the executor commits
+    // (revm-handler 18.1.0, `src/api.rs`) calls `finalize()` unconditionally *before* propagating
+    // the error, so a rejected tx's journal is drained and the state dropped; the executor commits
     // to `State<DB>` only on the `Ok` arm. An irreversibly committed debit on a rejected tx is
     // therefore discarded upstream today rather than sealed into the block.
     //
-    // The rollback is what makes that a celo-revm invariant instead of a bet on upstream.
-    // revm's sibling `InspectEvm::inspect_tx` (`revm-inspector`'s `inspect.rs`) returns on the
-    // error arm *before* `finalize()`, and so does our own `ExecuteEvm::replay` in
-    // `api/exec.rs` — on either, the orphaned state survives for whatever runs next on the same
-    // EVM. Keeping the debit revertable means no caller has to pick the right entry point.
+    // The rollback is what makes that a celo-revm invariant instead of a bet on the caller's
+    // choice of entry point. Not every entry point drains: `InspectEvm::inspect_tx`
+    // (revm-inspector 19.0.0, `src/inspect.rs`) returns on the error arm *before* `finalize()`,
+    // and so does our own `ExecuteEvm::replay` in `api/exec.rs`, leaving the orphaned state for
+    // whatever runs next on the same EVM. `CeloEvm::transact_raw` compensates for the inspecting
+    // arm in alloy-celo-evm, but `replay` is a public celo-revm API with no such guard, so keeping
+    // the debit revertable is what makes this safe one layer down.
     //
     // Driven through the bare handler (`handler.run` + a manual `finalize`) so the assertion
     // reads the journal the rejection left behind — going through `Evm::transact` would drain
