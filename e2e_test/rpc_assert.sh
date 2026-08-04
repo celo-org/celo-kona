@@ -49,7 +49,15 @@
 # and is semantic here (`logs`, `structLogs`, `calls`, per-tx trace lists), so a
 # reordering regression stays visible.
 
-RPC_GOLDEN_DIR="${RPC_GOLDEN_DIR:-$SCRIPT_DIR/rpc_golden}"
+# Required, not defaulted: guessing `$SCRIPT_DIR/rpc_golden` would make this
+# file depend on a variable it neither sets nor documents, and a wrong guess
+# surfaces as "no golden at ..." for every check rather than as a setup error.
+if [[ -z "${RPC_GOLDEN_DIR:-}" ]]; then
+    echo "rpc_assert: RPC_GOLDEN_DIR must be set before sourcing rpc_assert.sh" >&2
+    # shellcheck disable=SC2317  # the exit is the fallback when not sourced
+    return 1 2>/dev/null || exit 1
+fi
+
 RPC_GOLDEN_PASSED=0
 RPC_GOLDEN_FAILED=0
 RPC_GOLDEN_BLESSED=0
