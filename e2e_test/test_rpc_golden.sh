@@ -533,7 +533,10 @@ if [[ "${same_block:-no}" == yes ]]; then
         "[\"$BATCH_BLOCK\", [\"trace\"]]"
 
     # A mid-block simulation must see the fee-currency context as it stood at
-    # the start of the block, exactly as a transaction at that index would.
+    # the start of the block, exactly as a transaction at that index would. The
+    # callTracer frame carries no fee-currency data, so these two pin that
+    # seeding the context at a mid-block index works at all — a context taken
+    # from the wrong point that still executes would not move them.
     rpc_golden traceCall_at_midblock_index debug_traceCall \
         "[{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"gas\": \"0x30d40\", \"feeCurrency\": \"$FEE_CURRENCY\", \"maxFeePerGas\": \"0xba43b7400\", \"maxPriorityFeePerGas\": \"0x64\"}, \"$BATCH_BLOCK\", {\"tracer\": \"callTracer\", \"txIndex\": \"0x3\"}]"
     # An unrelated state override must not disable context seeding.
