@@ -16,7 +16,7 @@
 #     RPC_GOLDEN_DIR=$SCRIPT_DIR/rpc_golden \
 #     source rpc_assert.sh
 #
-#     rpc_golden <name> <method> <params-json> [jq-filter]
+#     rpc_golden <name> <method> <params-json> [jq-filter] [note]
 #     rpc_golden_json <name> <json-value>
 #     rpc_expect_ok <name> <method> <params-json>
 #     rpc_expect_error <name> <method> <params-json> [message-regex]
@@ -115,8 +115,12 @@ _rpc_take_jq_args() {
 }
 
 # Compare $2 against the committed golden for $1, or (re)write it under BLESS=1.
-_rpc_compare_golden() { # <name> <normalized-json>
-    local name=$1 normalized=$2
+# $3 is the scenario's rationale, printed on a mismatch: it is the one piece of
+# context that tells the reader whether the new output is a regression or the
+# intended effect of their change, and it is useless if it only ever lives in
+# the scenario file.
+_rpc_compare_golden() { # <name> <normalized-json> [note]
+    local name=$1 normalized=$2 note=${3:-}
     local golden="$RPC_GOLDEN_DIR/$name.json"
     RPC_GOLDEN_VISITED+=("$name")
 
@@ -137,6 +141,7 @@ _rpc_compare_golden() { # <name> <normalized-json>
         _rpc_pass "$name"
     else
         _rpc_fail "$name" "output differs from the committed golden"
+        [[ -n "$note" ]] && echo "        why this is pinned: $note"
         local lines
         lines=$(wc -l <<<"$diff_output")
         head -60 <<<"$diff_output" | sed 's/^/        /'
@@ -151,7 +156,7 @@ _rpc_compare_golden() { # <name> <normalized-json>
 # Never aborts the calling script; failures are counted and reported by
 # rpc_golden_summary.
 rpc_golden() {
-    local name=$1 method=$2 params=$3 filter=${4:-.}
+    local name=$1 method=$2 params=$3 filter=${4:-.} note=${5:-}
     local response normalized _rpc_jq_args=()
     _rpc_take_jq_args
 
@@ -171,7 +176,7 @@ rpc_golden() {
         _rpc_fail "$name" "jq filter failed: $normalized"
         return 0
     fi
-    _rpc_compare_golden "$name" "$normalized"
+    _rpc_compare_golden "$name" "$normalized" "$note"
 }
 
 # rpc_golden_json <name> <json-value>
