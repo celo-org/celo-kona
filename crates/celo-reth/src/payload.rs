@@ -209,8 +209,8 @@ struct CeloFeeCurrencyFilter<I> {
     block_gas_limit: u64,
     /// Cumulative gas used per fee currency address.
     gas_used_per_currency: HashMap<Address, u64>,
-    /// Gas reservation for the most recently yielded fee-currency transaction. A following
-    /// `next` call commits it, while a matching `mark_invalid` rolls it back.
+    /// Gas reservation for the most recently yielded fee-currency transaction. A matching
+    /// `mark_invalid` rolls it back; otherwise a following `next` call leaves it committed.
     pending_charge: Option<PendingFeeCurrencyCharge>,
 }
 
@@ -221,8 +221,9 @@ where
     type Transaction = CeloPoolTx;
 
     fn next(&mut self, ctx: ()) -> Option<Self::Transaction> {
-        // The payload builder requests the next transaction only after accepting the previously
-        // yielded one. Reaching this point therefore commits its fee-currency gas reservation.
+        // Continuing iteration drops the rollback handle and leaves the reservation counted. This
+        // normally follows inclusion, but upstream's nonce-too-low path also continues without
+        // calling mark_invalid, leaving a conservative reservation for this payload attempt.
         self.pending_charge = None;
 
         loop {
