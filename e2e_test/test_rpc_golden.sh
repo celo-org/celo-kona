@@ -496,6 +496,83 @@ rpc_expect_error send_cip64_unregistered_currency eth_sendRawTransaction \
     "[$(jq '.raw' <<<"$unregistered")]" 'unregistered fee-currency address'
 
 # ---------------------------------------------------------------------------
+# Phase 6 — eth_feeHistory across an exchange-rate change
+#
+# The Celo `eth_feeHistory` override converts each CIP-64 tip from fee-currency
+# units back to native before computing percentiles, and it looks the rate up at
+# the block whose transactions it is normalizing rather than at the head. That
+# distinction is deliberate — the rate cache is keyed by `(block_number,
+# fee_currency)` for exactly this reason — but the unit tests only cover the two
+# pure halves (converting a tip *given* a rate, and the gas-weighted percentile
+# math), not which block's rate gets passed in.
+#
+# So: one CIP-64 transaction at the current rate, then a rate change, then an
+# identical CIP-64 transaction, then one fee history spanning all three blocks.
+# Normalizing against the head rate would price the first block's tip at the new
+# rate and both rewards would come out equal.
+#
+# This phase must stay last: it leaves the fee currency's rate changed.
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "Phase 6: eth_feeHistory across an exchange-rate change"
+
+# `0x…ce16`'s oracle in the dev genesis alloc. Its `setExchangeRate` is ungated,
+# so no deploy and no ownership dance is needed — the rate change is one
+# ordinary transaction to a fixed address.
+FEE_CURRENCY_ORACLE=0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001
+# 2:1 at genesis -> 4:1 here, so a tip converted at the wrong rate is off by 2x.
+RATE_CHANGE_DATA=$(cast calldata 'setExchangeRate(address,uint256,uint256)' \
+    "$FEE_CURRENCY" 4000000000000000000 1000000000000000000)
+
+RATE_NONCE=$(( $(rpc_call eth_getTransactionCount "[\"$ACC_ADDR\", \"latest\"]" | jq -r '.result') ))
+cip64_before=$(sign_tx --nonce "$RATE_NONCE" --to "$DEAD" --value 1 \
+    --fee-currency "$FEE_CURRENCY" --gas 100000 \
+    --max-fee 100000000000 --max-priority-fee 2000000000)
+rate_change=$(sign_tx --nonce $((RATE_NONCE + 1)) --to "$FEE_CURRENCY_ORACLE" \
+    --data "$RATE_CHANGE_DATA" --gas 200000)
+cip64_after=$(sign_tx --nonce $((RATE_NONCE + 2)) --to "$DEAD" --value 1 \
+    --fee-currency "$FEE_CURRENCY" --gas 100000 \
+    --max-fee 100000000000 --max-priority-fee 2000000000)
+
+before_block= ; after_block=
+for tx in "$cip64_before" "$rate_change" "$cip64_after"; do
+    hash=$(jq -r '.hash' <<<"$tx")
+    if [[ "$(send_raw rate_sequence "$(jq -r '.raw' <<<"$tx")")" != "$hash" ]]; then
+        break
+    fi
+    if ! receipt=$(wait_receipt "$hash"); then
+        _rpc_fail "rate_sequence_mined" "no receipt for $hash"
+        break
+    fi
+    [[ -z "$before_block" ]] && before_block=$(jq -r '.blockNumber' <<<"$receipt")
+    after_block=$(jq -r '.blockNumber' <<<"$receipt")
+done
+
+if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
+    # Checked directly so a silently failed rate change reports itself here
+    # rather than as a confusing arithmetic mismatch below.
+    rpc_expect_eq rate_change_applied \
+        "$(cast call "$FEE_CURRENCY_DIRECTORY_ADDR" \
+            'getExchangeRate(address)(uint256,uint256)' "$FEE_CURRENCY" \
+            --rpc-url "$RPC_URL" | head -1 | cut -d' ' -f1)" \
+        "4000000000000000000"
+
+    rpc_golden feeHistory_across_rate_change eth_feeHistory \
+        "[\"0x3\", \"$after_block\", [50]]"
+
+    # The discriminating property, stated rather than left implicit in the hex:
+    # the same fee-currency tip is worth twice as much native before the change
+    # as after it. Head-rate normalization would make these equal.
+    rewards=$(rpc_call eth_feeHistory "[\"0x3\", \"$after_block\", [50]]" | jq -r '.result.reward')
+    rpc_expect_eq feeHistory_tip_halves_across_rate_change \
+        "$(( $(jq -r '.[0][0]' <<<"$rewards" | xargs cast to-dec) ))" \
+        "$(( $(jq -r '.[2][0]' <<<"$rewards" | xargs cast to-dec) * 2 ))"
+else
+    _rpc_fail rate_change_sequence "the rate-change sequence did not mine into distinct blocks"
+fi
+
+# ---------------------------------------------------------------------------
 
 echo ""
 if ! cast block-number --rpc-url "$RPC_URL" &>/dev/null; then
