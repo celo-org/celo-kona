@@ -725,7 +725,6 @@ where
             return unavailable();
         }
     };
-    use reth_storage_api::AccountReader;
     let state_nonce =
         balance_check.as_ref().and_then(|(sender, _)| match state.basic_account(sender) {
             Ok(account) => Some(account.unwrap_or_default().nonce),
