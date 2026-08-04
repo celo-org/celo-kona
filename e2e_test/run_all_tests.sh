@@ -144,8 +144,8 @@ echo "Test account balance: $(cast balance 0x42cf1bbc38BaAA3c4898ce8790e21eD2738
 
 cd "$SCRIPT_DIR"
 
-# Override SCRIPT_DIR before sourcing shared.sh, because shared.sh computes
-# it from $0 which points to our runner script, not to the test directory.
+# shared.sh resolves SCRIPT_DIR from its own location, so it agrees with ours;
+# export it so the test scripts we spawn inherit the same value.
 export SCRIPT_DIR="$SCRIPT_DIR"
 
 # Source shared env (sets ETH_RPC_URL, ACC_PRIVKEY, TOKEN_ADDR, etc.)
