@@ -2277,7 +2277,10 @@ where
         let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
         let db = StateProviderDatabase::new(state.as_ref());
         let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
-        let usable_currencies = self.query_usable_fee_currencies(&mut evm)?;
+        let Some(usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
+            CeloPoolMetrics::maintainer_failure("currency_directory", 1);
+            return None;
+        };
 
         // Recompute availability for the full pool so advancing the cache cannot hide a currency
         // that became unavailable on the newer head.

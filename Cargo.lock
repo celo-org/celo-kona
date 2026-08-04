@@ -2449,6 +2449,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-types",
  "metrics",
+ "metrics-util",
  "op-alloy-consensus",
  "op-alloy-rpc-types",
  "op-alloy-rpc-types-engine",
