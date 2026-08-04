@@ -370,7 +370,7 @@ where
         )?;
 
         // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is deregistered
-        // or their sender no longer covers the nonce-contiguous cumulative fee-currency cost.
+        // or their sender can no longer cover the transaction's maximum fee-currency cost.
         {
             let events = transaction_pool.subscribe_to_canonical_updates();
             let maintainer = CeloPoolMaintainer::new(
