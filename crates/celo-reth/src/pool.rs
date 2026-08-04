@@ -568,6 +568,25 @@ pub(crate) trait FcLookup {
     ) -> FcLookupResult;
 }
 
+/// Decode a positive exchange rate supported by the pool's fixed-width fee arithmetic.
+fn decode_exchange_rate(output: &[u8]) -> Option<ExchangeRate> {
+    use alloy_sol_types::SolCall;
+    use celo_revm::contracts::core_contracts::getExchangeRateCall;
+
+    let rate = getExchangeRateCall::abi_decode_returns(output).ok()?;
+    let numerator = u128::try_from(rate.numerator).ok()?;
+    let denominator = u128::try_from(rate.denominator).ok()?;
+    (numerator != 0 && denominator != 0).then_some(ExchangeRate { numerator, denominator })
+}
+
+/// Keep registered currencies whose exchange rate is currently usable by pool validation.
+fn usable_fee_currencies(
+    currencies: impl IntoIterator<Item = Address>,
+    mut exchange_rate: impl FnMut(Address) -> Option<ExchangeRate>,
+) -> HashSet<Address> {
+    currencies.into_iter().filter(|currency| exchange_rate(*currency).is_some()).collect()
+}
+
 /// Couples a [`StateProviderFactory`] with the chain's active [`OpSpecId`] so the
 /// pool's system-call EVM runs fee-currency bytecode at the right fork (see
 /// `build_pool_evm`) and next-block base fee. Holds the provider by reference;
@@ -760,15 +779,7 @@ where
                 None
             }
         })
-        .and_then(|output| {
-            let r = getExchangeRateCall::abi_decode_returns(&output).ok()?;
-            let numerator = u128::try_from(r.numerator).ok()?;
-            let denominator = u128::try_from(r.denominator).ok()?;
-            if numerator == 0 || denominator == 0 {
-                return None;
-            }
-            Some(ExchangeRate { numerator, denominator })
-        });
+        .and_then(|output| decode_exchange_rate(&output));
 
     // If rate lookup failed, the caller will reject the tx as UnregisteredCurrency
     // regardless of balance/debit — skip the remaining EVM calls to avoid wasted
@@ -1950,7 +1961,7 @@ where
 /// affected pair. The maintainer is a cleanup path, so uncertain state must not become an eviction.
 fn txs_with_insufficient_fee_currency_balance<'a>(
     transactions: impl IntoIterator<Item = &'a CeloPoolTx>,
-    registered_currencies: &HashSet<Address>,
+    usable_currencies: &HashSet<Address>,
     mut balance_of: impl FnMut(Address, Address) -> Option<U256>,
 ) -> (Vec<TxHash>, Vec<(Address, Address)>) {
     let mut balances = HashMap::<(Address, Address), Option<U256>>::new();
@@ -1959,7 +1970,7 @@ fn txs_with_insufficient_fee_currency_balance<'a>(
     let mut evicted = HashSet::new();
 
     for tx in transactions {
-        let Some(fee_currency) = tx.fee_currency().filter(|fc| registered_currencies.contains(fc))
+        let Some(fee_currency) = tx.fee_currency().filter(|fc| usable_currencies.contains(fc))
         else {
             continue;
         };
@@ -1997,7 +2008,7 @@ fn revalidation_head_is_current(scanned_hash: B256, latest_hash: Option<B256>) -
 }
 
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
-/// whose fee currency has been deregistered or whose sender can no longer afford their maximum
+/// whose fee currency is no longer usable or whose sender can no longer afford their maximum
 /// fee-currency gas cost.
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
@@ -2005,14 +2016,15 @@ pub struct CeloPoolMaintainer<Pool, P> {
     fee_currency_directory: Address,
     spec_fn: SpecFn,
     next_block_base_fee_fn: NextBlockBaseFeeFn,
-    /// Cached set of registered currencies. Deregistration checks only need a full pool scan when
-    /// this changes; canonical balance checks still run after every successful registry query.
+    /// Cached set of currencies with a usable exchange rate. Currency availability checks only
+    /// need a full pool scan when this changes; canonical balance checks still run after every
+    /// successful directory query.
     ///
     /// `None` means the maintainer has never observed a successful query,
     /// so no diff baseline exists yet. Diffing against an empty baseline
     /// would silently miss currencies removed during a startup outage,
     /// leaving stale CIP-64 txs in the pool — see [`Self::on_new_block`].
-    registered_currencies: Option<std::collections::HashSet<Address>>,
+    usable_currencies: Option<std::collections::HashSet<Address>>,
 }
 
 impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
@@ -2021,7 +2033,7 @@ impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
             .field("pool", &self.pool)
             .field("provider", &self.provider)
             .field("fee_currency_directory", &self.fee_currency_directory)
-            .field("registered_currencies", &self.registered_currencies)
+            .field("usable_currencies", &self.usable_currencies)
             .finish_non_exhaustive()
     }
 }
@@ -2041,7 +2053,7 @@ impl<Pool, P> CeloPoolMaintainer<Pool, P> {
             fee_currency_directory,
             spec_fn,
             next_block_base_fee_fn,
-            registered_currencies: None,
+            usable_currencies: None,
         }
     }
 }
@@ -2051,8 +2063,8 @@ where
     Pool: reth_transaction_pool::TransactionPool<Transaction = CeloPoolTx>,
     P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
 {
-    /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
-    fn query_registered_currencies<DB>(
+    /// Query fee currencies with a currently usable exchange rate.
+    fn query_usable_fee_currencies<DB>(
         &self,
         evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
     ) -> Option<HashSet<Address>>
@@ -2060,7 +2072,9 @@ where
         DB: revm::Database,
     {
         use alloy_sol_types::SolCall;
-        use celo_revm::contracts::core_contracts::{call_read_only, getCurrenciesCall};
+        use celo_revm::contracts::core_contracts::{
+            call_read_only, getCurrenciesCall, getExchangeRateCall,
+        };
 
         let calldata = getCurrenciesCall {}.abi_encode();
         let output = call_read_only(
@@ -2080,7 +2094,34 @@ where
         .0;
 
         let currencies: Vec<Address> = getCurrenciesCall::abi_decode_returns(&output).ok()?;
-        Some(currencies.into_iter().collect())
+        Some(usable_fee_currencies(currencies, |fee_currency| {
+            let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
+            let output = call_read_only(
+                evm,
+                self.fee_currency_directory,
+                calldata.into(),
+                Some(POOL_SYSTEM_CALL_GAS_LIMIT),
+            )
+            .inspect_err(|e| {
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    ?fee_currency,
+                    "Read-only EVM call failed querying fee-currency exchange rate"
+                );
+            })
+            .ok()?
+            .0;
+            let rate = decode_exchange_rate(&output);
+            if rate.is_none() {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fee_currency,
+                    "Excluding fee currency without a usable exchange rate"
+                );
+            }
+            rate
+        }))
     }
 
     /// Query a sender's current ERC20 balance for one registered fee currency.
@@ -2198,17 +2239,17 @@ where
         // every query in this pass observes consistent state and opcode semantics.
         let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
 
-        let Some(new_currencies) = self.query_registered_currencies(&mut evm) else {
+        let Some(new_usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure();
             return;
         };
 
-        let unregistered: Vec<TxHash> = match self.registered_currencies.as_ref() {
+        let unavailable_currency: Vec<TxHash> = match self.usable_currencies.as_ref() {
             // Cache is up to date — nothing to evict.
-            Some(old) if *old == new_currencies => Vec::new(),
+            Some(old) if *old == new_usable_currencies => Vec::new(),
             Some(old) => {
                 let removed: std::collections::HashSet<_> =
-                    old.difference(&new_currencies).copied().collect();
+                    old.difference(&new_usable_currencies).copied().collect();
                 if removed.is_empty() {
                     Vec::new()
                 } else {
@@ -2217,21 +2258,21 @@ where
             }
             // First successful query (e.g. startup query failed and left
             // the cache empty). Diffing against an empty baseline would
-            // silently miss currencies that were deregistered during the
-            // outage, so scan the whole pool against the current registry.
-            None => self.pool_txs_with_currency(|fc| !new_currencies.contains(fc)),
+            // silently miss currencies that became unusable during the
+            // outage, so scan the whole pool against the current usable set.
+            None => self.pool_txs_with_currency(|fc| !new_usable_currencies.contains(fc)),
         };
 
         let balance_candidates = balance_revalidation_candidates(&self.pool);
         let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
             balance_candidates.iter().map(|vtx| &vtx.transaction),
-            &new_currencies,
+            &new_usable_currencies,
             |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
         );
 
         let insufficient_balance_count = insufficient_balance.len();
-        let unregistered_count = unregistered.len();
-        let mut to_evict: HashSet<TxHash> = unregistered.into_iter().collect();
+        let unavailable_currency_count = unavailable_currency.len();
+        let mut to_evict: HashSet<TxHash> = unavailable_currency.into_iter().collect();
         to_evict.extend(insufficient_balance);
 
         let latest_hash = match self.provider.latest_header() {
@@ -2272,14 +2313,14 @@ where
             tracing::info!(
                 target: "celo::pool",
                 count = to_evict.len(),
-                unregistered = unregistered_count,
+                unavailable_currency = unavailable_currency_count,
                 insufficient_balance = insufficient_balance_count,
                 "Evicting invalid CIP-64 txs after canonical state update"
             );
             self.pool.remove_transactions(to_evict.into_iter().collect());
         }
 
-        self.registered_currencies = Some(new_currencies);
+        self.usable_currencies = Some(new_usable_currencies);
     }
 
     /// Collect hashes of pooled CIP-64 transactions whose fee currency
@@ -3823,6 +3864,18 @@ mod tests {
 
         assert_eq!(to_evict.len(), 1, "only the unregistered CIP-64-B tx should be evicted");
         assert_eq!(to_evict[0], *cip64_b.hash());
+    }
+
+    #[test]
+    fn usable_fee_currencies_exclude_missing_exchange_rates() {
+        let usable = Address::with_last_byte(0xA0);
+        let missing_rate = Address::with_last_byte(0xB0);
+
+        let currencies = usable_fee_currencies([usable, missing_rate], |currency| {
+            (currency == usable).then_some(ExchangeRate { numerator: 1, denominator: 1 })
+        });
+
+        assert_eq!(currencies, HashSet::from([usable]));
     }
 
     // -----------------------------------------------------------------------

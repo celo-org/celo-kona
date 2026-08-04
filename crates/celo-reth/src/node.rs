@@ -369,7 +369,7 @@ where
             &final_pool_config,
         )?;
 
-        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is deregistered
+        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is unusable
         // or their sender can no longer cover the transaction's maximum fee-currency cost.
         {
             let events = transaction_pool.subscribe_to_canonical_updates();
