@@ -211,6 +211,56 @@ rpc_expect_error() {
     return 0
 }
 
+# rpc_expect_same <name> <method-a> <params-a> <method-b> <params-b> [jq-filter]
+# Asserts two calls normalize to the same value. For invariants of the form
+# "these two paths must agree": pinning both as separate goldens states the
+# invariant only by coincidence, and lets a shared regression be blessed into
+# both files at once. One of the two paths still needs its own golden to pin
+# what the agreed-upon value *is*.
+rpc_expect_same() {
+    local name=$1 method_a=$2 params_a=$3 method_b=$4 params_b=$5 filter=${6:-.}
+    local response normalized normalized_a normalized_b method params side
+
+    for side in a b; do
+        if [[ $side == a ]]; then
+            method=$method_a params=$params_a
+        else
+            method=$method_b params=$params_b
+        fi
+        if ! response=$(rpc_call "$method" "$params"); then
+            _rpc_fail "$name" "transport error talking to $RPC_URL (node down?)"
+            return 0
+        fi
+        if ! _rpc_is_json "$response"; then
+            _rpc_fail "$name" "$method: response is not JSON: $(head -c 200 <<<"$response")"
+            return 0
+        fi
+        if _rpc_has_error "$response"; then
+            _rpc_fail "$name" "$method: unexpected JSON-RPC error: $(_rpc_error_msg "$response")"
+            return 0
+        fi
+        if ! normalized=$(_rpc_normalize "$response" "$filter" 2>&1); then
+            _rpc_fail "$name" "$method: jq filter failed: $normalized"
+            return 0
+        fi
+        if [[ $side == a ]]; then
+            normalized_a=$normalized
+        else
+            normalized_b=$normalized
+        fi
+    done
+
+    if [[ "$normalized_a" == "$normalized_b" ]]; then
+        _rpc_pass "$name"
+    else
+        _rpc_fail "$name" "$method_a and $method_b disagree"
+        diff -u --label "$method_a" <(printf '%s\n' "$normalized_a") \
+            --label "$method_b" <(printf '%s\n' "$normalized_b") |
+            head -40 | sed 's/^/        /'
+    fi
+    return 0
+}
+
 # rpc_expect_eq <name> <actual> <expected>
 rpc_expect_eq() {
     local name=$1 actual=$2 expected=$3

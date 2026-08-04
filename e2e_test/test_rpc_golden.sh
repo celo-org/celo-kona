@@ -365,9 +365,13 @@ for i in "${!LABELS[@]}"; do
 
     # A canonical block re-submitted as raw RLP must trace identically to the
     # block itself. This is the only path that reaches `debug_traceBlock`.
+    # Asserted against the block trace rather than pinned separately: the golden
+    # above already fixes the value, and two goldens would let one regression be
+    # blessed into both.
     raw_block=$(rpc_call debug_getRawBlock "[\"$block\"]" | jq -r '.result')
-    rpc_golden "traceRawBlock_$label" debug_traceBlock \
-        "[\"$raw_block\", {\"tracer\": \"callTracer\"}]"
+    rpc_expect_same "traceRawBlock_matches_traceBlock_$label" \
+        debug_traceBlock "[\"$raw_block\", {\"tracer\": \"callTracer\"}]" \
+        debug_traceBlockByNumber "[\"$block\", {\"tracer\": \"callTracer\"}]"
 
     if [[ "$label" == cip64 ]]; then
         CIP64_BLOCK=$block
