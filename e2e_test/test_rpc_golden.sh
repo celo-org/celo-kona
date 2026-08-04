@@ -235,6 +235,12 @@ TRACE_TX_FILTER='del(.blockHash)'
 # and callTracer goldens.
 STRUCTLOG_FILTER='{gas, failed, returnValue, structLogs: [.structLogs[]
     | "\(.pc) \(.op) gas=\(.gas) cost=\(.gasCost) depth=\(.depth) refund=\(.refund) stack=\(.stack | length)"]}'
+# The gas ratios are the only JSON floats in the whole corpus, and jq renders
+# doubles differently across versions (1.6 prints `0` where 1.7 keeps `0.0`),
+# which would show up as a golden diff on a machine with an older jq. Pin them
+# as parts per million instead: same signal, integer output.
+FEE_HISTORY_FILTER='.gasUsedRatio |= map(. * 1000000 | round)
+    | .blobGasUsedRatio |= map(. * 1000000 | round)'
 
 # ---------------------------------------------------------------------------
 # Phase 1 — read-only calls at the genesis block
@@ -401,7 +407,7 @@ done
 # every percentile is that one tip.
 if [[ -n "$CIP64_BLOCK" ]]; then
     rpc_golden feeHistory_over_cip64_block eth_feeHistory \
-        "[\"0x1\", \"$CIP64_BLOCK\", [25, 50, 75]]"
+        "[\"0x1\", \"$CIP64_BLOCK\", [25, 50, 75]]" "$FEE_HISTORY_FILTER"
     rpc_golden logs_of_cip64_block eth_getLogs \
         "[{\"fromBlock\": \"$CIP64_BLOCK\", \"toBlock\": \"$CIP64_BLOCK\", \"address\": \"$FEE_CURRENCY\"}]" \
         'map(del(.blockHash, .blockTimestamp, .topics[2]))'
@@ -592,7 +598,7 @@ if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
         "4000000000000000000"
 
     rpc_golden feeHistory_across_rate_change eth_feeHistory \
-        "[\"0x3\", \"$after_block\", [50]]"
+        "[\"0x3\", \"$after_block\", [50]]" "$FEE_HISTORY_FILTER"
 
     # The discriminating property, stated rather than left implicit in the hex:
     # the same fee-currency tip is worth twice as much native before the change
