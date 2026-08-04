@@ -289,7 +289,11 @@ while IFS= read -r scenario; do
     # Scenarios name the shared filters rather than restating them, so the
     # per-step rendering cannot drift between the two structLog goldens.
     filter=${filter//@STRUCTLOG_FILTER@/$STRUCTLOG_FILTER}
-    rpc_golden "$name" "$method" "$params" "$filter"
+    # The note is what tells whoever hits a mismatch whether the new output is a
+    # regression or the point of their change, so hand it to the reporter
+    # instead of leaving it readable only in the scenario file.
+    note=$(jq -r '.note // ""' <<<"$scenario")
+    rpc_golden "$name" "$method" "$params" "$filter" "$note"
 done < <(jq -c '.[]' "$SCRIPT_DIR/rpc_golden_scenarios.json")
 
 # `eth_gasPrice` and `eth_maxPriorityFeePerGas` take no block argument; they are
