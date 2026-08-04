@@ -925,12 +925,32 @@ mod tests {
         fc: Address,
         code: Bytes,
     ) -> String {
+        let mut evm = make_test_evm_with_token_code(blocklist, fc, code);
+        run_cip64_debit(&mut evm, fc)
+    }
+
+    /// Sequencing-shape test EVM with `code` deployed at the fee-currency address `fc`. Split out
+    /// of [`transact_cip64_with_token_code`] for the tests that need the EVM back after the
+    /// transaction, to inspect what it left behind.
+    fn make_test_evm_with_token_code(
+        blocklist: FeeCurrencyBlocklist,
+        fc: Address,
+        code: Bytes,
+    ) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
         use revm::state::{AccountInfo, Bytecode};
 
         let mut evm = make_test_evm(blocklist);
         evm.db_mut().insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
-        run_cip64_debit(&mut evm, fc)
+        evm
     }
+
+    /// A fee-currency stub that branches on calldata size: `debitGasFees(address,uint256)` calls
+    /// carry 68 bytes → STOP (the debit succeeds); `creditGasFees` calls carry 260 bytes → jump
+    /// into an infinite loop → OOG halt on the credit. So the main transaction executes in full
+    /// and only the post-execution settlement fails.
+    ///   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x08, JUMPI, STOP, JUMPDEST, PUSH1 0x08, JUMP
+    const CREDIT_HALTING_TOKEN_CODE: &[u8] =
+        &[0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x08, 0x56];
 
     /// A fee-currency contract that *reverts* the debit — canonically an
     /// underfunded sender's `ERC20: transfer amount exceeds balance` — is
@@ -989,17 +1009,10 @@ mod tests {
     fn test_credit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD4);
         let blocklist = FeeCurrencyBlocklist::default();
-        // Branch on calldata size: `debitGasFees(address,uint256)` calls carry
-        // 68 bytes → STOP (debit succeeds); `creditGasFees` calls carry 260
-        // bytes → jump into an infinite loop → OOG halt on the credit.
-        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x08, JUMPI, STOP,
-        //   JUMPDEST, PUSH1 0x08, JUMP
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[
-                0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x08, 0x56,
-            ]),
+            Bytes::from_static(CREDIT_HALTING_TOKEN_CODE),
         );
         assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
         assert!(
@@ -1010,6 +1023,54 @@ mod tests {
         assert!(
             blocklist.is_blocked(fc),
             "a credit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
+        );
+    }
+
+    /// A rejected CIP-64 tx must leave nothing behind in the journal.
+    ///
+    /// The credit runs through the *committing* `core_contracts::call`, so by the time the
+    /// failure is classified the credit's inner `commit_tx` has already folded the fully executed
+    /// main tx — nonce bump, native deduction, the debit, every storage write — into
+    /// `journal.state` and emptied the shared revert log. Nothing in celo-revm can unwind that;
+    /// there is no revert log left to replay, so `discard_tx` would be a no-op.
+    ///
+    /// What keeps it out of the block is upstream: revm's default `ExecuteEvm::transact` calls
+    /// `finalize()` *unconditionally, before* propagating the error, draining the journal and
+    /// dropping the orphaned state, and the block executor commits to `State<DB>` only on the
+    /// `Ok` arm. celo-kona neither owns nor documents that contract, and revm's sibling
+    /// `InspectEvm::inspect_tx` does not honour it — it returns on the `?` first.
+    ///
+    /// So pin it here. If a revm bump stops draining on the error path, a rejected transaction's
+    /// state is picked up by the next transaction on the same EVM and sealed into a block that
+    /// does not contain it — a state-root divergence. That must fail loudly, not silently.
+    #[test]
+    fn rejected_cip64_tx_leaves_no_residue_in_the_journal() {
+        use revm::ExecuteEvm;
+
+        let fc = Address::with_last_byte(0xD6);
+        let mut evm = make_test_evm_with_token_code(
+            FeeCurrencyBlocklist::default(),
+            fc,
+            Bytes::from_static(CREDIT_HALTING_TOKEN_CODE),
+        );
+
+        // A *credit* failure is what makes the emptiness assertion below meaningful: the credit
+        // hook only runs once the main frame has executed, so reaching it proves the transaction
+        // really did produce journal state for the drain to take. A validation-time rejection
+        // would leave the journal empty for uninteresting reasons.
+        let err = run_cip64_debit(&mut evm, fc);
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
+
+        // `transact_raw` returned `Err`, so the payload builder skips this tx and keeps the EVM.
+        // Draining the journal again must therefore yield nothing: whatever the rejected tx
+        // committed was already taken and dropped inside `transact`.
+        let residue = evm.inner.finalize();
+        assert!(
+            residue.is_empty(),
+            "a rejected CIP-64 tx left {} account(s) in the journal; the next transaction \
+             executed on this EVM would finalize them into a block that does not contain the \
+             rejected transaction",
+            residue.len()
         );
     }
 
