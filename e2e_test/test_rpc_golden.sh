@@ -269,6 +269,8 @@ substitute() { # <json> -> json with @PLACEHOLDER@ values filled in
             gsub("@ACC@"; $acc)
             | gsub("@DEAD@"; $dead)
             | gsub("@TOKEN@"; $token)
+            # @FEE_CURRENCY2@ first: the other pattern is a prefix of it and
+            # would otherwise leave a stray "2" behind.
             | gsub("@FEE_CURRENCY2@"; $fc2)
             | gsub("@FEE_CURRENCY@"; $fc)
             | gsub("@ERC20_DATA@"; $erc20)
