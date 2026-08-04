@@ -48,6 +48,7 @@ pub mod revert_evictions;
 
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
+use revert_evictions::RevertEvictions;
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
@@ -166,6 +167,7 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inspect: bool,
     cip64_storage: Cip64Storage,
     blocklist: FeeCurrencyBlocklist,
+    revert_evictions: RevertEvictions,
     /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
     ///
     /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
@@ -248,6 +250,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             inspect,
             cip64_storage: Cip64Storage::default(),
             blocklist: FeeCurrencyBlocklist::default(),
+            revert_evictions: RevertEvictions::default(),
             blocklist_enabled: false,
             cip64_store_enabled: false,
         }
@@ -320,6 +323,7 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
+        let tx_hash = tx.op_tx.enveloped_tx.as_ref().map(alloy_primitives::keccak256);
 
         // The base-fee check is enabled during replay-style execution — sequencing, block import
         // / derivation re-execution, AND block tracing (`debug_traceTransaction`,
@@ -409,6 +413,15 @@ where
                             "fee-currency debit/credit reverted for {fc}: {e} — \
                              dropping tx without blocklisting the currency"
                         );
+                        if let Some(tx_hash) = tx_hash {
+                            self.revert_evictions.record(tx_hash);
+                        } else {
+                            tracing::warn!(
+                                target: "celo",
+                                "fee-currency debit/credit reverted without encoded transaction bytes; \
+                                 skipping pool eviction record"
+                            );
+                        }
                         #[cfg(feature = "std")]
                         metrics::counter!(
                             "celo_payload_skipped_total",
@@ -552,12 +565,21 @@ pub struct CeloEvmFactory {
     /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
     /// empty.
     pub blocklist: FeeCurrencyBlocklist,
+    /// Shared exact transaction hashes awaiting eviction from the sequencing pool after a
+    /// fee-currency debit or credit revert.
+    pub revert_evictions: RevertEvictions,
 }
 
 impl CeloEvmFactory {
     /// Sets the shared fee currency blocklist.
     pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
         self.blocklist = blocklist;
+        self
+    }
+
+    /// Sets the shared transaction hashes awaiting pool eviction after fee-currency reverts.
+    pub fn with_revert_evictions(mut self, revert_evictions: RevertEvictions) -> Self {
+        self.revert_evictions = revert_evictions;
         self
     }
 }
@@ -581,6 +603,7 @@ fn make_test_evm_with_db<DB: Database>(
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
+        revert_evictions: RevertEvictions::default(),
         // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
         blocklist_enabled: true,
         // Default to the receipt-building executor path; loose-EVM tests build through the
@@ -595,6 +618,17 @@ fn make_test_evm(
     blocklist: FeeCurrencyBlocklist,
 ) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
     make_test_evm_with_db(revm::database::InMemoryDB::default(), blocklist)
+}
+
+/// Creates a sequencing-mode test EVM with local failure-policy state.
+#[cfg(test)]
+fn make_test_evm_with_evictions(
+    blocklist: FeeCurrencyBlocklist,
+    revert_evictions: revert_evictions::RevertEvictions,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+    let mut evm = make_test_evm(blocklist);
+    evm.revert_evictions = revert_evictions;
+    evm
 }
 
 /// Creates a loose RPC-style [`CeloEvm`] through the factory, the way reth's RPC layer does:
@@ -671,6 +705,7 @@ impl CeloEvmFactory {
             inspect,
             cip64_storage: Cip64Storage::default(),
             blocklist: self.blocklist.clone(),
+            revert_evictions: self.revert_evictions.clone(),
             // Off by default: the import/derivation executor and RPC create EVMs through the
             // factory and must not touch the blocklist. Sequencing flips it on via
             // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
@@ -917,6 +952,38 @@ mod tests {
         format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
     }
 
+    /// Like [`run_cip64_debit`], but returns the exact encoded transaction hash that the
+    /// sequencing failure policy must record.
+    fn run_cip64_debit_with_hash<DB: Database>(
+        evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
+        fc: Address,
+    ) -> (String, alloy_primitives::B256)
+    where
+        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(1), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        let block_number = evm.ctx_mut().block.number;
+        evm.inner.fee_currency_context =
+            celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+        let mut tx = make_cip64_tx(fc);
+        tx.op_tx.base.gas_limit = 200_000;
+        tx.op_tx.enveloped_tx = Some(Bytes::from_static(b"cip64-revert-eviction-test"));
+        let tx_hash = alloy_primitives::keccak256(tx.op_tx.enveloped_tx.as_ref().unwrap());
+        let result = evm.transact_raw(tx);
+        (format!("{:?}", result.expect_err("failing fee-currency call must error")), tx_hash)
+    }
+
     /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
     /// is registered in the per-block context and backed by `code` at the
     /// token address, so the `debitGasFees` system call genuinely executes
@@ -958,6 +1025,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_debit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD0);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(evictions.take(tx_hash));
+    }
+
+    #[test]
+    fn test_credit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD5);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        let code = Bytes::from_static(&[
+            0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x60, 0x00, 0xfd,
+        ]);
+        evm.db_mut().insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX));
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(evictions.take(tx_hash));
+    }
+
     /// A fee-currency contract that *halts* the debit (burns through the
     /// debit call's gas budget) is a genuine currency fault and must still be
     /// blocklisted.
@@ -977,6 +1085,50 @@ mod tests {
             blocklist.is_blocked(fc),
             "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
         );
+    }
+
+    #[test]
+    fn test_debit_halt_still_blocklists_without_recording_revert_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD1);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm = make_test_evm_with_evictions(blocklist.clone(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x5b, 0x60, 0x00, 0x56,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER));
+        assert!(blocklist.is_blocked(fc));
+        assert!(!evictions.take(tx_hash));
+    }
+
+    #[test]
+    fn test_non_sequencing_revert_does_not_record_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD6);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.blocklist_enabled = false;
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(!evictions.take(tx_hash));
     }
 
     /// A fee-currency contract that debits fine but *halts* the post-execution
