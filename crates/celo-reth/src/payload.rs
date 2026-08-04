@@ -140,17 +140,19 @@ impl FeeCurrencyLimits {
 pub struct CeloPayloadTransactions {
     limits: FeeCurrencyLimits,
     blocklist: FeeCurrencyBlocklist,
-    revert_evictions: RevertEvictions,
+    revert_evictions: Option<RevertEvictions>,
 }
 
 impl CeloPayloadTransactions {
-    /// Create a new instance with the given fee currency limits and sequencing failure policies.
-    pub const fn new(
-        limits: FeeCurrencyLimits,
-        blocklist: FeeCurrencyBlocklist,
-        revert_evictions: RevertEvictions,
-    ) -> Self {
-        Self { limits, blocklist, revert_evictions }
+    /// Create a new instance with the given fee currency limits and blocklist.
+    pub const fn new(limits: FeeCurrencyLimits, blocklist: FeeCurrencyBlocklist) -> Self {
+        Self { limits, blocklist, revert_evictions: None }
+    }
+
+    /// Use the given shared revert-eviction channel.
+    pub fn with_revert_evictions(mut self, revert_evictions: RevertEvictions) -> Self {
+        self.revert_evictions = Some(revert_evictions);
+        self
     }
 }
 
@@ -184,7 +186,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
             pool,
             limits: self.limits.clone(),
             blocklist: self.blocklist.clone(),
-            revert_evictions: self.revert_evictions.clone(),
+            revert_evictions: self.revert_evictions.clone().unwrap_or_default(),
             block_gas_limit,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -679,13 +681,14 @@ mod tests {
         pool.add_transaction(TransactionOrigin::External, replacement.clone()).await.unwrap();
         let evictions = RevertEvictions::default();
         evictions.record(old_hash);
-        let mut filter = eviction_filter(pool.clone(), vec![replacement], evictions.clone());
+        let mut filter = eviction_filter(pool.clone(), vec![old], evictions.clone());
 
         let yielded = filter.next(()).unwrap();
+        assert_eq!(*yielded.hash(), old_hash);
         filter.mark_invalid(yielded.sender(), yielded.nonce());
 
         assert!(pool.get(&replacement_hash).is_some());
-        assert!(evictions.take(old_hash));
+        assert!(!evictions.take(old_hash));
     }
 
     #[tokio::test]
@@ -763,6 +766,26 @@ mod tests {
     }
 
     #[test]
+    fn two_argument_constructor_remains_source_compatible() {
+        const fn construct_in_const_context(
+            limits: FeeCurrencyLimits,
+            blocklist: FeeCurrencyBlocklist,
+        ) -> CeloPayloadTransactions {
+            CeloPayloadTransactions::new(limits, blocklist)
+        }
+
+        let payload_transactions = construct_in_const_context(
+            FeeCurrencyLimits::default(),
+            FeeCurrencyBlocklist::default(),
+        );
+
+        let _filter = payload_transactions.best_transactions(
+            eviction_test_pool(),
+            reth_transaction_pool::BestTransactionsAttributes::new(0, None),
+        );
+    }
+
+    #[test]
     fn starting_payload_iterator_preserves_markers_from_concurrent_jobs() {
         let tx_hash = alloy_primitives::B256::with_last_byte(1);
         let evictions = RevertEvictions::default();
@@ -770,8 +793,8 @@ mod tests {
         let payload_transactions = CeloPayloadTransactions::new(
             FeeCurrencyLimits::default(),
             FeeCurrencyBlocklist::default(),
-            evictions.clone(),
-        );
+        )
+        .with_revert_evictions(evictions.clone());
 
         let _filter = payload_transactions.best_transactions(
             eviction_test_pool(),

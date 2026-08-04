@@ -15,12 +15,14 @@
 //! silently break CIP-64 payload building again.
 
 use alloy_consensus::{Header, Signed};
+use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
     CeloEvmConfig,
     pool::{CeloPoolTx, ExchangeRate},
 };
+use celo_revm::CeloTransaction;
 use reth_basic_payload_builder::PayloadConfig;
 use reth_chainspec::Chain;
 use reth_evm::execute::BlockBuilder;
@@ -35,6 +37,7 @@ use reth_payload_util::PayloadTransactions;
 use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_transaction_pool::PoolTransaction;
 use revm::{
+    context::TxEnv,
     database::{InMemoryDB, State},
     state::{AccountInfo, Bytecode},
 };
@@ -252,6 +255,18 @@ fn cip64_payload_builder_handles_low_fc_max_fee() {
     let mut pool_tx = CeloPoolTx::new(inner_pool_tx);
     // 1 FC = 10 native (numerator=1, denominator=10): native_max_fee = 10 Gwei * 10 = 100 Gwei.
     pool_tx.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 10 });
+
+    // Pin the transaction identity across the payload builder's production conversion boundary.
+    let pool_hash = *pool_tx.hash();
+    let consensus = pool_tx.clone_into_consensus();
+    let evm_tx: CeloTransaction<TxEnv> =
+        CeloTransaction::from_recovered_tx(consensus.inner(), consensus.signer());
+    let evm_envelope = evm_tx
+        .op_tx
+        .enveloped_tx
+        .as_ref()
+        .expect("signed CIP-64 transaction must carry EIP-2718 bytes");
+    assert_eq!(keccak256(evm_envelope.as_ref()), pool_hash);
 
     let best_txs = OneTx(Some(pool_tx));
 

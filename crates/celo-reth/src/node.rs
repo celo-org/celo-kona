@@ -411,11 +411,9 @@ where
             self.args;
         let blocklist = self.blocklist.clone();
         let revert_evictions = RevertEvictions::default();
-        let celo_txs = CeloPayloadTransactions::new(
-            self.fee_currency_limits.clone(),
-            blocklist.clone(),
-            revert_evictions.clone(),
-        );
+        let celo_txs =
+            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), blocklist.clone())
+                .with_revert_evictions(revert_evictions.clone());
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
