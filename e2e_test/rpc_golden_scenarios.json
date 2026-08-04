@@ -324,6 +324,19 @@
     "note": "The access-list path builds its own EVM; feeCurrency must survive the request conversion there too."
   },
   {
+    "name": "fillTransaction_cip64_defaults",
+    "method": "eth_fillTransaction",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "feeCurrency": "@FEE_CURRENCY@"
+      }
+    ],
+    "note": "The only coverage of `fill_cip64_fee_defaults` over the wire. A CIP-64 request omitting both fee fields must come back with them denominated in the fee currency -- op-geth's setLondonFeeDefaults, so 2 * base_fee_fc + tip_fc -- not with native wei values that the handler would then misread as fee-currency units. No signer is involved: the Celo fill runs before the delegation that `eth_sendTransaction` and `eth_signTransaction` need an unlocked account for."
+  },
+  {
     "name": "simulateV1_native",
     "method": "eth_simulateV1",
     "params": [
