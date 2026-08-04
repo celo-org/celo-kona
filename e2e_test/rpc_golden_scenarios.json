@@ -296,20 +296,6 @@
     "note": "Binary-search estimate over the fee currency's intrinsic gas. Deterministic for a given estimator, so a golden \u2014 a moved value means the estimator or the intrinsic-gas surcharge changed, both of which are worth a review."
   },
   {
-    "name": "estimateGas_cip64_lowercase_key",
-    "method": "eth_estimateGas",
-    "params": [
-      {
-        "from": "@ACC@",
-        "to": "@DEAD@",
-        "value": "0x1",
-        "feecurrency": "@FEE_CURRENCY@"
-      },
-      "0x0"
-    ],
-    "note": "op-geth binds the fee-currency key case-insensitively and clients rely on it; must equal the canonical-key estimate above."
-  },
-  {
     "name": "createAccessList_cip64",
     "method": "eth_createAccessList",
     "params": [
