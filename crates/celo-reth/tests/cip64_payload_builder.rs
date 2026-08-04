@@ -15,6 +15,7 @@
 //! silently break CIP-64 payload building again.
 
 use alloy_consensus::{Header, Signed};
+use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
@@ -32,6 +33,7 @@ use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, HeaderForPayload, MissingPayloadBehaviour, PayloadBuilder,
     PayloadConfig,
 };
+use celo_revm::CeloTransaction;
 use reth_chainspec::Chain;
 use reth_evm::execute::BlockBuilder;
 use reth_node_api::PayloadBuilderError;
@@ -47,6 +49,7 @@ use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::noop::NoopProvider;
 use reth_transaction_pool::PoolTransaction;
 use revm::{
+    context::TxEnv,
     database::{InMemoryDB, State},
     state::{AccountInfo, Bytecode},
 };
@@ -273,7 +276,21 @@ fn cip64_payload_builder_handles_low_fc_max_fee() {
         best_payload: None,
     };
 
-    let best_txs = RethPayloadTransactions(OneTx(Some(test_cip64_pool_tx(sender, sig))));
+    let pool_tx = test_cip64_pool_tx(sender, sig);
+
+    // Pin the transaction identity across the payload builder's production conversion boundary.
+    let pool_hash = *pool_tx.hash();
+    let consensus = pool_tx.clone_into_consensus();
+    let evm_tx: CeloTransaction<TxEnv> =
+        CeloTransaction::from_recovered_tx(consensus.inner(), consensus.signer());
+    let evm_envelope = evm_tx
+        .op_tx
+        .enveloped_tx
+        .as_ref()
+        .expect("signed CIP-64 transaction must carry EIP-2718 bytes");
+    assert_eq!(keccak256(evm_envelope.as_ref()), pool_hash);
+
+    let best_txs = RethPayloadTransactions(OneTx(Some(pool_tx)));
 
     // ── Drive execute_best_transactions. Pre-#20382 op-reth panicked inside the
     //    loop because consensus_tx.effective_tip_per_gas(25 Gwei) returns None for
