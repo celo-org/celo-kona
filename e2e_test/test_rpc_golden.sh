@@ -78,8 +78,10 @@ fi
 prepare_node
 
 # ---------------------------------------------------------------------------
-# A private node, on OS-assigned ports so it cannot collide with the shared
-# runner node or a second copy of this test.
+# A private node, on OS-assigned ports so its RPC cannot collide with the shared
+# runner node's. Only the *ports* are isolated: SAVED_NODE_LOG below and
+# prepare_node's shared js-tests/node_modules are both fixed paths, so two
+# copies of this test still must not run concurrently.
 # ---------------------------------------------------------------------------
 
 # An explicit template, because BSD `mktemp -d` without one ignores TMPDIR and
