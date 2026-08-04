@@ -32,6 +32,13 @@
 #    gap-filling transaction promotes all of them at once.
 #  * Transactions are signed offline with every field pinned, so their hashes
 #    are stable and can be committed in the goldens.
+#  * The block traces additionally pin the index-0 L1-attributes deposit, whose
+#    calldata and hash are the *same* in every block. That is a separate
+#    mechanism from the above: reth's dev payload builder holds the L1 origin
+#    constant, so the deposit's source hash never moves. A fork bump that
+#    changes the L1Block setter or that origin therefore rewrites every
+#    traceBlock/replayBlock golden at once, and the cause is the dependency
+#    bump rather than anything in this file.
 #
 # Measured against two independent runs from a fresh datadir, the only response
 # fields that vary are the ones derived from reth's dev payload builder, which
