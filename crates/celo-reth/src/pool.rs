@@ -2303,6 +2303,44 @@ where
         self.usable_currencies = Some(result.usable_currencies);
     }
 
+    fn apply_head_checked_revalidation(
+        &mut self,
+        result: FeeCurrencyRevalidation,
+        latest_hash: Option<B256>,
+        recheck: impl FnOnce(&Self, HashSet<TxHash>) -> Option<(FeeCurrencyRevalidation, Option<B256>)>,
+    ) {
+        if revalidation_head_action(result.scanned_hash, latest_hash) ==
+            RevalidationHeadAction::Recheck
+        {
+            CeloPoolMetrics::stale_revalidation_result("recheck");
+            tracing::warn!(
+                target: "celo::pool",
+                scanned_hash = ?result.scanned_hash,
+                ?latest_hash,
+                candidate_count = result.to_evict.len(),
+                "Rechecking stale fee-currency eviction candidates"
+            );
+            let Some((rechecked, latest_hash)) = recheck(self, result.to_evict) else {
+                return;
+            };
+            if revalidation_head_action(rechecked.scanned_hash, latest_hash) ==
+                RevalidationHeadAction::Recheck
+            {
+                CeloPoolMetrics::stale_revalidation_result("discard");
+                tracing::warn!(
+                    target: "celo::pool",
+                    scanned_hash = ?rechecked.scanned_hash,
+                    ?latest_hash,
+                    "Discarding fee-currency candidates after the bounded recheck became stale"
+                );
+                return;
+            }
+            self.apply_revalidation(rechecked);
+        } else {
+            self.apply_revalidation(result);
+        }
+    }
+
     /// Run the maintainer after canonical pool updates.
     pub async fn run(mut self, mut events: watch::Receiver<u64>, executor: TaskExecutor)
     where
@@ -2436,24 +2474,12 @@ where
                 return;
             }
         };
-        if revalidation_head_action(result.scanned_hash, latest_hash) ==
-            RevalidationHeadAction::Recheck
-        {
-            CeloPoolMetrics::stale_revalidation_result("recheck");
-            tracing::warn!(
-                target: "celo::pool",
-                scanned_hash = ?result.scanned_hash,
-                ?latest_hash,
-                candidate_count = result.to_evict.len(),
-                "Rechecking stale fee-currency eviction candidates"
-            );
-            let Some(rechecked) = self.recheck_eviction_candidates(result.to_evict) else {
-                return;
-            };
+        self.apply_head_checked_revalidation(result, latest_hash, |this, candidates| {
+            let rechecked = this.recheck_eviction_candidates(candidates)?;
             // The head update that made the full scan stale remains pending in the watch channel,
             // so the next pass performs a full balance scan. This bounded recheck only needs to
             // prevent already-found invalid transactions from lingering indefinitely.
-            let latest_hash = match self.provider.latest_header() {
+            let latest_hash = match this.provider.latest_header() {
                 Ok(latest) => latest.map(|latest| latest.hash()),
                 Err(e) => {
                     CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
@@ -2463,25 +2489,11 @@ where
                         scanned_hash = ?rechecked.scanned_hash,
                         "Failed to confirm canonical head after stale candidate recheck"
                     );
-                    return;
+                    return None;
                 }
             };
-            if revalidation_head_action(rechecked.scanned_hash, latest_hash) ==
-                RevalidationHeadAction::Recheck
-            {
-                CeloPoolMetrics::stale_revalidation_result("discard");
-                tracing::warn!(
-                    target: "celo::pool",
-                    scanned_hash = ?rechecked.scanned_hash,
-                    ?latest_hash,
-                    "Discarding fee-currency candidates after the bounded recheck became stale"
-                );
-                return;
-            }
-            self.apply_revalidation(rechecked);
-        } else {
-            self.apply_revalidation(result);
-        }
+            Some((rechecked, latest_hash))
+        });
     }
 
     /// Collect hashes of pooled CIP-64 transactions whose fee currency
@@ -4254,6 +4266,63 @@ mod tests {
             assert_eq!(candidates.len(), 1);
             assert_eq!(*candidates[0].hash(), pending_hash);
             assert!(candidates.iter().all(|tx| *tx.hash() != queued_hash));
+        }
+
+        #[tokio::test]
+        async fn stale_maintainer_result_is_rechecked_before_eviction() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+
+            let scanned_hash = B256::with_last_byte(1);
+            let fresh_hash = B256::with_last_byte(2);
+            let initial = FeeCurrencyRevalidation {
+                scanned_hash,
+                usable_currencies: HashSet::from([fc]),
+                to_evict: HashSet::from([tx_hash]),
+                unavailable_currency_count: 0,
+                insufficient_balance_count: 1,
+                lookup_failures: Vec::new(),
+            };
+            let provider = reth_provider::test_utils::MockEthProvider::default();
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider,
+                Address::ZERO,
+                spec_fn,
+                next_block_base_fee_fn,
+            );
+            let recheck_called = std::cell::Cell::new(false);
+
+            maintainer.apply_head_checked_revalidation(
+                initial,
+                Some(fresh_hash),
+                |_, candidates| {
+                    recheck_called.set(true);
+                    assert_eq!(candidates, HashSet::from([tx_hash]));
+                    Some((
+                        FeeCurrencyRevalidation {
+                            scanned_hash: fresh_hash,
+                            usable_currencies: HashSet::from([fc]),
+                            to_evict: HashSet::new(),
+                            unavailable_currency_count: 0,
+                            insufficient_balance_count: 0,
+                            lookup_failures: Vec::new(),
+                        },
+                        Some(fresh_hash),
+                    ))
+                },
+            );
+
+            assert!(recheck_called.get(), "a stale full scan must invoke the bounded recheck");
+            assert!(pool.get(&tx_hash).is_some(), "the stale eviction candidate must be retained");
         }
 
         /// A sender's transactions must observe earlier transactions from the
