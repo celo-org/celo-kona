@@ -530,11 +530,22 @@ over_cap=$(sign_tx --nonce "$NEXT_NONCE" --to "$DEAD" --value 1 \
 rpc_expect_error send_cip64_over_fee_cap eth_sendRawTransaction \
     "[$(jq '.raw' <<<"$over_cap")]" 'exceeds the configured cap'
 
-# Below the fee-currency-denominated base fee.
-under_priced=$(sign_tx --nonce $((NEXT_NONCE + 1)) --to "$DEAD" --value 1 \
+# The minimum-tip check, in fee-currency units. The message is pinned because an
+# unpinned rejection is satisfied by *any* error: this check previously carried
+# no regex and was named `send_cip64_below_base_fee`, which is not what it
+# tests — the tip comparison fires first and the transaction never reaches the
+# base-fee-floor comparison.
+#
+# There is deliberately no companion case for that floor: `CeloPoolBuilder`
+# short-circuits `base_fee_floor_fn` to 0 under --dev
+# (crates/celo-reth/src/node.rs:268-270), so `BelowBaseFeeFloor` is unreachable
+# from any dev-mode e2e test, and a transaction under-pricing the *current* base
+# fee is parked in the base-fee sub-pool rather than refused. That path is
+# covered by the pool unit tests, not here.
+below_min_tip=$(sign_tx --nonce $((NEXT_NONCE + 1)) --to "$DEAD" --value 1 \
     --fee-currency "$FEE_CURRENCY" --gas 100000 --max-fee 1000 --max-priority-fee 1)
-rpc_expect_error send_cip64_below_base_fee eth_sendRawTransaction \
-    "[$(jq '.raw' <<<"$under_priced")]"
+rpc_expect_error send_cip64_below_min_tip eth_sendRawTransaction \
+    "[$(jq '.raw' <<<"$below_min_tip")]" 'priority fee 1 below minimum'
 
 # A fee currency that is not in the directory has no rate to price against.
 # Note the pool and the call paths word this differently ("unregistered
