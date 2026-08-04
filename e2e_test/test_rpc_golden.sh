@@ -45,7 +45,8 @@
 #
 # Regenerating goldens after an intentional change:
 #     BLESS=1 e2e_test/test_rpc_golden.sh
-# then review `git diff -- e2e_test/rpc_golden`.
+# then review `git diff -- e2e_test/rpc_golden`. A bless run exits non-zero on
+# purpose — it overwrites the expectations instead of checking them.
 #shellcheck disable=SC2034  # RPC_JQ_ARGS is consumed by rpc_assert.sh
 # No `set -e`: a failed check must still reach the summary at the bottom, which
 # reports the tally and decides the exit status. Setup steps abort explicitly.

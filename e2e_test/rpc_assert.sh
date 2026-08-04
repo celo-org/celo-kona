@@ -23,7 +23,7 @@
 #     rpc_expect_eq <name> <actual> <expected>
 #     rpc_expect_same <name> <method-a> <params-a> <method-b> <params-b> [filter]
 #     rpc_golden_check_orphans  # fails if a committed golden went unread
-#     rpc_golden_summary        # prints totals; returns 1 if any check failed
+#     rpc_golden_summary        # prints totals; returns 1 on a failure or a bless
 #
 # Extra jq arguments (for filters that need a runtime value, e.g. the block's
 # randomized dev fee recipient) are taken from the RPC_JQ_ARGS array:
@@ -32,7 +32,7 @@
 #     RPC_JQ_ARGS=()
 #
 # Regenerating goldens after an intentional output change:
-#     BLESS=1 e2e_test/test_rpc_golden.sh
+#     BLESS=1 e2e_test/test_rpc_golden.sh   # exits non-zero: it asserts nothing
 # then read the resulting `git diff` on e2e_test/rpc_golden/. A golden that
 # moves without a matching intentional change is the regression this harness
 # exists to catch — never bless a diff you cannot explain.
@@ -301,10 +301,14 @@ rpc_golden_check_orphans() {
 rpc_golden_summary() {
     local total=$((RPC_GOLDEN_PASSED + RPC_GOLDEN_FAILED))
     echo ""
+    echo "rpc_assert: $RPC_GOLDEN_PASSED/$total checks passed"
+    # A bless run asserts nothing about the goldens it just overwrote, so it must
+    # not be able to report success — otherwise a stray BLESS in the environment
+    # turns the whole suite into a no-op that CI reads as green.
     if [[ $RPC_GOLDEN_BLESSED -gt 0 ]]; then
         echo "rpc_assert: $RPC_GOLDEN_BLESSED goldens (re)written in $RPC_GOLDEN_DIR"
-        echo "            review 'git diff -- e2e_test/rpc_golden' before committing"
+        echo "            review 'git diff -- e2e_test/rpc_golden', then re-run without BLESS"
+        return 1
     fi
-    echo "rpc_assert: $RPC_GOLDEN_PASSED/$total checks passed"
     [[ $RPC_GOLDEN_FAILED -eq 0 ]]
 }
