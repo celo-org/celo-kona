@@ -44,6 +44,7 @@ use revm::{
 pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
+pub mod revert_evictions;
 
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
