@@ -71,6 +71,11 @@ if [[ ! -x "$CELO_RETH" ]]; then
     exit 1
 fi
 
+# Phase 3 onwards signs its transactions with viem. run_all_tests.sh installs
+# the js-tests dependencies before its loop, but this test also has to work on
+# its own — that is the invocation the bless workflow documents.
+prepare_node
+
 # ---------------------------------------------------------------------------
 # A private node, on OS-assigned ports so it cannot collide with the shared
 # runner node or a second copy of this test.
