@@ -560,6 +560,13 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
+/// Fee-currency intrinsic gas and the EVM spec used to calculate the standard intrinsic gas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IntrinsicGasSnapshot {
+    gas: u64,
+    eth_spec: SpecId,
+}
+
 /// Result of looking up exchange rate, balance, and debit simulation for a fee currency.
 pub(crate) struct FcLookupResult {
     pub(crate) rate: Option<ExchangeRate>,
@@ -568,16 +575,12 @@ pub(crate) struct FcLookupResult {
     /// Sender nonce from the same latest state used for the fee-currency
     /// lookups. `None` if it was not requested or the account read failed.
     pub(crate) state_nonce: Option<u64>,
-    /// Standard EVM spec derived from the same canonical header as the lookup state. `None` when
-    /// no canonical header was available.
-    pub(crate) eth_spec: Option<SpecId>,
     pub(crate) debit_ok: Option<bool>,
-    /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`), added on
-    /// top of the standard intrinsic gas at block-build time. `None` if the rate
-    /// lookup failed (the currency is rejected as unregistered anyway) or the
-    /// config read failed — in which case the intrinsic-gas admission check is
-    /// skipped and the block builder remains the backstop.
-    pub(crate) intrinsic_gas: Option<u64>,
+    /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`) and the EVM spec from the
+    /// same canonical snapshot. `None` if the rate lookup failed (the currency is rejected as
+    /// unregistered anyway) or the config read failed, in which case the intrinsic-gas admission
+    /// check is skipped and the block builder remains the backstop.
+    pub(crate) intrinsic_gas: Option<IntrinsicGasSnapshot>,
 }
 
 /// Trait for looking up fee currency exchange rates, balances, and debit simulation.
@@ -755,7 +758,6 @@ where
         rate: None,
         balance: None,
         state_nonce: None,
-        eth_spec: None,
         debit_ok: None,
         intrinsic_gas: None,
     };
@@ -771,7 +773,7 @@ where
         }
     };
     let spec = spec_for_next_block(spec_fn, header.timestamp());
-    let eth_spec = Some(spec.into_eth_spec());
+    let eth_spec = spec.into_eth_spec();
     let state = match provider.state_by_block_hash(header.hash()) {
         Ok(state) => state,
         Err(e) => {
@@ -830,7 +832,6 @@ where
             rate,
             balance: None,
             state_nonce,
-            eth_spec,
             debit_ok: None,
             intrinsic_gas: None,
         };
@@ -863,7 +864,10 @@ where
         })
         .and_then(|output| {
             let cfg = getCurrencyConfigCall::abi_decode_returns(&output).ok()?;
-            Some(u64::try_from(cfg.intrinsicGas).unwrap_or(u64::MAX))
+            Some(IntrinsicGasSnapshot {
+                gas: u64::try_from(cfg.intrinsicGas).unwrap_or(u64::MAX),
+                eth_spec,
+            })
         })
     };
 
@@ -928,7 +932,7 @@ where
         }
     });
 
-    FcLookupResult { rate, balance, state_nonce, eth_spec, debit_ok, intrinsic_gas }
+    FcLookupResult { rate, balance, state_nonce, debit_ok, intrinsic_gas }
 }
 
 // ---------------------------------------------------------------------------
@@ -1684,9 +1688,7 @@ fn apply_exchange_rates_to_pool_tx(
         // (CallGasCostMoreThanGasLimit, with no log/metric). Mirrors celo-revm's
         // `validate_celo_initial_tx_gas`. Skipped when `intrinsic_gas` is None
         // (the config read failed) — the block builder stays the backstop.
-        if let Some(fc_intrinsic) = result.intrinsic_gas {
-            let eth_spec =
-                result.eth_spec.expect("fee-currency lookup with state must include its EVM spec");
+        if let Some(IntrinsicGasSnapshot { gas: fc_intrinsic, eth_spec }) = result.intrinsic_gas {
             let (access_list_accounts, access_list_storage_keys) =
                 tx.access_list().map_or((0, 0), |al| {
                     (al.0.len() as u64, al.0.iter().map(|i| i.storage_keys.len() as u64).sum())
@@ -2920,9 +2922,10 @@ mod tests {
                 rate: self.rate,
                 balance: self.balance,
                 state_nonce: Some(0),
-                eth_spec: Some(SpecId::PRAGUE),
                 debit_ok: self.debit_ok,
-                intrinsic_gas: self.intrinsic_gas,
+                intrinsic_gas: self
+                    .intrinsic_gas
+                    .map(|gas| IntrinsicGasSnapshot { gas, eth_spec: SpecId::PRAGUE }),
             }
         }
     }
@@ -2944,7 +2947,11 @@ mod tests {
                 fee_currency_directory,
                 balance_check,
             );
-            result.eth_spec = Some(self.eth_spec);
+            result
+                .intrinsic_gas
+                .as_mut()
+                .expect("snapshot-spec tests require intrinsic gas")
+                .eth_spec = self.eth_spec;
             result
         }
     }
