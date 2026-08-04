@@ -20,11 +20,6 @@ impl RevertEvictions {
     pub fn take(&self, tx_hash: B256) -> bool {
         self.inner.lock().remove(&tx_hash)
     }
-
-    /// Clears records left by abandoned payload attempts.
-    pub fn clear(&self) {
-        self.inner.lock().clear();
-    }
 }
 
 #[cfg(test)]
@@ -40,20 +35,6 @@ mod tests {
 
         assert!(evictions.take(hash));
         assert!(!evictions.take(hash));
-    }
-
-    #[test]
-    fn clear_removes_abandoned_entries() {
-        let evictions = RevertEvictions::default();
-        let first = B256::with_last_byte(1);
-        let second = B256::with_last_byte(2);
-        evictions.record(first);
-        evictions.record(second);
-
-        evictions.clear();
-
-        assert!(!evictions.take(first));
-        assert!(!evictions.take(second));
     }
 
     #[test]
