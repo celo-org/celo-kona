@@ -213,6 +213,19 @@ send_raw() { # <name> <raw> -> tx hash on stdout; reports a rejection as a failu
     jq -r '.result // empty' <<<"$response"
 }
 
+fc_balance_of() { # <block-tag> -> the sender's fee-currency balance, hex
+    rpc_call eth_call \
+        "[{\"to\": \"$FEE_CURRENCY\", \"data\": \"$BALANCE_OF_DATA\"}, \"$1\"]" |
+        jq -r '.result'
+}
+
+# Node, not bash: the fee-currency balance is ~1e26 and overflows a shell
+# integer, while the charge it is compared against does not.
+big_sub() { # <a-hex> <b-hex> -> a - b, decimal
+    node -e 'const [a, b] = process.argv.slice(1)
+        process.stdout.write((BigInt(a) - BigInt(b)).toString())' "$1" "$2"
+}
+
 wait_receipt() { # <hash> -> receipt JSON, or empty
     local response
     for _ in {1..80}; do
@@ -440,6 +453,18 @@ for i in "${!LABELS[@]}"; do
         debug_traceBlock "[\"$raw_block\", {\"tracer\": \"callTracer\"}]" \
         debug_traceBlockByNumber "[\"$block\", {\"tracer\": \"callTracer\"}]"
 
+    if [[ "$label" == cip64* ]]; then
+        # The receipt goldens pin the two fee-credit logs, but those are the
+        # settlement legs only: a debit that over-charges and never fully
+        # refunds leaves both of them correct. The sender's fee-currency
+        # balance across the block is the only place that shows it, and
+        # nothing else in the corpus reads it.
+        rpc_expect_eq "cip64_fee_currency_charge_matches_receipt_$label" \
+            "$(big_sub "$(fc_balance_of "$(cast to-hex $(( $(cast to-dec "$block") - 1 )))")" \
+                "$(fc_balance_of "$block")")" \
+            "$(( $(cast to-dec "$(jq -r '.gasUsed' <<<"$receipt")") *
+                 $(cast to-dec "$(jq -r '.effectiveGasPrice' <<<"$receipt")") ))"
+    fi
     if [[ "$label" == cip64 ]]; then
         CIP64_BLOCK=$block
         # Structural invariants that the goldens deliberately normalize away.
