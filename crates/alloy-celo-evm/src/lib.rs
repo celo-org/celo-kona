@@ -344,6 +344,16 @@ where
         // `is_blocked` is read.
         let apply_blocklist = self.blocklist_enabled && base_fee_check_enabled;
 
+        // Both arms drain the journal when they reject a transaction, so a rejected tx's state
+        // cannot be picked up by whatever runs next on this EVM. That matters because a rejected
+        // CIP-64 tx can reach here with state celo-revm cannot unwind: the credit runs through
+        // the committing `core_contracts::call`, whose `commit_tx` folds the fully executed main
+        // tx into `journal.state` and empties the revert log before the failure is classified.
+        //
+        // The `transact` arm inherits the drain from revm; the `inspect_tx` arm does not, and
+        // celo-revm overrides it to compensate (see the module note on `celo_revm::api::exec`).
+        // Both are pinned here by `rejected_cip64_tx_leaves_no_residue_{in_the_journal,
+        // on_the_inspecting_arm}`, so a revm bump that drops either drain fails loudly.
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
             .map_err(map_op_err);
 
@@ -1034,15 +1044,12 @@ mod tests {
     /// `journal.state` and emptied the shared revert log. Nothing in celo-revm can unwind that;
     /// there is no revert log left to replay, so `discard_tx` would be a no-op.
     ///
-    /// What keeps it out of the block is upstream: revm's default `ExecuteEvm::transact` calls
-    /// `finalize()` *unconditionally, before* propagating the error, draining the journal and
-    /// dropping the orphaned state, and the block executor commits to `State<DB>` only on the
-    /// `Ok` arm. celo-kona neither owns nor documents that contract, and revm's sibling
-    /// `InspectEvm::inspect_tx` does not honour it — it returns on the `?` first.
-    ///
-    /// So pin it here. If a revm bump stops draining on the error path, a rejected transaction's
-    /// state is picked up by the next transaction on the same EVM and sealed into a block that
-    /// does not contain it — a state-root divergence. That must fail loudly, not silently.
+    /// What keeps it out of the block is the drain: revm's default `ExecuteEvm::transact` calls
+    /// `finalize()` *unconditionally, before* propagating the error, dropping the orphaned state,
+    /// and the block executor commits to `State<DB>` only on the `Ok` arm. celo-kona does not own
+    /// that contract, so pin it here. If a revm bump stops draining on the error path, a rejected
+    /// transaction's state is picked up by the next transaction on the same EVM and sealed into a
+    /// block that does not contain it — a state-root divergence. That must fail loudly.
     #[test]
     fn rejected_cip64_tx_leaves_no_residue_in_the_journal() {
         use revm::ExecuteEvm;
@@ -1070,6 +1077,37 @@ mod tests {
             "a rejected CIP-64 tx left {} account(s) in the journal; the next transaction \
              executed on this EVM would finalize them into a block that does not contain the \
              rejected transaction",
+            residue.len()
+        );
+    }
+
+    /// The same emptiness holds on the inspecting arm, where `transact_raw` has to drain by hand
+    /// because `InspectEvm::inspect_tx` returns before `finalize()`. This is the test that would
+    /// fail if that hand-rolled drain were dropped.
+    #[test]
+    fn rejected_cip64_tx_leaves_no_residue_on_the_inspecting_arm() {
+        use revm::ExecuteEvm;
+
+        let fc = Address::with_last_byte(0xD8);
+        let mut evm = make_test_evm_with_token_code(
+            FeeCurrencyBlocklist::default(),
+            fc,
+            Bytes::from_static(CREDIT_HALTING_TOKEN_CODE),
+        );
+        // An inspecting EVM is a loose RPC EVM: neither state-producing flag is set, which is
+        // also what the `debug_assert!` in `transact_raw` requires.
+        evm.blocklist_enabled = false;
+        evm.cip64_store_enabled = false;
+        evm.set_inspector_enabled(true);
+
+        let err = run_cip64_debit(&mut evm, fc);
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
+
+        let residue = evm.inner.finalize();
+        assert!(
+            residue.is_empty(),
+            "a rejected CIP-64 tx left {} account(s) in the journal on the inspecting arm; \
+             `transact_raw` must drain what `InspectEvm::inspect_tx` does not",
             residue.len()
         );
     }

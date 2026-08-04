@@ -1,3 +1,23 @@
+//! Execution entry points for [`CeloEvm`].
+//!
+//! # Every entry point drains the journal on rejection
+//!
+//! A rejected CIP-64 transaction can reach the caller with state celo-revm cannot unwind. The
+//! `creditGasFees` hook runs through the *committing* `core_contracts::call`, whose `commit_tx`
+//! folds the fully executed main transaction — nonce bump, native deduction, the fee debit, every
+//! storage write — into `journal.state` and empties the shared revert log *before* the failure is
+//! classified. There is no revert log left to replay, so `discard_tx` would be a no-op.
+//!
+//! What keeps that state out of whatever runs next is therefore the journal drain, and it has to
+//! happen on the error path. Revm mostly does this: `ExecuteEvm::transact` (revm-handler 18.1.0,
+//! `src/api.rs`) calls `finalize()` unconditionally before propagating, and `transact_many` drains
+//! via `inspect_err`. Two defaulted methods are the exception — `InspectEvm::inspect_tx`
+//! (revm-inspector 19.0.0, `src/inspect.rs`) returns on the `?` first, and so did our own
+//! [`ExecuteEvm::replay`]. Both are overridden below so no caller of this crate has to know which
+//! entry point happens to be safe.
+//!
+//! `alloy-celo-evm`'s `CeloEvm::transact_raw` relies on this for its inspecting arm.
+
 use crate::constants::CELO_SYSTEM_ADDRESS;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
 use alloy_primitives::{Address, Bytes};
@@ -46,15 +66,19 @@ where
         self.inner.ctx().journal_mut().finalize()
     }
 
+    /// Drains the journal on the error path as well as the success path.
+    ///
+    /// See [the module note](self) — a rejected CIP-64 transaction can reach this point with
+    /// state that celo-revm cannot unwind, so the drain is what keeps it from reaching whatever
+    /// runs next on this EVM.
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
         let mut h =
             CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run(self).map(|result| {
-            let state = self.finalize();
-            ExecResultAndState::new(result, state)
-        })
+        let result = h.run(self);
+        let state = self.finalize();
+        result.map(|result| ExecResultAndState::new(result, state))
     }
 }
 
@@ -86,6 +110,27 @@ where
         let mut h =
             CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
         h.inspect_run(self)
+    }
+
+    /// Drains the journal on the error path as well as the success path; see
+    /// [the module note](self) and [`ExecuteEvm::replay`].
+    fn inspect_tx(
+        &mut self,
+        tx: Self::Tx,
+    ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
+        let output = self.inspect_one_tx(tx);
+        let state = self.finalize();
+        output.map(|output| ExecResultAndState::new(output, state))
+    }
+
+    /// Routes through the overridden [`InspectEvm::inspect_tx`] so this entry point drains too.
+    fn inspect(
+        &mut self,
+        tx: Self::Tx,
+        inspector: Self::Inspector,
+    ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
+        self.set_inspector(inspector);
+        self.inspect_tx(tx)
     }
 }
 
