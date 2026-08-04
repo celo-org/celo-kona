@@ -160,7 +160,10 @@ fi
 
 export RPC_URL="http://127.0.0.1:$HTTP_PORT"
 export RPC_GOLDEN_DIR="$SCRIPT_DIR/rpc_golden"
-source "$SCRIPT_DIR/rpc_assert.sh"
+# `|| exit`: rpc_assert.sh refuses to load without RPC_GOLDEN_DIR, and a
+# `return` from a sourced file only ends that file — without this the run would
+# carry on with none of the helpers defined.
+source "$SCRIPT_DIR/rpc_assert.sh" || exit 1
 
 for _ in {1..60}; do
     [[ "$(rpc_call eth_blockNumber '[]' | jq -r '.result // empty')" == "0x0" ]] && break
