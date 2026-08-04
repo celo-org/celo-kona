@@ -61,8 +61,9 @@ impl CeloPoolMetrics {
     fn pool_eviction(count: u64) {
         metrics::counter!("celo_pool_maintainer_evictions_total").increment(count);
     }
-    fn maintainer_failure() {
-        metrics::counter!("celo_pool_maintainer_failures_total").increment(1);
+    fn maintainer_failure(reason: &'static str, count: u64) {
+        metrics::counter!("celo_pool_maintainer_failures_total", "reason" => reason)
+            .increment(count);
     }
     fn maintainer_scan_duration(duration: Duration) {
         metrics::histogram!("celo_pool_maintainer_scan_duration_seconds")
@@ -2220,7 +2221,7 @@ where
                 return None;
             }
             Err(e) => {
-                CeloPoolMetrics::maintainer_failure();
+                CeloPoolMetrics::maintainer_failure("latest_header", 1);
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
@@ -2232,7 +2233,7 @@ where
         let state = match self.provider.state_by_block_hash(header.hash()) {
             Ok(state) => state,
             Err(e) => {
-                CeloPoolMetrics::maintainer_failure();
+                CeloPoolMetrics::maintainer_failure("canonical_state", 1);
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
@@ -2275,9 +2276,7 @@ where
     }
 
     fn apply_revalidation(&mut self, result: FeeCurrencyRevalidation) {
-        for _ in 0..result.lookup_failures.len() {
-            CeloPoolMetrics::maintainer_failure();
-        }
+        CeloPoolMetrics::maintainer_failure("balance_lookup", result.lookup_failures.len() as u64);
         for (fee_currency, affected_senders) in
             balance_lookup_failure_counts(result.lookup_failures)
         {
@@ -2352,7 +2351,7 @@ where
                 return;
             }
             Err(e) => {
-                CeloPoolMetrics::maintainer_failure();
+                CeloPoolMetrics::maintainer_failure("latest_header", 1);
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
@@ -2364,7 +2363,7 @@ where
         let state = match self.provider.state_by_block_hash(header.hash()) {
             Ok(state) => state,
             Err(e) => {
-                CeloPoolMetrics::maintainer_failure();
+                CeloPoolMetrics::maintainer_failure("canonical_state", 1);
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
@@ -2381,7 +2380,7 @@ where
         let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
 
         let Some(new_usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
-            CeloPoolMetrics::maintainer_failure();
+            CeloPoolMetrics::maintainer_failure("currency_directory", 1);
             return;
         };
 
@@ -2427,7 +2426,7 @@ where
         let latest_hash = match self.provider.latest_header() {
             Ok(latest) => latest.map(|latest| latest.hash()),
             Err(e) => {
-                CeloPoolMetrics::maintainer_failure();
+                CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
                 tracing::warn!(
                     target: "celo::pool",
                     %e,
@@ -2457,7 +2456,7 @@ where
             let latest_hash = match self.provider.latest_header() {
                 Ok(latest) => latest.map(|latest| latest.hash()),
                 Err(e) => {
-                    CeloPoolMetrics::maintainer_failure();
+                    CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
                     tracing::warn!(
                         target: "celo::pool",
                         %e,
