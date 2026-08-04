@@ -2002,9 +2002,33 @@ where
     pool.pending_transactions()
 }
 
-/// Return whether a fee-currency revalidation result still matches the canonical head.
-fn revalidation_head_is_current(scanned_hash: B256, latest_hash: Option<B256>) -> bool {
-    latest_hash == Some(scanned_hash)
+/// Action to take after comparing a fee-currency scan with the latest canonical head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevalidationHeadAction {
+    /// Apply the result because it was produced from the current head.
+    Apply,
+    /// Recheck only eviction candidates against a fresh snapshot before applying them.
+    Recheck,
+}
+
+fn revalidation_head_action(
+    scanned_hash: B256,
+    latest_hash: Option<B256>,
+) -> RevalidationHeadAction {
+    if latest_hash == Some(scanned_hash) {
+        RevalidationHeadAction::Apply
+    } else {
+        RevalidationHeadAction::Recheck
+    }
+}
+
+struct FeeCurrencyRevalidation {
+    scanned_hash: B256,
+    usable_currencies: HashSet<Address>,
+    to_evict: HashSet<TxHash>,
+    unavailable_currency_count: usize,
+    insufficient_balance_count: usize,
+    lookup_failures: Vec<(Address, Address)>,
 }
 
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
@@ -2164,6 +2188,106 @@ where
             .ok()
     }
 
+    /// Recheck stale eviction candidates against the latest canonical snapshot.
+    ///
+    /// Currency availability is cheap to recompute for the full pool and lets the cache advance
+    /// safely. Balance calls are limited to candidates found by the stale full scan.
+    fn recheck_eviction_candidates(
+        &self,
+        candidates: HashSet<TxHash>,
+    ) -> Option<FeeCurrencyRevalidation> {
+        use reth_revm::database::StateProviderDatabase;
+
+        let header = match self.provider.latest_header() {
+            Ok(Some(header)) => header,
+            Ok(None) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    "Skipping stale fee-currency candidate recheck without a canonical header"
+                );
+                return None;
+            }
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure();
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    "Failed to get latest header for stale fee-currency candidate recheck"
+                );
+                return None;
+            }
+        };
+        let state = match self.provider.state_by_block_hash(header.hash()) {
+            Ok(state) => state,
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure();
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    block_hash = ?header.hash(),
+                    "Failed to get canonical state for stale fee-currency candidate recheck"
+                );
+                return None;
+            }
+        };
+        let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
+        let db = StateProviderDatabase::new(state.as_ref());
+        let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
+        let usable_currencies = self.query_usable_fee_currencies(&mut evm)?;
+
+        // Recompute availability for the full pool so advancing the cache cannot hide a currency
+        // that became unavailable on the newer head.
+        let unavailable_currency: HashSet<TxHash> = self
+            .pool_txs_with_currency(|currency| !usable_currencies.contains(currency))
+            .into_iter()
+            .collect();
+        let candidate_transactions = self.pool.get_all(candidates.into_iter().collect());
+        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            candidate_transactions.iter().map(|vtx| &vtx.transaction),
+            &usable_currencies,
+            |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
+        );
+        let unavailable_currency_count = unavailable_currency.len();
+        let insufficient_balance_count = insufficient_balance.len();
+        let mut to_evict = unavailable_currency;
+        to_evict.extend(insufficient_balance);
+
+        Some(FeeCurrencyRevalidation {
+            scanned_hash: header.hash(),
+            usable_currencies,
+            to_evict,
+            unavailable_currency_count,
+            insufficient_balance_count,
+            lookup_failures,
+        })
+    }
+
+    fn apply_revalidation(&mut self, result: FeeCurrencyRevalidation) {
+        for (sender, fee_currency) in result.lookup_failures {
+            CeloPoolMetrics::maintainer_failure();
+            tracing::warn!(
+                target: "celo::pool",
+                ?sender,
+                ?fee_currency,
+                "Retaining pooled CIP-64 txs after canonical balance lookup failure"
+            );
+        }
+
+        if !result.to_evict.is_empty() {
+            CeloPoolMetrics::pool_eviction(result.to_evict.len() as u64);
+            tracing::info!(
+                target: "celo::pool",
+                count = result.to_evict.len(),
+                unavailable_currency = result.unavailable_currency_count,
+                insufficient_balance = result.insufficient_balance_count,
+                "Evicting invalid CIP-64 txs after canonical state update"
+            );
+            self.pool.remove_transactions(result.to_evict.into_iter().collect());
+        }
+
+        self.usable_currencies = Some(result.usable_currencies);
+    }
+
     /// Run the maintainer after canonical pool updates.
     pub async fn run(mut self, mut events: watch::Receiver<u64>, executor: TaskExecutor)
     where
@@ -2171,7 +2295,7 @@ where
     {
         // Try to seed the cache. If this fails, [`Self::on_new_block`]
         // detects the uninitialized state on its first successful query
-        // and scans the full pool against the freshly observed registry.
+        // and scans the full pool against the freshly observed usable set.
         self = self.on_new_block_blocking(&executor).await;
 
         while events.changed().await.is_ok() {
@@ -2274,6 +2398,14 @@ where
         let unavailable_currency_count = unavailable_currency.len();
         let mut to_evict: HashSet<TxHash> = unavailable_currency.into_iter().collect();
         to_evict.extend(insufficient_balance);
+        let result = FeeCurrencyRevalidation {
+            scanned_hash: header.hash(),
+            usable_currencies: new_usable_currencies,
+            to_evict,
+            unavailable_currency_count,
+            insufficient_balance_count,
+            lookup_failures,
+        };
 
         let latest_hash = match self.provider.latest_header() {
             Ok(latest) => latest.map(|latest| latest.hash()),
@@ -2288,39 +2420,50 @@ where
                 return;
             }
         };
-        if !revalidation_head_is_current(header.hash(), latest_hash) {
-            tracing::debug!(
-                target: "celo::pool",
-                scanned_hash = ?header.hash(),
-                ?latest_hash,
-                "Discarding stale fee-currency revalidation result"
-            );
-            return;
-        }
-
-        for (sender, fee_currency) in lookup_failures {
-            CeloPoolMetrics::maintainer_failure();
+        if revalidation_head_action(result.scanned_hash, latest_hash) ==
+            RevalidationHeadAction::Recheck
+        {
             tracing::warn!(
                 target: "celo::pool",
-                ?sender,
-                ?fee_currency,
-                "Retaining pooled CIP-64 txs after canonical balance lookup failure"
+                scanned_hash = ?result.scanned_hash,
+                ?latest_hash,
+                candidate_count = result.to_evict.len(),
+                "Rechecking stale fee-currency eviction candidates"
             );
+            let Some(rechecked) = self.recheck_eviction_candidates(result.to_evict) else {
+                return;
+            };
+            // The head update that made the full scan stale remains pending in the watch channel,
+            // so the next pass performs a full balance scan. This bounded recheck only needs to
+            // prevent already-found invalid transactions from lingering indefinitely.
+            let latest_hash = match self.provider.latest_header() {
+                Ok(latest) => latest.map(|latest| latest.hash()),
+                Err(e) => {
+                    CeloPoolMetrics::maintainer_failure();
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        scanned_hash = ?rechecked.scanned_hash,
+                        "Failed to confirm canonical head after stale candidate recheck"
+                    );
+                    return;
+                }
+            };
+            if revalidation_head_action(rechecked.scanned_hash, latest_hash) ==
+                RevalidationHeadAction::Recheck
+            {
+                tracing::warn!(
+                    target: "celo::pool",
+                    scanned_hash = ?rechecked.scanned_hash,
+                    ?latest_hash,
+                    "Discarding fee-currency candidates after the bounded recheck became stale"
+                );
+                return;
+            }
+            self.apply_revalidation(rechecked);
+        } else {
+            self.apply_revalidation(result);
         }
-
-        if !to_evict.is_empty() {
-            CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
-            tracing::info!(
-                target: "celo::pool",
-                count = to_evict.len(),
-                unavailable_currency = unavailable_currency_count,
-                insufficient_balance = insufficient_balance_count,
-                "Evicting invalid CIP-64 txs after canonical state update"
-            );
-            self.pool.remove_transactions(to_evict.into_iter().collect());
-        }
-
-        self.usable_currencies = Some(new_usable_currencies);
     }
 
     /// Collect hashes of pooled CIP-64 transactions whose fee currency
@@ -2428,12 +2571,15 @@ mod tests {
     }
 
     #[test]
-    fn stale_revalidation_head_is_rejected() {
+    fn stale_revalidation_head_requires_candidate_recheck() {
         let scanned = B256::with_last_byte(1);
 
-        assert!(revalidation_head_is_current(scanned, Some(scanned)));
-        assert!(!revalidation_head_is_current(scanned, Some(B256::with_last_byte(2))));
-        assert!(!revalidation_head_is_current(scanned, None));
+        assert_eq!(revalidation_head_action(scanned, Some(scanned)), RevalidationHeadAction::Apply);
+        assert_eq!(
+            revalidation_head_action(scanned, Some(B256::with_last_byte(2))),
+            RevalidationHeadAction::Recheck
+        );
+        assert_eq!(revalidation_head_action(scanned, None), RevalidationHeadAction::Recheck);
     }
 
     #[test]
