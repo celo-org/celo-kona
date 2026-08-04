@@ -21,6 +21,8 @@
 #     rpc_expect_ok <name> <method> <params-json>
 #     rpc_expect_error <name> <method> <params-json> [message-regex]
 #     rpc_expect_eq <name> <actual> <expected>
+#     rpc_expect_same <name> <method-a> <params-a> <method-b> <params-b> [filter]
+#     rpc_golden_check_orphans  # fails if a committed golden went unread
 #     rpc_golden_summary        # prints totals; returns 1 if any check failed
 #
 # Extra jq arguments (for filters that need a runtime value, e.g. the block's
@@ -46,6 +48,7 @@ RPC_GOLDEN_DIR="${RPC_GOLDEN_DIR:-$SCRIPT_DIR/rpc_golden}"
 RPC_GOLDEN_PASSED=0
 RPC_GOLDEN_FAILED=0
 RPC_GOLDEN_BLESSED=0
+RPC_GOLDEN_VISITED=()
 RPC_JQ_ARGS=()
 
 rpc_call() { # <method> <params-json> -> full JSON-RPC response on stdout
@@ -94,6 +97,7 @@ _rpc_normalize() { # <response> <jq-filter>
 _rpc_compare_golden() { # <name> <normalized-json>
     local name=$1 normalized=$2
     local golden="$RPC_GOLDEN_DIR/$name.json"
+    RPC_GOLDEN_VISITED+=("$name")
 
     if [[ "${BLESS:-}" == "1" ]]; then
         mkdir -p "$RPC_GOLDEN_DIR"
@@ -270,6 +274,28 @@ rpc_expect_eq() {
         _rpc_fail "$name" "expected '$expected', got '$actual'"
     fi
     return 0
+}
+
+# rpc_golden_check_orphans
+# Reports goldens that no check looked at. Renaming or deleting a scenario
+# otherwise leaves its file behind forever, and a stale golden reads exactly
+# like a covered case. Only meaningful after a complete run — call it once, at
+# the end, and not when the run bailed out early.
+rpc_golden_check_orphans() {
+    local golden name orphans=()
+    for golden in "$RPC_GOLDEN_DIR"/*.json; do
+        [[ -f "$golden" ]] || continue
+        name=${golden##*/}
+        name=${name%.json}
+        # shellcheck disable=SC2076  # literal match is the point
+        [[ " ${RPC_GOLDEN_VISITED[*]} " == *" $name "* ]] || orphans+=("$name")
+    done
+    if [[ ${#orphans[@]} -gt 0 ]]; then
+        _rpc_fail golden_files_all_used \
+            "no check reads: ${orphans[*]} (delete them, or the scenario was renamed)"
+    else
+        _rpc_pass golden_files_all_used
+    fi
 }
 
 rpc_golden_summary() {
