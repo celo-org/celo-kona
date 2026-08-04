@@ -159,10 +159,25 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
+        Self::celo_with_failure_policies(
+            chain_spec,
+            blocklist,
+            alloy_celo_evm::revert_evictions::RevertEvictions::default(),
+        )
+    }
+
+    /// Creates a new [`CeloEvmConfig`] with shared sequencing failure policies.
+    pub fn celo_with_failure_policies(
+        chain_spec: Arc<ChainSpec>,
+        blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+        revert_evictions: alloy_celo_evm::revert_evictions::RevertEvictions,
+    ) -> Self {
         // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
         // and the executor factory re-binds the receipt builder to that per-EVM storage on
         // every `create_executor` call.
-        let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
+        let evm_factory = CeloEvmFactory::default()
+            .with_blocklist(blocklist)
+            .with_revert_evictions(revert_evictions);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
             executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),
