@@ -479,7 +479,7 @@
       ],
       "0x0"
     ],
-    "note": "The parity namespace renders the same execution differently; token duality has to be representable in both."
+    "note": "The parity namespace renders the same execution differently, and what it pins is an omission: subtraces is 0 and the transfer precompile frame that callTracer and ots_traceTransaction both report is absent. That is upstream behaviour -- revm-inspectors sets exclude_precompile_calls for the parity config -- so token duality is deliberately invisible to trace_*. A frame appearing here is as much a regression as one disappearing from the callTracer goldens."
   },
   {
     "name": "trace_callMany_cip64",
