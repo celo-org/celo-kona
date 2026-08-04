@@ -626,4 +626,10 @@ else
     _rpc_pass node_still_answering
 fi
 
+# Only on an otherwise green run: a phase that failed above may have skipped its
+# goldens, and reporting those as orphans would bury the real failure.
+if [[ $RPC_GOLDEN_FAILED -eq 0 ]]; then
+    rpc_golden_check_orphans
+fi
+
 rpc_golden_summary
