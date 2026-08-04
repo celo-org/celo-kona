@@ -37,6 +37,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
     sync::{Arc, Mutex, OnceLock, Weak},
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc::Receiver, watch};
 
@@ -44,9 +45,7 @@ use tokio::sync::{mpsc::Receiver, watch};
 // Metrics
 // ---------------------------------------------------------------------------
 
-/// Prometheus metrics for the Celo pool validator.
-///
-/// All counters use the `celo_pool_` prefix.
+/// Prometheus metrics for the Celo pool validator and maintainer.
 struct CeloPoolMetrics;
 
 impl CeloPoolMetrics {
@@ -64,6 +63,28 @@ impl CeloPoolMetrics {
     }
     fn maintainer_failure() {
         metrics::counter!("celo_pool_maintainer_failures_total").increment(1);
+    }
+    fn maintainer_scan_duration(duration: Duration) {
+        metrics::histogram!("celo_pool_maintainer_scan_duration_seconds")
+            .record(duration.as_secs_f64());
+    }
+    fn stale_revalidation_result(action: &'static str) {
+        metrics::counter!("celo_pool_maintainer_stale_results_total", "action" => action)
+            .increment(1);
+    }
+}
+
+struct MaintainerScanTimer(Instant);
+
+impl MaintainerScanTimer {
+    fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Drop for MaintainerScanTimer {
+    fn drop(&mut self) {
+        CeloPoolMetrics::maintainer_scan_duration(self.0.elapsed());
     }
 }
 
@@ -2325,6 +2346,7 @@ where
     fn on_new_block(&mut self) {
         use reth_revm::database::StateProviderDatabase;
 
+        let _scan_timer = MaintainerScanTimer::start();
         let header = match self.provider.latest_header() {
             Ok(Some(header)) => header,
             Ok(None) => {
@@ -2423,6 +2445,7 @@ where
         if revalidation_head_action(result.scanned_hash, latest_hash) ==
             RevalidationHeadAction::Recheck
         {
+            CeloPoolMetrics::stale_revalidation_result("recheck");
             tracing::warn!(
                 target: "celo::pool",
                 scanned_hash = ?result.scanned_hash,
@@ -2452,6 +2475,7 @@ where
             if revalidation_head_action(rechecked.scanned_hash, latest_hash) ==
                 RevalidationHeadAction::Recheck
             {
+                CeloPoolMetrics::stale_revalidation_result("discard");
                 tracing::warn!(
                     target: "celo::pool",
                     scanned_hash = ?rechecked.scanned_hash,
