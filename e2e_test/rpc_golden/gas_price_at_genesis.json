@@ -1,0 +1,6 @@
+{
+  "gasPrice": "0x3baa0c40",
+  "gasPriceInFeeCurrency": "0x77541880",
+  "maxPriorityFeePerGas": "0xf4240",
+  "maxPriorityFeePerGasInFeeCurrency": "0x1e8480"
+}
