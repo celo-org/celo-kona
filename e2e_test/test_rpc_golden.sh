@@ -73,7 +73,13 @@ fi
 # runner node or a second copy of this test.
 # ---------------------------------------------------------------------------
 
-DATADIR=$(mktemp -d)
+# An explicit template, because BSD `mktemp -d` without one ignores TMPDIR and
+# always lands in the OS temp directory. Failure is fatal: an empty DATADIR
+# would send the datadir and the log to the filesystem root.
+DATADIR=$(mktemp -d "${TMPDIR:-/tmp}/celo-rpc-golden.XXXXXX") || {
+    echo "FAIL: could not create a temporary datadir"
+    exit 1
+}
 NODE_LOG="$DATADIR/celo-reth.log"
 NODE_PID=
 
