@@ -283,6 +283,9 @@ while IFS= read -r scenario; do
     method=$(jq -r '.method' <<<"$scenario")
     params=$(substitute "$(jq -c '.params' <<<"$scenario")")
     filter=$(jq -r '.filter // "."' <<<"$scenario")
+    # Scenarios name the shared filters rather than restating them, so the
+    # per-step rendering cannot drift between the two structLog goldens.
+    filter=${filter//@STRUCTLOG_FILTER@/$STRUCTLOG_FILTER}
     rpc_golden "$name" "$method" "$params" "$filter"
 done < <(jq -c '.[]' "$SCRIPT_DIR/rpc_golden_scenarios.json")
 

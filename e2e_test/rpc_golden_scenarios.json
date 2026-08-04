@@ -34,7 +34,7 @@
       }
     ],
     "note": "Callee is an EOA, so structLogs is empty and the value that matters is the gas accounting. Steps are rendered one per line, as in the ERC20 scenario, so both goldens read the same way.",
-    "filter": "{gas, failed, returnValue, structLogs: [.structLogs[] | \"\\(.pc) \\(.op) gas=\\(.gas) cost=\\(.gasCost) depth=\\(.depth) refund=\\(.refund) stack=\\(.stack | length)\"]}"
+    "filter": "@STRUCTLOG_FILTER@"
   },
   {
     "name": "traceCall_erc20_callTracer",
@@ -92,7 +92,7 @@
       }
     ],
     "note": "Opcode-level trace of the token-duality path. Steps are rendered one per line: keeping the full per-step stack would make this golden ~10k lines and unreviewable, while the stack depth still moves whenever the opcode sequence does. Stack contents are covered by the prestate and callTracer goldens, and the sender's genesis balance by the call_cip64 scenario.",
-    "filter": "{gas, failed, returnValue, structLogs: [.structLogs[] | \"\\(.pc) \\(.op) gas=\\(.gas) cost=\\(.gasCost) depth=\\(.depth) refund=\\(.refund) stack=\\(.stack | length)\"]}"
+    "filter": "@STRUCTLOG_FILTER@"
   },
   {
     "name": "traceCall_erc20_4byteTracer",
