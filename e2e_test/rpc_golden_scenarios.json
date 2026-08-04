@@ -188,7 +188,7 @@
       }
     ],
     "filter": "{pre: (.pre | with_entries(.value |= del(.code))), post: (.post | with_entries(.value |= del(.code)))}",
-    "note": "The CIP-64 fee flow as a state diff: the fee-token balance the sender loses and the fee recipient gains. This is the assertion a mis-pinned exchange rate breaks \u2014 a liveness check would still pass."
+    "note": "State diff of a CIP-64 call. What it pins is that the traceCall path charges no fee at all: the diff is the 1 wei of value plus the nonce, and no fee-currency account is touched, because the call env runs with the base fee disabled. The exchange rate is therefore NOT observable here \u2014 it is pinned by gas_price_at_genesis, fillTransaction_cip64_defaults, the mined receipt goldens and feeHistory_across_rate_change."
   },
   {
     "name": "traceCall_cip64_second_currency_callTracer",
@@ -208,7 +208,7 @@
         "tracer": "callTracer"
       }
     ],
-    "note": "The second genesis fee currency is wired to a different oracle at a different rate; keeps a single hardcoded rate from satisfying every CIP-64 golden."
+    "note": "The second genesis fee currency, wired to a different oracle at a different rate. The callTracer frame carries no fee-currency data, so this golden is byte-identical to the first currency's; what it pins is that the second currency resolves and executes at all. The rates are told apart by gas_price_at_genesis, which covers both currencies."
   },
   {
     "name": "traceCall_state_override_callTracer",
@@ -253,7 +253,7 @@
         }
       }
     ],
-    "note": "Block overrides must be applied before the fee-currency context is captured, otherwise the CIP-64 debit runs against a different block env than the call does."
+    "note": "Block overrides must be applied before the fee-currency context is captured, otherwise the CIP-64 debit runs against a different block env than the call does. The callTracer frame cannot show which env the context came from, so this pins that an override does not break the CIP-64 path \u2014 a wrong-env context that still executes is invisible here."
   },
   {
     "name": "call_cip64",
@@ -392,7 +392,7 @@
       "0x0"
     ],
     "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
-    "note": "validation=true keeps the base fee and the balance checks live, so this is the variant where the CIP-64 debit is for a non-zero amount."
+    "note": "validation=true keeps the base fee and the balance checks live; the visible effect is the non-zero baseFeePerGas in the synthesized block. The fee debit runs outside the call frame, so it contributes no entry to this response's `logs` \u2014 its Transfer events are pinned by the mined receipt goldens instead."
   },
   {
     "name": "simulateV1_two_blocks",
