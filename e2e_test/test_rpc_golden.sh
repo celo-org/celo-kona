@@ -91,7 +91,16 @@ DATADIR=$(mktemp -d "${TMPDIR:-/tmp}/celo-rpc-golden.XXXXXX") || {
 NODE_LOG="$DATADIR/celo-reth.log"
 NODE_PID=
 
+# The node log lives in the datadir, which this function deletes. Anything that
+# failed was very likely explained in there, so keep a copy next to the shared
+# runner's log — that is the path CI uploads on failure.
+SAVED_NODE_LOG="$SCRIPT_DIR/celo-reth-golden.log"
+
 cleanup() {
+    if [[ ${RPC_GOLDEN_FAILED:-0} -gt 0 && -f "$NODE_LOG" ]]; then
+        cp "$NODE_LOG" "$SAVED_NODE_LOG" 2>/dev/null &&
+            echo "rpc_assert: node log saved to ${SAVED_NODE_LOG#"$SCRIPT_DIR/"}"
+    fi
     if [[ -n "$NODE_PID" ]]; then
         kill "$NODE_PID" 2>/dev/null || true
         # Bounded: a node wedged on shutdown must not hang the test run.
