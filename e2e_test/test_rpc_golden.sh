@@ -21,15 +21,21 @@
 #    from the *named* block's header, so base fee, timestamp, coinbase and gas
 #    limit are literals from the genesis file rather than runtime values.
 #  * Mined scenarios submit transactions strictly one at a time, waiting for
-#    each receipt. Bare `--dev` is instant-mining and never mines an empty block
-#    (reth `crates/engine/local/src/miner.rs`, `MiningMode::Instant` returns
-#    Pending on an empty pool), so this yields exactly one transaction per
-#    block, hence a fixed base-fee sequence. Do not add `--dev.block-time`: an
-#    interval miner produces empty blocks on every tick and the base fee then
-#    depends on wall-clock timing.
+#    each receipt. Bare `--dev` is instant-mining: it builds a block per pool
+#    notification (reth `crates/engine/local/src/miner.rs`, `MiningMode::Instant`),
+#    so one pending transaction yields one block, hence a fixed base-fee
+#    sequence. Do not add `--dev.block-time`: an interval miner produces empty
+#    blocks on every tick and the base fee then depends on wall-clock timing.
 #  * Where several transactions must share a block, they are submitted behind a
 #    nonce gap so they stay *queued* (which triggers no block build) until the
-#    gap-filling transaction promotes all of them at once.
+#    gap-filling transaction promotes all of them at once. Promoting four at
+#    once queues four notifications for the one block that drains them, and the
+#    miner spends a surplus notification on a further block containing nothing
+#    but the L1-attributes deposit. That empty block is real — every base fee
+#    Phase 6 pins is computed across it — so Phase 6 waits for the chain to
+#    settle and asserts the resulting height before pinning anything derived
+#    from it. Without the barrier the same block can instead be built *after*
+#    Phase 6's first transaction and shift the whole sequence.
 #  * Transactions are signed offline with every field pinned, so their hashes
 #    are stable and can be committed in the goldens.
 #  * The block traces additionally pin the index-0 L1-attributes deposit, whose
@@ -654,6 +660,23 @@ rpc_expect_error send_cip64_unregistered_currency eth_sendRawTransaction \
 
 echo ""
 echo "Phase 6: eth_feeHistory across an exchange-rate change"
+
+# Let the trailing build from Phase 4 land before the first transaction below,
+# then pin the height it produced. The four base fees this phase pins are a
+# function of every block before them, so a chain one block shorter or longer
+# reports itself here by name instead of as four unexplained hex diffs.
+settle_chain() { # returns once two readings a beat apart agree
+    local height last=
+    for _ in {1..20}; do
+        height=$(rpc_call eth_blockNumber '[]' | jq -r '.result')
+        [[ "$height" == "$last" ]] && return 0
+        last=$height
+        sleep 0.5
+    done
+}
+settle_chain
+rpc_expect_eq chain_height_before_rate_change \
+    "$(( $(rpc_call eth_blockNumber '[]' | jq -r '.result') ))" 6
 
 # `0x…ce16`'s oracle in the dev genesis alloc. Its `setExchangeRate` is ungated,
 # so no deploy and no ownership dance is needed — the rate change is one
