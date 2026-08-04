@@ -567,6 +567,9 @@ pub(crate) struct FcLookupResult {
     /// Sender nonce from the same latest state used for the fee-currency
     /// lookups. `None` if it was not requested or the account read failed.
     pub(crate) state_nonce: Option<u64>,
+    /// Standard EVM spec derived from the same canonical header as the lookup state. `None` when
+    /// no canonical header was available.
+    pub(crate) eth_spec: Option<SpecId>,
     pub(crate) debit_ok: Option<bool>,
     /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`), added on
     /// top of the standard intrinsic gas at block-build time. `None` if the rate
@@ -608,14 +611,11 @@ fn usable_fee_currencies(
     currencies.into_iter().filter(|currency| exchange_rate(*currency).is_some()).collect()
 }
 
-/// Couples a [`StateProviderFactory`] with the chain's active [`OpSpecId`] so the
-/// pool's system-call EVM runs fee-currency bytecode at the right fork (see
-/// `build_pool_evm`) and next-block base fee. Holds the provider by reference;
-/// constructed per validation from the spec and derivation function held by
-/// [`CeloExchangeRateApplier`].
+/// Couples a [`StateProviderFactory`] with the chain's spec derivation so the pool's system-call
+/// EVM runs at the fork derived from the same canonical header as its state snapshot.
 pub(crate) struct ProviderFcLookup<'a, P> {
     pub(crate) provider: &'a P,
-    pub(crate) spec: OpSpecId,
+    pub(crate) spec_fn: &'a SpecFn,
     pub(crate) next_block_base_fee_fn: &'a NextBlockBaseFeeFn,
 }
 
@@ -634,7 +634,7 @@ where
             fee_currency,
             fee_currency_directory,
             balance_check,
-            self.spec,
+            self.spec_fn,
             self.next_block_base_fee_fn,
         )
     }
@@ -720,7 +720,7 @@ fn lookup_rate_and_balance_impl<P>(
     fee_currency: Address,
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
-    spec: OpSpecId,
+    spec_fn: &SpecFn,
     next_block_base_fee_fn: &NextBlockBaseFeeFn,
 ) -> FcLookupResult
 where
@@ -738,6 +738,7 @@ where
         rate: None,
         balance: None,
         state_nonce: None,
+        eth_spec: None,
         debit_ok: None,
         intrinsic_gas: None,
     };
@@ -752,6 +753,8 @@ where
             return unavailable();
         }
     };
+    let spec = spec_for_next_block(spec_fn, header.timestamp());
+    let eth_spec = Some(spec.into_eth_spec());
     let state = match provider.state_by_block_hash(header.hash()) {
         Ok(state) => state,
         Err(e) => {
@@ -810,6 +813,7 @@ where
             rate,
             balance: None,
             state_nonce,
+            eth_spec,
             debit_ok: None,
             intrinsic_gas: None,
         };
@@ -907,7 +911,7 @@ where
         }
     });
 
-    FcLookupResult { rate, balance, state_nonce, debit_ok, intrinsic_gas }
+    FcLookupResult { rate, balance, state_nonce, eth_spec, debit_ok, intrinsic_gas }
 }
 
 // ---------------------------------------------------------------------------
@@ -920,13 +924,9 @@ pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> 
 /// Computes the next block's actual Celo base fee from its canonical parent and timestamp.
 pub type NextBlockBaseFeeFn = Arc<dyn Fn(&Header, u64) -> u64 + Send + Sync>;
 
-/// Computes the [`OpSpecId`] for the next block from the chain spec, given the
-/// estimated next-block timestamp. Refreshed each head block (like
-/// [`BaseFeeFloorFn`]) so the pool tracks the chain's current fork, matching the
-/// block builder, which derives the spec dynamically too. No hardcoded spec to
-/// update on a future hardfork. Drives both the pool's system-call EVM (see
-/// `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the CIP-64
-/// intrinsic-gas admission check.
+/// Computes the [`OpSpecId`] for the next block from the chain spec, given the estimated
+/// next-block timestamp. Each lookup calls this with its captured canonical parent so the pool's
+/// system-call EVM and CIP-64 intrinsic-gas check use one consistent snapshot.
 pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
 
 /// Derive the EVM spec for the block built on a canonical parent.
@@ -1345,13 +1345,7 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// and estimated next-block timestamp.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
-    /// Active fork for the next block, refreshed each head block via `spec_fn`.
-    /// Drives the pool's system-call EVM (so modern fee-currency bytecode runs;
-    /// see `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the standard
-    /// intrinsic gas in the CIP-64 intrinsic-gas admission check. Matches what the
-    /// block builder derives, so there is no hardcoded spec to update on a hardfork.
-    next_block_spec: Arc<Mutex<OpSpecId>>,
-    /// Computes the next-block [`OpSpecId`] from the chain spec. See [`SpecFn`].
+    /// Computes the next-block [`OpSpecId`] from the canonical header captured by each lookup.
     spec_fn: SpecFn,
     /// Computes the next block's Celo base fee from the same parent used for state lookup.
     next_block_base_fee_fn: NextBlockBaseFeeFn,
@@ -1387,7 +1381,6 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         fee_currency_directory: Address,
         base_fee_floor: u64,
         base_fee_floor_fn: BaseFeeFloorFn,
-        spec: OpSpecId,
         spec_fn: SpecFn,
         next_block_base_fee_fn: NextBlockBaseFeeFn,
         minimum_priority_fee: u128,
@@ -1400,7 +1393,6 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             fee_currency_directory,
             base_fee_floor: Arc::new(std::sync::atomic::AtomicU64::new(base_fee_floor)),
             base_fee_floor_fn,
-            next_block_spec: Arc::new(Mutex::new(spec)),
             spec_fn,
             next_block_base_fee_fn,
             minimum_priority_fee,
@@ -1627,7 +1619,6 @@ fn apply_exchange_rates_to_pool_tx(
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
     pooled_fc_costs: &dyn Fn(Address, Address, u64, u64) -> (U256, U256),
-    eth_spec: SpecId,
 ) -> Result<(), CeloPoolRejection> {
     if let Some(fc) = tx.fee_currency() {
         let max_fee_fc = Fc::new(tx.inner.max_fee_per_gas());
@@ -1677,6 +1668,8 @@ fn apply_exchange_rates_to_pool_tx(
         // `validate_celo_initial_tx_gas`. Skipped when `intrinsic_gas` is None
         // (the config read failed) — the block builder stays the backstop.
         if let Some(fc_intrinsic) = result.intrinsic_gas {
+            let eth_spec =
+                result.eth_spec.expect("fee-currency lookup with state must include its EVM spec");
             let (access_list_accounts, access_list_storage_keys) =
                 tx.access_list().map_or((0, 0), |al| {
                     (al.0.len() as u64, al.0.iter().map(|i| i.storage_keys.len() as u64).sum())
@@ -1909,14 +1902,9 @@ where
         // of which `expect` `native_fees` to be populated — for CIP-64 txs
         // that population only happens here.
         let base_fee_floor = self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
-        // One cached fork drives both the pool's system-call EVM (so modern
-        // fee-currency bytecode runs; see `build_pool_evm`) and the intrinsic-gas
-        // admission check (via its eth-spec projection).
-        let spec = *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner());
-        let eth_spec = spec.into_eth_spec();
         let lookup = ProviderFcLookup {
             provider: &self.provider,
-            spec,
+            spec_fn: &self.spec_fn,
             next_block_base_fee_fn: &self.next_block_base_fee_fn,
         };
         let pooled_fc_costs = self
@@ -1931,7 +1919,6 @@ where
             self.minimum_priority_fee,
             self.tx_fee_cap,
             &|sender, fc, nonce, state_nonce| pooled_fc_costs(sender, fc, nonce, state_nonce),
-            eth_spec,
         );
         // Split into Ok/Err up-front so both branches of the async block
         // share a single concrete future type.
@@ -1959,12 +1946,6 @@ where
         let next_ts = header.timestamp().saturating_add(1);
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
         self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
-
-        // Recompute the active fork for the next block (same trigger as the floor)
-        // so the pool EVM spec and the intrinsic-gas admission check track fork
-        // activations automatically — nothing to update by hand when a hardfork lands.
-        let new_spec = (self.spec_fn)(next_ts);
-        *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner()) = new_spec;
     }
 }
 
@@ -2509,7 +2490,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{make_test_tx, make_test_tx_with_nonce};
+    use crate::test_utils::{
+        make_test_tx, make_test_tx_with_nonce, make_test_tx_with_nonce_and_input,
+    };
 
     /// A fee-currency contract compiled with a recent Solidity emits PUSH0
     /// (0x5f, EIP-3855, a Shanghai opcode). The pool's system-call EVM must run
@@ -2883,9 +2866,32 @@ mod tests {
                 rate: self.rate,
                 balance: self.balance,
                 state_nonce: Some(0),
+                eth_spec: Some(SpecId::PRAGUE),
                 debit_ok: self.debit_ok,
                 intrinsic_gas: self.intrinsic_gas,
             }
+        }
+    }
+
+    struct SnapshotSpecLookup<'a> {
+        inner: &'a MockFcLookup,
+        eth_spec: SpecId,
+    }
+
+    impl FcLookup for SnapshotSpecLookup<'_> {
+        fn lookup_rate_and_balance(
+            &self,
+            fee_currency: Address,
+            fee_currency_directory: Address,
+            balance_check: Option<(Address, U256)>,
+        ) -> FcLookupResult {
+            let mut result = self.inner.lookup_rate_and_balance(
+                fee_currency,
+                fee_currency_directory,
+                balance_check,
+            );
+            result.eth_spec = Some(self.eth_spec);
+            result
         }
     }
 
@@ -2941,7 +2947,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         match result {
@@ -2952,6 +2957,44 @@ mod tests {
             }
             other => panic!("expected IntrinsicGasTooLow, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn admission_intrinsic_gas_uses_lookup_snapshot_spec() {
+        let fc = Address::with_last_byte(0xED);
+        // One non-zero calldata byte costs 68 gas at Homestead and 16 gas at Prague.
+        // A stale Prague spec would admit this transaction at 21_016 gas.
+        let mut tx = make_test_tx_with_nonce_and_input(
+            Some(fc),
+            0,
+            21_016,
+            1_000_000_000,
+            100,
+            Address::with_last_byte(1),
+            Bytes::from_static(&[1]),
+        );
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+            intrinsic_gas: Some(0),
+        };
+        let lookup = SnapshotSpecLookup { inner: &mock, eth_spec: SpecId::HOMESTEAD };
+
+        let result = apply_exchange_rates_to_pool_tx(
+            &lookup,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &no_pooled_txs,
+        );
+
+        assert!(
+            matches!(result, Err(CeloPoolRejection::IntrinsicGasTooLow { required: 21_068, .. })),
+            "intrinsic gas must use the spec from the lookup snapshot: {result:?}"
+        );
     }
 
     /// The same tx with a gas limit exactly at the build-time intrinsic gas
@@ -2977,7 +3020,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             result.is_ok(),
@@ -3005,7 +3047,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
 
@@ -3036,17 +3077,8 @@ mod tests {
             intrinsic_gas: None,
         };
 
-        apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &no_pooled_txs,
-            SpecId::PRAGUE,
-        )
-        .expect("ok");
+        apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &no_pooled_txs)
+            .expect("ok");
 
         assert_eq!(
             *tx.cost(),
@@ -3069,7 +3101,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::UnregisteredCurrency(_))));
     }
@@ -3093,7 +3124,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance { .. })));
     }
@@ -3125,7 +3155,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::BalanceLookupFailed { .. })),
@@ -3153,7 +3182,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         let err = result.expect_err("a failed state-nonce read must fail closed");
@@ -3175,7 +3203,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         assert!(
@@ -3207,7 +3234,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor { .. })));
     }
@@ -3235,7 +3261,6 @@ mod tests {
             100,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowMinTip { .. })));
     }
@@ -3259,7 +3284,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
     }
@@ -3369,7 +3393,6 @@ mod tests {
             0,
             Some(100_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
     }
@@ -3396,7 +3419,6 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -3416,7 +3438,6 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -3437,7 +3458,6 @@ mod tests {
                 0,
                 cap,
                 &no_pooled_txs,
-                SpecId::PRAGUE,
             );
             assert!(result.is_ok(), "cap={cap:?} should disable fee cap check");
         }
@@ -3472,7 +3492,6 @@ mod tests {
             150,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::BelowMinTip { actual: 100, .. })),
@@ -3505,7 +3524,6 @@ mod tests {
             100,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Should accept: effective tip (200) >= min tip (100)");
     }
@@ -3570,7 +3588,6 @@ mod tests {
             0,
             Some(100_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
@@ -3600,7 +3617,6 @@ mod tests {
             0,
             Some(100_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Favorable rate should keep cost within cap; got {result:?}");
     }
@@ -3631,7 +3647,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "floor=0 should accept any fee; got {result:?}");
     }
@@ -3658,7 +3673,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "max_fee == floor should be accepted; got {result:?}");
     }
@@ -3688,16 +3702,7 @@ mod tests {
 
         // gas=100, max_fee=100 → required_fc = 10_000; 10_000 + 10_000 > 15_000 → reject
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(
             matches!(r, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
             "tx exceeding pooled expenditure + balance must be rejected; got {r:?}"
@@ -3734,16 +3739,7 @@ mod tests {
         let validate =
             |max_fee: u128, pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
                 let mut tx = make_test_tx(Some(fc), 21_000, max_fee, 1, sender);
-                apply_exchange_rates_to_pool_tx(
-                    &mock,
-                    &mut tx,
-                    Address::ZERO,
-                    0,
-                    0,
-                    None,
-                    pooled,
-                    SpecId::PRAGUE,
-                )
+                apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
             };
 
         // 1. Empty pool.
@@ -3786,16 +3782,7 @@ mod tests {
         };
         let validate = |pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
             let mut tx = make_test_tx(Some(fc), 21_000, 120, 1, sender);
-            apply_exchange_rates_to_pool_tx(
-                &mock,
-                &mut tx,
-                Address::ZERO,
-                0,
-                0,
-                None,
-                pooled,
-                SpecId::PRAGUE,
-            )
+            apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
         };
 
         let replacing = |_: Address, _: Address, _: u64, _: u64| {
@@ -3837,16 +3824,7 @@ mod tests {
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
         let expected_nonce = tx.nonce();
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "tx should be admitted; got {r:?}");
         assert_eq!(
             queried.get(),
@@ -3872,16 +3850,7 @@ mod tests {
         let pooled = |_: Address, _: Address, _: u64, _: u64| (U256::from(15_000u64), U256::ZERO);
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "spending exactly the full balance must be admitted; got {r:?}");
     }
 
@@ -4139,7 +4108,6 @@ mod tests {
                     &|sender, fc, nonce, state_nonce| {
                         pooled_fc_costs(sender, fc, nonce, state_nonce)
                     },
-                    SpecId::PRAGUE,
                 );
                 if let Some(gate) = &self.gate {
                     gate.entered.fetch_add(1, AtomicOrdering::SeqCst);
