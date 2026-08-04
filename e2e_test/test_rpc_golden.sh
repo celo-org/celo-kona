@@ -363,10 +363,13 @@ for i in "${!LABELS[@]}"; do
 
     block=$(jq -r '.blockNumber' <<<"$receipt")
     miner=$(rpc_call eth_getBlockByNumber "[\"$block\", false]" | jq -r '.result.miner')
-    RPC_JQ_ARGS=(--arg minerTopic "0x000000000000000000000000${miner#0x}")
+    # Re-supplied before each consumer: rpc_golden clears RPC_JQ_ARGS as it
+    # takes it, so the value cannot survive into a later block's goldens.
+    miner_args=(--arg minerTopic "0x000000000000000000000000${miner#0x}")
 
     filter="$RECEIPT_FILTER"
     [[ "$label" == cip64* ]] && filter="$RECEIPT_FILTER | $CREDIT_TOPIC_FILTER"
+    RPC_JQ_ARGS=("${miner_args[@]}")
     rpc_golden "receipt_$label" eth_getTransactionReceipt "[\"$hash\"]" "$filter"
     rpc_golden "tx_$label" eth_getTransactionByHash "[\"$hash\"]" \
         'del(.blockHash, .blockTimestamp)'
@@ -377,9 +380,9 @@ for i in "${!LABELS[@]}"; do
     rpc_golden "otsTrace_$label" ots_traceTransaction "[\"$hash\"]"
     rpc_golden "parityTrace_$label" trace_transaction "[\"$hash\"]" \
         "map($TRACE_TX_FILTER)"
+    RPC_JQ_ARGS=("${miner_args[@]}")
     rpc_golden "blockReceipts_$label" eth_getBlockReceipts "[\"$block\"]" \
         "map($filter)"
-    RPC_JQ_ARGS=()
 
     # A canonical block re-submitted as raw RLP must trace identically to the
     # block itself. This is the only path that reaches `debug_traceBlock`.
@@ -487,7 +490,6 @@ if [[ "${same_block:-no}" == yes ]]; then
         "[\"${BATCH_HASHES[2]}\"]" "$RECEIPT_FILTER | $CREDIT_TOPIC_FILTER"
     rpc_golden traceBlock_cip64_batch debug_traceBlockByNumber \
         "[\"$BATCH_BLOCK\", {\"tracer\": \"callTracer\"}]"
-    RPC_JQ_ARGS=()
 
     # The prefix-replay path, on the transaction with the longest prefix.
     rpc_golden traceTransaction_cip64_last_of_block debug_traceTransaction \
