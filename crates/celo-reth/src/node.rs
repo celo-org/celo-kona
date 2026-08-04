@@ -5,7 +5,7 @@ use crate::{
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     pool::{
         CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, CeloTransactionPool,
-        PooledFcCostsFn,
+        NextBlockBaseFeeFn, PooledFcCostsFn,
     },
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
@@ -237,6 +237,15 @@ where
         // pool exists below; the validator reads it through the `OnceLock`.
         let pooled_fc_costs: std::sync::Arc<std::sync::OnceLock<PooledFcCostsFn>> =
             std::sync::Arc::new(std::sync::OnceLock::new());
+        let cs_spec = ctx.chain_spec();
+        let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
+            reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
+        });
+        let cs_base_fee = ctx.chain_spec();
+        let next_block_base_fee_fn: NextBlockBaseFeeFn =
+            std::sync::Arc::new(move |parent: &alloy_consensus::Header, next_ts: u64| {
+                celo_next_block_base_fee(&cs_base_fee, parent, next_ts).unwrap_or_default()
+            });
 
         let blob_store = reth_node_builder::components::create_blob_store(ctx)?;
         let validator = reth_transaction_pool::TransactionValidationTaskExecutor::eth_builder(
@@ -311,30 +320,14 @@ where
                     _ => crate::CELO_BASE_FEE_FLOOR,
                 }
             };
-            // Mirror the base-fee floor: derive the active fork for the next block
-            // from the chain spec (refreshed each head block in `on_new_head_block`)
-            // so the pool's system-call EVM and the CIP-64 intrinsic-gas admission
-            // check track fork activations automatically. The block builder derives
-            // its spec the same way, so there is no hardcoded spec to update on a
-            // future hardfork.
-            let cs_spec = ctx.chain_spec();
-            let spec_fn: crate::pool::SpecFn = std::sync::Arc::new(move |next_ts: u64| {
-                reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(&cs_spec, next_ts)
-            });
-            let spec = match ctx.provider().latest_header() {
-                Ok(Some(header)) => spec_fn(header.timestamp().saturating_add(1)),
-                // Fresh chain / read error: use the newest configured fork;
-                // `on_new_head_block` corrects it on the first canonical block.
-                _ => spec_fn(u64::MAX),
-            };
             CeloExchangeRateApplier::new(
                 validator,
                 ctx.provider().clone(),
                 fee_currency_directory,
                 base_fee_floor,
                 base_fee_floor_fn,
-                spec,
-                spec_fn,
+                spec_fn.clone(),
+                next_block_base_fee_fn.clone(),
                 minimum_priority_fee,
                 tx_fee_cap,
                 pooled_fc_costs.clone(),
@@ -363,19 +356,21 @@ where
             &final_pool_config,
         )?;
 
-        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency
-        // is deregistered from the FeeCurrencyDirectory.
+        // Spawn Celo pool maintainer: evicts CIP-64 txs when their fee currency is unusable
+        // or their sender can no longer cover the transaction's maximum fee-currency cost.
         {
-            use reth_provider::CanonStateSubscriptions;
-            let events = ctx.provider().subscribe_to_canonical_state();
+            let events = transaction_pool.subscribe_to_canonical_updates();
             let maintainer = CeloPoolMaintainer::new(
                 transaction_pool.clone(),
                 ctx.provider().clone(),
                 fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
             );
+            let task_executor = ctx.task_executor().clone();
             ctx.task_executor().spawn_critical_task(
                 "celo pool fee currency maintainer",
-                Box::pin(maintainer.run(events)),
+                Box::pin(maintainer.run(events, task_executor)),
             );
         }
 

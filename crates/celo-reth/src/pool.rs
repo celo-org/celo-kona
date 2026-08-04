@@ -6,7 +6,7 @@
 //! that pay fees in non-native currencies.
 
 use crate::primitives::CeloTransactionSigned;
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader, Header, Transaction};
 use alloy_eips::{
     Typed2718, eip2930::AccessList, eip4844::BlobTransactionValidationError,
     eip7594::BlobTransactionSidecarVariant,
@@ -23,7 +23,8 @@ use reth_optimism_txpool::{
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
 };
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
     BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
@@ -36,19 +37,18 @@ use reth_transaction_pool::{
 use revm::{interpreter::gas::calculate_initial_tx_gas, primitives::hardfork::SpecId};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     sync::{Arc, Mutex, OnceLock, Weak},
+    time::{Duration, Instant},
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc::Receiver, watch};
 
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
 
-/// Prometheus metrics for the Celo pool validator.
-///
-/// All counters use the `celo_pool_` prefix.
+/// Prometheus metrics for the Celo pool validator and maintainer.
 struct CeloPoolMetrics;
 
 impl CeloPoolMetrics {
@@ -64,8 +64,31 @@ impl CeloPoolMetrics {
     fn pool_eviction(count: u64) {
         metrics::counter!("celo_pool_maintainer_evictions_total").increment(count);
     }
-    fn maintainer_failure() {
-        metrics::counter!("celo_pool_maintainer_failures_total").increment(1);
+    fn maintainer_failure(reason: &'static str, count: u64) {
+        metrics::counter!("celo_pool_maintainer_failures_total", "reason" => reason)
+            .increment(count);
+    }
+    fn maintainer_scan_duration(duration: Duration) {
+        metrics::histogram!("celo_pool_maintainer_scan_duration_seconds")
+            .record(duration.as_secs_f64());
+    }
+    fn stale_revalidation_result(action: &'static str) {
+        metrics::counter!("celo_pool_maintainer_stale_results_total", "action" => action)
+            .increment(1);
+    }
+}
+
+struct MaintainerScanTimer(Instant);
+
+impl MaintainerScanTimer {
+    fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Drop for MaintainerScanTimer {
+    fn drop(&mut self) {
+        CeloPoolMetrics::maintainer_scan_duration(self.0.elapsed());
     }
 }
 
@@ -508,6 +531,13 @@ impl OpPooledTx for CeloPoolTx {
 // FeeCurrencyDirectory reader
 // ---------------------------------------------------------------------------
 
+/// Fee-currency intrinsic gas and the EVM spec used to calculate the standard intrinsic gas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IntrinsicGasSnapshot {
+    gas: u64,
+    eth_spec: SpecId,
+}
+
 /// Result of looking up exchange rate, balance, and debit simulation for a fee currency.
 pub(crate) struct FcLookupResult {
     pub(crate) rate: Option<ExchangeRate>,
@@ -517,12 +547,11 @@ pub(crate) struct FcLookupResult {
     /// lookups. `None` if it was not requested or the account read failed.
     pub(crate) state_nonce: Option<u64>,
     pub(crate) debit_ok: Option<bool>,
-    /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`), added on
-    /// top of the standard intrinsic gas at block-build time. `None` if the rate
-    /// lookup failed (the currency is rejected as unregistered anyway) or the
-    /// config read failed — in which case the intrinsic-gas admission check is
-    /// skipped and the block builder remains the backstop.
-    pub(crate) intrinsic_gas: Option<u64>,
+    /// The fee currency's extra intrinsic gas (from `getCurrencyConfig`) and the EVM spec from the
+    /// same canonical snapshot. `None` if the rate lookup failed (the currency is rejected as
+    /// unregistered anyway) or the config read failed, in which case the intrinsic-gas admission
+    /// check is skipped and the block builder remains the backstop.
+    pub(crate) intrinsic_gas: Option<IntrinsicGasSnapshot>,
 }
 
 /// Trait for looking up fee currency exchange rates, balances, and debit simulation.
@@ -538,16 +567,53 @@ pub(crate) trait FcLookup {
     ) -> FcLookupResult;
 }
 
-/// Couples a [`StateProviderFactory`] with the chain's active [`OpSpecId`] so the
-/// pool's system-call EVM runs fee-currency bytecode at the right fork (see
-/// `build_pool_evm`). Holds the provider by reference; constructed per
-/// validation from the spec cached on [`CeloExchangeRateApplier`].
-pub(crate) struct ProviderFcLookup<'a, P> {
-    pub(crate) provider: &'a P,
-    pub(crate) spec: OpSpecId,
+/// Decode an exchange-rate response, distinguishing malformed output from a successfully decoded
+/// rate that the pool's fixed-width arithmetic cannot support.
+fn try_decode_exchange_rate(output: &[u8]) -> Result<Option<ExchangeRate>, alloy_sol_types::Error> {
+    use alloy_sol_types::SolCall;
+    use celo_revm::contracts::core_contracts::getExchangeRateCall;
+
+    let rate = getExchangeRateCall::abi_decode_returns(output)?;
+    let Ok(numerator) = u128::try_from(rate.numerator) else {
+        return Ok(None);
+    };
+    let Ok(denominator) = u128::try_from(rate.denominator) else {
+        return Ok(None);
+    };
+    Ok((numerator != 0 && denominator != 0).then_some(ExchangeRate { numerator, denominator }))
 }
 
-impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
+/// Decode a usable exchange rate for admission, where any unavailable rate rejects the tx.
+fn decode_exchange_rate(output: &[u8]) -> Option<ExchangeRate> {
+    try_decode_exchange_rate(output).ok().flatten()
+}
+
+/// Keep registered currencies whose exchange rate is currently usable by pool validation.
+fn usable_fee_currencies<E>(
+    currencies: impl IntoIterator<Item = Address>,
+    mut exchange_rate: impl FnMut(Address) -> Result<Option<ExchangeRate>, E>,
+) -> Result<HashSet<Address>, E> {
+    let mut usable = HashSet::new();
+    for currency in currencies {
+        if exchange_rate(currency)?.is_some() {
+            usable.insert(currency);
+        }
+    }
+    Ok(usable)
+}
+
+/// Couples a [`StateProviderFactory`] with the chain's spec derivation so the pool's system-call
+/// EVM runs at the fork derived from the same canonical header as its state snapshot.
+pub(crate) struct ProviderFcLookup<'a, P> {
+    pub(crate) provider: &'a P,
+    pub(crate) spec_fn: &'a SpecFn,
+    pub(crate) next_block_base_fee_fn: &'a NextBlockBaseFeeFn,
+}
+
+impl<P> FcLookup for ProviderFcLookup<'_, P>
+where
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
+{
     fn lookup_rate_and_balance(
         &self,
         fee_currency: Address,
@@ -559,7 +625,8 @@ impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
             fee_currency,
             fee_currency_directory,
             balance_check,
-            self.spec,
+            self.spec_fn,
+            self.next_block_base_fee_fn,
         )
     }
 }
@@ -577,7 +644,8 @@ impl<P: StateProviderFactory> FcLookup for ProviderFcLookup<'_, P> {
 /// ERC20 transfers.
 const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 
-/// Build the pool's system-call EVM over `db`, configured at chain fork `spec`.
+/// Build the pool's system-call EVM over parent post-state in `db`, configured at chain fork
+/// `spec` and the next block environment derived from `parent`.
 ///
 /// The spec MUST be the chain's active fork rather than a context-free default:
 /// fee-currency contracts compiled with a recent Solidity emit post-Merge opcodes
@@ -590,20 +658,65 @@ const POOL_SYSTEM_CALL_GAS_LIMIT: u64 = 1_000_000;
 fn build_pool_evm<DB: revm::Database>(
     db: DB,
     spec: OpSpecId,
+    parent: &Header,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
 ) -> celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector> {
     use celo_revm::{CeloBuilder, DefaultCelo};
     use revm::Context;
 
-    Context::celo().with_db(db).modify_cfg_chained(|cfg| cfg.spec = spec).build_celo()
+    Context::celo()
+        .with_db(db)
+        .with_block(pool_block_env(parent, spec, next_block_base_fee_fn))
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
+        .build_celo()
 }
 
-fn lookup_rate_and_balance_impl(
-    provider: &dyn StateProviderFactory,
+/// Build the next block environment observed by fee-currency system calls over parent post-state.
+///
+/// Number, timestamp, and base fee are deterministic for Celo's next block. Fields supplied only
+/// with payload attributes use the parent's values as the best available estimate at pool time.
+fn pool_block_env(
+    parent: &Header,
+    spec: OpSpecId,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
+) -> revm::context::BlockEnv {
+    use revm::{
+        context::BlockEnv, context_interface::block::BlobExcessGasAndPrice,
+        primitives::hardfork::SpecId,
+    };
+
+    let eth_spec = spec.into_eth_spec();
+    let post_merge = eth_spec.is_enabled_in(SpecId::MERGE);
+    let blob_excess_gas_and_price = eth_spec
+        .is_enabled_in(SpecId::CANCUN)
+        .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
+    let next_timestamp = parent.timestamp.saturating_add(1);
+    let next_base_fee = next_block_base_fee_fn(parent, next_timestamp);
+
+    BlockEnv {
+        number: U256::from(parent.number.saturating_add(1)),
+        beneficiary: parent.beneficiary,
+        timestamp: U256::from(next_timestamp),
+        gas_limit: parent.gas_limit,
+        basefee: next_base_fee,
+        difficulty: if post_merge { U256::ZERO } else { parent.difficulty },
+        prevrandao: post_merge.then_some(parent.mix_hash),
+        blob_excess_gas_and_price,
+        slot_num: 0,
+    }
+}
+
+fn lookup_rate_and_balance_impl<P>(
+    provider: &P,
     fee_currency: Address,
     fee_currency_directory: Address,
     balance_check: Option<(Address, U256)>,
-    spec: OpSpecId,
-) -> FcLookupResult {
+    spec_fn: &SpecFn,
+    next_block_base_fee_fn: &NextBlockBaseFeeFn,
+) -> FcLookupResult
+where
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
+{
     use alloy_sol_types::SolCall;
     use celo_revm::contracts::{
         core_contracts::{getCurrencyConfigCall, getExchangeRateCall},
@@ -612,20 +725,39 @@ fn lookup_rate_and_balance_impl(
     use reth_revm::database::StateProviderDatabase;
     use revm::context_interface::result::ExecutionResult;
 
-    let state = match provider.latest() {
-        Ok(s) => s,
+    let unavailable = || FcLookupResult {
+        rate: None,
+        balance: None,
+        state_nonce: None,
+        debit_ok: None,
+        intrinsic_gas: None,
+    };
+    let header = match provider.latest_header() {
+        Ok(Some(header)) => header,
+        Ok(None) => {
+            tracing::warn!(target: "celo::pool", ?fee_currency, "Failed to get latest header for FC lookup");
+            return unavailable();
+        }
         Err(e) => {
-            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest state for FC lookup");
-            return FcLookupResult {
-                rate: None,
-                balance: None,
-                state_nonce: None,
-                debit_ok: None,
-                intrinsic_gas: None,
-            };
+            tracing::warn!(target: "celo::pool", %e, ?fee_currency, "Failed to get latest header for FC lookup");
+            return unavailable();
         }
     };
-    use reth_storage_api::AccountReader;
+    let spec = spec_for_next_block(spec_fn, header.timestamp());
+    let eth_spec = spec.into_eth_spec();
+    let state = match provider.state_by_block_hash(header.hash()) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!(
+                target: "celo::pool",
+                %e,
+                ?fee_currency,
+                block_hash = ?header.hash(),
+                "Failed to get header-matched state for FC lookup"
+            );
+            return unavailable();
+        }
+    };
     let state_nonce =
         balance_check.as_ref().and_then(|(sender, _)| match state.basic_account(sender) {
             Ok(account) => Some(account.unwrap_or_default().nonce),
@@ -640,7 +772,7 @@ fn lookup_rate_and_balance_impl(
             }
         });
     let db = StateProviderDatabase::new(state);
-    let mut evm = build_pool_evm(db, spec);
+    let mut evm = build_pool_evm(db, spec, header.header(), next_block_base_fee_fn);
 
     // 1. Look up exchange rate
     let rate_calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
@@ -661,15 +793,7 @@ fn lookup_rate_and_balance_impl(
                 None
             }
         })
-        .and_then(|output| {
-            let r = getExchangeRateCall::abi_decode_returns(&output).ok()?;
-            let numerator = u128::try_from(r.numerator).ok()?;
-            let denominator = u128::try_from(r.denominator).ok()?;
-            if numerator == 0 || denominator == 0 {
-                return None;
-            }
-            Some(ExchangeRate { numerator, denominator })
-        });
+        .and_then(|output| decode_exchange_rate(&output));
 
     // If rate lookup failed, the caller will reject the tx as UnregisteredCurrency
     // regardless of balance/debit — skip the remaining EVM calls to avoid wasted
@@ -711,7 +835,10 @@ fn lookup_rate_and_balance_impl(
         })
         .and_then(|output| {
             let cfg = getCurrencyConfigCall::abi_decode_returns(&output).ok()?;
-            Some(u64::try_from(cfg.intrinsicGas).unwrap_or(u64::MAX))
+            Some(IntrinsicGasSnapshot {
+                gas: u64::try_from(cfg.intrinsicGas).unwrap_or(u64::MAX),
+                eth_spec,
+            })
         })
     };
 
@@ -786,14 +913,18 @@ fn lookup_rate_and_balance_impl(
 /// Type alias for the base fee floor computation closure.
 pub type BaseFeeFloorFn = Arc<dyn Fn(&dyn alloy_consensus::BlockHeader, u64) -> u64 + Send + Sync>;
 
-/// Computes the [`OpSpecId`] for the next block from the chain spec, given the
-/// estimated next-block timestamp. Refreshed each head block (like
-/// [`BaseFeeFloorFn`]) so the pool tracks the chain's current fork, matching the
-/// block builder, which derives the spec dynamically too. No hardcoded spec to
-/// update on a future hardfork. Drives both the pool's system-call EVM (see
-/// `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the CIP-64
-/// intrinsic-gas admission check.
+/// Computes the next block's actual Celo base fee from its canonical parent and timestamp.
+pub type NextBlockBaseFeeFn = Arc<dyn Fn(&Header, u64) -> u64 + Send + Sync>;
+
+/// Computes the [`OpSpecId`] for the next block from the chain spec, given the estimated
+/// next-block timestamp. Each lookup calls this with its captured canonical parent so the pool's
+/// system-call EVM and CIP-64 intrinsic-gas check use one consistent snapshot.
 pub type SpecFn = Arc<dyn Fn(u64) -> OpSpecId + Send + Sync>;
+
+/// Derive the EVM spec for the block built on a canonical parent.
+fn spec_for_next_block(spec_fn: &SpecFn, parent_timestamp: u64) -> OpSpecId {
+    spec_fn(parent_timestamp.saturating_add(1))
+}
 
 /// Reads a sender's already-committed fee-currency expenditure from the live
 /// pool at validation time.
@@ -954,6 +1085,7 @@ where
 {
     inner: Arc<P>,
     sender_locks: Arc<SenderAdmissionLocks>,
+    canonical_updates: watch::Sender<u64>,
 }
 
 impl<P> CeloTransactionPool<P>
@@ -962,7 +1094,13 @@ where
 {
     /// Wrap a raw reth pool.
     pub fn new(inner: Arc<P>) -> Self {
-        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()) }
+        let (canonical_updates, _) = watch::channel(0);
+        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()), canonical_updates }
+    }
+
+    /// Subscribe to canonical pool updates after the wrapped reth pool has applied them.
+    pub fn subscribe_to_canonical_updates(&self) -> watch::Receiver<u64> {
+        self.canonical_updates.subscribe()
     }
 
     async fn with_sender_lock<T>(
@@ -1172,7 +1310,8 @@ where
         &self,
         update: reth_transaction_pool::CanonicalStateUpdate<'_, Self::Block>,
     ) {
-        self.inner.on_canonical_state_change(update)
+        self.inner.on_canonical_state_change(update);
+        self.canonical_updates.send_modify(|version| *version = version.wrapping_add(1));
     }
 
     delegate_pool!(fn update_accounts(&self, accounts: Vec<reth_execution_types::ChangedAccount>));
@@ -1198,14 +1337,10 @@ pub struct CeloExchangeRateApplier<V, P> {
     /// and estimated next-block timestamp.
     /// Returns 0 if the floor cannot be determined (dev mode).
     base_fee_floor_fn: BaseFeeFloorFn,
-    /// Active fork for the next block, refreshed each head block via `spec_fn`.
-    /// Drives the pool's system-call EVM (so modern fee-currency bytecode runs;
-    /// see `build_pool_evm`) and, via [`OpSpecId::into_eth_spec`], the standard
-    /// intrinsic gas in the CIP-64 intrinsic-gas admission check. Matches what the
-    /// block builder derives, so there is no hardcoded spec to update on a hardfork.
-    next_block_spec: Arc<Mutex<OpSpecId>>,
-    /// Computes the next-block [`OpSpecId`] from the chain spec. See [`SpecFn`].
+    /// Computes the next-block [`OpSpecId`] from the canonical header captured by each lookup.
     spec_fn: SpecFn,
+    /// Computes the next block's Celo base fee from the same parent used for state lookup.
+    next_block_base_fee_fn: NextBlockBaseFeeFn,
     /// Minimum priority fee in native wei. CIP-64 txs must have a priority fee
     /// that, when converted to FC units, is at least this value converted to FC.
     minimum_priority_fee: u128,
@@ -1238,8 +1373,8 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
         fee_currency_directory: Address,
         base_fee_floor: u64,
         base_fee_floor_fn: BaseFeeFloorFn,
-        spec: OpSpecId,
         spec_fn: SpecFn,
+        next_block_base_fee_fn: NextBlockBaseFeeFn,
         minimum_priority_fee: u128,
         tx_fee_cap: Option<u128>,
         pooled_fc_costs: Arc<OnceLock<PooledFcCostsFn>>,
@@ -1250,8 +1385,8 @@ impl<V, P> CeloExchangeRateApplier<V, P> {
             fee_currency_directory,
             base_fee_floor: Arc::new(std::sync::atomic::AtomicU64::new(base_fee_floor)),
             base_fee_floor_fn,
-            next_block_spec: Arc::new(Mutex::new(spec)),
             spec_fn,
+            next_block_base_fee_fn,
             minimum_priority_fee,
             tx_fee_cap,
             pooled_fc_costs,
@@ -1476,7 +1611,6 @@ fn apply_exchange_rates_to_pool_tx(
     minimum_priority_fee: u128,
     tx_fee_cap: Option<u128>,
     pooled_fc_costs: &dyn Fn(Address, Address, u64, u64) -> (U256, U256),
-    eth_spec: SpecId,
 ) -> Result<(), CeloPoolRejection> {
     if let Some(fc) = tx.fee_currency() {
         let max_fee_fc = Fc::new(tx.inner.max_fee_per_gas());
@@ -1525,7 +1659,7 @@ fn apply_exchange_rates_to_pool_tx(
         // (CallGasCostMoreThanGasLimit, with no log/metric). Mirrors celo-revm's
         // `validate_celo_initial_tx_gas`. Skipped when `intrinsic_gas` is None
         // (the config read failed) — the block builder stays the backstop.
-        if let Some(fc_intrinsic) = result.intrinsic_gas {
+        if let Some(IntrinsicGasSnapshot { gas: fc_intrinsic, eth_spec }) = result.intrinsic_gas {
             let (access_list_accounts, access_list_storage_keys) =
                 tx.access_list().map_or((0, 0), |al| {
                     (al.0.len() as u64, al.0.iter().map(|i| i.storage_keys.len() as u64).sum())
@@ -1741,7 +1875,7 @@ fn apply_exchange_rates_to_pool_tx(
 impl<V, P> TransactionValidator for CeloExchangeRateApplier<V, P>
 where
     V: TransactionValidator<Transaction = CeloPoolTx>,
-    P: StateProviderFactory + Debug + Send + Sync + 'static,
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header> + Debug + Send + Sync + 'static,
 {
     type Transaction = CeloPoolTx;
     type Block = V::Block;
@@ -1758,12 +1892,11 @@ where
         // of which `expect` `native_fees` to be populated — for CIP-64 txs
         // that population only happens here.
         let base_fee_floor = self.base_fee_floor.load(std::sync::atomic::Ordering::Acquire);
-        // One cached fork drives both the pool's system-call EVM (so modern
-        // fee-currency bytecode runs; see `build_pool_evm`) and the intrinsic-gas
-        // admission check (via its eth-spec projection).
-        let spec = *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner());
-        let eth_spec = spec.into_eth_spec();
-        let lookup = ProviderFcLookup { provider: &self.provider, spec };
+        let lookup = ProviderFcLookup {
+            provider: &self.provider,
+            spec_fn: &self.spec_fn,
+            next_block_base_fee_fn: &self.next_block_base_fee_fn,
+        };
         let pooled_fc_costs = self
             .pooled_fc_costs
             .get()
@@ -1776,7 +1909,6 @@ where
             self.minimum_priority_fee,
             self.tx_fee_cap,
             &|sender, fc, nonce, state_nonce| pooled_fc_costs(sender, fc, nonce, state_nonce),
-            eth_spec,
         );
         // Split into Ok/Err up-front so both branches of the async block
         // share a single concrete future type.
@@ -1804,167 +1936,569 @@ where
         let next_ts = header.timestamp().saturating_add(1);
         let new_floor = (self.base_fee_floor_fn)(header, next_ts);
         self.base_fee_floor.store(new_floor, std::sync::atomic::Ordering::Release);
-
-        // Recompute the active fork for the next block (same trigger as the floor)
-        // so the pool EVM spec and the intrinsic-gas admission check track fork
-        // activations automatically — nothing to update by hand when a hardfork lands.
-        let new_spec = (self.spec_fn)(next_ts);
-        *self.next_block_spec.lock().unwrap_or_else(|e| e.into_inner()) = new_spec;
     }
 }
 
 // ---------------------------------------------------------------------------
-// CeloPoolMaintainer — evict CIP-64 txs when fee currency is deregistered
+// CeloPoolMaintainer — revalidate pooled CIP-64 txs on canonical updates
 // ---------------------------------------------------------------------------
 
+/// Find pooled CIP-64 transactions that the sender can no longer afford after a canonical state
+/// update. Balances are cached per sender and fee currency so multiple nonces share one lookup.
+/// Each transaction is checked independently, matching op-geth's fee-currency balance filter.
+/// Reth parks cumulative native-balance overdrafts rather than deleting them, and does not expose
+/// that demotion operation through [`TransactionPool`].
+///
+/// A failed lookup is returned to the caller and deliberately retains every transaction for the
+/// affected pair. The maintainer is a cleanup path, so uncertain state must not become an eviction.
+fn txs_with_insufficient_fee_currency_balance<'a>(
+    transactions: impl IntoIterator<Item = &'a CeloPoolTx>,
+    usable_currencies: &HashSet<Address>,
+    mut balance_of: impl FnMut(Address, Address) -> Option<U256>,
+) -> (Vec<TxHash>, Vec<(Address, Address)>) {
+    let mut balances = HashMap::<(Address, Address), Option<U256>>::new();
+    let mut lookup_failures = Vec::new();
+    let mut to_evict = Vec::new();
+    let mut evicted = HashSet::new();
+
+    for tx in transactions {
+        let Some(fee_currency) = tx.fee_currency().filter(|fc| usable_currencies.contains(fc))
+        else {
+            continue;
+        };
+        let key = (tx.sender(), fee_currency);
+        let balance = balances.get(&key).copied().unwrap_or_else(|| {
+            let balance = balance_of(key.0, key.1);
+            if balance.is_none() {
+                lookup_failures.push(key);
+            }
+            balances.insert(key, balance);
+            balance
+        });
+        if balance.is_some_and(|balance| balance < tx.fc_gas_cost()) && evicted.insert(*tx.hash()) {
+            to_evict.push(*tx.hash());
+        }
+    }
+
+    (to_evict, lookup_failures)
+}
+
+fn balance_lookup_failure_counts(
+    failures: impl IntoIterator<Item = (Address, Address)>,
+) -> HashMap<Address, usize> {
+    let mut counts = HashMap::new();
+    for (_, fee_currency) in failures {
+        *counts.entry(fee_currency).or_default() += 1;
+    }
+    counts
+}
+
+/// Return only transactions executable against the pool's current canonical state.
+///
+/// Balance maintenance intentionally follows op-geth's pending-list scan. Parked transactions are
+/// reconsidered after reth promotes them during a later canonical pool update.
+fn balance_revalidation_candidates<Pool>(pool: &Pool) -> Vec<Arc<ValidPoolTransaction<CeloPoolTx>>>
+where
+    Pool: TransactionPool<Transaction = CeloPoolTx>,
+{
+    pool.pending_transactions()
+}
+
+/// Action to take after comparing a fee-currency scan with the latest canonical head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevalidationHeadAction {
+    /// Apply the result because it was produced from the current head.
+    Apply,
+    /// Recheck only eviction candidates against a fresh snapshot before applying them.
+    Recheck,
+}
+
+fn revalidation_head_action(
+    scanned_hash: B256,
+    latest_hash: Option<B256>,
+) -> RevalidationHeadAction {
+    if latest_hash == Some(scanned_hash) {
+        RevalidationHeadAction::Apply
+    } else {
+        RevalidationHeadAction::Recheck
+    }
+}
+
+struct FeeCurrencyRevalidation {
+    scanned_hash: B256,
+    usable_currencies: HashSet<Address>,
+    to_evict: HashSet<TxHash>,
+    unavailable_currency_count: usize,
+    insufficient_balance_count: usize,
+    lookup_failures: Vec<(Address, Address)>,
+}
+
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
-/// whose fee currency has been deregistered from the `FeeCurrencyDirectory`.
-#[derive(Debug)]
+/// whose fee currency is no longer usable or whose sender can no longer afford their maximum
+/// fee-currency gas cost.
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
     provider: P,
     fee_currency_directory: Address,
-    /// Cached set of registered currencies. Only scan pool when this changes.
+    spec_fn: SpecFn,
+    next_block_base_fee_fn: NextBlockBaseFeeFn,
+    /// Cached set of currencies with a usable exchange rate. Currency availability checks only
+    /// need a full pool scan when this changes; canonical balance checks still run after every
+    /// successful directory query.
     ///
     /// `None` means the maintainer has never observed a successful query,
     /// so no diff baseline exists yet. Diffing against an empty baseline
     /// would silently miss currencies removed during a startup outage,
     /// leaving stale CIP-64 txs in the pool — see [`Self::on_new_block`].
-    registered_currencies: Option<std::collections::HashSet<Address>>,
+    usable_currencies: Option<std::collections::HashSet<Address>>,
+}
+
+impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CeloPoolMaintainer")
+            .field("pool", &self.pool)
+            .field("provider", &self.provider)
+            .field("fee_currency_directory", &self.fee_currency_directory)
+            .field("usable_currencies", &self.usable_currencies)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P> {
     /// Create a new [`CeloPoolMaintainer`].
-    pub const fn new(pool: Pool, provider: P, fee_currency_directory: Address) -> Self {
-        Self { pool, provider, fee_currency_directory, registered_currencies: None }
+    pub fn new(
+        pool: Pool,
+        provider: P,
+        fee_currency_directory: Address,
+        spec_fn: SpecFn,
+        next_block_base_fee_fn: NextBlockBaseFeeFn,
+    ) -> Self {
+        Self {
+            pool,
+            provider,
+            fee_currency_directory,
+            spec_fn,
+            next_block_base_fee_fn,
+            usable_currencies: None,
+        }
     }
 }
 
 impl<Pool, P> CeloPoolMaintainer<Pool, P>
 where
     Pool: reth_transaction_pool::TransactionPool<Transaction = CeloPoolTx>,
-    P: StateProviderFactory,
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
 {
-    /// Query the currently registered fee currencies from the `FeeCurrencyDirectory`.
-    fn query_registered_currencies(&self) -> Option<std::collections::HashSet<Address>> {
+    /// Query fee currencies with a currently usable exchange rate.
+    fn query_usable_fee_currencies<DB>(
+        &self,
+        evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+    ) -> Option<HashSet<Address>>
+    where
+        DB: revm::Database,
+    {
         use alloy_sol_types::SolCall;
-        use celo_revm::contracts::core_contracts::getCurrenciesCall;
-        use reth_revm::database::StateProviderDatabase;
-        use revm::context_interface::result::ExecutionResult;
-
-        let state = self.provider.latest().inspect_err(|e| {
-            tracing::warn!(target: "celo::pool", %e, "Failed to get latest state for currency query");
-        }).ok()?;
-        let db = StateProviderDatabase::new(state);
-        // The FeeCurrencyDirectory is legacy bytecode and this read-only
-        // `getCurrencies` query has no fork-gated semantics, so the Celo default
-        // spec suffices (and stays forward-compatible if the directory is ever
-        // redeployed with PUSH0-emitting bytecode). The maintainer never rejects
-        // txs, so unlike the validator it needs no per-head spec tracking.
-        let mut evm = build_pool_evm(db, celo_revm::CELO_DEFAULT_SPEC);
+        use celo_revm::contracts::core_contracts::{
+            call_read_only, getCurrenciesCall, getExchangeRateCall,
+        };
 
         let calldata = getCurrenciesCall {}.abi_encode();
-        let result = evm
-            .transact_system_call_with_gas_limit(
+        let output = call_read_only(
+            evm,
+            self.fee_currency_directory,
+            calldata.into(),
+            Some(POOL_SYSTEM_CALL_GAS_LIMIT),
+        )
+        .inspect_err(|e| {
+            tracing::warn!(
+                target: "celo::pool",
+                %e,
+                "Read-only EVM call failed querying fee currencies"
+            );
+        })
+        .ok()?
+        .0;
+
+        let currencies: Vec<Address> = getCurrenciesCall::abi_decode_returns(&output).ok()?;
+        usable_fee_currencies(currencies, |fee_currency| {
+            let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
+            let output = match call_read_only(
+                evm,
                 self.fee_currency_directory,
                 calldata.into(),
-                POOL_SYSTEM_CALL_GAS_LIMIT,
-            )
-            .inspect_err(|e| {
-                tracing::warn!(target: "celo::pool", %e, "EVM system call failed querying fee currencies");
-            })
-            .ok()?;
+                Some(POOL_SYSTEM_CALL_GAS_LIMIT),
+            ) {
+                Ok(output) => output.0,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        ?fee_currency,
+                        "Read-only EVM call failed querying fee-currency exchange rate"
+                    );
+                    return Err(());
+                }
+            };
+            let rate = match try_decode_exchange_rate(&output) {
+                Ok(rate) => rate,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        ?fee_currency,
+                        "Failed to decode fee-currency exchange rate"
+                    );
+                    return Err(());
+                }
+            };
+            if rate.is_none() {
+                tracing::warn!(
+                    target: "celo::pool",
+                    ?fee_currency,
+                    "Excluding fee currency without a usable exchange rate"
+                );
+            }
+            Ok(rate)
+        })
+        .ok()
+    }
 
-        match result {
-            ExecutionResult::Success { output, .. } => {
-                let currencies: Vec<Address> =
-                    getCurrenciesCall::abi_decode_returns(&output.into_data()).ok()?;
-                Some(currencies.into_iter().collect())
+    /// Query a sender's current ERC20 balance for one registered fee currency.
+    fn query_fee_currency_balance<DB>(
+        evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+        sender: Address,
+        fee_currency: Address,
+    ) -> Option<U256>
+    where
+        DB: revm::Database,
+    {
+        use alloy_sol_types::SolCall;
+        use celo_revm::contracts::{core_contracts::call_read_only, erc20::IFeeCurrencyERC20};
+
+        let calldata = IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
+        let output =
+            call_read_only(evm, fee_currency, calldata.into(), Some(POOL_SYSTEM_CALL_GAS_LIMIT))
+                .inspect_err(|e| {
+                    tracing::debug!(
+                        target: "celo::pool",
+                        %e,
+                        ?sender,
+                        ?fee_currency,
+                        "Read-only EVM call failed during canonical balance revalidation"
+                    );
+                })
+                .ok()?
+                .0;
+
+        IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output)
+            .inspect_err(|e| {
+                tracing::debug!(
+                    target: "celo::pool",
+                    %e,
+                    ?sender,
+                    ?fee_currency,
+                    "Failed to decode canonical fee-currency balance"
+                );
+            })
+            .ok()
+    }
+
+    /// Recheck stale eviction candidates against the latest canonical snapshot.
+    ///
+    /// Currency availability is cheap to recompute for the full pool and lets the cache advance
+    /// safely. Balance calls are limited to candidates found by the stale full scan.
+    fn recheck_eviction_candidates(
+        &self,
+        candidates: HashSet<TxHash>,
+    ) -> Option<FeeCurrencyRevalidation> {
+        use reth_revm::database::StateProviderDatabase;
+
+        let header = match self.provider.latest_header() {
+            Ok(Some(header)) => header,
+            Ok(None) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    "Skipping stale fee-currency candidate recheck without a canonical header"
+                );
+                return None;
             }
-            other => {
-                tracing::warn!(target: "celo::pool", ?other, "Fee currency query returned non-success");
-                None
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure("latest_header", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    "Failed to get latest header for stale fee-currency candidate recheck"
+                );
+                return None;
             }
+        };
+        let state = match self.provider.state_by_block_hash(header.hash()) {
+            Ok(state) => state,
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure("canonical_state", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    block_hash = ?header.hash(),
+                    "Failed to get canonical state for stale fee-currency candidate recheck"
+                );
+                return None;
+            }
+        };
+        let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
+        let db = StateProviderDatabase::new(state.as_ref());
+        let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
+        let Some(usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
+            CeloPoolMetrics::maintainer_failure("currency_directory", 1);
+            return None;
+        };
+
+        // Recompute availability for the full pool so advancing the cache cannot hide a currency
+        // that became unavailable on the newer head.
+        let unavailable_currency: HashSet<TxHash> = self
+            .pool_txs_with_currency(|currency| !usable_currencies.contains(currency))
+            .into_iter()
+            .collect();
+        let candidate_transactions = self.pool.get_all(candidates.into_iter().collect());
+        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            candidate_transactions.iter().map(|vtx| &vtx.transaction),
+            &usable_currencies,
+            |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
+        );
+        let unavailable_currency_count = unavailable_currency.len();
+        let insufficient_balance_count = insufficient_balance.len();
+        let mut to_evict = unavailable_currency;
+        to_evict.extend(insufficient_balance);
+
+        Some(FeeCurrencyRevalidation {
+            scanned_hash: header.hash(),
+            usable_currencies,
+            to_evict,
+            unavailable_currency_count,
+            insufficient_balance_count,
+            lookup_failures,
+        })
+    }
+
+    fn apply_revalidation(&mut self, result: FeeCurrencyRevalidation) {
+        CeloPoolMetrics::maintainer_failure("balance_lookup", result.lookup_failures.len() as u64);
+        for (fee_currency, affected_senders) in
+            balance_lookup_failure_counts(result.lookup_failures)
+        {
+            tracing::warn!(
+                target: "celo::pool",
+                ?fee_currency,
+                affected_senders,
+                "Retaining pooled CIP-64 txs after canonical balance lookup failures"
+            );
+        }
+
+        if !result.to_evict.is_empty() {
+            CeloPoolMetrics::pool_eviction(result.to_evict.len() as u64);
+            tracing::info!(
+                target: "celo::pool",
+                count = result.to_evict.len(),
+                unavailable_currency = result.unavailable_currency_count,
+                insufficient_balance = result.insufficient_balance_count,
+                "Evicting invalid CIP-64 txs after canonical state update"
+            );
+            self.pool.remove_transactions(result.to_evict.into_iter().collect());
+        }
+
+        self.usable_currencies = Some(result.usable_currencies);
+    }
+
+    fn apply_head_checked_revalidation(
+        &mut self,
+        result: FeeCurrencyRevalidation,
+        latest_hash: Option<B256>,
+        recheck: impl FnOnce(&Self, HashSet<TxHash>) -> Option<(FeeCurrencyRevalidation, Option<B256>)>,
+    ) {
+        if revalidation_head_action(result.scanned_hash, latest_hash) ==
+            RevalidationHeadAction::Recheck
+        {
+            CeloPoolMetrics::stale_revalidation_result("recheck");
+            tracing::warn!(
+                target: "celo::pool",
+                scanned_hash = ?result.scanned_hash,
+                ?latest_hash,
+                candidate_count = result.to_evict.len(),
+                "Rechecking stale fee-currency eviction candidates"
+            );
+            let Some((rechecked, latest_hash)) = recheck(self, result.to_evict) else {
+                return;
+            };
+            if revalidation_head_action(rechecked.scanned_hash, latest_hash) ==
+                RevalidationHeadAction::Recheck
+            {
+                CeloPoolMetrics::stale_revalidation_result("discard");
+                tracing::warn!(
+                    target: "celo::pool",
+                    scanned_hash = ?rechecked.scanned_hash,
+                    ?latest_hash,
+                    "Discarding fee-currency candidates after the bounded recheck became stale"
+                );
+                return;
+            }
+            self.apply_revalidation(rechecked);
+        } else {
+            self.apply_revalidation(result);
         }
     }
 
-    /// Run the maintainer, listening for canonical state changes.
-    pub async fn run(
-        mut self,
-        mut events: reth_provider::CanonStateNotifications<crate::primitives::CeloPrimitives>,
-    ) {
+    /// Run the maintainer after canonical pool updates.
+    pub async fn run(mut self, mut events: watch::Receiver<u64>, executor: TaskExecutor)
+    where
+        Self: Send + 'static,
+    {
         // Try to seed the cache. If this fails, [`Self::on_new_block`]
         // detects the uninitialized state on its first successful query
-        // and scans the full pool against the freshly observed registry.
-        self.on_new_block();
+        // and scans the full pool against the freshly observed usable set.
+        self = self.on_new_block_blocking(&executor).await;
 
-        loop {
-            match events.recv().await {
-                Ok(_notification) => {
-                    self.on_new_block();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(
-                        target: "celo::pool",
-                        skipped,
-                        "Celo pool maintainer lagged, checking currencies"
-                    );
-                    self.on_new_block();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    tracing::warn!(
-                        target: "celo::pool",
-                        "Canonical state stream closed, stopping Celo pool maintainer"
-                    );
-                    break;
-                }
-            }
+        while events.changed().await.is_ok() {
+            // Mark the newest version observed before starting the scan. Updates arriving while
+            // the blocking task runs are coalesced and cause one immediate follow-up pass.
+            let _latest_version = *events.borrow_and_update();
+            self = self.on_new_block_blocking(&executor).await;
         }
     }
 
-    /// Handle a new canonical block: check if registered currencies changed
-    /// and evict CIP-64 txs with deregistered currencies.
+    /// Run the synchronous provider and EVM work outside the async runtime's worker threads.
+    async fn on_new_block_blocking(mut self, executor: &TaskExecutor) -> Self
+    where
+        Self: Send + 'static,
+    {
+        executor
+            .spawn_blocking(move || {
+                self.on_new_block();
+                self
+            })
+            .await
+            .expect("Celo pool fee-currency maintenance task panicked")
+    }
+
+    /// Handle a new canonical block: evict CIP-64 txs that are no longer valid against canonical
+    /// fee-currency registration and balance state.
     fn on_new_block(&mut self) {
-        let Some(new_currencies) = self.query_registered_currencies() else {
-            CeloPoolMetrics::maintainer_failure();
+        use reth_revm::database::StateProviderDatabase;
+
+        let _scan_timer = MaintainerScanTimer::start();
+        let header = match self.provider.latest_header() {
+            Ok(Some(header)) => header,
+            Ok(None) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    "Skipping canonical fee-currency revalidation without a canonical header"
+                );
+                return;
+            }
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure("latest_header", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    "Failed to get latest header for canonical fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        let state = match self.provider.state_by_block_hash(header.hash()) {
+            Ok(state) => state,
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure("canonical_state", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    block_hash = ?header.hash(),
+                    "Failed to get canonical state for fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
+        let db = StateProviderDatabase::new(state.as_ref());
+        // Use one EVM over one canonical state snapshot, at the fork active for the next block, so
+        // every query in this pass observes consistent state and opcode semantics.
+        let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
+
+        let Some(new_usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
+            CeloPoolMetrics::maintainer_failure("currency_directory", 1);
             return;
         };
 
-        let to_evict: Vec<TxHash> = match self.registered_currencies.as_ref() {
+        let unavailable_currency: Vec<TxHash> = match self.usable_currencies.as_ref() {
             // Cache is up to date — nothing to evict.
-            Some(old) if *old == new_currencies => Vec::new(),
+            Some(old) if *old == new_usable_currencies => Vec::new(),
             Some(old) => {
                 let removed: std::collections::HashSet<_> =
-                    old.difference(&new_currencies).copied().collect();
+                    old.difference(&new_usable_currencies).copied().collect();
                 if removed.is_empty() {
                     Vec::new()
                 } else {
-                    tracing::info!(
-                        target: "celo::pool",
-                        ?removed,
-                        "Detected deregistered fee currencies"
-                    );
                     self.pool_txs_with_currency(|fc| removed.contains(fc))
                 }
             }
             // First successful query (e.g. startup query failed and left
             // the cache empty). Diffing against an empty baseline would
-            // silently miss currencies that were deregistered during the
-            // outage, so scan the whole pool against the current registry.
-            None => self.pool_txs_with_currency(|fc| !new_currencies.contains(fc)),
+            // silently miss currencies that became unusable during the
+            // outage, so scan the whole pool against the current usable set.
+            None => self.pool_txs_with_currency(|fc| !new_usable_currencies.contains(fc)),
         };
 
-        if !to_evict.is_empty() {
-            CeloPoolMetrics::pool_eviction(to_evict.len() as u64);
-            tracing::info!(
-                target: "celo::pool",
-                count = to_evict.len(),
-                "Evicting CIP-64 txs with unregistered fee currencies"
-            );
-            self.pool.remove_transactions(to_evict);
-        }
+        let balance_candidates = balance_revalidation_candidates(&self.pool);
+        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+            balance_candidates.iter().map(|vtx| &vtx.transaction),
+            &new_usable_currencies,
+            |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
+        );
 
-        self.registered_currencies = Some(new_currencies);
+        let insufficient_balance_count = insufficient_balance.len();
+        let unavailable_currency_count = unavailable_currency.len();
+        let mut to_evict: HashSet<TxHash> = unavailable_currency.into_iter().collect();
+        to_evict.extend(insufficient_balance);
+        let result = FeeCurrencyRevalidation {
+            scanned_hash: header.hash(),
+            usable_currencies: new_usable_currencies,
+            to_evict,
+            unavailable_currency_count,
+            insufficient_balance_count,
+            lookup_failures,
+        };
+
+        let latest_hash = match self.provider.latest_header() {
+            Ok(latest) => latest.map(|latest| latest.hash()),
+            Err(e) => {
+                CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %e,
+                    scanned_hash = ?header.hash(),
+                    "Failed to confirm canonical head after fee-currency revalidation"
+                );
+                return;
+            }
+        };
+        self.apply_head_checked_revalidation(result, latest_hash, |this, candidates| {
+            let rechecked = this.recheck_eviction_candidates(candidates)?;
+            // The head update that made the full scan stale remains pending in the watch channel,
+            // so the next pass performs a full balance scan. This bounded recheck only needs to
+            // prevent already-found invalid transactions from lingering indefinitely.
+            let latest_hash = match this.provider.latest_header() {
+                Ok(latest) => latest.map(|latest| latest.hash()),
+                Err(e) => {
+                    CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
+                    tracing::warn!(
+                        target: "celo::pool",
+                        %e,
+                        scanned_hash = ?rechecked.scanned_hash,
+                        "Failed to confirm canonical head after stale candidate recheck"
+                    );
+                    return None;
+                }
+            };
+            Some((rechecked, latest_hash))
+        });
     }
 
     /// Collect hashes of pooled CIP-64 transactions whose fee currency
@@ -1986,7 +2520,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{make_test_tx, make_test_tx_with_nonce};
+    use crate::test_utils::{
+        make_test_tx, make_test_tx_with_nonce, make_test_tx_with_nonce_and_input,
+    };
 
     /// A fee-currency contract compiled with a recent Solidity emits PUSH0
     /// (0x5f, EIP-3855, a Shanghai opcode). The pool's system-call EVM must run
@@ -2013,7 +2549,10 @@ mod tests {
         };
 
         // BEDROCK maps to SpecId::MERGE (pre-Shanghai): PUSH0 is not activated.
-        let mut bedrock = build_pool_evm(make_db(), OpSpecId::BEDROCK);
+        let header = Header::default();
+        let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+        let mut bedrock =
+            build_pool_evm(make_db(), OpSpecId::BEDROCK, &header, &next_block_base_fee_fn);
         let at_bedrock = bedrock.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2025,7 +2564,8 @@ mod tests {
         );
 
         // Isthmus maps to SpecId::PRAGUE: the same bytecode runs to completion.
-        let mut isthmus = build_pool_evm(make_db(), OpSpecId::ISTHMUS);
+        let mut isthmus =
+            build_pool_evm(make_db(), OpSpecId::ISTHMUS, &header, &next_block_base_fee_fn);
         let at_isthmus = isthmus.transact_system_call_with_gas_limit(
             target,
             Bytes::new(),
@@ -2035,6 +2575,59 @@ mod tests {
             matches!(at_isthmus, Ok(ExecutionResult::Success { .. })),
             "PUSH0 must execute at the active spec, got {at_isthmus:?}",
         );
+    }
+
+    #[test]
+    fn pool_block_env_uses_next_block_fields() {
+        let beneficiary = Address::with_last_byte(0x42);
+        let prevrandao = B256::with_last_byte(0x77);
+        let parent = Header {
+            number: 123,
+            beneficiary,
+            timestamp: 456,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(25_000_000_000),
+            mix_hash: prevrandao,
+            ..Default::default()
+        };
+        let next_base_fee = 26_000_000_000;
+        let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(move |seen_parent, next_ts| {
+            assert_eq!(seen_parent.number, 123);
+            assert_eq!(next_ts, 457);
+            next_base_fee
+        });
+
+        let block = pool_block_env(&parent, OpSpecId::ISTHMUS, &next_block_base_fee_fn);
+
+        assert_eq!(block.number, U256::from(124));
+        assert_eq!(block.beneficiary, beneficiary);
+        assert_eq!(block.timestamp, U256::from(457));
+        assert_eq!(block.gas_limit, 30_000_000);
+        assert_eq!(block.basefee, next_base_fee);
+        assert_eq!(block.prevrandao, Some(prevrandao));
+    }
+
+    #[test]
+    fn stale_revalidation_head_requires_candidate_recheck() {
+        let scanned = B256::with_last_byte(1);
+
+        assert_eq!(revalidation_head_action(scanned, Some(scanned)), RevalidationHeadAction::Apply);
+        assert_eq!(
+            revalidation_head_action(scanned, Some(B256::with_last_byte(2))),
+            RevalidationHeadAction::Recheck
+        );
+        assert_eq!(revalidation_head_action(scanned, None), RevalidationHeadAction::Recheck);
+    }
+
+    #[test]
+    fn maintainer_spec_uses_next_block_timestamp() {
+        let activation_timestamp = 100;
+        let spec_fn: SpecFn = Arc::new(move |timestamp| {
+            if timestamp >= activation_timestamp { OpSpecId::ISTHMUS } else { OpSpecId::BEDROCK }
+        });
+
+        assert_eq!(spec_for_next_block(&spec_fn, activation_timestamp - 2), OpSpecId::BEDROCK);
+        assert_eq!(spec_for_next_block(&spec_fn, activation_timestamp - 1), OpSpecId::ISTHMUS);
     }
 
     #[test]
@@ -2272,8 +2865,36 @@ mod tests {
                 balance: self.balance,
                 state_nonce: Some(0),
                 debit_ok: self.debit_ok,
-                intrinsic_gas: self.intrinsic_gas,
+                intrinsic_gas: self
+                    .intrinsic_gas
+                    .map(|gas| IntrinsicGasSnapshot { gas, eth_spec: SpecId::PRAGUE }),
             }
+        }
+    }
+
+    struct SnapshotSpecLookup<'a> {
+        inner: &'a MockFcLookup,
+        eth_spec: SpecId,
+    }
+
+    impl FcLookup for SnapshotSpecLookup<'_> {
+        fn lookup_rate_and_balance(
+            &self,
+            fee_currency: Address,
+            fee_currency_directory: Address,
+            balance_check: Option<(Address, U256)>,
+        ) -> FcLookupResult {
+            let mut result = self.inner.lookup_rate_and_balance(
+                fee_currency,
+                fee_currency_directory,
+                balance_check,
+            );
+            result
+                .intrinsic_gas
+                .as_mut()
+                .expect("snapshot-spec tests require intrinsic gas")
+                .eth_spec = self.eth_spec;
+            result
         }
     }
 
@@ -2329,7 +2950,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         match result {
@@ -2340,6 +2960,44 @@ mod tests {
             }
             other => panic!("expected IntrinsicGasTooLow, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn admission_intrinsic_gas_uses_lookup_snapshot_spec() {
+        let fc = Address::with_last_byte(0xED);
+        // One non-zero calldata byte costs 68 gas at Homestead and 16 gas at Prague.
+        // A stale Prague spec would admit this transaction at 21_016 gas.
+        let mut tx = make_test_tx_with_nonce_and_input(
+            Some(fc),
+            0,
+            21_016,
+            1_000_000_000,
+            100,
+            Address::with_last_byte(1),
+            Bytes::from_static(&[1]),
+        );
+        let mock = MockFcLookup {
+            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
+            balance: Some(U256::MAX),
+            debit_ok: Some(true),
+            intrinsic_gas: Some(0),
+        };
+        let lookup = SnapshotSpecLookup { inner: &mock, eth_spec: SpecId::HOMESTEAD };
+
+        let result = apply_exchange_rates_to_pool_tx(
+            &lookup,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &no_pooled_txs,
+        );
+
+        assert!(
+            matches!(result, Err(CeloPoolRejection::IntrinsicGasTooLow { required: 21_068, .. })),
+            "intrinsic gas must use the spec from the lookup snapshot: {result:?}"
+        );
     }
 
     /// The same tx with a gas limit exactly at the build-time intrinsic gas
@@ -2365,7 +3023,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             result.is_ok(),
@@ -2393,7 +3050,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
 
@@ -2424,17 +3080,8 @@ mod tests {
             intrinsic_gas: None,
         };
 
-        apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &no_pooled_txs,
-            SpecId::PRAGUE,
-        )
-        .expect("ok");
+        apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &no_pooled_txs)
+            .expect("ok");
 
         assert_eq!(
             *tx.cost(),
@@ -2457,7 +3104,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::UnregisteredCurrency(_))));
     }
@@ -2481,7 +3127,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::InsufficientBalance { .. })));
     }
@@ -2513,7 +3158,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::BalanceLookupFailed { .. })),
@@ -2541,7 +3185,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         let err = result.expect_err("a failed state-nonce read must fail closed");
@@ -2563,7 +3206,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
 
         assert!(
@@ -2595,7 +3237,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowBaseFeeFloor { .. })));
     }
@@ -2623,7 +3264,6 @@ mod tests {
             100,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::BelowMinTip { .. })));
     }
@@ -2647,7 +3287,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::DebitSimulationFailed { .. })));
     }
@@ -2757,7 +3396,6 @@ mod tests {
             0,
             Some(100_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok());
     }
@@ -2784,7 +3422,6 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -2804,7 +3441,6 @@ mod tests {
             0,
             Some(1_000_000_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })));
     }
@@ -2825,7 +3461,6 @@ mod tests {
                 0,
                 cap,
                 &no_pooled_txs,
-                SpecId::PRAGUE,
             );
             assert!(result.is_ok(), "cap={cap:?} should disable fee cap check");
         }
@@ -2860,7 +3495,6 @@ mod tests {
             150,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::BelowMinTip { actual: 100, .. })),
@@ -2893,7 +3527,6 @@ mod tests {
             100,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Should accept: effective tip (200) >= min tip (100)");
     }
@@ -2958,7 +3591,6 @@ mod tests {
             0,
             Some(100_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(
             matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
@@ -2988,7 +3620,6 @@ mod tests {
             0,
             Some(100_000_000),
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "Favorable rate should keep cost within cap; got {result:?}");
     }
@@ -3019,7 +3650,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "floor=0 should accept any fee; got {result:?}");
     }
@@ -3046,7 +3676,6 @@ mod tests {
             0,
             None,
             &no_pooled_txs,
-            SpecId::PRAGUE,
         );
         assert!(result.is_ok(), "max_fee == floor should be accepted; got {result:?}");
     }
@@ -3076,16 +3705,7 @@ mod tests {
 
         // gas=100, max_fee=100 → required_fc = 10_000; 10_000 + 10_000 > 15_000 → reject
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(
             matches!(r, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
             "tx exceeding pooled expenditure + balance must be rejected; got {r:?}"
@@ -3122,16 +3742,7 @@ mod tests {
         let validate =
             |max_fee: u128, pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
                 let mut tx = make_test_tx(Some(fc), 21_000, max_fee, 1, sender);
-                apply_exchange_rates_to_pool_tx(
-                    &mock,
-                    &mut tx,
-                    Address::ZERO,
-                    0,
-                    0,
-                    None,
-                    pooled,
-                    SpecId::PRAGUE,
-                )
+                apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
             };
 
         // 1. Empty pool.
@@ -3174,16 +3785,7 @@ mod tests {
         };
         let validate = |pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
             let mut tx = make_test_tx(Some(fc), 21_000, 120, 1, sender);
-            apply_exchange_rates_to_pool_tx(
-                &mock,
-                &mut tx,
-                Address::ZERO,
-                0,
-                0,
-                None,
-                pooled,
-                SpecId::PRAGUE,
-            )
+            apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
         };
 
         let replacing = |_: Address, _: Address, _: u64, _: u64| {
@@ -3225,16 +3827,7 @@ mod tests {
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
         let expected_nonce = tx.nonce();
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "tx should be admitted; got {r:?}");
         assert_eq!(
             queried.get(),
@@ -3260,16 +3853,7 @@ mod tests {
         let pooled = |_: Address, _: Address, _: u64, _: u64| (U256::from(15_000u64), U256::ZERO);
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-            SpecId::PRAGUE,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "spending exactly the full balance must be admitted; got {r:?}");
     }
 
@@ -3357,6 +3941,21 @@ mod tests {
         assert_eq!(sum_pooled_fc_costs(&[], fc, 0, 0), (U256::ZERO, U256::ZERO));
     }
 
+    #[test]
+    fn balance_lookup_failures_are_counted_per_currency() {
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let failures = [
+            (Address::with_last_byte(1), fc_a),
+            (Address::with_last_byte(2), fc_a),
+            (Address::with_last_byte(3), fc_b),
+        ];
+
+        let counts = balance_lookup_failure_counts(failures);
+
+        assert_eq!(counts, HashMap::from([(fc_a, 2), (fc_b, 1)]));
+    }
+
     /// Test that the eviction filter logic in `on_new_block` correctly
     /// identifies CIP-64 txs whose fee currency was deregistered while
     /// leaving native txs and txs with still-registered currencies alone.
@@ -3422,6 +4021,46 @@ mod tests {
 
         assert_eq!(to_evict.len(), 1, "only the unregistered CIP-64-B tx should be evicted");
         assert_eq!(to_evict[0], *cip64_b.hash());
+    }
+
+    #[test]
+    fn usable_fee_currencies_exclude_missing_exchange_rates() {
+        let usable = Address::with_last_byte(0xA0);
+        let missing_rate = Address::with_last_byte(0xB0);
+
+        let currencies = usable_fee_currencies([usable, missing_rate], |currency| {
+            Ok::<_, ()>(
+                (currency == usable).then_some(ExchangeRate { numerator: 1, denominator: 1 }),
+            )
+        })
+        .expect("unsupported rates are not lookup failures");
+
+        assert_eq!(currencies, HashSet::from([usable]));
+    }
+
+    #[test]
+    fn usable_fee_currency_lookup_error_aborts_scan() {
+        let usable = Address::with_last_byte(0xA0);
+        let lookup_failed = Address::with_last_byte(0xB0);
+        let not_visited = Address::with_last_byte(0xC0);
+        let mut visited = Vec::new();
+
+        let result = usable_fee_currencies([usable, lookup_failed, not_visited], |currency| {
+            visited.push(currency);
+            if currency == lookup_failed {
+                Err("rate lookup failed")
+            } else {
+                Ok(Some(ExchangeRate { numerator: 1, denominator: 1 }))
+            }
+        });
+
+        assert_eq!(result, Err("rate lookup failed"));
+        assert_eq!(visited, vec![usable, lookup_failed], "the scan must stop at the first error");
+    }
+
+    #[test]
+    fn malformed_exchange_rate_is_a_lookup_error() {
+        assert!(try_decode_exchange_rate(&[]).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -3515,7 +4154,6 @@ mod tests {
                     &|sender, fc, nonce, state_nonce| {
                         pooled_fc_costs(sender, fc, nonce, state_nonce)
                     },
-                    SpecId::PRAGUE,
                 );
                 if let Some(gate) = &self.gate {
                     gate.entered.fetch_add(1, AtomicOrdering::SeqCst);
@@ -3577,6 +4215,120 @@ mod tests {
             let state_nonce = Arc::new(AtomicU64::new(0));
             let pool = test_pool_with_controls(balance, state_nonce.clone(), None);
             (pool, state_nonce)
+        }
+
+        /// Canonical maintenance must wake the Celo maintainer only after the wrapped reth pool
+        /// has processed the update. The watch channel keeps only the newest version, so multiple
+        /// heads received during one balance scan require only one follow-up scan.
+        #[tokio::test]
+        async fn canonical_updates_coalesce_to_the_latest_pool_update() {
+            use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
+
+            let pool = test_pool(25_000);
+            let mut updates = pool.subscribe_to_canonical_updates();
+            let tip = SealedBlock::seal_slow(crate::primitives::CeloBlock::default());
+
+            for _ in 0..2 {
+                pool.on_canonical_state_change(CanonicalStateUpdate {
+                    new_tip: &tip,
+                    pending_block_base_fee: 0,
+                    pending_block_blob_fee: None,
+                    changed_accounts: Vec::new(),
+                    mined_transactions: Vec::new(),
+                    update_kind: PoolUpdateKind::Commit,
+                });
+            }
+
+            updates.changed().await.expect("canonical update sender must remain open");
+            assert_eq!(*updates.borrow_and_update(), 2, "both updates must reach the latest value");
+            assert!(
+                !updates.has_changed().expect("canonical update sender must remain open"),
+                "the two updates must coalesce into one wake-up"
+            );
+        }
+
+        /// Balance maintenance follows op-geth's executable-list behavior: nonce-gapped queued
+        /// transactions remain parked and are not queried on every canonical head.
+        #[tokio::test]
+        async fn balance_revalidation_candidates_exclude_queued_transactions() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let pending = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let queued = make_test_tx_with_nonce(Some(fc), 2, 100, 100, 10, sender);
+            let pending_hash = *pending.hash();
+            let queued_hash = *queued.hash();
+
+            pool.add_transaction(TransactionOrigin::External, pending)
+                .await
+                .expect("nonce-zero transaction must be admitted");
+            pool.add_transaction(TransactionOrigin::External, queued)
+                .await
+                .expect("nonce-gapped transaction must be admitted");
+            assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+
+            let candidates = balance_revalidation_candidates(&pool);
+
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(*candidates[0].hash(), pending_hash);
+            assert!(candidates.iter().all(|tx| *tx.hash() != queued_hash));
+        }
+
+        #[tokio::test]
+        async fn stale_maintainer_result_is_rechecked_before_eviction() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+
+            let scanned_hash = B256::with_last_byte(1);
+            let fresh_hash = B256::with_last_byte(2);
+            let initial = FeeCurrencyRevalidation {
+                scanned_hash,
+                usable_currencies: HashSet::from([fc]),
+                to_evict: HashSet::from([tx_hash]),
+                unavailable_currency_count: 0,
+                insufficient_balance_count: 1,
+                lookup_failures: Vec::new(),
+            };
+            let provider = reth_provider::test_utils::MockEthProvider::default();
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider,
+                Address::ZERO,
+                spec_fn,
+                next_block_base_fee_fn,
+            );
+            let recheck_called = std::cell::Cell::new(false);
+
+            maintainer.apply_head_checked_revalidation(
+                initial,
+                Some(fresh_hash),
+                |_, candidates| {
+                    recheck_called.set(true);
+                    assert_eq!(candidates, HashSet::from([tx_hash]));
+                    Some((
+                        FeeCurrencyRevalidation {
+                            scanned_hash: fresh_hash,
+                            usable_currencies: HashSet::from([fc]),
+                            to_evict: HashSet::new(),
+                            unavailable_currency_count: 0,
+                            insufficient_balance_count: 0,
+                            lookup_failures: Vec::new(),
+                        },
+                        Some(fresh_hash),
+                    ))
+                },
+            );
+
+            assert!(recheck_called.get(), "a stale full scan must invoke the bounded recheck");
+            assert!(pool.get(&tx_hash).is_some(), "the stale eviction candidate must be retained");
         }
 
         /// A sender's transactions must observe earlier transactions from the
@@ -3934,6 +4686,97 @@ mod tests {
             let tx = make_test_tx_with_nonce(Some(fc), 1, 10, 1_000, 950, sender);
             pool.add_transaction(TransactionOrigin::External, tx).await.expect("fits");
         }
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_uses_original_fee_currency_cost() {
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let mut tx = make_test_tx(Some(fc), 100, 200, 10, sender);
+
+        tx.apply_exchange_rate(ExchangeRate { numerator: 2, denominator: 1 });
+
+        assert_eq!(tx.max_fee_per_gas(), 100, "pool fee accessor should be native-equivalent");
+        assert_eq!(
+            tx.fc_gas_cost(),
+            U256::from(20_000u64),
+            "canonical balance checks must use the original fee-currency fee cap"
+        );
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_keeps_individually_affordable_transactions() {
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let first = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+        let second = make_test_tx_with_nonce(Some(fc), 1, 100, 100, 10, sender);
+        let registered = HashSet::from([fc]);
+
+        // Each tx costs 10_000 and is individually affordable, but the nonce-contiguous
+        // prefix costs 20_000 against a balance of 15_000. Input order must not matter.
+        let (to_evict, lookup_failures) =
+            txs_with_insufficient_fee_currency_balance([&second, &first], &registered, |_, _| {
+                Some(U256::from(15_000u64))
+            });
+
+        assert!(
+            to_evict.is_empty(),
+            "canonical maintenance must not delete transactions that reth would park"
+        );
+        assert!(lookup_failures.is_empty());
+    }
+
+    #[test]
+    fn canonical_balance_revalidation_is_cached_isolated_and_fail_open() {
+        use reth_transaction_pool::PoolTransaction;
+        use std::{cell::RefCell, collections::HashSet};
+
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let fc_unregistered = Address::with_last_byte(0xC0);
+        let sender_a = Address::with_last_byte(1);
+        let sender_b = Address::with_last_byte(2);
+
+        let exact_balance = make_test_tx(Some(fc_a), 100, 100, 10, sender_a);
+        let same_pair_unaffordable = make_test_tx(Some(fc_a), 101, 100, 10, sender_a);
+        let different_sender_unaffordable = make_test_tx(Some(fc_a), 100, 100, 10, sender_b);
+        let failed_lookup = make_test_tx(Some(fc_b), 100, 100, 10, sender_a);
+        let failed_lookup_again = make_test_tx(Some(fc_b), 101, 100, 10, sender_a);
+        let unregistered = make_test_tx(Some(fc_unregistered), 100, 100, 10, sender_a);
+        let native = make_test_tx(None, 100, 100, 10, sender_a);
+        let txs = [
+            &exact_balance,
+            &same_pair_unaffordable,
+            &different_sender_unaffordable,
+            &failed_lookup,
+            &failed_lookup_again,
+            &unregistered,
+            &native,
+        ];
+        let registered = HashSet::from([fc_a, fc_b]);
+        let calls = RefCell::new(HashMap::new());
+
+        let (to_evict, lookup_failures) =
+            txs_with_insufficient_fee_currency_balance(txs, &registered, |sender, fee_currency| {
+                *calls.borrow_mut().entry((sender, fee_currency)).or_insert(0usize) += 1;
+                match (sender, fee_currency) {
+                    (sender, fc) if sender == sender_a && fc == fc_a => Some(U256::from(10_000u64)),
+                    (sender, fc) if sender == sender_b && fc == fc_a => Some(U256::from(9_999u64)),
+                    (sender, fc) if sender == sender_a && fc == fc_b => None,
+                    pair => panic!("unexpected balance lookup for {pair:?}"),
+                }
+            });
+
+        assert_eq!(
+            HashSet::<TxHash>::from_iter(to_evict),
+            HashSet::from([*same_pair_unaffordable.hash(), *different_sender_unaffordable.hash(),])
+        );
+        assert_eq!(lookup_failures, vec![(sender_a, fc_b)]);
+        assert_eq!(
+            calls.into_inner(),
+            HashMap::from([((sender_a, fc_a), 1), ((sender_b, fc_a), 1), ((sender_a, fc_b), 1),]),
+            "each registered sender/currency pair should be queried once"
+        );
     }
 }
 
