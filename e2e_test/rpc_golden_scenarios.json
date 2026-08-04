@@ -146,7 +146,7 @@
         "tracer": "callTracer"
       }
     ],
-    "note": "CIP-64 with real gas prices, so the fee-currency debit and credit actually run. gasUsed here covers the fee currency's registered intrinsic gas."
+    "note": "CIP-64 with real gas prices. What this pins is the intrinsic gas: gasUsed covers the fee currency's registered surcharge, 0x11558 against 0x5208 for the same transfer paid natively. It does NOT pin the fee-currency debit -- the call env runs with the base fee disabled, so no fee is charged at all on this path; traceCall_cip64_prestateTracer_diff shows the resulting state diff carrying no fee-currency account. The debit and credit are pinned by the mined receipt goldens."
   },
   {
     "name": "traceCall_cip64_no_fees_callTracer",
