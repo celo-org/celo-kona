@@ -26,10 +26,15 @@
 #     rpc_golden_summary        # prints totals; returns 1 on a failure or a bless
 #
 # Extra jq arguments (for filters that need a runtime value, e.g. the block's
-# randomized dev fee recipient) are taken from the RPC_JQ_ARGS array:
+# randomized dev fee recipient) are taken from the RPC_JQ_ARGS array. They apply
+# to the *next* check only and are cleared as it consumes them, so a forgotten
+# reset cannot leak into an unrelated golden:
 #     RPC_JQ_ARGS=(--arg miner "$miner")
 #     rpc_golden ... '.logs |= map(...)'
-#     RPC_JQ_ARGS=()
+# Leaking would fail *open* rather than closed — a stale --arg minerTopic makes
+# the credit-topic filter rewrite a topic using a previous block's fee
+# recipient, and the golden still compares equal. A filter that references an
+# argument nobody supplied fails loudly instead, as a jq error.
 #
 # Regenerating goldens after an intentional output change:
 #     BLESS=1 e2e_test/test_rpc_golden.sh   # exits non-zero: it asserts nothing
@@ -88,9 +93,17 @@ _rpc_error_msg() {
 
 # Sorted, filtered, pretty-printed `.result`. Pretty-printing keeps the committed
 # goldens reviewable line-by-line in a pull request rather than as one long line.
-_rpc_normalize() { # <response> <jq-filter>
+_rpc_normalize() { # <response> <jq-filter> [jq-args...]
     local response=$1 filter=$2
-    jq -S --indent 2 "${RPC_JQ_ARGS[@]}" ".result | ($filter)" <<<"$response"
+    shift 2
+    jq -S --indent 2 "$@" ".result | ($filter)" <<<"$response"
+}
+
+# Take RPC_JQ_ARGS for the check that is starting and clear it, so the args
+# cannot survive into the next one. Callers use the `_rpc_jq_args` array.
+_rpc_take_jq_args() {
+    _rpc_jq_args=("${RPC_JQ_ARGS[@]}")
+    RPC_JQ_ARGS=()
 }
 
 # Compare $2 against the committed golden for $1, or (re)write it under BLESS=1.
@@ -131,7 +144,8 @@ _rpc_compare_golden() { # <name> <normalized-json>
 # rpc_golden_summary.
 rpc_golden() {
     local name=$1 method=$2 params=$3 filter=${4:-.}
-    local response normalized
+    local response normalized _rpc_jq_args=()
+    _rpc_take_jq_args
 
     if ! response=$(rpc_call "$method" "$params"); then
         _rpc_fail "$name" "transport error talking to $RPC_URL (node down?)"
@@ -145,7 +159,7 @@ rpc_golden() {
         _rpc_fail "$name" "unexpected JSON-RPC error: $(_rpc_error_msg "$response")"
         return 0
     fi
-    if ! normalized=$(_rpc_normalize "$response" "$filter" 2>&1); then
+    if ! normalized=$(_rpc_normalize "$response" "$filter" "${_rpc_jq_args[@]}" 2>&1); then
         _rpc_fail "$name" "jq filter failed: $normalized"
         return 0
     fi
@@ -157,8 +171,9 @@ rpc_golden() {
 # over several calls, a derived expectation — rather than one RPC response.
 rpc_golden_json() {
     local name=$1 value=$2
-    local normalized
-    if ! normalized=$(jq -S --indent 2 "${RPC_JQ_ARGS[@]}" . <<<"$value" 2>&1); then
+    local normalized _rpc_jq_args=()
+    _rpc_take_jq_args
+    if ! normalized=$(jq -S --indent 2 "${_rpc_jq_args[@]}" . <<<"$value" 2>&1); then
         _rpc_fail "$name" "value is not valid JSON: $normalized"
         return 0
     fi
@@ -224,6 +239,8 @@ rpc_expect_error() {
 rpc_expect_same() {
     local name=$1 method_a=$2 params_a=$3 method_b=$4 params_b=$5 filter=${6:-.}
     local response normalized normalized_a normalized_b method params side
+    local _rpc_jq_args=()
+    _rpc_take_jq_args
 
     for side in a b; do
         if [[ $side == a ]]; then
@@ -243,7 +260,7 @@ rpc_expect_same() {
             _rpc_fail "$name" "$method: unexpected JSON-RPC error: $(_rpc_error_msg "$response")"
             return 0
         fi
-        if ! normalized=$(_rpc_normalize "$response" "$filter" 2>&1); then
+        if ! normalized=$(_rpc_normalize "$response" "$filter" "${_rpc_jq_args[@]}" 2>&1); then
             _rpc_fail "$name" "$method: jq filter failed: $normalized"
             return 0
         fi
