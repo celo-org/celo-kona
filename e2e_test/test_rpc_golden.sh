@@ -51,7 +51,10 @@
 # reports the tally and decides the exit status. Setup steps abort explicitly.
 set -o pipefail
 
-source shared.sh
+# By path, not by name: a bare `source shared.sh` only resolves when the caller
+# happens to run from e2e_test/, and without `set -e` a miss would leave every
+# address below empty instead of aborting.
+source "$(dirname "$0")/shared.sh"
 
 if [[ -n "${NETWORK:-}" ]]; then
     echo "SKIP: golden RPC tests only run against the local dev genesis (NETWORK=$NETWORK)"
