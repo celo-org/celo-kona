@@ -296,6 +296,15 @@ while IFS= read -r scenario; do
     rpc_golden "$name" "$method" "$params" "$filter" "$note"
 done < <(jq -c '.[]' "$SCRIPT_DIR/rpc_golden_scenarios.json")
 
+# op-geth binds the fee-currency key case-insensitively and clients rely on it.
+# Asserted against the canonical-key estimate rather than pinned as a second
+# golden: two files would state the equality only by coincidence, and would let
+# one regression be blessed into both at once.
+CIP64_ESTIMATE_REQ="\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\""
+rpc_expect_same estimateGas_cip64_lowercase_key_matches_canonical \
+    eth_estimateGas "[{$CIP64_ESTIMATE_REQ, \"feecurrency\": \"$FEE_CURRENCY\"}, \"0x0\"]" \
+    eth_estimateGas "[{$CIP64_ESTIMATE_REQ, \"feeCurrency\": \"$FEE_CURRENCY\"}, \"0x0\"]"
+
 # `eth_gasPrice` and `eth_maxPriorityFeePerGas` take no block argument; they are
 # pinned here because no block has been mined yet, so the head is still genesis.
 rpc_golden_json gas_price_at_genesis "$(jq -n \
