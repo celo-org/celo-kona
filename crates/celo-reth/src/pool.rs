@@ -1993,6 +1993,16 @@ fn txs_with_insufficient_fee_currency_balance<'a>(
     (to_evict, lookup_failures)
 }
 
+fn balance_lookup_failure_counts(
+    failures: impl IntoIterator<Item = (Address, Address)>,
+) -> HashMap<Address, usize> {
+    let mut counts = HashMap::new();
+    for (_, fee_currency) in failures {
+        *counts.entry(fee_currency).or_default() += 1;
+    }
+    counts
+}
+
 /// Return only transactions executable against the pool's current canonical state.
 ///
 /// Balance maintenance intentionally follows op-geth's pending-list scan. Parked transactions are
@@ -2166,7 +2176,7 @@ where
         let output =
             call_read_only(evm, fee_currency, calldata.into(), Some(POOL_SYSTEM_CALL_GAS_LIMIT))
                 .inspect_err(|e| {
-                    tracing::warn!(
+                    tracing::debug!(
                         target: "celo::pool",
                         %e,
                         ?sender,
@@ -2179,7 +2189,7 @@ where
 
         IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output)
             .inspect_err(|e| {
-                tracing::warn!(
+                tracing::debug!(
                     target: "celo::pool",
                     %e,
                     ?sender,
@@ -2265,13 +2275,17 @@ where
     }
 
     fn apply_revalidation(&mut self, result: FeeCurrencyRevalidation) {
-        for (sender, fee_currency) in result.lookup_failures {
+        for _ in 0..result.lookup_failures.len() {
             CeloPoolMetrics::maintainer_failure();
+        }
+        for (fee_currency, affected_senders) in
+            balance_lookup_failure_counts(result.lookup_failures)
+        {
             tracing::warn!(
                 target: "celo::pool",
-                ?sender,
                 ?fee_currency,
-                "Retaining pooled CIP-64 txs after canonical balance lookup failure"
+                affected_senders,
+                "Retaining pooled CIP-64 txs after canonical balance lookup failures"
             );
         }
 
@@ -3936,6 +3950,21 @@ mod tests {
     fn test_sum_pooled_fc_costs_empty() {
         let fc = Address::with_last_byte(0xAA);
         assert_eq!(sum_pooled_fc_costs(&[], fc, 0, 0), (U256::ZERO, U256::ZERO));
+    }
+
+    #[test]
+    fn balance_lookup_failures_are_counted_per_currency() {
+        let fc_a = Address::with_last_byte(0xA0);
+        let fc_b = Address::with_last_byte(0xB0);
+        let failures = [
+            (Address::with_last_byte(1), fc_a),
+            (Address::with_last_byte(2), fc_a),
+            (Address::with_last_byte(3), fc_b),
+        ];
+
+        let counts = balance_lookup_failure_counts(failures);
+
+        assert_eq!(counts, HashMap::from([(fc_a, 2), (fc_b, 1)]));
     }
 
     /// Test that the eviction filter logic in `on_new_block` correctly
