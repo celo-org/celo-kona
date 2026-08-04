@@ -237,8 +237,13 @@ TRACE_TX_FILTER='del(.blockHash)'
 # of thousands of lines and unreviewable, while the stack *depth* still moves
 # whenever the opcode sequence does. Stack contents are covered by the prestate
 # and callTracer goldens.
+#
+# The step's own `error` is kept: without it a halt at the interpreter boundary
+# (out of gas, stack underflow, invalid jump) shows up only as a discontinuity
+# in the gas column, and the top-level `failed` flag reports the frame's outcome
+# rather than which step produced it.
 STRUCTLOG_FILTER='{gas, failed, returnValue, structLogs: [.structLogs[]
-    | "\(.pc) \(.op) gas=\(.gas) cost=\(.gasCost) depth=\(.depth) refund=\(.refund) stack=\(.stack | length)"]}'
+    | "\(.pc) \(.op) gas=\(.gas) cost=\(.gasCost) depth=\(.depth) refund=\(.refund) stack=\(.stack | length) err=\(.error // "")"]}'
 # The gas ratios are the only JSON floats in the whole corpus, and jq renders
 # doubles differently across versions (1.6 prints `0` where 1.7 keeps `0.0`),
 # which would show up as a golden diff on a machine with an older jq. Pin them
