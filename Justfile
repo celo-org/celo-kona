@@ -31,7 +31,7 @@ test:
 # trybuild-managed sub-target, so this is split off from `just test` and only
 # runs in CI post-merge to main.
 test-trybuild:
-  cargo nextest run -p celo-reth --test units_compile_fail
+  cargo nextest run -p celo-revm --test units_compile_fail
 
 # Runs benchmarks
 benches:

@@ -7,7 +7,7 @@ error[E0369]: cannot add `Fc` to `Native`
   |             Native
   |
 note: `Native` does not implement `Add<Fc>`
- --> $WORKSPACE/crates/celo-revm/src/units.rs
+ --> src/units.rs
   |
   | pub struct Native(u128);
   | ^^^^^^^^^^^^^^^^^ `Native` is defined in another crate

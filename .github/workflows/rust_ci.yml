@@ -31,15 +31,16 @@ jobs:
         run: just test
 
   # The trybuild compile-fail guard for `celo_revm::units` (see
-  # `crates/celo-reth/tests/units_compile_fail.rs`) recompiles the full
-  # dep tree once per UI fixture in a trybuild-managed sub-target, which
-  # routinely pushes past the main `test` job's 40-minute budget. Run it
-  # in its own job, only on push to main, so PRs aren't blocked on it.
+  # `crates/celo-revm/tests/units_compile_fail.rs`) recompiles its dep tree
+  # once per UI fixture in a trybuild-managed sub-target. It lives in its own
+  # job so a from-scratch fixture compile can't eat the main `test` job's
+  # budget. It runs on PRs: hosting the fixture in `celo-revm` rather than
+  # `celo-reth` keeps that sub-compile small, and a main-only guard cannot
+  # block the change that breaks it.
   trybuild:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     name: trybuild
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
