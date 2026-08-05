@@ -1,0 +1,9 @@
+{
+  "baseFeePerGas": "0x3b9aca00",
+  "extraData": "0x0100000032000000060000000000000000",
+  "gasLimit": "0x1c9c380",
+  "hash": "0x33e91023d38320e6815cb5aa3778f7520f0ebca4bc9d49ff07b4afb1ac7b0083",
+  "miner": "0x0000000000000000000000000000000000000000",
+  "stateRoot": "0x16bad87041e724a2c5343ae602f2f9a44872c9364b08655a4fafeda2f3d5db7d",
+  "timestamp": "0x6490fdd2"
+}

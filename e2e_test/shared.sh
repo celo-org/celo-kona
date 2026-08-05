@@ -1,7 +1,11 @@
 #!/bin/bash
 #shellcheck disable=SC2034  # unused vars make sense in a shared file
 
-SCRIPT_DIR=$(readlink -f "$(dirname "$0")")
+# Resolved from this file, not from the caller's $0: run_all_tests.sh sources us
+# after cd-ing into e2e_test, at which point its own relative $0 no longer
+# resolves and readlink -f yields an empty SCRIPT_DIR. Every caller lives in this
+# directory, so the value is unchanged for all of them.
+SCRIPT_DIR=$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")
 export SCRIPT_DIR
 export TERM="${TERM:-xterm-256color}"
 
@@ -66,7 +70,7 @@ export ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 
 prepare_node() {
     (
-        cd js-tests || exit 1
+        cd "$SCRIPT_DIR/js-tests" || exit 1
         # re-install when .package-lock.json is missing　or package-lock.json is newer than it
         if [[ ! -f node_modules/.package-lock.json ]] || 
            [[ package-lock.json -nt node_modules/.package-lock.json ]]; then
