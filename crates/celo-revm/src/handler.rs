@@ -2503,6 +2503,118 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The same guarantee on the *committing* entry points. Revm's defaulted `transact_commit`
+    // (and its inspecting siblings) propagate the error before `commit_inner()` reaches its
+    // `finalize()`, so a DB-backed caller that keeps the EVM after a rejection would find the
+    // orphaned state still in the journal — and the next accepted transaction would commit it.
+    // `api/exec.rs` overrides them to drain unconditionally and commit only on the `Ok` arm.
+    //
+    // Both halves are asserted: nothing left in the journal, and nothing written to the database.
+    // The second is what distinguishes the committing path — draining *into* the commit would be
+    // just as wrong as not draining at all.
+    //
+    // `transact_many_commit` and `replay_commit` need no override and get no test here: they
+    // inherit the drain from `transact_many` and from the overridden `replay` above.
+
+    /// Drive a CIP-64 transaction that is rejected *after* the fee debit through `run`, then
+    /// require that the rejection left nothing behind on either side of the commit boundary.
+    /// Shared by the committing-entry-point tests below, which differ only in `run`.
+    fn assert_rejecting_commit_entry_point_drains(
+        entry_point: &str,
+        run: impl FnOnce(
+            &mut CeloEvm<InMemoryDB, NoOpInspector>,
+        ) -> Result<
+            revm::context_interface::result::ExecutionResult<OpHaltReason>,
+            EVMError<<InMemoryDB as revm::Database>::Error, OpTransactionError>,
+        >,
+    ) {
+        use revm::{Database, context_interface::ContextTr, handler::EvmTr};
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // Same nonce-too-low setup as above: a rejection check that runs *after* the fee debit,
+        // so the transaction really does put state in the journal before it is rejected.
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            100_000,
+            100,
+            10,
+            1,
+        );
+
+        let err = run(&mut evm).expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+
+        // Draining again must yield nothing: the override already took and dropped whatever the
+        // rejected transaction left behind.
+        let residue = evm.finalize();
+        assert!(
+            residue.is_empty(),
+            "a rejected CIP-64 tx left {} account(s) in the journal after `{entry_point}`; the \
+             next transaction on this EVM would finalize them as if they were its own",
+            residue.len()
+        );
+
+        // ...and that drain must not have gone to the database instead. The sender's nonce is the
+        // cheapest witness: the rejected tx executed far enough to bump it in the journal.
+        let committed_nonce = evm
+            .inner
+            .ctx()
+            .db_mut()
+            .basic(sender)
+            .expect("the in-memory db is infallible")
+            .map(|acct| acct.nonce)
+            .unwrap_or_default();
+        assert_eq!(
+            committed_nonce, 1,
+            "`{entry_point}` wrote a rejected CIP-64 tx's state to the database \
+             (nonce {committed_nonce} != the pre-tx 1); it must drop what it drains"
+        );
+    }
+
+    #[test]
+    fn rejected_cip64_tx_drains_the_journal_on_transact_commit() {
+        use revm::{ExecuteCommitEvm, context_interface::ContextTr, handler::EvmTr};
+
+        assert_rejecting_commit_entry_point_drains("transact_commit", |evm| {
+            let tx = evm.inner.ctx().tx().clone();
+            evm.transact_commit(tx)
+        });
+    }
+
+    /// The inspecting sibling. `inspect_commit` routes through `inspect_tx_commit`, so covering
+    /// the latter covers both.
+    #[test]
+    fn rejected_cip64_tx_drains_the_journal_on_inspect_tx_commit() {
+        use revm::{context_interface::ContextTr, handler::EvmTr, inspector::InspectCommitEvm};
+
+        assert_rejecting_commit_entry_point_drains("inspect_tx_commit", |evm| {
+            let tx = evm.inner.ctx().tx().clone();
+            evm.inspect_tx_commit(tx)
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Caveat: revert-on-rejection must NOT become revert-on-execution-revert. A CIP-64 tx
     // that is *included* but whose EVM execution reverts still owes gas — the fee stays
     // debited (the checkpoint is committed in validation, before execution runs, so an

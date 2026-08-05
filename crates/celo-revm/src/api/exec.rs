@@ -11,10 +11,28 @@
 //! What keeps that state out of whatever runs next is therefore the journal drain, and it has to
 //! happen on the error path. Revm mostly does this: `ExecuteEvm::transact` (revm-handler 18.1.0,
 //! `src/api.rs`) calls `finalize()` unconditionally before propagating, and `transact_many` drains
-//! via `inspect_err`. Two defaulted methods are the exception — `InspectEvm::inspect_tx`
-//! (revm-inspector 19.0.0, `src/inspect.rs`) returns on the `?` first, and so did our own
-//! [`ExecuteEvm::replay`]. Both are overridden below so no caller of this crate has to know which
-//! entry point happens to be safe.
+//! via `inspect_err`. The defaulted methods that return on the `?` first are the exception, and
+//! every one of them is overridden below so no caller of this crate has to know which entry point
+//! happens to be safe:
+//!
+//! - [`ExecuteEvm::replay`] — ours, and it had the same gap.
+//! - [`InspectEvm::inspect_tx`] / [`InspectEvm::inspect`] (revm-inspector 19.0.0,
+//!   `src/inspect.rs`).
+//! - The committing entry points [`ExecuteCommitEvm::transact_commit`],
+//!   [`InspectCommitEvm::inspect_tx_commit`] and [`InspectCommitEvm::inspect_commit`], whose
+//!   defaults propagate before `commit_inner()` can reach its `finalize()`.
+//!
+//! The committing overrides leave the success arm to revm's own `commit_inner()` and add the
+//! drain only on the error arm, so the accepted-transaction path stays byte-identical to
+//! upstream. `transact_many_commit` and `replay_commit` need no override — they inherit the drain
+//! from `transact_many` and from our `replay`.
+//!
+//! One divergence is deliberate and worth knowing about: `finalize()` drains everything
+//! accumulated since the last drain, not just the transaction that failed. A caller that
+//! interleaves `transact_one` with `transact_commit` therefore loses the earlier transactions'
+//! state when a later one is rejected, where upstream would leave it in the journal. The journal
+//! cannot separate the two, so the choice is drop-all or keep-all, and keep-all is the bug this
+//! module exists to prevent. Upstream's own `ExecuteEvm::transact` drops-all for the same reason.
 //!
 //! `alloy-celo-evm`'s `CeloEvm::transact_raw` relies on this for its inspecting arm.
 
@@ -91,6 +109,31 @@ where
     fn commit(&mut self, state: Self::State) {
         self.inner.ctx().db_mut().commit(state);
     }
+
+    /// Drains the journal on the error path, where revm's default does not.
+    ///
+    /// See [the module note](self). Revm's default propagates the `transact_one` error before
+    /// `commit_inner()` runs, leaving the rejected transaction's state in the journal for the
+    /// next transaction on this EVM to finalize as its own.
+    ///
+    /// The success arm calls [`ExecuteCommitEvm::commit_inner`] rather than reproducing it, so
+    /// only the error arm diverges from upstream and a future revm that adds a step to
+    /// `commit_inner` is inherited rather than silently skipped.
+    fn transact_commit(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        match self.transact_one(tx) {
+            Ok(output) => {
+                self.commit_inner();
+                Ok(output)
+            }
+            Err(err) => {
+                // The drain takes everything accumulated since the last one, not just this
+                // transaction — the journal cannot separate the two. Dropping it is the
+                // deliberate choice; see the module note.
+                let _ = self.finalize();
+                Err(err)
+            }
+        }
+    }
 }
 
 impl<DB, INSP, P> InspectEvm for CeloEvm<DB, INSP, P>
@@ -140,6 +183,32 @@ where
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
+    /// Committing counterpart of the overridden [`InspectEvm::inspect_tx`]: drains the journal on
+    /// the error path, where revm's default does not. Shaped like
+    /// [`ExecuteCommitEvm::transact_commit`] — see there and [the module note](self).
+    fn inspect_tx_commit(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        match self.inspect_one_tx(tx) {
+            Ok(output) => {
+                self.commit_inner();
+                Ok(output)
+            }
+            Err(err) => {
+                let _ = self.finalize();
+                Err(err)
+            }
+        }
+    }
+
+    /// Routes through the overridden [`InspectCommitEvm::inspect_tx_commit`] so this entry point
+    /// drains too.
+    fn inspect_commit(
+        &mut self,
+        tx: Self::Tx,
+        inspector: Self::Inspector,
+    ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.set_inspector(inspector);
+        self.inspect_tx_commit(tx)
+    }
 }
 
 impl<DB, INSP, P> SystemCallEvm for CeloEvm<DB, INSP, P>
