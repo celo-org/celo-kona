@@ -31,7 +31,25 @@ use alloy_primitives::Address;
 use spin::Mutex;
 
 /// How long (in seconds) a currency stays blocked before automatic eviction.
-pub const BLOCKLIST_EVICTION_SECONDS: u64 = 7200;
+///
+/// Deliberately private: the TTL alone is not the eviction contract — the comparison in
+/// [`FeeCurrencyBlocklist::evict`] and the clock its caller passes are — so consumers that want
+/// a deadline read `evicts_at` off [`BlockedCurrency`] instead of re-deriving one.
+const BLOCKLIST_EVICTION_SECONDS: u64 = 7200;
+
+/// One entry of the blocklist, as reported by [`FeeCurrencyBlocklist::blocked_currencies`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockedCurrency {
+    /// The blocked fee currency.
+    pub address: Address,
+    /// The timestamp passed to [`FeeCurrencyBlocklist::block_currency`] — the timestamp of the
+    /// block that was being built when the currency's debit/credit halted.
+    pub blocked_at: u64,
+    /// The timestamp at or after which [`FeeCurrencyBlocklist::evict`] drops this entry.
+    ///
+    /// See that method for which clock it is compared against.
+    pub evicts_at: u64,
+}
 
 /// Internal state for the fee currency blocklist.
 #[derive(Debug, Default)]
@@ -63,17 +81,24 @@ impl FeeCurrencyBlocklist {
         self.inner.lock().blocked.contains_key(&currency)
     }
 
-    /// Returns the currently blocked currencies with the timestamp each was blocked at,
-    /// ordered by address.
+    /// Returns the currently blocked currencies, ordered by address.
     ///
-    /// The timestamp is the one [`Self::block_currency`] recorded — the timestamp of the block
-    /// that was being built when the currency halted. Eviction is driven by [`Self::evict`],
-    /// which the sequencing path calls with *wall-clock* seconds, so an entry older than
-    /// [`BLOCKLIST_EVICTION_SECONDS`] can still be listed here until the next payload build,
-    /// and can conversely be evicted early while block timestamps lag wall clock. Callers that
-    /// need "would this currency be skipped right now" should use [`Self::is_blocked`].
-    pub fn blocked_currencies(&self) -> Vec<(Address, u64)> {
-        self.inner.lock().blocked.iter().map(|(&c, &at)| (c, at)).collect()
+    /// Eviction is driven by [`Self::evict`], which the sequencing path calls with *wall-clock*
+    /// seconds, so an entry past its [`evicts_at`](BlockedCurrency::evicts_at) can still be
+    /// listed here until the next payload build, and can conversely be evicted early while
+    /// block timestamps lag wall clock. Callers that need "would this currency be skipped right
+    /// now" should use [`Self::is_blocked`].
+    pub fn blocked_currencies(&self) -> Vec<BlockedCurrency> {
+        self.inner
+            .lock()
+            .blocked
+            .iter()
+            .map(|(&address, &blocked_at)| BlockedCurrency {
+                address,
+                blocked_at,
+                evicts_at: blocked_at.saturating_add(BLOCKLIST_EVICTION_SECONDS),
+            })
+            .collect()
     }
 
     /// Returns the currencies for which blocklisting has been disabled, ordered by address.
@@ -140,6 +165,13 @@ mod tests {
 
     fn addr(b: u8) -> Address {
         Address::with_last_byte(b)
+    }
+
+    /// The entry `blocked_currencies` is expected to report for a currency blocked at
+    /// `blocked_at`. `evicts_at` is checked against `evict`'s actual behaviour by
+    /// `evicts_at_is_the_deadline_evict_enforces`, not here.
+    fn entry(address: Address, blocked_at: u64) -> BlockedCurrency {
+        BlockedCurrency { address, blocked_at, evicts_at: blocked_at + BLOCKLIST_EVICTION_SECONDS }
     }
 
     #[test]
@@ -238,10 +270,10 @@ mod tests {
         bl.block_currency(addr(2), 5000);
         bl.block_currency(addr(1), 1000);
         // Ordered by address, not insertion order.
-        assert_eq!(bl.blocked_currencies(), vec![(addr(1), 1000), (addr(2), 5000)]);
+        assert_eq!(bl.blocked_currencies(), vec![entry(addr(1), 1000), entry(addr(2), 5000)]);
 
         bl.unblock_currency(addr(1));
-        assert_eq!(bl.blocked_currencies(), vec![(addr(2), 5000)]);
+        assert_eq!(bl.blocked_currencies(), vec![entry(addr(2), 5000)]);
 
         bl.evict(5000 + BLOCKLIST_EVICTION_SECONDS);
         assert!(bl.blocked_currencies().is_empty());
@@ -258,7 +290,28 @@ mod tests {
         bl.enable_blocklist(&[addr(1)]);
         assert!(bl.disabled_currencies().is_empty());
         bl.block_currency(addr(1), 2000);
-        assert_eq!(bl.blocked_currencies(), vec![(addr(1), 2000)]);
+        assert_eq!(bl.blocked_currencies(), vec![entry(addr(1), 2000)]);
+    }
+
+    /// Drift guard for the one number that crosses the crate boundary: the deadline reported
+    /// on [`BlockedCurrency`] must be the deadline [`FeeCurrencyBlocklist::evict`] actually
+    /// enforces. The expectation is taken from the reported value rather than recomputed from
+    /// `BLOCKLIST_EVICTION_SECONDS`, so changing either the TTL or the comparison in `evict`
+    /// without changing the other fails here.
+    #[test]
+    fn evicts_at_is_the_deadline_evict_enforces() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.block_currency(addr(1), 1000);
+        let reported = bl.blocked_currencies()[0];
+        assert_eq!(reported.blocked_at, 1000);
+
+        // One second before the reported deadline the entry survives...
+        bl.evict(reported.evicts_at - 1);
+        assert!(bl.is_blocked(addr(1)));
+
+        // ...and at it, the entry is gone.
+        bl.evict(reported.evicts_at);
+        assert!(!bl.is_blocked(addr(1)));
     }
 
     #[test]
