@@ -7,9 +7,9 @@
 //! Native CELO transactions are unrestricted.
 
 use crate::pool::CeloPoolTx;
-use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
+use alloy_celo_evm::CeloFailurePolicies;
 use alloy_consensus::Transaction;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use reth_optimism_payload_builder::builder::OpPayloadTransactions;
 use reth_payload_util::{BestPayloadTransactions, PayloadTransactions};
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
@@ -139,13 +139,13 @@ impl FeeCurrencyLimits {
 #[derive(Debug, Clone)]
 pub struct CeloPayloadTransactions {
     limits: FeeCurrencyLimits,
-    blocklist: FeeCurrencyBlocklist,
+    failure_policies: CeloFailurePolicies,
 }
 
 impl CeloPayloadTransactions {
-    /// Create a new instance with the given fee currency limits and blocklist.
-    pub const fn new(limits: FeeCurrencyLimits, blocklist: FeeCurrencyBlocklist) -> Self {
-        Self { limits, blocklist }
+    /// Creates an instance with fee currency limits and shared sequencing failure policies.
+    pub const fn new(limits: FeeCurrencyLimits, failure_policies: CeloFailurePolicies) -> Self {
+        Self { limits, failure_policies }
     }
 }
 
@@ -158,23 +158,25 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
     where
         Pool: TransactionPool<Transaction = CeloPoolTx>,
     {
-        // Evict stale blocklist entries before filtering. The EVM-side eviction in
-        // `CeloEvm::transact_raw` only runs once a tx reaches the executor, so a payload whose
-        // first executable txs all use the stale-blocklisted currency would have them rejected
-        // by `CeloFeeCurrencyFilter` below indefinitely — even past the 7200s TTL. Wall clock
-        // is a safe time source here: block timestamps track wall time within seconds and the
-        // blocklist is a best-effort sequencing heuristic, not consensus state.
+        // Do not clear revert markers here. Reth can run multiple payload jobs concurrently, so
+        // one iterator must not erase another job's marker before its inline `mark_invalid` call.
+        // Evict stale blocklist entries before filtering. Otherwise transactions using an expired
+        // entry would continue to be rejected by `CeloFeeCurrencyFilter` below even past the 7200s
+        // TTL. Wall clock is a safe time source here: block timestamps track wall time within
+        // seconds and the blocklist is a best-effort sequencing heuristic, not consensus state.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        self.blocklist.evict(now);
+        self.failure_policies.blocklist().evict(now);
 
         let block_gas_limit = pool.block_info().block_gas_limit;
+        let inner = BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr));
         CeloFeeCurrencyFilter {
-            inner: BestPayloadTransactions::new(pool.best_transactions_with_attributes(attr)),
+            inner,
+            pool,
             limits: self.limits.clone(),
-            blocklist: self.blocklist.clone(),
+            failure_policies: self.failure_policies.clone(),
             block_gas_limit,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -191,6 +193,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
 struct PendingFeeCurrencyCharge {
     sender: Address,
     nonce: u64,
+    tx_hash: B256,
     fee_currency: Address,
     gas_limit: u64,
 }
@@ -201,10 +204,11 @@ struct PendingFeeCurrencyCharge {
 /// are skipped (and their sender marked invalid). Native CELO transactions pass through
 /// without any limit.
 #[derive(Debug)]
-struct CeloFeeCurrencyFilter<I> {
+struct CeloFeeCurrencyFilter<I, Pool> {
     inner: I,
+    pool: Pool,
     limits: FeeCurrencyLimits,
-    blocklist: FeeCurrencyBlocklist,
+    failure_policies: CeloFailurePolicies,
     /// Block gas limit from the pool, used to compute per-currency gas caps.
     block_gas_limit: u64,
     /// Cumulative gas used per fee currency address.
@@ -214,9 +218,10 @@ struct CeloFeeCurrencyFilter<I> {
     pending_charge: Option<PendingFeeCurrencyCharge>,
 }
 
-impl<I> PayloadTransactions for CeloFeeCurrencyFilter<I>
+impl<I, Pool> PayloadTransactions for CeloFeeCurrencyFilter<I, Pool>
 where
     I: PayloadTransactions<Transaction = CeloPoolTx>,
+    Pool: TransactionPool<Transaction = CeloPoolTx>,
 {
     type Transaction = CeloPoolTx;
 
@@ -232,7 +237,7 @@ where
 
             // Check blocklist before gas limits
             if let Some(fc) = fee_currency &&
-                self.blocklist.is_blocked(fc)
+                self.failure_policies.blocklist().is_blocked(fc)
             {
                 tracing::debug!(
                     target: "celo::payload",
@@ -271,6 +276,7 @@ where
                 self.pending_charge = Some(PendingFeeCurrencyCharge {
                     sender: tx.sender(),
                     nonce: tx.nonce(),
+                    tx_hash: *tx.hash(),
                     fee_currency: fc,
                     gas_limit: tx.gas_limit(),
                 });
@@ -282,26 +288,50 @@ where
     }
 
     fn mark_invalid(&mut self, sender: Address, nonce: u64) {
-        if let Some(charge) =
-            self.pending_charge.take_if(|charge| charge.sender == sender && charge.nonce == nonce) &&
-            let std::collections::hash_map::Entry::Occupied(mut entry) =
+        let charge =
+            self.pending_charge.take_if(|charge| charge.sender == sender && charge.nonce == nonce);
+
+        if let Some(charge) = charge {
+            if let std::collections::hash_map::Entry::Occupied(mut entry) =
                 self.gas_used_per_currency.entry(charge.fee_currency)
-        {
-            let remaining = entry.get().saturating_sub(charge.gas_limit);
-            if remaining == 0 {
-                entry.remove();
-            } else {
-                *entry.get_mut() = remaining;
+            {
+                let remaining = entry.get().saturating_sub(charge.gas_limit);
+                if remaining == 0 {
+                    entry.remove();
+                } else {
+                    *entry.get_mut() = remaining;
+                }
             }
+
+            self.inner.mark_invalid(sender, nonce);
+
+            if self.failure_policies.revert_evictions().take(charge.tx_hash) {
+                let removed = self.pool.remove_transactions_and_descendants(vec![charge.tx_hash]);
+                if !removed.is_empty() {
+                    metrics::counter!(
+                        "celo_pool_evictions_total",
+                        "reason" => "debit_credit_reverted"
+                    )
+                    .increment(removed.len() as u64);
+                    tracing::info!(
+                        target: "celo::pool",
+                        tx_hash = ?charge.tx_hash,
+                        removed = removed.len(),
+                        "Evicted reverted CIP-64 transaction and descendants"
+                    );
+                }
+            }
+        } else {
+            self.inner.mark_invalid(sender, nonce);
         }
-        self.inner.mark_invalid(sender, nonce);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_celo_evm::{blocklist::FeeCurrencyBlocklist, revert_evictions::RevertEvictions};
+    use alloy_primitives::{U256, address};
 
     #[test]
     fn test_parse_limits() {
@@ -497,7 +527,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use crate::pool::CeloPoolTx;
-    use reth_transaction_pool::PoolTransaction;
+    use reth_transaction_pool::{
+        CoinbaseTipOrdering, Pool, PoolConfig, PoolTransaction, TransactionOrigin,
+        TransactionValidationOutcome, TransactionValidator, blobstore::NoopBlobStore,
+        validate::ValidTransaction,
+    };
 
     /// Create a test CeloPoolTx with default fee values (1 Gwei fee cap, 100 wei tip).
     fn make_test_tx(fee_currency: Option<Address>, gas_limit: u64, sender: Address) -> CeloPoolTx {
@@ -527,6 +561,218 @@ mod tests {
         Address::with_last_byte(b)
     }
 
+    #[derive(Debug)]
+    struct AcceptAll;
+
+    impl TransactionValidator for AcceptAll {
+        type Transaction = CeloPoolTx;
+        type Block = crate::primitives::CeloBlock;
+
+        async fn validate_transaction(
+            &self,
+            _origin: TransactionOrigin,
+            mut transaction: CeloPoolTx,
+        ) -> TransactionValidationOutcome<CeloPoolTx> {
+            transaction
+                .apply_exchange_rate(crate::pool::ExchangeRate { numerator: 1, denominator: 1 });
+            TransactionValidationOutcome::Valid {
+                balance: U256::MAX,
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::Valid(transaction),
+                propagate: false,
+                authorities: None,
+            }
+        }
+    }
+
+    type EvictionTestPool = Pool<AcceptAll, CoinbaseTipOrdering<CeloPoolTx>, NoopBlobStore>;
+
+    fn eviction_test_pool() -> EvictionTestPool {
+        Pool::new(
+            AcceptAll,
+            CoinbaseTipOrdering::default(),
+            NoopBlobStore::default(),
+            PoolConfig::default(),
+        )
+    }
+
+    fn eviction_filter(
+        pool: EvictionTestPool,
+        txs: Vec<CeloPoolTx>,
+        revert_evictions: RevertEvictions,
+    ) -> CeloFeeCurrencyFilter<VecPayloadTransactions, EvictionTestPool> {
+        CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions { txs, invalid: vec![] },
+            pool,
+            limits: FeeCurrencyLimits { limits: HashMap::new(), default_limit: 1.0 },
+            failure_policies: CeloFailurePolicies::new(
+                FeeCurrencyBlocklist::default(),
+                revert_evictions,
+            ),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn reverted_transaction_evicts_exact_hash_and_descendants() {
+        let fc = fc_addr(10);
+        let sender = Address::with_last_byte(1);
+        let other_sender = Address::with_last_byte(2);
+        let ancestor =
+            crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let target =
+            crate::test_utils::make_test_tx_with_nonce(Some(fc), 1, 100_000, 100, 10, sender);
+        let descendant =
+            crate::test_utils::make_test_tx_with_nonce(Some(fc), 2, 100_000, 100, 10, sender);
+        let other =
+            crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_001, 100, 10, other_sender);
+        let ancestor_hash = *ancestor.hash();
+        let target_hash = *target.hash();
+        let descendant_hash = *descendant.hash();
+        let other_hash = *other.hash();
+        let pool = eviction_test_pool();
+        for tx in [ancestor, target.clone(), descendant, other] {
+            pool.add_transaction(TransactionOrigin::External, tx).await.unwrap();
+        }
+        let evictions = RevertEvictions::default();
+        evictions.record(target_hash);
+        let mut filter = CeloFeeCurrencyFilter {
+            inner: VecPayloadTransactions { txs: vec![target.clone()], invalid: vec![] },
+            pool: pool.clone(),
+            limits: FeeCurrencyLimits::default(),
+            failure_policies: CeloFailurePolicies::new(FeeCurrencyBlocklist::default(), evictions),
+            block_gas_limit: 30_000_000,
+            gas_used_per_currency: HashMap::new(),
+            pending_charge: None,
+        };
+
+        let yielded = filter.next(()).unwrap();
+        filter.mark_invalid(yielded.sender(), yielded.nonce());
+
+        assert!(pool.get(&ancestor_hash).is_some());
+        assert!(pool.get(&target_hash).is_none());
+        assert!(pool.get(&descendant_hash).is_none());
+        assert!(pool.get(&other_hash).is_some());
+    }
+
+    #[tokio::test]
+    async fn same_nonce_replacement_is_not_removed_by_old_hash_marker() {
+        let fc = fc_addr(11);
+        let sender = Address::with_last_byte(1);
+        let old = crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let replacement =
+            crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 120, 12, sender);
+        let old_hash = *old.hash();
+        let replacement_hash = *replacement.hash();
+        let pool = eviction_test_pool();
+        pool.add_transaction(TransactionOrigin::External, replacement.clone()).await.unwrap();
+        let evictions = RevertEvictions::default();
+        evictions.record(old_hash);
+        let mut filter = eviction_filter(pool.clone(), vec![old], evictions.clone());
+
+        let yielded = filter.next(()).unwrap();
+        assert_eq!(*yielded.hash(), old_hash);
+        filter.mark_invalid(yielded.sender(), yielded.nonce());
+
+        assert!(pool.get(&replacement_hash).is_some());
+        assert!(!evictions.take(old_hash));
+    }
+
+    #[tokio::test]
+    async fn unrelated_mark_invalid_does_not_consume_or_evict() {
+        let fc = fc_addr(12);
+        let sender = Address::with_last_byte(1);
+        let tx = crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let tx_hash = *tx.hash();
+        let pool = eviction_test_pool();
+        pool.add_transaction(TransactionOrigin::External, tx.clone()).await.unwrap();
+        let evictions = RevertEvictions::default();
+        evictions.record(tx_hash);
+        let mut filter = eviction_filter(pool.clone(), vec![tx], evictions.clone());
+
+        assert!(filter.next(()).is_some());
+        filter.mark_invalid(Address::with_last_byte(9), 0);
+
+        assert!(pool.get(&tx_hash).is_some());
+        assert!(evictions.take(tx_hash));
+    }
+
+    #[tokio::test]
+    async fn repeated_revert_eviction_is_idempotent() {
+        let fc = fc_addr(13);
+        let sender = Address::with_last_byte(1);
+        let tx = crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let tx_hash = *tx.hash();
+        let pool = eviction_test_pool();
+        pool.add_transaction(TransactionOrigin::External, tx.clone()).await.unwrap();
+        let evictions = RevertEvictions::default();
+        evictions.record(tx_hash);
+        let mut filter = eviction_filter(pool.clone(), vec![tx], evictions);
+
+        let yielded = filter.next(()).unwrap();
+        filter.mark_invalid(yielded.sender(), yielded.nonce());
+        filter.mark_invalid(yielded.sender(), yielded.nonce());
+
+        assert!(pool.get(&tx_hash).is_none());
+    }
+
+    #[tokio::test]
+    async fn blocklist_skip_does_not_consume_revert_marker_or_evict() {
+        let fc = fc_addr(14);
+        let sender = Address::with_last_byte(1);
+        let tx = crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let tx_hash = *tx.hash();
+        let pool = eviction_test_pool();
+        pool.add_transaction(TransactionOrigin::External, tx.clone()).await.unwrap();
+        let evictions = RevertEvictions::default();
+        evictions.record(tx_hash);
+        let mut filter = eviction_filter(pool.clone(), vec![tx], evictions.clone());
+        filter.failure_policies.blocklist().block_currency(fc, 1);
+
+        assert!(filter.next(()).is_none());
+        assert!(pool.get(&tx_hash).is_some());
+        assert!(evictions.take(tx_hash));
+    }
+
+    #[tokio::test]
+    async fn gas_cap_skip_does_not_consume_revert_marker_or_evict() {
+        let fc = fc_addr(15);
+        let sender = Address::with_last_byte(1);
+        let tx = crate::test_utils::make_test_tx_with_nonce(Some(fc), 0, 100_000, 100, 10, sender);
+        let tx_hash = *tx.hash();
+        let pool = eviction_test_pool();
+        pool.add_transaction(TransactionOrigin::External, tx.clone()).await.unwrap();
+        let evictions = RevertEvictions::default();
+        evictions.record(tx_hash);
+        let mut filter = eviction_filter(pool.clone(), vec![tx], evictions.clone());
+        filter.limits.default_limit = 0.0;
+
+        assert!(filter.next(()).is_none());
+        assert!(pool.get(&tx_hash).is_some());
+        assert!(evictions.take(tx_hash));
+    }
+
+    #[test]
+    fn starting_payload_iterator_preserves_markers_from_concurrent_jobs() {
+        let tx_hash = alloy_primitives::B256::with_last_byte(1);
+        let evictions = RevertEvictions::default();
+        evictions.record(tx_hash);
+        let payload_transactions = CeloPayloadTransactions::new(
+            FeeCurrencyLimits::default(),
+            CeloFailurePolicies::new(FeeCurrencyBlocklist::default(), evictions.clone()),
+        );
+
+        let _filter = payload_transactions.best_transactions(
+            eviction_test_pool(),
+            reth_transaction_pool::BestTransactionsAttributes::new(0, None),
+        );
+
+        assert!(evictions.take(tx_hash));
+    }
+
     #[test]
     fn filter_passes_native_celo_tx() {
         let sender = Address::with_last_byte(1);
@@ -535,8 +781,9 @@ mod tests {
                 txs: vec![make_test_tx(None, 21_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -557,8 +804,9 @@ mod tests {
                 txs: vec![make_test_tx(None, 25_000_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -586,8 +834,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits,
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -607,8 +856,9 @@ mod tests {
                 txs: vec![make_test_tx(Some(fc), 16_000_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -634,8 +884,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -662,8 +913,9 @@ mod tests {
                 txs: vec![make_test_tx(Some(fc), 21_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist,
+            failure_policies: CeloFailurePolicies::new(blocklist, RevertEvictions::default()),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -682,8 +934,9 @@ mod tests {
                 txs: vec![make_test_tx(Some(fc), 15_000_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(), // max = 0.5 * 30M = 15M
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -708,8 +961,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(), // max = 15M
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -741,8 +995,9 @@ mod tests {
                 txs: vec![make_test_tx(Some(fc), 21_000, sender)],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist,
+            failure_policies: CeloFailurePolicies::new(blocklist, RevertEvictions::default()),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -764,8 +1019,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -793,8 +1049,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -823,8 +1080,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,
@@ -847,8 +1105,9 @@ mod tests {
                 ],
                 invalid: vec![],
             },
+            pool: reth_transaction_pool::noop::NoopTransactionPool::<CeloPoolTx>::new(),
             limits: FeeCurrencyLimits::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
+            failure_policies: CeloFailurePolicies::default(),
             block_gas_limit: 30_000_000,
             gas_used_per_currency: HashMap::new(),
             pending_charge: None,

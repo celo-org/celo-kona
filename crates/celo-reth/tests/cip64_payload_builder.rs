@@ -14,16 +14,22 @@
 //! reintroducing a consensus-layer `effective_tip_per_gas` call, which would
 //! silently break CIP-64 payload building again.
 
+use alloy_celo_evm::{
+    CeloFailurePolicies, blocklist::FeeCurrencyBlocklist, revert_evictions::RevertEvictions,
+};
 use alloy_consensus::{Header, Signed};
-use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_evm::FromRecoveredTx;
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
     CeloEvmConfig,
     pool::{CeloPoolTx, ExchangeRate},
 };
+use celo_revm::CeloTransaction;
 use reth_basic_payload_builder::PayloadConfig;
 use reth_chainspec::Chain;
-use reth_evm::execute::BlockBuilder;
+use reth_evm::{ConfigureEvm, execute::BlockBuilder};
 use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
 use reth_optimism_payload_builder::{
     OpPayloadBuilderAttributes,
@@ -32,9 +38,11 @@ use reth_optimism_payload_builder::{
 };
 use reth_optimism_txpool::OpPooledTransaction as OpPoolPoolTx;
 use reth_payload_util::PayloadTransactions;
-use reth_primitives_traits::{Recovered, SealedHeader};
+use reth_primitives_traits::{Recovered, SealedHeader, WithEncoded};
+use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 use reth_transaction_pool::PoolTransaction;
 use revm::{
+    context::TxEnv,
     database::{InMemoryDB, State},
     state::{AccountInfo, Bytecode},
 };
@@ -145,6 +153,214 @@ impl PayloadTransactions for OneTx {
     fn mark_invalid(&mut self, _sender: Address, _nonce: u64) {}
 }
 
+fn underfunded_cip64() -> (Address, CeloTxEnvelope, Bytes, B256) {
+    let sig = Signature::test_signature();
+    let cip64 = TxCip64 {
+        chain_id: 42220,
+        nonce: 0,
+        gas_limit: 200_000,
+        max_fee_per_gas: 10_000_000_000,
+        max_priority_fee_per_gas: 1_000_000_000,
+        to: TxKind::Call(Address::ZERO),
+        value: U256::ZERO,
+        access_list: Default::default(),
+        input: Default::default(),
+        fee_currency: Some(TEST_FC),
+    };
+    let envelope = CeloTxEnvelope::Cip64(Signed::new_unhashed(cip64, sig));
+    let sender = envelope.recover_signer().unwrap();
+    let encoded: Bytes = envelope.encoded_2718().into();
+    let tx_hash = keccak256(&encoded);
+    (sender, envelope, encoded, tx_hash)
+}
+
+fn explicit_payload_records_revert_eviction(no_tx_pool: bool) -> bool {
+    let (sender, envelope, encoded, tx_hash) = underfunded_cip64();
+
+    // A zero fee-currency balance makes the debit call revert. Derivation and witness/debug paths
+    // still execute supplied transactions, but must not mutate the sequencer's local failure
+    // policies.
+    let inner_db = make_celo_test_db(sender, U256::ZERO);
+    let mut state = State::builder().with_database(inner_db).with_bundle_update().build();
+    let chain_spec: Arc<OpChainSpec> = Arc::new(
+        OpChainSpecBuilder::default()
+            .chain(Chain::from_id(42220))
+            .genesis(Default::default())
+            .granite_activated()
+            .build(),
+    );
+    let parent = SealedHeader::seal_slow(Header {
+        base_fee_per_gas: Some(25_000_000_000),
+        gas_limit: 30_000_000,
+        gas_used: 15_000_000,
+        timestamp: 0,
+        number: 0,
+        excess_blob_gas: Some(0),
+        blob_gas_used: Some(0),
+        parent_beacon_block_root: Some(B256::ZERO),
+        ..Default::default()
+    });
+    let attributes = OpPayloadBuilderAttributes::<CeloTxEnvelope> {
+        timestamp: 1,
+        suggested_fee_recipient: Address::from([0xfe; 20]),
+        parent: parent.hash(),
+        parent_beacon_block_root: Some(B256::ZERO),
+        no_tx_pool,
+        transactions: vec![WithEncoded::new(encoded, envelope)],
+        gas_limit: Some(30_000_000),
+        ..Default::default()
+    };
+    let config = PayloadConfig {
+        parent_header: Arc::new(parent),
+        attributes,
+        payload_id: Default::default(),
+    };
+    let revert_evictions = RevertEvictions::default();
+    let failure_policies =
+        CeloFailurePolicies::new(FeeCurrencyBlocklist::default(), revert_evictions.clone());
+    let ctx: OpPayloadBuilderCtx<_, OpChainSpec, _> = OpPayloadBuilderCtx {
+        evm_config: CeloEvmConfig::celo_with_failure_policies(chain_spec.clone(), failure_policies),
+        builder_config: OpBuilderConfig::default(),
+        chain_spec,
+        config,
+        cancel: Default::default(),
+        best_payload: None,
+    };
+
+    let mut builder = ctx.block_builder(&mut state).expect("block_builder");
+    builder.apply_pre_execution_changes().expect("pre-execution");
+    ctx.execute_sequencer_transactions(&mut builder, None)
+        .expect("invalid derived transaction is skipped");
+
+    revert_evictions.take(tx_hash)
+}
+
+#[test]
+fn no_tx_pool_payload_does_not_record_revert_eviction() {
+    assert!(
+        !explicit_payload_records_revert_eviction(true),
+        "no-tx-pool derivation must not record sequencing failure policies"
+    );
+}
+
+#[test]
+fn explicit_cip64_payload_does_not_record_revert_eviction() {
+    assert!(
+        !explicit_payload_records_revert_eviction(false),
+        "explicit CIP-64 execution must not mutate sequencing failure policies"
+    );
+}
+
+#[test]
+fn pending_block_builder_does_not_record_revert_eviction() {
+    let (sender, envelope, encoded, tx_hash) = underfunded_cip64();
+    let inner_db = make_celo_test_db(sender, U256::ZERO);
+    let mut state = State::builder().with_database(inner_db).with_bundle_update().build();
+    let chain_spec: Arc<OpChainSpec> = Arc::new(
+        OpChainSpecBuilder::default()
+            .chain(Chain::from_id(42220))
+            .genesis(Default::default())
+            .granite_activated()
+            .build(),
+    );
+    let parent = SealedHeader::seal_slow(Header {
+        base_fee_per_gas: Some(25_000_000_000),
+        gas_limit: 30_000_000,
+        gas_used: 15_000_000,
+        timestamp: 0,
+        number: 0,
+        excess_blob_gas: Some(0),
+        blob_gas_used: Some(0),
+        parent_beacon_block_root: Some(B256::ZERO),
+        ..Default::default()
+    });
+    let revert_evictions = RevertEvictions::default();
+    let failure_policies =
+        CeloFailurePolicies::new(FeeCurrencyBlocklist::default(), revert_evictions.clone());
+    let evm_config = CeloEvmConfig::celo_with_failure_policies(chain_spec, failure_policies);
+    type NextEnv = <CeloEvmConfig<OpChainSpec> as ConfigureEvm>::NextBlockEnvCtx;
+    let pending_env = <NextEnv as BuildPendingEnv<Header>>::build_pending_env(&parent);
+
+    let mut builder = evm_config
+        .builder_for_next_block(&mut state, &parent, pending_env)
+        .expect("pending block builder");
+    builder.apply_pre_execution_changes().expect("pre-execution");
+    let result = builder
+        .execute_transaction(WithEncoded::new(encoded, Recovered::new_unchecked(envelope, sender)));
+
+    assert!(result.is_err(), "underfunded CIP-64 transaction must fail");
+    assert!(
+        !revert_evictions.take(tx_hash),
+        "pending block execution must not mutate sequencing failure policies"
+    );
+}
+
+#[test]
+fn tx_pool_payload_records_revert_eviction() {
+    let (sender, envelope, _encoded, tx_hash) = underfunded_cip64();
+    let inner_db = make_celo_test_db(sender, U256::ZERO);
+    let mut state = State::builder().with_database(inner_db).with_bundle_update().build();
+    let chain_spec: Arc<OpChainSpec> = Arc::new(
+        OpChainSpecBuilder::default()
+            .chain(Chain::from_id(42220))
+            .genesis(Default::default())
+            .granite_activated()
+            .build(),
+    );
+    let parent = SealedHeader::seal_slow(Header {
+        base_fee_per_gas: Some(25_000_000_000),
+        gas_limit: 30_000_000,
+        gas_used: 15_000_000,
+        timestamp: 0,
+        number: 0,
+        excess_blob_gas: Some(0),
+        blob_gas_used: Some(0),
+        parent_beacon_block_root: Some(B256::ZERO),
+        ..Default::default()
+    });
+    let attributes = OpPayloadBuilderAttributes::<CeloTxEnvelope> {
+        timestamp: 1,
+        suggested_fee_recipient: Address::from([0xfe; 20]),
+        parent: parent.hash(),
+        parent_beacon_block_root: Some(B256::ZERO),
+        gas_limit: Some(30_000_000),
+        ..Default::default()
+    };
+    let config = PayloadConfig {
+        parent_header: Arc::new(parent),
+        attributes,
+        payload_id: Default::default(),
+    };
+    let revert_evictions = RevertEvictions::default();
+    let failure_policies =
+        CeloFailurePolicies::new(FeeCurrencyBlocklist::default(), revert_evictions.clone());
+    let ctx: OpPayloadBuilderCtx<_, OpChainSpec, _> = OpPayloadBuilderCtx {
+        evm_config: CeloEvmConfig::celo_with_failure_policies(chain_spec.clone(), failure_policies),
+        builder_config: OpBuilderConfig::default(),
+        chain_spec,
+        config,
+        cancel: Default::default(),
+        best_payload: None,
+    };
+    let pooled = CeloPooledTransaction::try_from(envelope).unwrap();
+    let inner_pool_tx = OpPoolPoolTx::<CeloTxEnvelope, CeloPooledTransaction>::from_pooled(
+        Recovered::new_unchecked(pooled, sender),
+    );
+    let mut pool_tx = CeloPoolTx::new(inner_pool_tx);
+    pool_tx.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 10 });
+
+    let mut builder = ctx.block_builder(&mut state).expect("block_builder");
+    builder.apply_pre_execution_changes().expect("pre-execution");
+    let mut info = ExecutionInfo::new();
+    ctx.execute_best_transactions(&mut info, &mut builder, OneTx(Some(pool_tx)), None, None)
+        .expect("invalid pool transaction is skipped");
+
+    assert!(
+        revert_evictions.take(tx_hash),
+        "sequencing txpool execution must record local failure policies"
+    );
+}
+
 #[test]
 fn cip64_payload_builder_handles_low_fc_max_fee() {
     // Sender with deterministic test signature.
@@ -252,6 +468,18 @@ fn cip64_payload_builder_handles_low_fc_max_fee() {
     let mut pool_tx = CeloPoolTx::new(inner_pool_tx);
     // 1 FC = 10 native (numerator=1, denominator=10): native_max_fee = 10 Gwei * 10 = 100 Gwei.
     pool_tx.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 10 });
+
+    // Pin the transaction identity across the payload builder's production conversion boundary.
+    let pool_hash = *pool_tx.hash();
+    let consensus = pool_tx.clone_into_consensus();
+    let evm_tx: CeloTransaction<TxEnv> =
+        CeloTransaction::from_recovered_tx(consensus.inner(), consensus.signer());
+    let evm_envelope = evm_tx
+        .op_tx
+        .enveloped_tx
+        .as_ref()
+        .expect("signed CIP-64 transaction must carry EIP-2718 bytes");
+    assert_eq!(keccak256(evm_envelope.as_ref()), pool_hash);
 
     let best_txs = OneTx(Some(pool_tx));
 

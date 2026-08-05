@@ -44,9 +44,15 @@ use revm::{
 pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
+pub mod failure_policies;
+pub mod revert_evictions;
 
-use blocklist::FeeCurrencyBlocklist;
+pub use failure_policies::CeloFailurePolicies;
+
 use cip64_storage::Cip64Storage;
+
+#[cfg(test)]
+use {blocklist::FeeCurrencyBlocklist, revert_evictions::RevertEvictions};
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
@@ -164,23 +170,24 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
-    blocklist: FeeCurrencyBlocklist,
-    /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
+    failure_policies: CeloFailurePolicies,
+    /// Whether this EVM may write local fee-currency next-block failure-policy state.
     ///
-    /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls *halted* while the node was building a block from its own mempool, so the sequencer
-    /// can skip them for a while. Halts are the only failures that blocklist: contract *reverts*
-    /// are ambiguous (canonically an underfunded sender), and EVM-level call errors are the
-    /// node's own infrastructure faults — neither is evidence against the currency. It must
-    /// therefore only be touched on the sequencing path.
-    /// Block import and derivation re-execute already-canonical blocks and must produce identical
-    /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
+    /// The local policies blocklist currencies whose debit/credit calls *halted* and record exact
+    /// transaction hashes in [`revert_evictions::RevertEvictions`] when those calls *reverted*.
+    /// Contract reverts are ambiguous (canonically an underfunded sender), so they never blocklist
+    /// a whole currency.
+    /// EVM-level call errors are the node's own infrastructure faults and affect neither policy.
+    /// These shared policy objects must therefore only be touched while the sequencer executes
+    /// candidates from its local transaction pool. Block import, derivation, pending-block
+    /// construction, and explicit witness/debug execution must produce results without mutating a
+    /// node-local heuristic, so they leave it alone entirely.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). It is flipped to `true` only by the sequencing-side
-    /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
-    /// its dormant post-exec sibling — which import/derivation deliberately bypass.
-    blocklist_enabled: bool,
+    /// import/derivation executor and ordinary replay/call RPCs). Celo-reth flips it to `true`
+    /// only when its next-block context identifies pool-backed sequencing with the matching
+    /// payload-pool consumer.
+    failure_policies_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
     ///
@@ -191,10 +198,10 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
     /// flipped to `true` only for receipt-building executors:
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
-    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
-    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
-    /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), used by
+    /// import, derivation, base next-block builders, and kona proofs, plus celo-reth's post-exec
+    /// executor and next-block builder, which enable storage outside `create_executor`. The RPC
+    /// layer also builds loose per-tx EVMs, including parity `trace_*`, otterscan `ots_*`, and
     /// `replay_transactions_until` — that run a whole block through one EVM without building
     /// receipts, and leave it off.
     cip64_store_enabled: bool,
@@ -246,18 +253,18 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             inner: evm,
             inspect,
             cip64_storage: Cip64Storage::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
-            blocklist_enabled: false,
+            failure_policies: CeloFailurePolicies::default(),
+            failure_policies_enabled: false,
             cip64_store_enabled: false,
         }
     }
 
-    /// Enables fee currency blocklist reads/writes for this EVM. Called only on the sequencing
-    /// path (`CeloEvmConfig::builder_for_next_block`); import, derivation and RPC leave it off so
-    /// they never touch the shared blocklist.
+    /// Enables local fee-currency failure policies for this EVM. Celo-reth calls this only for
+    /// pool-backed sequencing payload construction. Import, derivation, pending-block construction,
+    /// and ordinary replay/call RPCs leave it off.
     #[must_use]
-    pub const fn with_blocklist_enabled(mut self) -> Self {
-        self.blocklist_enabled = true;
+    pub const fn with_failure_policies_enabled(mut self) -> Self {
+        self.failure_policies_enabled = true;
         self
     }
 
@@ -326,23 +333,30 @@ where
         // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
-        // the sequencing path: `blocklist_enabled` is set on EVMs built via
-        // `CeloEvmConfig::builder_for_next_block` (the payload builder) and left off for import /
-        // derivation re-execution and RPC. Import and derivation therefore neither read nor write
-        // it. (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
-        // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
+        // The fee currency blocklist and revert-eviction channel are local sequencing policies.
+        // `failure_policies_enabled` is set only for pool-backed sequencing payload construction,
+        // and left off for import, derivation, pending-block construction, explicit witness/debug
+        // execution, and ordinary replay/call RPCs. The `base_fee_check_enabled` conjunct is
+        // redundant given `failure_policies_enabled`, but remains an explicit guard against ever
+        // enabling these policies on a call-style RPC simulation EVM.
         //
-        // NOTE: blocklist *rejection* is intentionally NOT performed here even on the sequencing
-        // path; it is enforced upstream in `CeloFeeCurrencyFilter` (see `celo-reth`'s
-        // `payload.rs`). Performing it here would also catch import/derivation EVMs were
-        // `blocklist_enabled` ever set on them, letting a node's locally-accumulated
-        // blocklist reject a valid canonical block built by another sequencer. Below we
-        // only *populate* the blocklist, and only when `apply_blocklist` holds — so import
-        // and derivation neither read nor write it. Stale-entry eviction also lives upstream
-        // in `CeloPayloadTransactions::best_transactions`, since that is the one place
+        // NOTE: blocklist *rejection* is intentionally NOT performed here even when failure
+        // policies are enabled; the payload path enforces it in `CeloFeeCurrencyFilter` (see
+        // `celo-reth`'s `payload.rs`). Performing it here would also catch import/derivation EVMs
+        // were `failure_policies_enabled` ever set on them, letting a node's
+        // locally-accumulated blocklist reject a valid canonical block built by another
+        // sequencer. Below we only populate local failure-policy state when
+        // `apply_failure_policies` holds. Stale blocklist eviction also lives upstream in
+        // `CeloPayloadTransactions::best_transactions`, since that is the one place
         // `is_blocked` is read.
-        let apply_blocklist = self.blocklist_enabled && base_fee_check_enabled;
+        let apply_failure_policies = self.failure_policies_enabled && base_fee_check_enabled;
+        // `Bytes::clone` is cheap. Preserve the envelope only for policy-enabled CIP-64 candidates,
+        // then hash it only if execution proves this is a debit/credit revert.
+        let revert_eviction_envelope = if apply_failure_policies && fee_currency.is_some() {
+            tx.op_tx.enveloped_tx.clone()
+        } else {
+            None
+        };
 
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
             .map_err(map_op_err);
@@ -366,7 +380,7 @@ where
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
-            Err(e) if apply_blocklist && fee_currency.is_some() => {
+            Err(e) if apply_failure_policies && fee_currency.is_some() => {
                 // Classify why this CIP-64 tx failed during block building. Only a
                 // fee-currency debit/credit failure should blocklist the currency, not
                 // unrelated validation errors (nonce, gas limit, etc.) that happen to
@@ -408,6 +422,17 @@ where
                             "fee-currency debit/credit reverted for {fc}: {e} — \
                              dropping tx without blocklisting the currency"
                         );
+                        if let Some(envelope) = revert_eviction_envelope {
+                            self.failure_policies
+                                .revert_evictions()
+                                .record(alloy_primitives::keccak256(envelope));
+                        } else {
+                            tracing::warn!(
+                                target: "celo",
+                                "fee-currency debit/credit reverted without encoded transaction bytes; \
+                                 skipping pool eviction record"
+                            );
+                        }
                         #[cfg(feature = "std")]
                         metrics::counter!(
                             "celo_payload_skipped_total",
@@ -435,7 +460,7 @@ where
                         )
                         .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
-                        self.blocklist.block_currency(fc, block_timestamp);
+                        self.failure_policies.blocklist().block_currency(fc, block_timestamp);
                     } else {
                         // Neither marker: the system call itself errored — an
                         // EVM-infrastructure failure (`CoreContractError::Evm`,
@@ -542,21 +567,24 @@ where
 /// is owned by the EVM instance, not the factory, so two consumers (e.g. the main-chain
 /// executor and a re-executing ExEx) running through the same factory get independent
 /// slots and never overwrite each other's pending CIP-64 receipt data.
+///
+/// The factory also clones one shared [`CeloFailurePolicies`] bundle into every EVM. Only
+/// pool-backed sequencing enables policy writes: a fee-currency debit or credit halt blocklists
+/// the currency, while a revert records the exact transaction hash for later pool eviction.
+/// Import, derivation, pending-block construction, and ordinary replay/call RPCs leave the policies
+/// disabled. Blocklist rejection remains in the sequencing payload filter rather than
+/// [`CeloEvm::transact_raw`]. The default factory uses empty policies.
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
-    /// Shared fee currency blocklist. EVMs created by this factory *populate* this blocklist
-    /// when a CIP-64 fee-currency debit/credit fails during execution, but only on the sequencing
-    /// path (`CeloEvm::with_blocklist_enabled`); import/derivation EVMs leave it untouched. The
-    /// sequencing-time payload filter (`CeloFeeCurrencyFilter` in `celo-reth`) reads it to skip
-    /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
-    /// empty.
-    pub blocklist: FeeCurrencyBlocklist,
+    /// Shared local sequencing failure policies. EVMs produced by this factory write these
+    /// policies only after [`CeloEvm::with_failure_policies_enabled`] is applied.
+    failure_policies: CeloFailurePolicies,
 }
 
 impl CeloEvmFactory {
-    /// Sets the shared fee currency blocklist.
-    pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
-        self.blocklist = blocklist;
+    /// Sets the shared local sequencing failure policies.
+    pub fn with_failure_policies(mut self, failure_policies: CeloFailurePolicies) -> Self {
+        self.failure_policies = failure_policies;
         self
     }
 }
@@ -579,9 +607,9 @@ fn make_test_evm_with_db<DB: Database>(
             .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
         inspect: false,
         cip64_storage: Cip64Storage::default(),
-        blocklist,
-        // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
-        blocklist_enabled: true,
+        failure_policies: CeloFailurePolicies::new(blocklist, RevertEvictions::default()),
+        // Tests here exercise policy-enabled next-block behavior, so enable the policies.
+        failure_policies_enabled: true,
         // Default to the receipt-building executor path; loose-EVM tests build through the
         // factory instead (`make_loose_test_evm`).
         cip64_store_enabled: true,
@@ -594,6 +622,18 @@ fn make_test_evm(
     blocklist: FeeCurrencyBlocklist,
 ) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
     make_test_evm_with_db(revm::database::InMemoryDB::default(), blocklist)
+}
+
+/// Creates a policy-enabled next-block test EVM with local failure-policy state.
+#[cfg(test)]
+fn make_test_evm_with_evictions(
+    blocklist: FeeCurrencyBlocklist,
+    revert_evictions: revert_evictions::RevertEvictions,
+) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
+    let mut evm = make_test_evm(blocklist);
+    evm.failure_policies =
+        CeloFailurePolicies::new(evm.failure_policies.blocklist().clone(), revert_evictions);
+    evm
 }
 
 /// Creates a loose RPC-style [`CeloEvm`] through the factory, the way reth's RPC layer does:
@@ -669,11 +709,11 @@ impl CeloEvmFactory {
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect,
             cip64_storage: Cip64Storage::default(),
-            blocklist: self.blocklist.clone(),
-            // Off by default: the import/derivation executor and RPC create EVMs through the
-            // factory and must not touch the blocklist. Sequencing flips it on via
-            // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
-            blocklist_enabled: false,
+            failure_policies: self.failure_policies.clone(),
+            // Off by default: import, derivation, pending-block construction, witness/debug
+            // execution, and ordinary replay/call RPCs must not touch local failure-policy state.
+            // Celo-reth opts in only for pool-backed sequencing.
+            failure_policies_enabled: false,
             // Off by default; `create_executor` flips it on for receipt-building executors.
             cip64_store_enabled: false,
         }
@@ -868,7 +908,7 @@ mod tests {
         let blocklist = FeeCurrencyBlocklist::default();
 
         let mut evm = make_test_evm(blocklist.clone());
-        // Set a non-zero basefee so the EVM is in "block building" mode
+        // Use a non-zero base fee for block-style validation; the helper enables failure policies.
         evm.ctx_mut().block.basefee = 1_000_000_000;
 
         // This CIP-64 tx will fail (fee currency not registered), but the
@@ -879,7 +919,7 @@ mod tests {
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
     }
 
-    /// Put the given sequencing-mode EVM in block-building mode, register `fc`
+    /// Put the given policy-enabled EVM in block-style validation mode, register `fc`
     /// in the per-block fee-currency context, and run a CIP-64 tx through
     /// `transact_raw`, driving the `debitGasFees` system call against whatever
     /// state the EVM's database holds. Returns the resulting error, stringified.
@@ -892,7 +932,7 @@ mod tests {
     {
         use celo_revm::fee_currency_context::FeeCurrencyInfo;
 
-        // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+        // Use a non-zero base fee for block-style validation; the helper enables failure policies.
         evm.ctx_mut().block.basefee = 1_000_000_000;
         // Register the currency in the per-block fee-currency context, pinned
         // to the current block so the handler uses it as-is instead of
@@ -916,7 +956,39 @@ mod tests {
         format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
     }
 
-    /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
+    /// Like [`run_cip64_debit`], but returns the exact encoded transaction hash that the
+    /// local next-block failure policy must record.
+    fn run_cip64_debit_with_hash<DB: Database>(
+        evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
+        fc: Address,
+    ) -> (String, alloy_primitives::B256)
+    where
+        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(1), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        let block_number = evm.ctx_mut().block.number;
+        evm.inner.fee_currency_context =
+            celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+        let mut tx = make_cip64_tx(fc);
+        tx.op_tx.base.gas_limit = 200_000;
+        tx.op_tx.enveloped_tx = Some(Bytes::from_static(b"cip64-revert-eviction-test"));
+        let tx_hash = alloy_primitives::keccak256(tx.op_tx.enveloped_tx.as_ref().unwrap());
+        let result = evm.transact_raw(tx);
+        (format!("{:?}", result.expect_err("failing fee-currency call must error")), tx_hash)
+    }
+
+    /// Run a CIP-64 tx through a policy-enabled EVM whose fee currency `fc`
     /// is registered in the per-block context and backed by `code` at the
     /// token address, so the `debitGasFees` system call genuinely executes
     /// that bytecode. Returns the resulting error, stringified.
@@ -957,6 +1029,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_debit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD0);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(evictions.take(tx_hash));
+    }
+
+    #[test]
+    fn test_credit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD5);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        let code = Bytes::from_static(&[
+            0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x60, 0x00, 0xfd,
+        ]);
+        evm.db_mut().insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX));
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(evictions.take(tx_hash));
+    }
+
     /// A fee-currency contract that *halts* the debit (burns through the
     /// debit call's gas budget) is a genuine currency fault and must still be
     /// blocklisted.
@@ -976,6 +1089,50 @@ mod tests {
             blocklist.is_blocked(fc),
             "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
         );
+    }
+
+    #[test]
+    fn test_debit_halt_still_blocklists_without_recording_revert_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD1);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm = make_test_evm_with_evictions(blocklist.clone(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x5b, 0x60, 0x00, 0x56,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER));
+        assert!(blocklist.is_blocked(fc));
+        assert!(!evictions.take(tx_hash));
+    }
+
+    #[test]
+    fn test_disabled_failure_policies_revert_does_not_record_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD6);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let mut evm =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.failure_policies_enabled = false;
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(!evictions.take(tx_hash));
     }
 
     /// A fee-currency contract that debits fine but *halts* the post-execution
@@ -1188,7 +1345,7 @@ mod tests {
 
         let err_msg = metrics::with_local_recorder(&recorder, || {
             let mut evm = make_test_evm(blocklist.clone());
-            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            // Non-zero basefee puts the EVM in block-building mode (failure policies on).
             evm.ctx_mut().block.basefee = 1_000_000_000;
             let result = evm.transact_raw(make_cip64_tx(fc));
             format!("{:?}", result.expect_err("unregistered fee currency must fail"))
@@ -1518,9 +1675,9 @@ mod tests {
         );
     }
 
-    /// Verify that the blocklist is NOT enforced during RPC simulation
-    /// (eth_call / eth_estimateGas). RPC mode disables the base fee check,
-    /// which `transact_raw` uses as the signal for "not block building".
+    /// Verify that `transact_raw` does not enforce the blocklist during call-style RPC simulation.
+    /// Blocklist rejection belongs to the sequencing payload filter, while disabling the base-fee
+    /// check here also suppresses failure-policy writes.
     #[test]
     fn test_blocklist_bypassed_in_rpc_simulation() {
         let fc = Address::with_last_byte(0xAA);
@@ -1532,8 +1689,8 @@ mod tests {
         // Enable RPC simulation mode: disable base fee check
         evm.ctx_mut().cfg.disable_base_fee = true;
 
-        // Even though the currency is blocklisted, transact_raw should NOT
-        // reject it — the blocklist only applies during block building.
+        // Even though the currency is blocklisted, `transact_raw` must not reject it; rejection
+        // belongs to the sequencing payload filter.
         let tx = make_cip64_tx(fc);
         let result = evm.transact_raw(tx);
         if let Err(e) = &result {
