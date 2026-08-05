@@ -1477,11 +1477,10 @@ pub fn celo_admin_module(
             let blocked: Vec<BlockedFeeCurrency> = ctx
                 .blocked_currencies()
                 .into_iter()
-                .map(|(address, blocked_at)| BlockedFeeCurrency {
-                    address,
-                    blocked_at,
-                    evicts_at: blocked_at
-                        .saturating_add(alloy_celo_evm::blocklist::BLOCKLIST_EVICTION_SECONDS),
+                .map(|entry| BlockedFeeCurrency {
+                    address: entry.address,
+                    blocked_at: entry.blocked_at,
+                    evicts_at: entry.evicts_at,
                 })
                 .collect();
             Ok::<_, jsonrpsee_types::ErrorObjectOwned>(blocked)
@@ -1870,8 +1869,6 @@ mod tests {
     /// what the sequencing filter would skip, and reflects blocks, unblocks and eviction.
     #[tokio::test]
     async fn admin_get_blocklist_fee_currencies_reflects_blocklist_state() {
-        use alloy_celo_evm::blocklist::BLOCKLIST_EVICTION_SECONDS;
-
         let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
         let module = celo_admin_module(blocklist.clone());
 
@@ -1892,21 +1889,24 @@ mod tests {
         blocklist.block_currency(first, 1000);
         blocklist.block_currency(second, 5000);
 
-        assert_eq!(
-            list(&module).await,
-            vec![
-                BlockedFeeCurrency {
-                    address: first,
-                    blocked_at: 1000,
-                    evicts_at: 1000 + BLOCKLIST_EVICTION_SECONDS,
-                },
-                BlockedFeeCurrency {
-                    address: second,
-                    blocked_at: 5000,
-                    evicts_at: 5000 + BLOCKLIST_EVICTION_SECONDS,
-                },
-            ],
-        );
+        // Ordered by address, and every field carried through from the blocklist unchanged —
+        // the deadline is the blocklist's to define (`BlockedCurrency::evicts_at`, whose
+        // agreement with `evict` that crate tests), not this layer's to recompute.
+        let expected: Vec<BlockedFeeCurrency> = blocklist
+            .blocked_currencies()
+            .into_iter()
+            .map(|entry| BlockedFeeCurrency {
+                address: entry.address,
+                blocked_at: entry.blocked_at,
+                evicts_at: entry.evicts_at,
+            })
+            .collect();
+        assert_eq!(expected.len(), 2);
+        assert_eq!(expected[0].address, first);
+        assert_eq!(expected[0].blocked_at, 1000);
+        assert_eq!(expected[1].address, second);
+        assert_eq!(expected[1].blocked_at, 5000);
+        assert_eq!(list(&module).await, expected);
 
         // A currency the operator unblocks drops out of the listing.
         blocklist.unblock_currency(first);
@@ -1914,8 +1914,9 @@ mod tests {
         assert_eq!(after_unblock.len(), 1);
         assert_eq!(after_unblock[0].address, second);
 
-        // So does one that ages out of the eviction window.
-        blocklist.evict(5000 + BLOCKLIST_EVICTION_SECONDS);
+        // So does one that ages out of the eviction window, at exactly the `evictsAt` the
+        // listing reported for it.
+        blocklist.evict(after_unblock[0].evicts_at);
         assert!(list(&module).await.is_empty());
     }
 
