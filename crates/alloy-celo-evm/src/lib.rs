@@ -178,16 +178,15 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// Contract reverts are ambiguous (canonically an underfunded sender), so they never blocklist
     /// a whole currency.
     /// EVM-level call errors are the node's own infrastructure faults and affect neither policy.
-    /// These shared policy objects must therefore only be touched during local next-block
-    /// construction.
-    /// Block import and derivation re-execute already-canonical blocks and must produce identical
-    /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
+    /// These shared policy objects must therefore only be touched while the sequencer executes
+    /// candidates from its local transaction pool. Block import, derivation, pending-block
+    /// construction, and explicit witness/debug execution must produce results without mutating a
+    /// node-local heuristic, so they leave it alone entirely.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and ordinary replay/call RPCs). Celo-reth flips it to `true` in
-    /// both next-block builders: `builder_for_next_block` serves speculative builders such as the
-    /// pending-block RPC, while `post_exec_builder_for_next_block` serves the standard OP payload
-    /// builder. Import and derivation deliberately bypass both.
+    /// import/derivation executor and ordinary replay/call RPCs). Celo-reth flips it to `true`
+    /// only when its next-block context identifies pool-backed sequencing with the matching
+    /// payload-pool consumer.
     failure_policies_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
@@ -260,9 +259,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         }
     }
 
-    /// Enables local fee-currency failure policies for this EVM. Celo-reth calls this from its
-    /// next-block builders, used by payload construction and speculative pending-block execution.
-    /// Import, derivation and ordinary replay/call RPCs leave it off.
+    /// Enables local fee-currency failure policies for this EVM. Celo-reth calls this only for
+    /// pool-backed sequencing payload construction. Import, derivation, pending-block construction,
+    /// and ordinary replay/call RPCs leave it off.
     #[must_use]
     pub const fn with_failure_policies_enabled(mut self) -> Self {
         self.failure_policies_enabled = true;
@@ -334,13 +333,12 @@ where
         // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // The fee currency blocklist and revert-eviction channel are local next-block policies.
-        // `failure_policies_enabled` is set by celo-reth's next-block builders, used for payload
-        // construction and speculative pending-block execution, and left off for import,
-        // derivation re-execution, and ordinary replay/call RPCs. Import and derivation therefore
-        // touch neither policy object. The `base_fee_check_enabled` conjunct is redundant given
-        // `failure_policies_enabled`, but remains an explicit guard against ever enabling these
-        // policies on a call-style RPC simulation EVM.
+        // The fee currency blocklist and revert-eviction channel are local sequencing policies.
+        // `failure_policies_enabled` is set only for pool-backed sequencing payload construction,
+        // and left off for import, derivation, pending-block construction, explicit witness/debug
+        // execution, and ordinary replay/call RPCs. The `base_fee_check_enabled` conjunct is
+        // redundant given `failure_policies_enabled`, but remains an explicit guard against ever
+        // enabling these policies on a call-style RPC simulation EVM.
         //
         // NOTE: blocklist *rejection* is intentionally NOT performed here even when failure
         // policies are enabled; the payload path enforces it in `CeloFeeCurrencyFilter` (see
@@ -570,21 +568,21 @@ where
 /// executor and a re-executing ExEx) running through the same factory get independent
 /// slots and never overwrite each other's pending CIP-64 receipt data.
 ///
-/// The factory also clones one shared [`CeloFailurePolicies`] bundle into every EVM. Only local
-/// next-block builders enable policy writes: a fee-currency debit or credit halt blocklists the
-/// currency, while a revert records the exact transaction hash for later pool eviction. Import,
-/// derivation, and ordinary replay/call RPCs leave the policies disabled. Blocklist rejection
-/// remains in the sequencing payload filter rather than [`CeloEvm::transact_raw`]. The default
-/// factory uses empty policies.
+/// The factory also clones one shared [`CeloFailurePolicies`] bundle into every EVM. Only
+/// pool-backed sequencing enables policy writes: a fee-currency debit or credit halt blocklists
+/// the currency, while a revert records the exact transaction hash for later pool eviction.
+/// Import, derivation, pending-block construction, and ordinary replay/call RPCs leave the policies
+/// disabled. Blocklist rejection remains in the sequencing payload filter rather than
+/// [`CeloEvm::transact_raw`]. The default factory uses empty policies.
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
-    /// Shared local next-block failure policies. EVMs produced by this factory write these
+    /// Shared local sequencing failure policies. EVMs produced by this factory write these
     /// policies only after [`CeloEvm::with_failure_policies_enabled`] is applied.
     failure_policies: CeloFailurePolicies,
 }
 
 impl CeloEvmFactory {
-    /// Sets the shared local next-block failure policies.
+    /// Sets the shared local sequencing failure policies.
     pub fn with_failure_policies(mut self, failure_policies: CeloFailurePolicies) -> Self {
         self.failure_policies = failure_policies;
         self
@@ -712,9 +710,9 @@ impl CeloEvmFactory {
             inspect,
             cip64_storage: Cip64Storage::default(),
             failure_policies: self.failure_policies.clone(),
-            // Off by default: the import/derivation executor and ordinary replay/call RPCs create
-            // EVMs through the factory and must not touch local failure-policy state. Celo-reth's
-            // next-block builders opt in with `with_failure_policies_enabled`.
+            // Off by default: import, derivation, pending-block construction, witness/debug
+            // execution, and ordinary replay/call RPCs must not touch local failure-policy state.
+            // Celo-reth opts in only for pool-backed sequencing.
             failure_policies_enabled: false,
             // Off by default; `create_executor` flips it on for receipt-building executors.
             cip64_store_enabled: false,

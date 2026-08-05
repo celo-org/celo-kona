@@ -92,8 +92,10 @@ use reth_optimism_primitives::DepositReceipt;
 #[cfg(feature = "std")]
 use {
     reth_evm::{ConfigureEngineEvm, ExecutableTxIterator, ExecutionCtxFor},
-    reth_optimism_payload_builder::OpExecData,
+    reth_node_api::{BuildNextEnv, PayloadBuilderError},
+    reth_optimism_payload_builder::{OpExecData, OpPayloadBuilderAttributes},
     reth_primitives_traits::TxTy,
+    reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv,
 };
 
 pub use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR as CELO_BASE_FEE_FLOOR;
@@ -116,6 +118,49 @@ where
         Some(raw)
     } else {
         Some(raw.max(CELO_BASE_FEE_FLOOR))
+    }
+}
+
+/// Context for constructing a Celo next-block EVM.
+///
+/// Failure policies are enabled only when the EVM belongs to the pool-backed sequencing path.
+/// Derivation, explicit CIP-64 witness execution, and pending-block construction leave them off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CeloNextBlockEnvAttributes {
+    inner: OpNextBlockEnvAttributes,
+    failure_policies_enabled: bool,
+}
+
+#[cfg(feature = "std")]
+impl<ChainSpec> BuildNextEnv<OpPayloadBuilderAttributes<CeloTransactionSigned>, Header, ChainSpec>
+    for CeloNextBlockEnvAttributes
+where
+    ChainSpec: EthChainSpec + OpHardforks,
+{
+    fn build_next_env(
+        attributes: &OpPayloadBuilderAttributes<CeloTransactionSigned>,
+        parent: &SealedHeader<Header>,
+        chain_spec: &ChainSpec,
+    ) -> Result<Self, PayloadBuilderError> {
+        let inner = OpNextBlockEnvAttributes::build_next_env(attributes, parent, chain_spec)?;
+        // In normal sequencing, explicit attributes contain only deposit/system transactions;
+        // CIP-64 user transactions come from `CeloPayloadTransactions`, which consumes policy
+        // records. An explicit CIP-64 transaction instead identifies derivation or witness/debug
+        // execution, where mutating the sequencer's shared policy state would be a side effect.
+        let failure_policies_enabled = !attributes.no_tx_pool &&
+            attributes.transactions.iter().all(|tx| !tx.value().is_cip64());
+
+        Ok(Self { inner, failure_policies_enabled })
+    }
+}
+
+#[cfg(feature = "std")]
+impl BuildPendingEnv<Header> for CeloNextBlockEnvAttributes {
+    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+        Self {
+            inner: OpNextBlockEnvAttributes::build_pending_env(parent),
+            failure_policies_enabled: false,
+        }
     }
 }
 
@@ -151,7 +196,7 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
         Self::celo_with_failure_policies(chain_spec, alloy_celo_evm::CeloFailurePolicies::default())
     }
 
-    /// Creates a new [`CeloEvmConfig`] with shared local next-block failure policies.
+    /// Creates a new [`CeloEvmConfig`] with shared local sequencing failure policies.
     pub fn celo_with_failure_policies(
         chain_spec: Arc<ChainSpec>,
         failure_policies: alloy_celo_evm::CeloFailurePolicies,
@@ -233,7 +278,7 @@ where
 {
     type Primitives = N;
     type Error = EIP1559ParamError;
-    type NextBlockEnvCtx = OpNextBlockEnvAttributes;
+    type NextBlockEnvCtx = CeloNextBlockEnvAttributes;
     type BlockExecutorFactory = CeloBlockExecutorFactory<R, Arc<ChainSpec>>;
     type BlockAssembler = OpBlockAssembler<ChainSpec>;
 
@@ -261,13 +306,13 @@ where
         Ok(alloy_op_evm::evm_env_for_op_next_block(
             parent,
             NextEvmEnvAttributes {
-                timestamp: attributes.timestamp,
-                suggested_fee_recipient: attributes.suggested_fee_recipient,
-                prev_randao: attributes.prev_randao,
-                gas_limit: attributes.gas_limit,
+                timestamp: attributes.inner.timestamp,
+                suggested_fee_recipient: attributes.inner.suggested_fee_recipient,
+                prev_randao: attributes.inner.prev_randao,
+                gas_limit: attributes.inner.gas_limit,
                 slot_number: None,
             },
-            celo_next_block_base_fee(self.chain_spec(), parent, attributes.timestamp)
+            celo_next_block_base_fee(self.chain_spec(), parent, attributes.inner.timestamp)
                 .unwrap_or_default(),
             self.chain_spec(),
             self.chain_spec().chain().id(),
@@ -321,17 +366,15 @@ where
     ) -> Result<OpBlockExecutionCtx, Self::Error> {
         Ok(self.context_for_next_block_with_post_exec_mode(
             parent,
-            attributes,
+            attributes.inner,
             PostExecMode::default(),
         ))
     }
 
-    /// Builds a block builder for local next-block construction. The standard OP payload builder
-    /// enters through `post_exec_builder_for_next_block` below; this method is used by other
-    /// speculative builders, including reth's pending-block RPC, which also executes transactions
-    /// from this node's local pool. Both next-block paths enable local fee-currency failure
-    /// policies. Block import and derivation instead build EVMs via `evm_with_env` +
-    /// `create_executor` and leave those policies disabled.
+    /// Builds a block builder for local next-block construction. The supplied context decides
+    /// whether this is pool-backed sequencing, the only path allowed to mutate shared local
+    /// fee-currency failure policies. Pending-block and explicit-transaction execution leave them
+    /// disabled.
     /// Otherwise identical to the default `ConfigureEvm` implementation.
     fn builder_for_next_block<'a, DB: Database + 'a>(
         &'a self,
@@ -343,7 +386,12 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        let evm = self.evm_with_env(db, evm_env).with_failure_policies_enabled();
+        let evm = self.evm_with_env(db, evm_env);
+        let evm = if attributes.failure_policies_enabled {
+            evm.with_failure_policies_enabled()
+        } else {
+            evm
+        };
         let ctx = self.context_for_next_block(parent, attributes)?;
         Ok(self.create_block_builder(evm, parent, ctx))
     }
@@ -416,14 +464,21 @@ where
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         // The standard OP payload builder routes every payload build through this next-block path;
-        // `post_exec_mode` controls only SDM behavior. Enable local failure policies and CIP-64
-        // receipt storage for the block being built.
-        let evm = self
-            .evm_with_env(db, evm_env)
-            .with_failure_policies_enabled()
-            .with_cip64_store_enabled();
-        let ctx =
-            self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
+        // `post_exec_mode` controls only SDM behavior. The next-block context independently scopes
+        // local failure policies to pool-backed sequencing, while every receipt-building payload
+        // still needs its own CIP-64 storage.
+        let evm = self.evm_with_env(db, evm_env);
+        let evm = if attributes.failure_policies_enabled {
+            evm.with_failure_policies_enabled()
+        } else {
+            evm
+        }
+        .with_cip64_store_enabled();
+        let ctx = self.context_for_next_block_with_post_exec_mode(
+            parent,
+            attributes.inner,
+            post_exec_mode,
+        );
         let builder = R::from(evm.cip64_storage().clone());
         let executor =
             OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
