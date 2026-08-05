@@ -8,10 +8,11 @@
 //! sender) and EVM-level call errors (the node's own infrastructure faults) never
 //! blocklist.
 //!
-//! This is a *local next-block heuristic*. It is populated inside `CeloEvm::transact_raw()`,
-//! but only for EVMs built for local next-block construction (`failure_policies_enabled`); block
-//! import and derivation re-execution leave it untouched, so a node's locally-accumulated
-//! blocklist can never affect whether it accepts a canonical block. Rejection itself is
+//! This is a *local sequencing heuristic*. It is populated inside `CeloEvm::transact_raw()`, but
+//! only while the sequencer executes candidates from its local transaction pool
+//! (`failure_policies_enabled`). Block import, derivation, pending-block construction, and
+//! witness/debug execution leave it untouched, so a node's locally-accumulated blocklist can never
+//! affect whether it accepts a canonical block or serves a speculative read. Rejection itself is
 //! sequencing-only, enforced by `CeloFeeCurrencyFilter` in `celo-reth`'s `payload.rs`. Kona/ZK
 //! paths do not need it and use the default empty blocklist on `CeloEvmFactory::default()`.
 //!
@@ -41,7 +42,7 @@ struct BlocklistState {
 
 /// Shared, thread-safe fee currency blocklist.
 ///
-/// When a CIP-64 transaction's fee-currency debit/credit *halts* during policy-enabled next-block
+/// When a CIP-64 transaction's fee-currency debit/credit *halts* during policy-enabled sequencing
 /// execution, the currency is added to the blocklist. Contract *reverts*
 /// (e.g. an underfunded sender's `ERC20: transfer amount exceeds balance` — but a paused
 /// token reverts the same way) are ambiguous, insufficient evidence of a currency fault,

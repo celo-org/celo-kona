@@ -5,7 +5,7 @@ use alloy_primitives::B256;
 use spin::Mutex;
 
 /// Exact transaction hashes whose fee-currency debit or credit reverted during policy-enabled
-/// next-block execution.
+/// sequencing execution.
 #[derive(Debug, Clone, Default)]
 pub struct RevertEvictions {
     inner: Arc<Mutex<BTreeSet<B256>>>,

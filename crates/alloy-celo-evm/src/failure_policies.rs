@@ -1,8 +1,8 @@
-//! Shared local failure policies used while constructing a next block with CIP-64 transactions.
+//! Shared local failure policies used while sequencing CIP-64 transactions from the pool.
 
 use crate::{blocklist::FeeCurrencyBlocklist, revert_evictions::RevertEvictions};
 
-/// Shared blocklist and revert-eviction state for local next-block construction.
+/// Shared blocklist and revert-eviction state for pool-backed sequencing.
 ///
 /// Keeping both channels in one value prevents the EVM producer and payload-pool consumer from
 /// being configured independently. Cloning this value preserves both shared channels.
