@@ -209,14 +209,35 @@ sign_tx() { # <sign_raw_tx.mjs args...> -> {"hash","raw"}
         node sign_raw_tx.mjs --chain-id "$CHAIN_ID" "$@")
 }
 
-send_raw() { # <name> <raw> -> tx hash on stdout; reports a rejection as a failure
-    local response
-    response=$(rpc_call eth_sendRawTransaction "[\"$2\"]")
+# A send that never lands must fail the run, so every way it can go wrong —
+# transport, a non-JSON body, a JSON-RPC rejection, a response carrying neither
+# result nor error — is checked and reported here. The hash comes back in a
+# global rather than on stdout: under `sent=$(send_raw ...)` the helper runs in
+# a subshell, where _rpc_fail's counter increment is discarded and its message
+# is captured instead of printed, which is exactly how a failed send would go
+# unnoticed.
+SENT_HASH=
+send_raw() { # <name> <raw> -> SENT_HASH; reports any failure to send
+    local response hash
+    SENT_HASH=
+    if ! response=$(rpc_call eth_sendRawTransaction "[\"$2\"]"); then
+        _rpc_fail "send_$1" "transport error talking to $RPC_URL (node down?)"
+        return 1
+    fi
+    if ! _rpc_is_json "$response"; then
+        _rpc_fail "send_$1" "response is not JSON: $(head -c 200 <<<"$response")"
+        return 1
+    fi
     if _rpc_has_error "$response"; then
         _rpc_fail "send_$1" "$(_rpc_error_msg "$response")"
         return 1
     fi
-    jq -r '.result // empty' <<<"$response"
+    hash=$(jq -r '.result // empty' <<<"$response")
+    if [[ -z "$hash" ]]; then
+        _rpc_fail "send_$1" "response has neither a result nor an error: $response"
+        return 1
+    fi
+    SENT_HASH=$hash
 }
 
 fc_balance_of() { # <block-tag> -> the sender's fee-currency balance, hex
@@ -411,14 +432,13 @@ for i in "${!LABELS[@]}"; do
     hash=$(jq -r '.hash' <<<"${TXS[$i]}")
     raw=$(jq -r '.raw' <<<"${TXS[$i]}")
 
-    # An empty $sent means send_raw already reported the rejection. A
+    # send_raw has already reported anything that stopped the send. A
     # *different* hash is an encoding change in the signer or in CIP-64
     # serialization; without a failure of its own it only shows up several
     # phases later, as this label's goldens being reported unread.
-    sent=$(send_raw "$label" "$raw")
-    if [[ "$sent" != "$hash" ]]; then
-        [[ -n "$sent" ]] &&
-            _rpc_fail "send_$label" "node returned $sent, signed hash is $hash"
+    send_raw "$label" "$raw" || continue
+    if [[ "$SENT_HASH" != "$hash" ]]; then
+        _rpc_fail "send_$label" "node returned $SENT_HASH, signed hash is $hash"
         continue
     fi
     if ! receipt=$(wait_receipt "$hash"); then
@@ -526,7 +546,7 @@ for i in 1 2 3; do
         --fee-currency "$FEE_CURRENCY" --gas 100000 \
         --max-fee 100000000000 --max-priority-fee 2000000000)
     BATCH_HASHES+=("$(jq -r '.hash' <<<"$tx")")
-    send_raw "batch_$i" "$(jq -r '.raw' <<<"$tx")" >/dev/null
+    send_raw "batch_$i" "$(jq -r '.raw' <<<"$tx")"
 done
 # The gap filler pays in the *other* genesis fee currency, so the replayed
 # prefix spans two currencies at two different exchange rates. Its fee fields
@@ -536,7 +556,7 @@ done
 filler=$(sign_tx --nonce "$NONCE" --to "$DEAD" --value 1 --fee-currency "$FEE_CURRENCY2" \
     --gas 100000 --max-fee 100000000 --max-priority-fee 1000000)
 FILLER_HASH=$(jq -r '.hash' <<<"$filler")
-send_raw filler "$(jq -r '.raw' <<<"$filler")" >/dev/null
+send_raw filler "$(jq -r '.raw' <<<"$filler")"
 
 if ! batch_receipt=$(wait_receipt "${BATCH_HASHES[2]}"); then
     _rpc_fail "batch_mined" "the nonce-gap batch was not mined"
@@ -699,10 +719,9 @@ cip64_after=$(sign_tx --nonce $((RATE_NONCE + 2)) --to "$DEAD" --value 1 \
 before_block= ; after_block=
 for tx in "$cip64_before" "$rate_change" "$cip64_after"; do
     hash=$(jq -r '.hash' <<<"$tx")
-    sent=$(send_raw rate_sequence "$(jq -r '.raw' <<<"$tx")")
-    if [[ "$sent" != "$hash" ]]; then
-        [[ -n "$sent" ]] &&
-            _rpc_fail send_rate_sequence "node returned $sent, signed hash is $hash"
+    send_raw rate_sequence "$(jq -r '.raw' <<<"$tx")" || break
+    if [[ "$SENT_HASH" != "$hash" ]]; then
+        _rpc_fail send_rate_sequence "node returned $SENT_HASH, signed hash is $hash"
         break
     fi
     if ! receipt=$(wait_receipt "$hash"); then
