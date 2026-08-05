@@ -66,10 +66,12 @@ impl FeeCurrencyBlocklist {
     /// Returns the currently blocked currencies with the timestamp each was blocked at,
     /// ordered by address.
     ///
-    /// Eviction is driven by [`Self::evict`], which the sequencing path calls with the
-    /// block timestamp, so an entry older than [`BLOCKLIST_EVICTION_SECONDS`] can still be
-    /// listed here until the next eviction runs. Callers that need "would this currency be
-    /// skipped right now" should use [`Self::is_blocked`].
+    /// The timestamp is the one [`Self::block_currency`] recorded — the timestamp of the block
+    /// that was being built when the currency halted. Eviction is driven by [`Self::evict`],
+    /// which the sequencing path calls with *wall-clock* seconds, so an entry older than
+    /// [`BLOCKLIST_EVICTION_SECONDS`] can still be listed here until the next payload build,
+    /// and can conversely be evicted early while block timestamps lag wall clock. Callers that
+    /// need "would this currency be skipped right now" should use [`Self::is_blocked`].
     pub fn blocked_currencies(&self) -> Vec<(Address, u64)> {
         self.inner.lock().blocked.iter().map(|(&c, &at)| (c, at)).collect()
     }
@@ -89,6 +91,13 @@ impl FeeCurrencyBlocklist {
     }
 
     /// Removes entries older than `BLOCKLIST_EVICTION_SECONDS` (7200s) from the current timestamp.
+    ///
+    /// The caller picks the clock, and the two callers do not agree: [`Self::block_currency`]
+    /// records the timestamp of the block being built, while celo-reth's
+    /// `CeloPayloadTransactions::best_transactions` evicts with wall-clock seconds. They match
+    /// while the chain tracks wall time, which is the assumption this best-effort heuristic is
+    /// built on; while the sequencer is catching up, entries age out sooner than their recorded
+    /// timestamp plus the TTL implies.
     pub fn evict(&self, current_timestamp: u64) {
         let mut state = self.inner.lock();
         state.blocked.retain(|_, blocked_at| {
