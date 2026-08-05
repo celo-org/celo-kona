@@ -28,8 +28,8 @@ test:
 
 # Slow trybuild compile-fail guard for `celo_revm::units` mixed-denomination
 # defenses. Each UI fixture triggers a fresh from-scratch compile in a
-# trybuild-managed sub-target, so this is split off from `just test` and only
-# runs in CI post-merge to main.
+# trybuild-managed sub-target, so this is split off from `just test` and runs
+# in its own CI job.
 test-trybuild:
   cargo nextest run -p celo-revm --test units_compile_fail
 
