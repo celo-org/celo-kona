@@ -19,16 +19,18 @@
 //! - `admin_disableBlocklistFeeCurrencies`: Prevents a currency from being blocklisted.
 //! - `admin_enableBlocklistFeeCurrencies`: Re-enables blocklisting for a currency.
 //! - `admin_unblockFeeCurrency`: Removes a currency from the blocklist.
+//! - `admin_getBlocklistFeeCurrencies`: Reads back the current blocklist.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
+    vec::Vec,
 };
 use alloy_primitives::Address;
 use spin::Mutex;
 
 /// How long (in seconds) a currency stays blocked before automatic eviction.
-const BLOCKLIST_EVICTION_SECONDS: u64 = 7200;
+pub const BLOCKLIST_EVICTION_SECONDS: u64 = 7200;
 
 /// Internal state for the fee currency blocklist.
 #[derive(Debug, Default)]
@@ -58,6 +60,22 @@ impl FeeCurrencyBlocklist {
     /// Returns `true` if the given currency is currently blocked.
     pub fn is_blocked(&self, currency: Address) -> bool {
         self.inner.lock().blocked.contains_key(&currency)
+    }
+
+    /// Returns the currently blocked currencies with the timestamp each was blocked at,
+    /// ordered by address.
+    ///
+    /// Eviction is driven by [`Self::evict`], which the sequencing path calls with the
+    /// block timestamp, so an entry older than [`BLOCKLIST_EVICTION_SECONDS`] can still be
+    /// listed here until the next eviction runs. Callers that need "would this currency be
+    /// skipped right now" should use [`Self::is_blocked`].
+    pub fn blocked_currencies(&self) -> Vec<(Address, u64)> {
+        self.inner.lock().blocked.iter().map(|(&c, &at)| (c, at)).collect()
+    }
+
+    /// Returns the currencies for which blocklisting has been disabled, ordered by address.
+    pub fn disabled_currencies(&self) -> Vec<Address> {
+        self.inner.lock().blocklist_disabled.iter().copied().collect()
     }
 
     /// Adds a currency to the blocklist at the given timestamp
@@ -178,6 +196,37 @@ mod tests {
         bl.enable_blocklist(&[addr(1)]);
         bl.block_currency(addr(1), 1000);
         assert!(bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn blocked_currencies_lists_entries_with_timestamps() {
+        let bl = FeeCurrencyBlocklist::default();
+        assert!(bl.blocked_currencies().is_empty());
+
+        bl.block_currency(addr(2), 5000);
+        bl.block_currency(addr(1), 1000);
+        // Ordered by address, not insertion order.
+        assert_eq!(bl.blocked_currencies(), vec![(addr(1), 1000), (addr(2), 5000)]);
+
+        bl.unblock_currency(addr(1));
+        assert_eq!(bl.blocked_currencies(), vec![(addr(2), 5000)]);
+
+        bl.evict(5000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(bl.blocked_currencies().is_empty());
+    }
+
+    #[test]
+    fn blocked_currencies_omits_disabled() {
+        let bl = FeeCurrencyBlocklist::default();
+        bl.disable_blocklist(&[addr(1)]);
+        bl.block_currency(addr(1), 1000);
+        assert!(bl.blocked_currencies().is_empty());
+        assert_eq!(bl.disabled_currencies(), vec![addr(1)]);
+
+        bl.enable_blocklist(&[addr(1)]);
+        assert!(bl.disabled_currencies().is_empty());
+        bl.block_currency(addr(1), 2000);
+        assert_eq!(bl.blocked_currencies(), vec![(addr(1), 2000)]);
     }
 
     #[test]

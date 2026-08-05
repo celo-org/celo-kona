@@ -1395,10 +1395,26 @@ where
 // Admin RPCs for fee currency blocklist management
 // ---------------------------------------------------------------------------
 
+/// One entry of the `admin_getBlocklistFeeCurrencies` response.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedFeeCurrency {
+    /// The blocked fee currency's address.
+    pub address: Address,
+    /// Block timestamp (seconds) at which the currency was blocked.
+    pub blocked_at: u64,
+    /// Block timestamp (seconds) at or after which the entry is evicted.
+    ///
+    /// Eviction runs on the sequencing path with the block timestamp, so an entry whose
+    /// `evictsAt` has passed can still be listed until the next block is built.
+    pub evicts_at: u64,
+}
+
 /// Build a [`jsonrpsee::RpcModule`] with fee currency blocklist admin methods:
 /// - `admin_disableBlocklistFeeCurrencies`: Disable blocklisting for given currencies
 /// - `admin_enableBlocklistFeeCurrencies`: Re-enable blocklisting for given currencies
 /// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
+/// - `admin_getBlocklistFeeCurrencies`: List the currently blocked currencies
 ///
 /// # Authentication
 ///
@@ -1433,6 +1449,29 @@ pub fn celo_admin_module(
             Ok::<_, jsonrpsee_types::ErrorObjectOwned>(true)
         })
         .expect("admin_unblockFeeCurrency registration");
+
+    // Named after op-geth's `admin_getBlocklistFeeCurrencies` (its `eth/api_admin.go`), as the
+    // three mutators above already are, so operator tooling ports across unchanged. op-geth's
+    // takes an `includeDisabled` flag, which has no meaning here: its `DisableBlocking` leaves
+    // an already-blocked entry in the map and merely filters it out of reads, whereas our
+    // `disable_blocklist` deletes it, so a currency can never be both blocked and disabled.
+    // The response shape does differ — op-geth returns `{address: expiry}`, we return objects
+    // that also carry `blockedAt` — but `evictsAt` is op-geth's expiry value exactly.
+    module
+        .register_method("admin_getBlocklistFeeCurrencies", |_params, ctx, _| {
+            let blocked: Vec<BlockedFeeCurrency> = ctx
+                .blocked_currencies()
+                .into_iter()
+                .map(|(address, blocked_at)| BlockedFeeCurrency {
+                    address,
+                    blocked_at,
+                    evicts_at: blocked_at
+                        .saturating_add(alloy_celo_evm::blocklist::BLOCKLIST_EVICTION_SECONDS),
+                })
+                .collect();
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(blocked)
+        })
+        .expect("admin_getBlocklistFeeCurrencies registration");
 
     module
 }
@@ -1745,6 +1784,104 @@ mod tests {
         assert!(
             method_names.contains(&"admin_unblockFeeCurrency"),
             "missing admin_unblockFeeCurrency"
+        );
+        assert!(
+            method_names.contains(&"admin_getBlocklistFeeCurrencies"),
+            "missing admin_getBlocklistFeeCurrencies"
+        );
+    }
+
+    /// The read side of the blocklist: `admin_getBlocklistFeeCurrencies` reports exactly
+    /// what the sequencing filter would skip, and reflects blocks, unblocks and eviction.
+    #[tokio::test]
+    async fn admin_get_blocklist_fee_currencies_reflects_blocklist_state() {
+        use alloy_celo_evm::blocklist::BLOCKLIST_EVICTION_SECONDS;
+
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist.clone());
+
+        async fn list(
+            module: &jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist>,
+        ) -> Vec<BlockedFeeCurrency> {
+            module
+                .call::<_, Vec<BlockedFeeCurrency>>("admin_getBlocklistFeeCurrencies", [(); 0])
+                .await
+                .expect("admin_getBlocklistFeeCurrencies call")
+        }
+
+        // Empty blocklist lists nothing.
+        assert!(list(&module).await.is_empty());
+
+        let first = Address::with_last_byte(0xA1);
+        let second = Address::with_last_byte(0xA2);
+        blocklist.block_currency(first, 1000);
+        blocklist.block_currency(second, 5000);
+
+        assert_eq!(
+            list(&module).await,
+            vec![
+                BlockedFeeCurrency {
+                    address: first,
+                    blocked_at: 1000,
+                    evicts_at: 1000 + BLOCKLIST_EVICTION_SECONDS,
+                },
+                BlockedFeeCurrency {
+                    address: second,
+                    blocked_at: 5000,
+                    evicts_at: 5000 + BLOCKLIST_EVICTION_SECONDS,
+                },
+            ],
+        );
+
+        // A currency the operator unblocks drops out of the listing.
+        blocklist.unblock_currency(first);
+        let after_unblock = list(&module).await;
+        assert_eq!(after_unblock.len(), 1);
+        assert_eq!(after_unblock[0].address, second);
+
+        // So does one that ages out of the eviction window.
+        blocklist.evict(5000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(list(&module).await.is_empty());
+    }
+
+    /// A currency with blocklisting disabled is never listed, matching `is_blocked`.
+    #[tokio::test]
+    async fn admin_get_blocklist_fee_currencies_omits_disabled() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist.clone());
+        let fc = Address::with_last_byte(0xA3);
+
+        module
+            .call::<_, bool>("admin_disableBlocklistFeeCurrencies", [vec![fc]])
+            .await
+            .expect("admin_disableBlocklistFeeCurrencies call");
+        blocklist.block_currency(fc, 1000);
+
+        assert!(!blocklist.is_blocked(fc));
+        let blocked = module
+            .call::<_, Vec<BlockedFeeCurrency>>("admin_getBlocklistFeeCurrencies", [(); 0])
+            .await
+            .expect("admin_getBlocklistFeeCurrencies call");
+        assert!(blocked.is_empty(), "disabled currency must not be listed: {blocked:?}");
+    }
+
+    /// The response uses the camelCase field names the RPC contract promises.
+    #[test]
+    fn blocked_fee_currency_serializes_camel_case() {
+        let json = serde_json::to_value(BlockedFeeCurrency {
+            address: Address::with_last_byte(0xA4),
+            blocked_at: 1000,
+            evicts_at: 8200,
+        })
+        .unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "address": "0x00000000000000000000000000000000000000a4",
+                "blockedAt": 1000,
+                "evictsAt": 8200,
+            })
         );
     }
 
