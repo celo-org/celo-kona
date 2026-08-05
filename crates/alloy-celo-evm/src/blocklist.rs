@@ -8,12 +8,12 @@
 //! sender) and EVM-level call errors (the node's own infrastructure faults) never
 //! blocklist.
 //!
-//! This is a *local sequencing heuristic*. It is populated inside `CeloEvm::transact_raw()`,
-//! but only for EVMs built on the sequencing path (`blocklist_enabled`); block import and
-//! derivation re-execution leave it untouched, so a node's locally-accumulated blocklist can
-//! never affect whether it accepts a canonical block. Rejection itself is also sequencing-only,
-//! enforced by `CeloFeeCurrencyFilter` in `celo-reth`'s `payload.rs`. Kona/ZK paths do not need
-//! it and use the default empty blocklist on `CeloEvmFactory::default()`.
+//! This is a *local next-block heuristic*. It is populated inside `CeloEvm::transact_raw()`,
+//! but only for EVMs built for local next-block construction (`failure_policies_enabled`); block
+//! import and derivation re-execution leave it untouched, so a node's locally-accumulated
+//! blocklist can never affect whether it accepts a canonical block. Rejection itself is
+//! sequencing-only, enforced by `CeloFeeCurrencyFilter` in `celo-reth`'s `payload.rs`. Kona/ZK
+//! paths do not need it and use the default empty blocklist on `CeloEvmFactory::default()`.
 //!
 //! Blocklisting can be controlled per-currency via admin RPCs:
 //! - `admin_disableBlocklistFeeCurrencies`: Prevents a currency from being blocklisted.
@@ -41,8 +41,8 @@ struct BlocklistState {
 
 /// Shared, thread-safe fee currency blocklist.
 ///
-/// When a CIP-64 transaction's fee-currency debit/credit *halts* during EVM execution
-/// on the sequencing path, the currency is added to the blocklist. Contract *reverts*
+/// When a CIP-64 transaction's fee-currency debit/credit *halts* during policy-enabled next-block
+/// execution, the currency is added to the blocklist. Contract *reverts*
 /// (e.g. an underfunded sender's `ERC20: transfer amount exceeds balance` — but a paused
 /// token reverts the same way) are ambiguous, insufficient evidence of a currency fault,
 /// and never blocklist; EVM-level call errors (e.g. a database read failing mid-call)
