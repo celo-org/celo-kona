@@ -2539,7 +2539,6 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
- "trybuild",
  "zstd",
 ]
 
@@ -2566,6 +2565,7 @@ dependencies = [
  "spin 0.10.0",
  "thiserror 2.0.18",
  "tracing",
+ "trybuild",
 ]
 
 [[package]]

@@ -7,7 +7,16 @@
 //! visible at each use.
 //!
 //! Regenerate expected stderr after a deliberate API change with:
-//! `TRYBUILD=overwrite cargo test -p celo-reth --test units_compile_fail`.
+//! `TRYBUILD=overwrite cargo test -p celo-revm --test units_compile_fail`.
+//!
+//! This lives in `celo-revm`, not `celo-reth`, on purpose. trybuild resolves
+//! its scratch project from scratch under `--offline`, and it inherits the
+//! dependencies of the crate under test. From `celo-reth` that pulled in the
+//! `reth-*` git dependencies, which the workspace declares against
+//! `paradigmxyz/reth` and redirects via `[patch]` to `celo-org/reth` — so the
+//! unpatched source is absent from `Cargo.lock` and never fetched, and the
+//! offline resolve failed on any clean checkout. `celo-revm` has no `reth-*`
+//! dependencies, so the scratch resolve stays satisfiable.
 
 #[test]
 fn units_compile_fail() {

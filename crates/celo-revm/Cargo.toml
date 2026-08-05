@@ -50,6 +50,7 @@ rstest.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 revm-handler.workspace = true
+trybuild = "1"
 
 [features]
 default = ["std", "c-kzg", "secp256k1", "portable", "blst", "alloy-op-evm"]
