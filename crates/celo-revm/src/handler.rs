@@ -2347,26 +2347,37 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // A CIP-64 tx rejected by a state check that runs *after* the ERC20 fee debit must
-    // leak no debit into the block: the rollbackable debit is reverted with the tx.
+    // leave no debit in the journal: the rollbackable debit is reverted with the tx.
     //
     // The debit runs first (early), charging the sender's fee-currency balance, and only
     // then does `validate_against_state_and_deduct_caller` run the nonce / EIP-3607 /
     // affordability checks. Because the debit is bracketed by a journal checkpoint
-    // (`cip64_rollbackable_debit_and_deduct_caller`), a rejection here reverts it. If the
-    // debit instead committed irreversibly (the pre-fix behavior), the block builder —
-    // which reuses one journal across the block, skips the invalid tx, and finalizes once —
-    // would seal the orphaned debit, while a validator re-executing only the *included* txs
-    // never applies it: the fee-currency balance (hence the state root) diverges — a
-    // consensus split. This test rejects a nonce-too-low CIP-64 tx and asserts nothing is
-    // debited.
+    // (`cip64_rollbackable_debit_and_deduct_caller`), a rejection here reverts it. This test
+    // rejects a nonce-too-low CIP-64 tx and asserts nothing is debited.
     //
-    // Driven through the bare handler (`handler.run` + a manual `finalize`), then asserting the
-    // finalized fee-currency balance. On the rejection path op-revm's `catch_error` override
-    // does no journal work for these non-deposit txs — it neither commits nor discards — so what
-    // reaches `finalize` is whatever the debit left in the journal. Against a committing debit,
-    // `commit_tx` already folded the charge into state and cleared the revert log, so the
-    // rejected tx leaks the debit. The rollbackable (non-committing) debit keeps its revert-log
-    // entries and `checkpoint_revert` unwinds them on the Err arm of
+    // What this does NOT claim is that a committing debit would reach the block. The builder
+    // does *not* reuse one journal across the block and finalize once: `OpBlockExecutor` runs
+    // one `Evm::transact` per transaction, and revm's default `ExecuteEvm::transact`
+    // (revm-handler 18.1.0, `src/api.rs`) calls `finalize()` unconditionally *before* propagating
+    // the error, so a rejected tx's journal is drained and the state dropped; the executor commits
+    // to `State<DB>` only on the `Ok` arm. An irreversibly committed debit on a rejected tx is
+    // therefore discarded upstream today rather than sealed into the block.
+    //
+    // The rollback is what makes that a celo-revm invariant instead of a bet on the caller's
+    // choice of entry point. The drain is the outer layer of that defence and is not free either:
+    // revm's defaulted `InspectEvm::inspect_tx` (revm-inspector 19.0.0, `src/inspect.rs`) returns
+    // on the error arm *before* `finalize()`, so `api/exec.rs` overrides it — and `replay` — to
+    // drain unconditionally. Keeping the debit revertable is what holds one layer down, where
+    // there is no drain to rely on at all: the bare `handler.run` this test drives.
+    //
+    // Driven through the bare handler (`handler.run` + a manual `finalize`) so the assertion
+    // reads the journal the rejection left behind — going through `Evm::transact` would drain
+    // the leak before it could be observed. On the rejection path op-revm's `catch_error`
+    // override does no journal work for these non-deposit txs — it neither commits nor
+    // discards — so what reaches `finalize` is whatever the debit left in the journal. Against
+    // a committing debit, `commit_tx` already folded the charge into state and cleared the
+    // revert log, so the rejected tx leaks the debit. The rollbackable (non-committing) debit
+    // keeps its revert-log entries and `checkpoint_revert` unwinds them on the Err arm of
     // `cip64_rollbackable_debit_and_deduct_caller`, so nothing is debited.
     #[test]
     fn rejected_cip64_tx_reverts_the_fee_debit() {
@@ -2401,8 +2412,10 @@ mod tests {
             1,
         );
 
-        // Mirror the builder: run the (rejected) tx through the handler, then finalize the
-        // journal (the builder reuses one journal across the block and finalizes once).
+        // Run the (rejected) tx through the bare handler, then finalize by hand: this observes
+        // the journal the rejection left behind, which is the invariant under test. It is
+        // deliberately *not* the builder's path — `Evm::transact` finalizes before returning
+        // the error, so it would drain the leak before it could be asserted on.
         let mut handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         let err = handler
@@ -2431,6 +2444,174 @@ mod tests {
              (balance {final_balance} != original {fc_balance}); the rollbackable debit \
              must be reverted when a later rejection check fails"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The companion to the test above, one layer up: `ExecuteEvm::replay` must drain the journal
+    // when it rejects a transaction, so a caller that reuses the EVM cannot pick up the rejected
+    // tx's state. Revm's defaulted `replay` returns on the error arm before `finalize()`;
+    // `api/exec.rs` overrides it (and `inspect_tx`) precisely so celo-revm's public API carries
+    // this guarantee for external consumers, who have no `transact_raw` wrapper to compensate.
+    #[test]
+    fn rejected_cip64_tx_drains_the_journal_on_replay() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // Same nonce-too-low setup as above: a rejection check that runs *after* the fee debit,
+        // so the transaction really does put state in the journal before it is rejected.
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            100_000,
+            100,
+            10,
+            1,
+        );
+
+        let err = evm
+            .replay()
+            .expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+
+        // `replay` returned `Err`; draining again must yield nothing, because the override
+        // already took and dropped whatever the rejected transaction left behind.
+        let residue = evm.finalize();
+        assert!(
+            residue.is_empty(),
+            "a rejected CIP-64 tx left {} account(s) in the journal after `replay`; the next \
+             transaction on this EVM would finalize them as if they were its own",
+            residue.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The same guarantee on the *committing* entry points. Revm's defaulted `transact_commit`
+    // (and its inspecting siblings) propagate the error before `commit_inner()` reaches its
+    // `finalize()`, so a DB-backed caller that keeps the EVM after a rejection would find the
+    // orphaned state still in the journal — and the next accepted transaction would commit it.
+    // `api/exec.rs` overrides them to drain unconditionally and commit only on the `Ok` arm.
+    //
+    // Both halves are asserted: nothing left in the journal, and nothing written to the database.
+    // The second is what distinguishes the committing path — draining *into* the commit would be
+    // just as wrong as not draining at all.
+    //
+    // `transact_many_commit` and `replay_commit` need no override and get no test here: they
+    // inherit the drain from `transact_many` and from the overridden `replay` above.
+
+    /// Drive a CIP-64 transaction that is rejected *after* the fee debit through `run`, then
+    /// require that the rejection left nothing behind on either side of the commit boundary.
+    /// Shared by the committing-entry-point tests below, which differ only in `run`.
+    fn assert_rejecting_commit_entry_point_drains(
+        entry_point: &str,
+        run: impl FnOnce(
+            &mut CeloEvm<InMemoryDB, NoOpInspector>,
+        ) -> Result<
+            revm::context_interface::result::ExecutionResult<OpHaltReason>,
+            EVMError<<InMemoryDB as revm::Database>::Error, OpTransactionError>,
+        >,
+    ) {
+        use revm::{Database, context_interface::ContextTr, handler::EvmTr};
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fc_balance = U256::from(1_000_000_000_000u128);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, fc_balance);
+        // Same nonce-too-low setup as above: a rejection check that runs *after* the fee debit,
+        // so the transaction really does put state in the journal before it is rejected.
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            100_000,
+            100,
+            10,
+            1,
+        );
+
+        let err = run(&mut evm).expect_err("a nonce-too-low CIP-64 tx must be rejected");
+        let err_str = format!("{err:?}");
+        assert!(
+            err_str.contains("Nonce") || err_str.contains("nonce"),
+            "tx must be rejected by the nonce check (which runs after the debit), got: {err_str}"
+        );
+
+        // Draining again must yield nothing: the override already took and dropped whatever the
+        // rejected transaction left behind.
+        let residue = evm.finalize();
+        assert!(
+            residue.is_empty(),
+            "a rejected CIP-64 tx left {} account(s) in the journal after `{entry_point}`; the \
+             next transaction on this EVM would finalize them as if they were its own",
+            residue.len()
+        );
+
+        // ...and that drain must not have gone to the database instead. The sender's nonce is the
+        // cheapest witness: the rejected tx executed far enough to bump it in the journal.
+        let committed_nonce = evm
+            .inner
+            .ctx()
+            .db_mut()
+            .basic(sender)
+            .expect("the in-memory db is infallible")
+            .map(|acct| acct.nonce)
+            .unwrap_or_default();
+        assert_eq!(
+            committed_nonce, 1,
+            "`{entry_point}` wrote a rejected CIP-64 tx's state to the database \
+             (nonce {committed_nonce} != the pre-tx 1); it must drop what it drains"
+        );
+    }
+
+    #[test]
+    fn rejected_cip64_tx_drains_the_journal_on_transact_commit() {
+        use revm::{ExecuteCommitEvm, context_interface::ContextTr, handler::EvmTr};
+
+        assert_rejecting_commit_entry_point_drains("transact_commit", |evm| {
+            let tx = evm.inner.ctx().tx().clone();
+            evm.transact_commit(tx)
+        });
+    }
+
+    /// The inspecting sibling. `inspect_commit` routes through `inspect_tx_commit`, so covering
+    /// the latter covers both.
+    #[test]
+    fn rejected_cip64_tx_drains_the_journal_on_inspect_tx_commit() {
+        use revm::{context_interface::ContextTr, handler::EvmTr, inspector::InspectCommitEvm};
+
+        assert_rejecting_commit_entry_point_drains("inspect_tx_commit", |evm| {
+            let tx = evm.inner.ctx().tx().clone();
+            evm.inspect_tx_commit(tx)
+        });
     }
 
     // -----------------------------------------------------------------------
