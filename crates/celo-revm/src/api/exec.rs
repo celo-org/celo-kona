@@ -1,6 +1,6 @@
 //! Execution entry points for [`CeloEvm`].
 //!
-//! # Every entry point drains the journal on rejection
+//! # Every *journal-owning* entry point drains on rejection
 //!
 //! A rejected CIP-64 transaction can reach the caller with state celo-revm cannot unwind. The
 //! `creditGasFees` hook runs through the *committing* `core_contracts::call`, whose `commit_tx`
@@ -12,8 +12,8 @@
 //! happen on the error path. Revm mostly does this: `ExecuteEvm::transact` (revm-handler 18.1.0,
 //! `src/api.rs`) calls `finalize()` unconditionally before propagating, and `transact_many` drains
 //! via `inspect_err`. The defaulted methods that return on the `?` first are the exception, and
-//! every one of them is overridden below so no caller of this crate has to know which entry point
-//! happens to be safe:
+//! every one of them is overridden below, so a caller that uses an entry point which owns the
+//! journal lifecycle does not have to know which of them happens to be safe:
 //!
 //! - [`ExecuteEvm::replay`] — ours, and it had the same gap.
 //! - [`InspectEvm::inspect_tx`] / [`InspectEvm::inspect`] (revm-inspector 19.0.0,
@@ -35,6 +35,29 @@
 //! module exists to prevent. Upstream's own `ExecuteEvm::transact` drops-all for the same reason.
 //!
 //! `alloy-celo-evm`'s `CeloEvm::transact_raw` relies on this for its inspecting arm.
+//!
+//! # What the guarantee does *not* cover
+//!
+//! [`ExecuteEvm::transact_one`] and [`InspectEvm::inspect_one_tx`] are deliberately excluded. They
+//! are the non-finalizing primitives — they never drain, on either path, because their whole
+//! purpose is to accumulate state across a batch that the caller finalizes once at the end. Adding
+//! an error-path drain there would discard the *earlier, accepted* transactions of that batch,
+//! which is how `transact_many` and every block builder use them. That trades a rare orphan for
+//! routine destruction of valid state, so this crate does not do it.
+//!
+//! The exclusion has a sharp edge, and callers need to know about it: revm documents on
+//! `transact_one` (revm-handler 18.1.0, `src/api.rs`) that "if the transaction fails, the journal
+//! will revert all changes of given transaction". **celo-revm does not honour that for CIP-64.**
+//! A credit-hook failure has already been committed into `journal.state` by the time it is
+//! classified, so there is nothing left to revert. A caller who reads revm's contract and keeps
+//! going after an `Err` — safe on plain revm — silently folds the rejected transaction into
+//! whatever it finalizes next.
+//!
+//! So a direct user of these two methods owns the drain: on `Err`, call [`ExecuteEvm::finalize`]
+//! and drop what it returns before reusing the EVM, or drop the EVM. Everything above them in this
+//! module already does exactly that. The permanent fix is to stop producing unwindable-but-
+//! uncommitted state in the first place, which is a change to the credit hook, not to these entry
+//! points.
 
 use crate::constants::CELO_SYSTEM_ADDRESS;
 use crate::{CeloContext, CeloEvm, handler::CeloHandler};
@@ -73,6 +96,17 @@ where
         self.inner.ctx().set_block(block);
     }
 
+    /// # Warning: a failure here does *not* revert the transaction's state
+    ///
+    /// Revm documents that a failing `transact_one` leaves the journal reverted. celo-revm cannot
+    /// honour that for CIP-64: a `creditGasFees` failure is classified *after* the hook's
+    /// `commit_tx` has already folded the whole transaction into `journal.state` and emptied the
+    /// revert log.
+    ///
+    /// This method does not drain, by design; see
+    /// [the module note](self#what-the-guarantee-does-not-cover). If you call it directly and want
+    /// to keep using the EVM after an `Err`, call [`ExecuteEvm::finalize`] yourself and drop the
+    /// result. Prefer [`ExecuteEvm::transact`], which does that for you.
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
         let mut h =
@@ -148,6 +182,12 @@ where
         self.inner.0.inspector = inspector;
     }
 
+    /// # Warning: a failure here does *not* revert the transaction's state
+    ///
+    /// The inspecting twin of [`ExecuteEvm::transact_one`], and it carries the same caveat: no
+    /// drain on either path, and a CIP-64 credit failure leaves state the journal can no longer
+    /// unwind. See there and [the module note](self#what-the-guarantee-does-not-cover).
+    /// Prefer [`InspectEvm::inspect_tx`], which drains for you.
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx().set_tx(tx);
         let mut h =
