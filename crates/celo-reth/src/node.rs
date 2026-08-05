@@ -10,7 +10,7 @@ use crate::{
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
-use alloy_celo_evm::revert_evictions::RevertEvictions;
+use alloy_celo_evm::{CeloFailurePolicies, revert_evictions::RevertEvictions};
 use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
@@ -409,15 +409,16 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, compute_pending_block, discovery_v4, .. } =
             self.args;
-        let blocklist = self.blocklist.clone();
-        let revert_evictions = RevertEvictions::default();
-        let celo_txs =
-            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), blocklist.clone())
-                .with_revert_evictions(revert_evictions.clone());
+        let failure_policies =
+            CeloFailurePolicies::new(self.blocklist.clone(), RevertEvictions::default());
+        let celo_txs = CeloPayloadTransactions::new(
+            self.fee_currency_limits.clone(),
+            failure_policies.clone(),
+        );
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
-            .executor(CeloExecutorBuilder { blocklist, revert_evictions })
+            .executor(CeloExecutorBuilder { failure_policies })
             .payload(BasicPayloadServiceBuilder::new(
                 OpPayloadBuilder::new(compute_pending_block)
                     .with_da_config(self.da_config.clone())
@@ -556,10 +557,8 @@ where
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct CeloExecutorBuilder {
-    /// Shared fee currency blocklist.
-    pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
-    /// Shared exact transaction hashes awaiting pool eviction after fee-currency reverts.
-    pub revert_evictions: RevertEvictions,
+    /// Shared local next-block failure policies.
+    pub failure_policies: CeloFailurePolicies,
 }
 
 impl<Node> ExecutorBuilder<Node> for CeloExecutorBuilder
@@ -572,11 +571,7 @@ where
     >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(CeloEvmConfig::celo_with_failure_policies(
-            ctx.chain_spec(),
-            self.blocklist,
-            self.revert_evictions,
-        ))
+        Ok(CeloEvmConfig::celo_with_failure_policies(ctx.chain_spec(), self.failure_policies))
     }
 }
 
