@@ -96,9 +96,14 @@ impl FeeCurrencyBlocklist {
         });
     }
 
-    /// Removes a currency from the blocklist.
-    pub fn unblock_currency(&self, currency: Address) {
-        self.inner.lock().blocked.remove(&currency);
+    /// Removes a currency from the blocklist, returning whether it was blocked.
+    ///
+    /// `false` means the currency was already absent — either never blocked, evicted, or
+    /// exempted via [`Self::disable_blocklist`]. Mirrors op-geth's `AddressBlocklist.Remove`,
+    /// whose return value `admin_unblockFeeCurrency` reports so an operator can tell a
+    /// no-op call from a real one.
+    pub fn unblock_currency(&self, currency: Address) -> bool {
+        self.inner.lock().blocked.remove(&currency).is_some()
     }
 
     /// Disables blocklisting for the given currencies.
@@ -178,8 +183,25 @@ mod tests {
     fn unblock_removes_immediately() {
         let bl = FeeCurrencyBlocklist::default();
         bl.block_currency(addr(1), 1000);
-        bl.unblock_currency(addr(1));
+        assert!(bl.unblock_currency(addr(1)));
         assert!(!bl.is_blocked(addr(1)));
+    }
+
+    #[test]
+    fn unblock_reports_currencies_that_were_not_blocked() {
+        let bl = FeeCurrencyBlocklist::default();
+        // Never blocked.
+        assert!(!bl.unblock_currency(addr(1)));
+
+        // Already evicted.
+        bl.block_currency(addr(2), 1000);
+        bl.evict(1000 + BLOCKLIST_EVICTION_SECONDS);
+        assert!(!bl.unblock_currency(addr(2)));
+
+        // Exempt from blocklisting, so `block_currency` never inserted it.
+        bl.disable_blocklist(&[addr(3)]);
+        bl.block_currency(addr(3), 1000);
+        assert!(!bl.unblock_currency(addr(3)));
     }
 
     #[test]

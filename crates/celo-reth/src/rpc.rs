@@ -1413,7 +1413,8 @@ pub struct BlockedFeeCurrency {
 /// Build a [`jsonrpsee::RpcModule`] with fee currency blocklist admin methods:
 /// - `admin_disableBlocklistFeeCurrencies`: Disable blocklisting for given currencies
 /// - `admin_enableBlocklistFeeCurrencies`: Re-enable blocklisting for given currencies
-/// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
+/// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist, reporting whether it was in
+///   fact blocked
 /// - `admin_getBlocklistFeeCurrencies`: List the currently blocked currencies
 /// - `admin_getDisabledBlocklistFeeCurrencies`: List the currencies blocklisting is disabled for
 ///
@@ -1443,11 +1444,13 @@ pub fn celo_admin_module(
         })
         .expect("admin_enableBlocklistFeeCurrencies registration");
 
+    // Returns whether the currency was actually blocked, as op-geth's `UnblockFeeCurrency`
+    // does — an unconditional `true` cannot distinguish a real unblock from a typo'd address
+    // or a currency that had already aged out.
     module
         .register_method("admin_unblockFeeCurrency", |params, ctx, _| {
             let currency: Address = params.one()?;
-            ctx.unblock_currency(currency);
-            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(true)
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(ctx.unblock_currency(currency))
         })
         .expect("admin_unblockFeeCurrency registration");
 
@@ -1982,8 +1985,37 @@ mod tests {
         blocklist.block_currency(fc, 1000);
         assert!(blocklist.is_blocked(fc));
 
-        blocklist.unblock_currency(fc);
+        assert!(blocklist.unblock_currency(fc));
         assert!(!blocklist.is_blocked(fc));
+    }
+
+    /// `admin_unblockFeeCurrency` reports whether it actually removed something, so an
+    /// operator can tell a real unblock from a typo'd address or an already-evicted entry.
+    #[tokio::test]
+    async fn admin_unblock_fee_currency_reports_whether_it_was_blocked() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist.clone());
+        let fc = Address::with_last_byte(0xBC);
+
+        async fn unblock(
+            module: &jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist>,
+            fc: Address,
+        ) -> bool {
+            module
+                .call::<_, bool>("admin_unblockFeeCurrency", [fc])
+                .await
+                .expect("admin_unblockFeeCurrency call")
+        }
+
+        // Never blocked -> nothing removed.
+        assert!(!unblock(&module, fc).await);
+
+        blocklist.block_currency(fc, 1000);
+        assert!(unblock(&module, fc).await);
+        assert!(!blocklist.is_blocked(fc));
+
+        // Unblocking twice is idempotent, and the second call says so.
+        assert!(!unblock(&module, fc).await);
     }
 
     // -----------------------------------------------------------------------
