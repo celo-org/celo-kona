@@ -20,6 +20,7 @@
 //! - `admin_enableBlocklistFeeCurrencies`: Re-enables blocklisting for a currency.
 //! - `admin_unblockFeeCurrency`: Removes a currency from the blocklist.
 //! - `admin_getBlocklistFeeCurrencies`: Reads back the current blocklist.
+//! - `admin_getDisabledBlocklistFeeCurrencies`: Reads back the disabled set.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},

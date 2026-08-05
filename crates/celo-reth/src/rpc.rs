@@ -1415,6 +1415,7 @@ pub struct BlockedFeeCurrency {
 /// - `admin_enableBlocklistFeeCurrencies`: Re-enable blocklisting for given currencies
 /// - `admin_unblockFeeCurrency`: Remove a currency from the blocklist
 /// - `admin_getBlocklistFeeCurrencies`: List the currently blocked currencies
+/// - `admin_getDisabledBlocklistFeeCurrencies`: List the currencies blocklisting is disabled for
 ///
 /// # Authentication
 ///
@@ -1472,6 +1473,14 @@ pub fn celo_admin_module(
             Ok::<_, jsonrpsee_types::ErrorObjectOwned>(blocked)
         })
         .expect("admin_getBlocklistFeeCurrencies registration");
+
+    // Named after op-geth's `admin_getDisabledBlocklistFeeCurrencies`: same 0 params, same
+    // `[address]` return.
+    module
+        .register_method("admin_getDisabledBlocklistFeeCurrencies", |_params, ctx, _| {
+            Ok::<_, jsonrpsee_types::ErrorObjectOwned>(ctx.disabled_currencies())
+        })
+        .expect("admin_getDisabledBlocklistFeeCurrencies registration");
 
     module
 }
@@ -1788,6 +1797,58 @@ mod tests {
         assert!(
             method_names.contains(&"admin_getBlocklistFeeCurrencies"),
             "missing admin_getBlocklistFeeCurrencies"
+        );
+        assert!(
+            method_names.contains(&"admin_getDisabledBlocklistFeeCurrencies"),
+            "missing admin_getDisabledBlocklistFeeCurrencies"
+        );
+    }
+
+    /// The read side of the disable set: `admin_getDisabledBlocklistFeeCurrencies` reports
+    /// exactly which currencies the two mutators have exempted from blocklisting.
+    #[tokio::test]
+    async fn admin_get_disabled_blocklist_fee_currencies_reflects_disable_set() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist.clone());
+
+        async fn disabled(
+            module: &jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist>,
+        ) -> Vec<Address> {
+            module
+                .call::<_, Vec<Address>>("admin_getDisabledBlocklistFeeCurrencies", [(); 0])
+                .await
+                .expect("admin_getDisabledBlocklistFeeCurrencies call")
+        }
+
+        // Nothing is exempt by default.
+        assert!(disabled(&module).await.is_empty());
+
+        let first = Address::with_last_byte(0xB1);
+        let second = Address::with_last_byte(0xB2);
+        module
+            .call::<_, bool>("admin_disableBlocklistFeeCurrencies", [vec![second, first]])
+            .await
+            .expect("admin_disableBlocklistFeeCurrencies call");
+        // Ordered by address, not by the order the operator passed them in.
+        assert_eq!(disabled(&module).await, vec![first, second]);
+
+        // Re-enabling one drops it from the listing and leaves the other exempt.
+        module
+            .call::<_, bool>("admin_enableBlocklistFeeCurrencies", [vec![first]])
+            .await
+            .expect("admin_enableBlocklistFeeCurrencies call");
+        assert_eq!(disabled(&module).await, vec![second]);
+
+        // The disable set is independent of the blocklist: blocking `second` is a no-op
+        // while it is exempt, and neither reader reports it.
+        blocklist.block_currency(second, 1000);
+        assert_eq!(disabled(&module).await, vec![second]);
+        assert!(
+            module
+                .call::<_, Vec<BlockedFeeCurrency>>("admin_getBlocklistFeeCurrencies", [(); 0])
+                .await
+                .expect("admin_getBlocklistFeeCurrencies call")
+                .is_empty()
         );
     }
 
