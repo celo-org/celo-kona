@@ -1403,10 +1403,14 @@ pub struct BlockedFeeCurrency {
     pub address: Address,
     /// Block timestamp (seconds) at which the currency was blocked.
     pub blocked_at: u64,
-    /// Block timestamp (seconds) at or after which the entry is evicted.
+    /// Timestamp (seconds) at or after which the entry is evicted: `blockedAt` plus the
+    /// blocklist TTL.
     ///
-    /// Eviction runs on the sequencing path with the block timestamp, so an entry whose
-    /// `evictsAt` has passed can still be listed until the next block is built.
+    /// Eviction runs on the sequencing path against *wall-clock* time, while `blockedAt` is a
+    /// block timestamp, so this is an accurate deadline only while block timestamps track wall
+    /// clock. An entry whose `evictsAt` has passed stays listed until the next block is built,
+    /// and while the sequencer is catching up (block timestamps lagging wall clock) an entry is
+    /// evicted earlier than its `evictsAt`.
     pub evicts_at: u64,
 }
 
