@@ -3,6 +3,7 @@
 use crate::{
     CeloEvmConfig, celo_next_block_base_fee,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
+    payload_metrics::PayloadMetricsBuilderBuilder,
     pool::{
         CeloExchangeRateApplier, CeloPoolMaintainer, CeloPoolTx, CeloTransactionPool,
         NextBlockBaseFeeFn, PooledFcCostsFn,
@@ -388,7 +389,9 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         CeloPoolBuilder,
-        BasicPayloadServiceBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+        BasicPayloadServiceBuilder<
+            PayloadMetricsBuilderBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+        >,
         OpNetworkBuilder,
         CeloExecutorBuilder,
         CeloConsensusBuilder,
@@ -415,12 +418,12 @@ where
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
-            .payload(BasicPayloadServiceBuilder::new(
+            .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
                 OpPayloadBuilder::new(compute_pending_block)
                     .with_da_config(self.da_config.clone())
                     .with_gas_limit_config(self.gas_limit_config.clone())
                     .with_transactions(celo_txs),
-            ))
+            )))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
     }
