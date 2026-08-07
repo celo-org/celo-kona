@@ -3,7 +3,10 @@
 //! Duplicated from kona's `BlobSource` (celo-kona wraps upstream kona instead of patching it)
 //! with the batch-authentication branch from celo-org/optimism#449 folded in. Pre-Espresso
 //! behaviour is byte-identical to upstream; post-Espresso, batches are authorized by
-//! `BatchInfoAuthenticated` events instead of by transaction sender.
+//! `BatchInfoAuthenticated` events instead of by transaction sender, and batch data is
+//! calldata-only: blob batch transactions are dropped regardless of authentication
+//! (DEC-op-026), so derivation never requires blob preimages, which the Celo fault-proof
+//! host cannot supply.
 
 use crate::{
     batch_auth::{
@@ -80,6 +83,12 @@ where
     /// otherwise vanilla OP Stack sender verification against `batcher_address` is used. The gating
     /// decision is made per-transaction by [`is_batch_authorized`] from
     /// [`Self::batch_auth_config`] + `l1_origin_time`.
+    ///
+    /// From Espresso activation onward (including the auth-enforcement grace window), blob
+    /// batch transactions are dropped entirely, authenticated or not: batch data is
+    /// calldata-only (DEC-op-026) because the Celo fault-proof host does not implement the
+    /// `L1Blob` preimage hint. Dropping them here guarantees post-Espresso derivation never
+    /// requests blob preimages.
     fn extract_blob_data(
         &self,
         txs: Vec<TxEnvelope>,
@@ -110,6 +119,20 @@ where
             let Some(to) = tx_kind else { continue };
 
             if to != self.batcher_address {
+                continue;
+            }
+
+            // Post-Espresso, blob DA is unsupported (calldata-only, DEC-op-026): drop blob
+            // batch transactions before any authorization check so derivation never
+            // requires blob preimages, which the Celo fault-proof host cannot supply
+            // (no `L1Blob` hint).
+            if blob_hashes.is_some() &&
+                self.batch_auth_config.is_some_and(|c| c.is_active(l1_origin_time))
+            {
+                tracing::warn!(
+                    target: "blob_source",
+                    "Ignoring blob batch tx: blob DA is unsupported post-Espresso"
+                );
                 continue;
             }
 
@@ -721,12 +744,13 @@ mod tests {
         assert_eq!(source.data.len(), blob_tx_hashes().len());
     }
 
-    /// Auth enforced: a 4844 blob tx whose blob batch commitment was authenticated by an event
-    /// emitted by the batch tx's own sender is accepted; its blob versioned hashes are filled.
-    /// Direct analogue of the Go "authenticated blob tx accepted" sub-test (commitment =
-    /// `ComputeBlobBatchHash(blobHashes)`, auth caller = batcher).
+    /// Auth enforced: a 4844 blob tx is dropped even when its blob batch commitment was
+    /// authenticated by an event emitted by the batch tx's own sender — post-Espresso batch
+    /// data is calldata-only (DEC-op-026), because the Celo fault-proof host cannot supply
+    /// blob preimages. No blob versioned hashes may be requested. Direct analogue of the Go
+    /// "authenticated blob tx rejected: blob DA unsupported post-fork" sub-test.
     #[tokio::test]
-    async fn test_auth_enforced_4844_blob_event_path() {
+    async fn test_auth_enforced_4844_blob_dropped_despite_auth() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
         let mut source = CeloBlobSource::new(
             TestChainProvider::default(),
@@ -752,19 +776,68 @@ mod tests {
             Receipt { status: Eip658Value::Eip658(true), logs: vec![log], ..Default::default() };
         source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
         source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+        // No blobs are inserted into the fetcher: the dropped tx must not request any, or
+        // `load_blobs` would fail on the missing blobs.
+
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        assert!(source.open);
+        // The authenticated blob tx is dropped: calldata-only DA post-Espresso.
+        assert!(source.data.is_empty());
+    }
+
+    /// Fork active but within the grace window: blob batch transactions are already dropped —
+    /// the calldata-only DA restriction applies from activation, not from auth enforcement.
+    /// No receipts are inserted, so this also proves the drop happens without any lookback
+    /// scan, and passing the real batcher signer proves the sender path cannot rescue it.
+    /// Mirrors the Go "post-fork: blob batcher tx dropped from activation onward" sub-test.
+    #[tokio::test]
+    async fn test_grace_window_4844_blob_dropped() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS - 1,
+            ..Default::default()
+        };
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+
+        source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
+        assert!(source.data.is_empty());
+    }
+
+    /// Espresso configured but not yet active at the scanned block's timestamp: a 4844 blob tx
+    /// from the batcher keeps upstream sender-path acceptance — the calldata-only restriction
+    /// starts exactly at the fork boundary. Mirrors the Go "pre-fork: blob batcher tx accepted
+    /// via sender auth" sub-test.
+    #[tokio::test]
+    async fn test_pre_fork_4844_blob_sender_path() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER,
+            Some(BatchAuthConfig { authenticator_address: auth_addr, espresso_time: 1_000 }),
+        );
+        let block_info = BlockInfo::default(); // timestamp 0 < espresso_time 1000
+        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
         for hash in blob_tx_hashes() {
             source.blob_fetcher.insert_blob(hash, Blob::with_last_byte(1u8));
         }
 
-        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
         assert!(source.open);
-        // The authenticated blob tx is accepted: one blob placeholder per versioned hash.
+        // One blob placeholder per versioned hash carried by the tx.
         assert_eq!(source.data.len(), blob_tx_hashes().len());
     }
 
     /// Auth enforced: a 4844 blob tx whose blob batch commitment is authenticated, but by a
-    /// different caller than the batch tx sender, is rejected (caller-binding). Mirrors the Go
-    /// "authenticated tx rejected when sender differs from auth caller" sub-test, on the blob path.
+    /// different caller than the batch tx sender, is rejected. Since the calldata-only DA gate
+    /// (DEC-op-026) this is dropped before the auth check even runs; the test remains as
+    /// belt-and-braces that no post-Espresso path lets a blob batch through.
     #[tokio::test]
     async fn test_auth_enforced_4844_blob_caller_mismatch_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
@@ -798,9 +871,10 @@ mod tests {
         assert!(source.data.is_empty());
     }
 
-    /// Auth enforced: a 4844 blob tx from the batcher with no authenticating event is rejected —
-    /// the sender-based fallback is gone once Espresso is active. Mirrors the Go "fallback batcher
-    /// without auth event rejected" sub-test, on the blob path.
+    /// Auth enforced: a 4844 blob tx from the batcher with no authenticating event is rejected.
+    /// Since the calldata-only DA gate (DEC-op-026) this is dropped before the auth check even
+    /// runs; the test remains as belt-and-braces that no post-Espresso path lets a blob batch
+    /// through.
     #[tokio::test]
     async fn test_auth_enforced_4844_blob_no_event_rejected() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
