@@ -67,6 +67,16 @@ pub struct BatchAuthConfig {
 }
 
 impl BatchAuthConfig {
+    /// Returns true once the Espresso fork is active at the given L1 origin time:
+    /// `l1_origin_time >= espresso_time`. From activation onward — including the
+    /// auth-enforcement grace window — batch data is calldata-only: blob batch
+    /// transactions are dropped by the data source (DEC-op-026).
+    ///
+    /// Mirrors op-node's `rollup.Config.IsEspresso`; must stay in lockstep with it.
+    pub const fn is_active(&self, l1_origin_time: u64) -> bool {
+        l1_origin_time >= self.espresso_time
+    }
+
     /// Returns true once event-based batch authentication is EXCLUSIVELY enforced at the given L1
     /// origin time: `l1_origin_time >= espresso_time +`
     /// [`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`].
