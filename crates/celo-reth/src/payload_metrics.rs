@@ -174,6 +174,16 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
         self.inner.on_missing_payload(args)
     }
 
+    /// Deliberately left outside the attempt scope, so a block builder created here captures no
+    /// context and emits nothing.
+    ///
+    /// `OpPayloadBuilder::on_missing_payload` is hardcoded to `AwaitInProgress`, which makes
+    /// reth's `RaceEmptyPayload` branch unreachable on an OP Stack chain. The only remaining
+    /// caller is `PayloadJob::best_payload`, and op-reth documents this method as test-only
+    /// because the payload it produces has no L1 system transactions: if it ever fires in
+    /// production that is a correctness problem, not a latency budget item, and reth already
+    /// counts it via `inc_requested_empty_payload`. Timing a near-zero-work build into the
+    /// sequencing histograms would only make those distributions bimodal.
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
