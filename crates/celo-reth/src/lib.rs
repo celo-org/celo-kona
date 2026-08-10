@@ -53,6 +53,9 @@ pub mod pool;
 pub mod payload;
 
 #[cfg(feature = "std")]
+pub mod payload_metrics;
+
+#[cfg(feature = "std")]
 pub mod rpc;
 
 #[cfg(feature = "std")]
@@ -348,7 +351,13 @@ where
         let evm_env = self.next_evm_env(parent, &attributes)?;
         let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
         let ctx = self.context_for_next_block(parent, attributes)?;
-        Ok(self.create_block_builder(evm, parent, ctx))
+        let builder = self.create_block_builder(evm, parent, ctx);
+        // Sequencing-only observability: the decorator is transparent, and it emits nothing
+        // unless a `PayloadMetricsBuilder` attempt is active on this thread. no-std proof
+        // builds return the bare builder.
+        #[cfg(feature = "std")]
+        let builder = crate::payload_metrics::PayloadMetricsBlockBuilder::new(builder);
+        Ok(builder)
     }
 }
 
@@ -429,13 +438,18 @@ where
         let executor =
             OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
 
-        Ok(BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
+        let builder = BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,
             transactions: alloc::vec::Vec::new(),
             ctx,
             parent,
             assembler: self.block_assembler(),
-        })
+        };
+        // Same sequencing-side instrumentation as `builder_for_next_block`; see there for the
+        // std-only rationale.
+        #[cfg(feature = "std")]
+        let builder = crate::payload_metrics::PayloadMetricsBlockBuilder::new(builder);
+        Ok(builder)
     }
 }
 
