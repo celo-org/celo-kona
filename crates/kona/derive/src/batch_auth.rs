@@ -84,8 +84,16 @@ impl BatchAuthConfig {
     /// sender-authenticated batches.
     ///
     /// Mirrors op-node's `derive.isEspressoAuthEnforced`; must stay in lockstep with it.
+    ///
+    /// The [`Self::is_active`] conjunct is what op-node's `cfg.IsEspresso(l1OriginTime) &&` does,
+    /// and it is load-bearing only when the sum overflows: without it, an `espresso_time` within
+    /// [`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`] of [`u64::MAX`] wraps the bound down to a small
+    /// number and reports enforcement for origin times far *below* activation, where op-node
+    /// reports none. `wrapping_add` reproduces Go's `uint64` arithmetic exactly and in every
+    /// build profile — a saturating or checked add would itself be a divergence.
     pub const fn is_enforced(&self, l1_origin_time: u64) -> bool {
-        l1_origin_time >= self.espresso_time + BATCH_AUTH_ENFORCEMENT_DELAY_SECS
+        self.is_active(l1_origin_time) &&
+            l1_origin_time >= self.espresso_time.wrapping_add(BATCH_AUTH_ENFORCEMENT_DELAY_SECS)
     }
 }
 
@@ -326,6 +334,27 @@ mod tests {
     use alloy_consensus::{Eip658Value, Header, Receipt, Signed, TxLegacy};
     use alloy_primitives::{Address, Log, LogData, Signature, TxKind, address, b256};
     use kona_derive::test_utils::TestChainProvider;
+
+    /// An `espresso_time` close enough to `u64::MAX` that the enforcement bound overflows.
+    /// Unreachable for a real unix timestamp, but the config is host-supplied for unknown
+    /// chains, and the two implementations have to agree on every input.
+    #[test]
+    fn test_is_enforced_overflow_matches_op_node() {
+        let cfg = BatchAuthConfig {
+            authenticator_address: Address::ZERO,
+            espresso_time: u64::MAX - BATCH_AUTH_ENFORCEMENT_DELAY_SECS + 100,
+        };
+
+        // The wrapped bound is a small number, but an origin time below activation is neither
+        // active nor enforced — op-node's `IsEspresso(t) &&` says the same.
+        assert!(!cfg.is_active(2_000));
+        assert!(!cfg.is_enforced(2_000));
+
+        // At and after activation the wrapped bound is already passed, so enforcement holds
+        // immediately — matching op-node, whose `uint64` addition wraps identically.
+        assert!(cfg.is_active(cfg.espresso_time));
+        assert!(cfg.is_enforced(cfg.espresso_time));
+    }
 
     fn make_auth_receipt(
         authenticator_addr: Address,
