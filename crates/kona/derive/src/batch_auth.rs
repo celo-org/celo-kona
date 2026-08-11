@@ -60,9 +60,11 @@ pub struct BatchAuthConfig {
     pub authenticator_address: Address,
     /// Activation timestamp (L2) for the Espresso event-only batch authorization hardfork.
     ///
-    /// The fork is conceptually an L2-timestamp hardfork, but the per-L1-block decision made at
-    /// the data source layer is gated on the L1 origin time of the block being scanned (see
-    /// [`Self::is_enforced`]) — mirroring the upstream `ecotoneTime` precedent.
+    /// The fork is conceptually an L2-timestamp hardfork, but the per-L1-block decisions made at
+    /// the data source layer are gated on the L1 origin time of the block being scanned —
+    /// mirroring the upstream `ecotoneTime` precedent. There are two such decisions, on
+    /// different boundaries: calldata-only DA from activation ([`Self::is_active`]) and
+    /// event-only batch authorization after the grace window ([`Self::is_enforced`]).
     pub espresso_time: u64,
 }
 
