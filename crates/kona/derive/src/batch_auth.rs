@@ -89,14 +89,20 @@ impl BatchAuthConfig {
     }
 }
 
-/// Computes `keccak256(calldata)`, matching the `BatchAuthenticator` contract's calldata batch
-/// validation path.
+/// Computes `keccak256(calldata)`, the commitment a calldata batch is authenticated under.
+///
+/// `BatchAuthenticator.authenticateBatchInfo` takes the commitment as an opaque `bytes32` and
+/// never inspects how it was derived, so this encoding is agreed off-chain between the batcher
+/// and derivation — changing it is a consensus change, not a contract change.
 pub fn compute_calldata_batch_hash(data: &[u8]) -> B256 {
     keccak256(data)
 }
 
-/// Computes `keccak256(concat(blob_hashes))`, matching the `BatchAuthenticator` contract's blob
-/// batch validation path.
+/// Computes `keccak256(concat(blob_hashes))`, the same commitment for a blob batch, agreed
+/// off-chain as above.
+///
+/// Reachable only pre-Espresso: from activation [`crate::CeloBlobSource`] drops blob batches
+/// before hashing them.
 pub fn compute_blob_batch_hash(blob_hashes: &[B256]) -> B256 {
     let mut concatenated = Vec::with_capacity(32 * blob_hashes.len());
     for hash in blob_hashes {
