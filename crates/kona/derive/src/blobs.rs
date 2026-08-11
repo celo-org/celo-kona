@@ -131,7 +131,8 @@ where
             {
                 tracing::warn!(
                     target: "blob_source",
-                    "Ignoring blob batch tx: blob DA is unsupported post-Espresso"
+                    "Ignoring blob batch tx: blob DA is unsupported post-Espresso: {:?}",
+                    tx.tx_hash()
                 );
                 continue;
             }
