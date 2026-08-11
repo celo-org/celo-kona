@@ -11,7 +11,7 @@ use crate::{
     primitives::{CeloBlock, CeloPrimitives},
     rpc::CeloEthApiBuilder,
 };
-use alloy_celo_evm::{CeloFailurePolicies, revert_evictions::RevertEvictions};
+use alloy_celo_evm::CeloFailurePolicies;
 use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
@@ -53,6 +53,7 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
+use reth_storage_api::BlockReaderIdExt;
 use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
@@ -72,8 +73,9 @@ pub struct CeloNode {
     pub args: RollupArgs,
     /// Optional override for how long the payload builder waits for the shared sparse trie.
     pub payload_state_root_wait: Option<Duration>,
-    /// Shared fee currency blocklist for CIP-64 transactions.
-    pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
+    /// Shared sequencing failure policies used by payload EVMs, payload filtering, and canonical
+    /// pool maintenance.
+    pub failure_policies: CeloFailurePolicies,
     /// Per-fee-currency block space limits.
     pub fee_currency_limits: FeeCurrencyLimits,
     /// Data availability configuration for the OP payload builder.
@@ -94,7 +96,7 @@ impl CeloNode {
         Self {
             args,
             payload_state_root_wait: None,
-            blocklist: Default::default(),
+            failure_policies: Default::default(),
             fee_currency_limits: Default::default(),
             da_config: OpDAConfig::default(),
             gas_limit_config: OpGasLimitConfig::default(),
@@ -119,7 +121,7 @@ impl CeloNode {
         mut self,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
-        self.blocklist = blocklist;
+        self.failure_policies = self.failure_policies.with_blocklist(blocklist);
         self
     }
 
@@ -226,6 +228,15 @@ where
 #[non_exhaustive]
 pub struct CeloPoolBuilder {
     inner: OpPoolBuilder<CeloPoolTx>,
+    failure_policies: CeloFailurePolicies,
+}
+
+impl CeloPoolBuilder {
+    /// Sets the shared sequencing failure policies consumed by canonical pool maintenance.
+    pub fn with_failure_policies(mut self, failure_policies: CeloFailurePolicies) -> Self {
+        self.failure_policies = failure_policies;
+        self
+    }
 }
 
 impl<Node, Evm> reth_node_builder::components::PoolBuilder<Node, Evm> for CeloPoolBuilder
@@ -257,7 +268,8 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: Evm,
     ) -> eyre::Result<Self::Pool> {
-        let pool_config_overrides = self.inner.pool_config_overrides;
+        let Self { inner, failure_policies } = self;
+        let pool_config_overrides = inner.pool_config_overrides;
         let chain_id = ctx.chain_spec().chain().id();
         let fee_currency_directory =
             celo_revm::constants::get_addresses(chain_id).fee_currency_directory;
@@ -349,7 +361,6 @@ where
             // floor until the first `on_new_head_block` fires and can reject
             // otherwise-valid CIP-64 txs in the meantime.
             use alloy_consensus::BlockHeader;
-            use reth_storage_api::BlockReaderIdExt;
             let base_fee_floor = if is_dev {
                 0
             } else {
@@ -393,7 +404,16 @@ where
         // All insertions, including backup reloads and canonical-chain
         // reinjections, must pass through the Celo wrapper so same-sender
         // validation and insertion stay serialized.
-        let transaction_pool = CeloTransactionPool::new(raw_pool);
+        if let Ok(Some(header)) = ctx.provider().latest_header() {
+            failure_policies.set_canonical_head(
+                alloy_celo_evm::revert_evictions::PayloadGeneration::new(
+                    header.number,
+                    header.hash(),
+                ),
+            );
+        }
+        let transaction_pool =
+            CeloTransactionPool::new_with_failure_policies(raw_pool, failure_policies.clone());
         reth_node_builder::components::spawn_maintenance_tasks(
             ctx,
             transaction_pool.clone(),
@@ -410,6 +430,7 @@ where
                 fee_currency_directory,
                 spec_fn,
                 next_block_base_fee_fn,
+                failure_policies,
             );
             let task_executor = ctx.task_executor().clone();
             ctx.task_executor().spawn_critical_task(
@@ -454,15 +475,14 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         let RollupArgs { disable_txpool_gossip, compute_pending_block, discovery_v4, .. } =
             self.args;
-        let failure_policies =
-            CeloFailurePolicies::new(self.blocklist.clone(), RevertEvictions::default());
+        let failure_policies = self.failure_policies.clone();
         let celo_txs = CeloPayloadTransactions::new(
             self.fee_currency_limits.clone(),
             failure_policies.clone(),
         );
         ComponentsBuilder::default()
             .node_types::<N>()
-            .pool(CeloPoolBuilder::default())
+            .pool(CeloPoolBuilder::default().with_failure_policies(failure_policies.clone()))
             .executor(CeloExecutorBuilder { failure_policies })
             .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
                 OpPayloadBuilder::new(compute_pending_block)
@@ -793,6 +813,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_celo_evm::revert_evictions::{PayloadGeneration, RevertEviction, RevertReason};
+    use alloy_primitives::B256;
 
     /// Fields `OpNode` derives from [`RollupArgs`] reach Celo's payload builder;
     /// `max_uncompressed_block_size` stands in for the set.
@@ -838,5 +860,21 @@ mod tests {
             .builder_config();
 
         assert_eq!(config.state_root_wait, Some(wait));
+    }
+
+    #[test]
+    fn replacing_blocklist_preserves_shared_revert_eviction_channel() {
+        let node = CeloNode::default();
+        let policies = node.failure_policies.clone();
+        let generation = PayloadGeneration::new(1, B256::with_last_byte(2));
+        policies.set_canonical_head(generation);
+        let node = node.with_blocklist(Default::default());
+        assert!(policies.record_revert_if_current(RevertEviction::new(
+            B256::with_last_byte(1),
+            RevertReason::Credit,
+            generation,
+        )));
+
+        assert_eq!(node.failure_policies.revert_evictions().take_batch(1).records.len(), 1);
     }
 }

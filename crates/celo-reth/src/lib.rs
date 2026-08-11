@@ -167,9 +167,12 @@ where
 
 #[cfg(feature = "std")]
 impl BuildPendingEnv<Header> for CeloNextBlockEnvAttributes {
-    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+    fn build_pending_env(
+        parent: &SealedHeader<Header>,
+        block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
+    ) -> Self {
         Self {
-            inner: OpNextBlockEnvAttributes::build_pending_env(parent),
+            inner: OpNextBlockEnvAttributes::build_pending_env(parent, block_overrides),
             failure_policies_enabled: false,
         }
     }
@@ -450,7 +453,12 @@ where
         let evm_env = self.next_evm_env(parent, &attributes)?;
         let evm = self.evm_with_env(db, evm_env);
         let evm = if attributes.failure_policies_enabled {
-            evm.with_failure_policies_enabled()
+            evm.with_failure_policies_enabled(
+                alloy_celo_evm::revert_evictions::PayloadGeneration::new(
+                    parent.number,
+                    parent.hash(),
+                ),
+            )
         } else {
             evm
         };
@@ -543,7 +551,12 @@ where
         // still needs its own CIP-64 storage.
         let evm = self.evm_with_env(db, evm_env);
         let evm = if attributes.failure_policies_enabled {
-            evm.with_failure_policies_enabled()
+            evm.with_failure_policies_enabled(
+                alloy_celo_evm::revert_evictions::PayloadGeneration::new(
+                    parent.number,
+                    parent.hash(),
+                ),
+            )
         } else {
             evm
         }
