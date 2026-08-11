@@ -17,6 +17,11 @@ ignore = [
     # the runtime binary. Unmaintained (not a vulnerability) and no safe upgrade exists; removing
     # it requires alloy-sol-macro to drop the dep upstream.
     "RUSTSEC-2026-0173",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0247 bitmaps is unmaintained.
+    # Transitive only: reth-transaction-pool -> imbl -> imbl-sized-chunks -> bitmaps. Nothing in
+    # this workspace names it, all versions are affected, and it is unmaintained rather than a
+    # vulnerability, so clearing it needs reth or imbl to drop the dep upstream.
+    "RUSTSEC-2026-0247",
 ]
 
 [licenses]
