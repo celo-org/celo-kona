@@ -789,24 +789,39 @@ mod tests {
     /// the calldata-only DA restriction applies from activation, not from auth enforcement.
     /// No receipts are inserted, so this also proves the drop happens without any lookback
     /// scan, and passing the real batcher signer proves the sender path cannot rescue it.
-    /// Mirrors the Go "post-fork: blob batcher tx dropped from activation onward" sub-test.
+    /// Mirrors the Go "post-fork: blob batcher tx dropped from activation onward" sub-test,
+    /// including both of its loop points.
+    ///
+    /// The first iteration sits on the activation instant itself. `is_active` and op-node's
+    /// `IsEspresso` are both `>=`, and a one-block disagreement there is a chain split, so a
+    /// non-zero `espresso_time` is what pins the comparison: with `espresso_time = 0` no
+    /// timestamp can tell `>=` from `>`.
     #[tokio::test]
     async fn test_grace_window_4844_blob_dropped() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
-        let mut source = CeloBlobSource::new(
-            TestChainProvider::default(),
-            TestBlobProvider::default(),
-            BLOB_TX_SENDER,
-            Some(auth_config(auth_addr)),
-        );
-        let block_info = BlockInfo {
-            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS - 1,
-            ..Default::default()
-        };
-        source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+        const ESPRESSO_TIME: u64 = 1_000;
 
-        source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
-        assert!(source.data.is_empty());
+        for timestamp in
+            [ESPRESSO_TIME, ESPRESSO_TIME + celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS - 1]
+        {
+            let mut source = CeloBlobSource::new(
+                TestChainProvider::default(),
+                TestBlobProvider::default(),
+                BLOB_TX_SENDER,
+                Some(BatchAuthConfig {
+                    authenticator_address: auth_addr,
+                    espresso_time: ESPRESSO_TIME,
+                }),
+            );
+            let block_info = BlockInfo { timestamp, ..Default::default() };
+            source.chain_provider.insert_block_with_transactions(1, block_info, valid_blob_txs());
+
+            source.load_blobs(&block_info, BLOB_TX_BATCHER).await.unwrap();
+            assert!(
+                source.data.is_empty(),
+                "blob batch must be dropped at l1 origin time {timestamp}"
+            );
+        }
     }
 
     /// Espresso configured but not yet active at the scanned block's timestamp: a 4844 blob tx
