@@ -824,6 +824,71 @@ mod tests {
         }
     }
 
+    /// Auth enforced, one block carrying both a calldata batch and a blob batch, each
+    /// authenticated under its own commitment: only the calldata batch survives, and no blob
+    /// preimages are requested. Mirrors the Go "mixed calldata+blob block: only the calldata
+    /// batch accepted" sub-test.
+    ///
+    /// The blob tx is placed *first*, ahead of the calldata batch, which the Go sub-test does not
+    /// do. That ordering is what makes the drop's per-transaction scope observable: a whole-block
+    /// short-circuit (`break` where the gate has `continue`) would swallow the calldata batch
+    /// behind it, and op-node would still derive it.
+    #[tokio::test]
+    async fn test_auth_enforced_mixed_block_keeps_calldata_batch() {
+        let auth_addr = address!("00000000000000000000000000000000000000aa");
+        // Both txs have to target the inbox the source gates on, which for `valid_blob_txs` is
+        // BLOB_TX_SENDER.
+        let calldata_tx = test_legacy_tx(BLOB_TX_SENDER);
+        let calldata_sender = calldata_tx.recover_signer().unwrap();
+        let calldata = match &calldata_tx {
+            TxEnvelope::Legacy(t) => t.tx().input.clone(),
+            _ => unreachable!(),
+        };
+
+        let mut source = CeloBlobSource::new(
+            TestChainProvider::default(),
+            TestBlobProvider::default(),
+            BLOB_TX_SENDER,
+            Some(auth_config(auth_addr)),
+        );
+        let block_info = BlockInfo {
+            timestamp: celo_genesis::BATCH_AUTH_ENFORCEMENT_DELAY_SECS,
+            ..Default::default()
+        };
+        // Authenticate both batches, each by its own sender, so the blob batch can only be
+        // stopped by the calldata-only gate.
+        let blob_log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, BLOB_TX_BATCHER.into_word()],
+                compute_blob_batch_hash(&blob_tx_hashes()).as_slice().to_vec().into(),
+            ),
+        };
+        let calldata_log = Log {
+            address: auth_addr,
+            data: LogData::new_unchecked(
+                vec![BATCH_INFO_AUTHENTICATED_TOPIC, calldata_sender.into_word()],
+                keccak256(&calldata).as_slice().to_vec().into(),
+            ),
+        };
+        let receipt = Receipt {
+            status: Eip658Value::Eip658(true),
+            logs: vec![blob_log, calldata_log],
+            ..Default::default()
+        };
+        let mut txs = valid_blob_txs();
+        txs.push(calldata_tx);
+        source.chain_provider.insert_block_with_transactions(1, block_info, txs);
+        source.chain_provider.insert_receipts(block_info.hash, vec![receipt]);
+        // No blobs are seeded: the dropped blob tx must not request any.
+
+        source.load_blobs(&block_info, Address::ZERO).await.unwrap();
+        assert_eq!(source.data.len(), 1, "only the calldata batch may survive post-Espresso");
+        // The survivor is the calldata batch, not a blob placeholder.
+        assert_eq!(source.data[0].calldata, Some(calldata));
+        assert!(source.data[0].data.is_none());
+    }
+
     /// Espresso configured but not yet active at the scanned block's timestamp: a 4844 blob tx
     /// from the batcher keeps upstream sender-path acceptance — the calldata-only restriction
     /// starts exactly at the fork boundary. Mirrors the Go "pre-fork: blob batcher tx accepted
