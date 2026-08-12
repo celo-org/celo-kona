@@ -1,0 +1,51 @@
+[package]
+name = "engine-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+exclude.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
+
+[dependencies]
+# Ethereum
+alloy-consensus = { workspace = true, features = ["std"] }
+alloy-primitives = { workspace = true, features = ["serde", "std"] }
+alloy-rlp.workspace = true
+alloy-rpc-types-engine = { workspace = true, features = ["serde", "std"] }
+# `k256` is not used directly. It gates `OpPayloadAttributes::recovered_transactions{,_with_encoded}`,
+# which the repo's `clippy.toml` lists as disallowed (they decode `OpTxEnvelope` and so reject
+# CIP-64). Without the feature those paths are unresolvable and clippy downgrades the entry to a
+# warning instead of guarding this crate. The dependency is already in the graph, so this is free.
+op-alloy-rpc-types-engine = { workspace = true, features = ["serde", "std", "k256"] }
+
+# Reth
+# Only for `JwtSecret` + `AuthClientLayer`, i.e. the engine API's HS256 bearer-token
+# transport. Pulls in no node machinery.
+reth-rpc-layer.workspace = true
+
+# RPC
+jsonrpsee = { workspace = true, features = ["http-client"] }
+# Plain-HTTP GET of the node's Prometheus endpoint. No TLS features: the metrics port is local.
+reqwest.workspace = true
+tower = { version = "0.5.3", default-features = false }
+
+# Misc
+anyhow.workspace = true
+clap.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
