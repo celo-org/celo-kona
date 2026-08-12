@@ -56,6 +56,9 @@ pub mod payload;
 pub mod payload_metrics;
 
 #[cfg(feature = "std")]
+pub mod trie_prefetch;
+
+#[cfg(feature = "std")]
 pub mod rpc;
 
 #[cfg(feature = "std")]

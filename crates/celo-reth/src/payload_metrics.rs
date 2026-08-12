@@ -471,6 +471,31 @@ impl<P: StateRootProvider> StateRootProvider for PayloadMetricsStateProvider<P> 
         &self,
         state: HashedPostState,
     ) -> ProviderResult<(alloy_primitives::B256, TrieUpdates)> {
+        // Warm the pages the walk below is about to fault on, concurrently. This computes nothing
+        // and discards every result, so it cannot change the root — only how long it takes. Off
+        // unless `CELO_PAYLOAD_TRIE_PREFETCH_THREADS` is set. Timed separately from, and included
+        // in, the state-root duration below, so the split is always recoverable.
+        if let (Some(outcome), Some(has_best_payload)) =
+            (crate::trie_prefetch::prefetch(&state), self.has_best_payload)
+        {
+            let has_best_label = bool_label(has_best_payload);
+            metrics::histogram!(
+                "celo_payload_trie_prefetch_duration_seconds",
+                "has_best_payload" => has_best_label,
+            )
+            .record(outcome.elapsed.as_secs_f64());
+            metrics::histogram!(
+                "celo_payload_trie_prefetch_accounts",
+                "has_best_payload" => has_best_label,
+            )
+            .record(outcome.accounts as f64);
+            metrics::histogram!(
+                "celo_payload_trie_prefetch_slots",
+                "has_best_payload" => has_best_label,
+            )
+            .record(outcome.slots as f64);
+        }
+
         let started = Instant::now();
         let result = self.inner.state_root_with_updates(state);
         if let Some(has_best_payload) = self.has_best_payload {

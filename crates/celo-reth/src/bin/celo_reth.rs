@@ -644,6 +644,15 @@ where
     //      `admin` namespace is enabled
     let handle = node_builder
         .extend_rpc_modules(move |ctx| {
+            // 0. Payload trie prefetch. Installed here rather than in the payload-builder wrapper
+            //    because this is the first place the provider's concrete type is known: the
+            //    prefetcher needs to open its own read-only providers, which `FullProvider` alone
+            //    does not promise, and stating that bound on the generic `PayloadBuilderBuilder`
+            //    impl propagates out and breaks `CeloNode`'s component wiring. No-op unless
+            //    `CELO_PAYLOAD_TRIE_PREFETCH_THREADS` is set. Runs before the payload service
+            //    builds anything, so no block can miss it.
+            celo_reth::trie_prefetch::install(ctx.node().provider().clone());
+
             // 1. proofs-history RPC overrides (if enabled). Mirrors the OP launcher in
             //    ethereum-optimism/optimism @ kona-node/v1.5.1:
             //    rust/op-reth/crates/node/src/proof_history.rs.
