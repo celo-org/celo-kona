@@ -27,8 +27,15 @@
 #                   this at the output of scripts/perf/make_state.py to get a trie with realistic
 #                   depth — the stock dev trie is ~1.5 levels and every measurement on it is a
 #                   floor value.
-#   TXS             Transactions to submit, each to a fresh uniformly spread address (default 10).
-#                   New leaves in distinct subtries are what make a state root cost anything.
+#   TXS             Total transactions to submit, each to a fresh uniformly spread address
+#                   (default 10). New leaves in distinct subtries are what make a state root cost
+#                   anything, so the recipients are deliberately scattered.
+#   TX_PER_BLOCK    Batch size, one batch per block (default 15). This, not TXS, is what controls
+#                   the number of independent trie paths per block — the parameter
+#                   celo-blockchain-planning#1453 identifies as load-bearing. Submitting TXS as one
+#                   burst instead puts them all in the first two or three blocks and leaves every
+#                   later block changing a single account, which silently invalidates any
+#                   measurement that scales with path count.
 #   SKIP_BUILD      Set to 1 to skip cargo build
 #   KEEP_DATADIR    Set to 1 to leave the datadir and artifacts in place for inspection
 #   WORK_BASE       Directory to create the scratch workdir under (default: $TMPDIR, then /tmp)
@@ -175,11 +182,18 @@ echo "==> Initialising datadir ($DATADIR)"
 # several blocks inside the same second, and reth rejects payload attributes whose timestamp is
 # not strictly greater than the head's — making those blocks permanently unreplayable.
 echo "==> Mining $BLOCKS dev blocks"
+# `--txpool.max-account-slots` is raised from its default of 16 because the workload below submits
+# from a single prefunded key. Past 16 pending transactions the pool rejects the rest, and because
+# they are submitted with explicit sequential nonces a rejection leaves a nonce gap that strands
+# every later transaction as non-executable. The visible symptom is silent: `cast send --async`
+# still returns a hash for all of them, and the chain ends up with ~5 user transactions in block 1
+# and nothing after, which looks like a workload that ran rather than one that was dropped.
 "$CELO_RETH" node --dev --dev.block-time 1s \
     --chain "$GENESIS" \
     --datadir "$DATADIR" \
     --http --http.port "$HTTP_PORT" --http.api eth,debug \
     --authrpc.port "$AUTH_PORT" \
+    --txpool.max-account-slots "$(( ${TX_PER_BLOCK:-15} * 4 ))" \
     --disable-discovery --port 0 \
     >>"$MINE_LOG" 2>&1 &
 NODE_PID=$!
@@ -210,6 +224,12 @@ for i in range(int(sys.argv[1])):
     print('0x' + hashlib.sha3_256(b'recipient' + i.to_bytes(8, 'big')).digest()[:20].hex())
 " "${TXS:-10}" >"$WORKDIR/recipients.txt"
 
+    # Submitted in per-block batches *while the miner runs*, not as one burst up front. A burst all
+    # lands in the first two or three blocks and leaves every later block with a single changed
+    # account, which silently makes the archive useless for anything that scales with the number of
+    # independent trie paths per block. TX_PER_BLOCK is therefore the parameter that matters, not
+    # TXS.
+    #
     # Wait only on the cast PIDs collected so far. A bare `wait` would also wait on the mining node,
     # which is a background child of this same shell and never exits — that deadlocks the script
     # after mining has already succeeded.
@@ -220,18 +240,19 @@ for i in range(int(sys.argv[1])):
             --nonce "$((start_nonce + i))" --value 1000 "$recipient" >/dev/null 2>&1 &
         batch="$batch $!"
         i=$((i + 1))
-        # Bounded fan-out: a few hundred simultaneous cast processes is its own load test.
-        if [[ $((i % 25)) -eq 0 ]]; then
+        if [[ $((i % ${TX_PER_BLOCK:-15})) -eq 0 ]]; then
             # shellcheck disable=SC2086  # deliberate word split over the collected PIDs
             wait $batch 2>/dev/null || true
             batch=""
+            # Let the miner seal what was just submitted before queueing the next block's worth.
+            sleep 1
         fi
     done <"$WORKDIR/recipients.txt"
     if [[ -n "$batch" ]]; then
         # shellcheck disable=SC2086
         wait $batch 2>/dev/null || true
     fi
-    echo "    submitted $i transactions from nonce $start_nonce"
+    echo "    submitted $i transactions from nonce $start_nonce, ~${TX_PER_BLOCK:-15}/block"
 else
     echo "WARNING: cast not found; the archive will contain deposit-only blocks"
 fi
