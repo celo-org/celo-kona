@@ -37,6 +37,10 @@ test-trybuild:
 benches:
   cargo bench --no-run --workspace --features test-utils {{exclude_members}}
 
+# Validate the engine-replay driver end to end against a local dev chain (no snapshot needed)
+perf-bootstrap blocks='30':
+  scripts/perf/bootstrap_dev_replay.sh {{blocks}}
+
 # Lint the workspace for all available targets
 lint-all: lint-native lint-docs
 
