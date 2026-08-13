@@ -27,9 +27,20 @@
 #                   this at the output of scripts/perf/make_state.py to get a trie with realistic
 #                   depth — the stock dev trie is ~1.5 levels and every measurement on it is a
 #                   floor value.
-#   TXS             Total transactions to submit, each to a fresh uniformly spread address
-#                   (default 10). New leaves in distinct subtries are what make a state root cost
-#                   anything, so the recipients are deliberately scattered.
+#   TXS             Total transactions to submit (default 10), one per recipient produced by
+#                   scripts/perf/recipients.py. Changed leaves in distinct subtries are what make a
+#                   state root cost anything, so recipients are deliberately scattered.
+#   RECIPIENT_MODE  Whether a transfer inserts a trie leaf or updates one (default `fresh`):
+#                     fresh               addresses absent from genesis — every transfer INSERTS
+#                     existing-scattered  genesis accounts, none repeated — every transfer UPDATES,
+#                                         with the same scatter as `fresh`
+#                     existing-hot        the same TX_PER_BLOCK genesis accounts every block —
+#                                         updates whose paths repeat, so residency is reused
+#                   `fresh` vs `existing-scattered` isolates insertion; `existing-scattered` vs
+#                   `existing-hot` isolates locality. That pair is what separates
+#                   celo-blockchain-planning#1453's two candidate drivers. See recipients.py.
+#   GENESIS_ACCOUNTS  The --accounts value that produced GENESIS_FILE. Required by the existing-*
+#                   modes, since that is the pool they draw from; unused by `fresh`.
 #   TX_PER_BLOCK    Batch size, one batch per block (default 15). This, not TXS, is what controls
 #                   the number of independent trie paths per block — the parameter
 #                   celo-blockchain-planning#1453 identifies as load-bearing. Submitting TXS as one
@@ -213,16 +224,27 @@ wait_for_rpc "$MINE_LOG"
 # e2e suite's viem tests can; archiving a range from a node that has run e2e_test/run_all_tests.sh
 # is the way to cover the 0x7b encoding path.
 if command -v cast >/dev/null 2>&1; then
-    echo "==> Sending ${TXS:-10} transactions to fresh addresses"
+    echo "==> Sending ${TXS:-10} transactions to ${RECIPIENT_MODE:-fresh} recipients"
     start_nonce="$(cast nonce --rpc-url "$RPC_URL" \
         "$(cast wallet address --private-key "$ACC_PRIVKEY")" 2>/dev/null || echo 0)"
-    # Same derivation as scripts/perf/make_state.py, different domain, so recipients are new
-    # accounts spread across the trie rather than neighbours sharing a long prefix.
-    python3 -c "
-import hashlib, sys
-for i in range(int(sys.argv[1])):
-    print('0x' + hashlib.sha3_256(b'recipient' + i.to_bytes(8, 'big')).digest()[:20].hex())
-" "${TXS:-10}" >"$WORKDIR/recipients.txt"
+    # RECIPIENT_MODE selects whether each transfer inserts a new trie leaf or updates one that is
+    # already there — the variable celo-blockchain-planning#1453 needs separated. See
+    # scripts/perf/recipients.py for why the three modes isolate insertion from locality.
+    recipient_args=(--count "${TXS:-10}" --mode "${RECIPIENT_MODE:-fresh}"
+        --cycle "${TX_PER_BLOCK:-15}")
+    if [[ "${RECIPIENT_MODE:-fresh}" != fresh ]]; then
+        # The existing-* modes draw from the pool make_state.py allocated, so they need its size.
+        # Fail here rather than generating addresses that are absent from genesis, which would turn
+        # an update arm into a second insertion arm and read as a null result.
+        [[ -n "${GENESIS_ACCOUNTS:-}" ]] || {
+            echo "ERROR: RECIPIENT_MODE=${RECIPIENT_MODE} needs GENESIS_ACCOUNTS set to the"
+            echo "       --accounts value that produced $GENESIS_FILE."
+            exit 1
+        }
+        recipient_args+=(--accounts "$GENESIS_ACCOUNTS")
+    fi
+    python3 "$REPO_ROOT/scripts/perf/recipients.py" "${recipient_args[@]}" \
+        >"$WORKDIR/recipients.txt" || exit 1
 
     # Submitted in per-block batches *while the miner runs*, not as one burst up front. A burst all
     # lands in the first two or three blocks and leaves every later block with a single changed
