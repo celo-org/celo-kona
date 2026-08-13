@@ -473,8 +473,10 @@ impl<P: StateRootProvider> StateRootProvider for PayloadMetricsStateProvider<P> 
     ) -> ProviderResult<(alloy_primitives::B256, TrieUpdates)> {
         // Warm the pages the walk below is about to fault on, concurrently. This computes nothing
         // and discards every result, so it cannot change the root — only how long it takes. Off
-        // unless `CELO_PAYLOAD_TRIE_PREFETCH_THREADS` is set. Timed separately from, and included
-        // in, the state-root duration below, so the split is always recoverable.
+        // unless `CELO_PAYLOAD_TRIE_PREFETCH_THREADS` is set. Timed in its own histogram and
+        // *excluded* from the state-root duration below — `started` is taken after it returns — so
+        // the root histogram keeps measuring the walk alone and stays comparable across the on and
+        // off arms. Additive: finalization = hashed post state + prefetch + root + rest.
         if let (Some(outcome), Some(has_best_payload)) =
             (crate::trie_prefetch::prefetch(&state), self.has_best_payload)
         {
