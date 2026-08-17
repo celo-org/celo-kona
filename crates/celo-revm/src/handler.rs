@@ -63,21 +63,84 @@ const LEGACY_CHAIN_ID_EXCEPTIONS: [(B256, u64, u64); 2] = [
     ),
 ];
 
+/// CIP-64 transactions that were included in a canonical block even though the sender's
+/// fee-currency balance did not cover `gas_limit * max_fee_per_gas`. celo-revm enforced only
+/// the `gas_limit * effective_gas_price` that `debitGasFees` charges, while op-geth has always
+/// enforced the stricter EIP-1559 rule (`canPayFee`, `core/celo_state_transition.go`). Once
+/// celo-revm enforces it too — see [`CeloHandler::cip64_check_max_fee_balance`] — replaying
+/// these transactions would reject them and invalidate their blocks, so they must keep being
+/// accepted during historical sync to avoid a hard fork.
+/// See <https://github.com/celo-org/celo-kona/issues/292>.
+///
+/// An entry bypasses the max-fee balance check and nothing else; the `debitGasFees` charge
+/// still has to succeed. The list must be identical to op-geth's.
+///
+/// Each entry: `(tx_hash, network_chain_id, block_number)`.
+const CIP64_MAX_FEE_EXCEPTIONS: [(B256, u64, u64); 1] = [
+    // Celo Mainnet block 75046581, tx index 29 — 200000 gas * 29097136819 max fee
+    // = 5819427363800000 required in 0x0E2A3e05bc9A16F5292A6170456A710cb89C6f72, while sender
+    // 0x1De6939e8A03DF7bDc970A951B67628d2D138eD9 held 5295000000000000. The 12161345100
+    // effective price made the actual debit 2432269020000000, which was affordable.
+    (
+        b256!("e9e0248cf5b02ce016b195690fbb168f08eeeff7b9b353a52ecf98f4229ba834"),
+        42220, // Celo Mainnet chain ID
+        75046581,
+    ),
+];
+
 fn is_legacy_chain_id_exception(
+    network_chain_id: u64,
+    block_number: u64,
+    enveloped_tx: Option<&[u8]>,
+) -> bool {
+    is_pinned_exception(
+        &LEGACY_CHAIN_ID_EXCEPTIONS,
+        network_chain_id,
+        block_number,
+        enveloped_tx,
+    )
+}
+
+// Wired into the max-fee balance check in the next commit; the list is pinned on its own so
+// the exception is in place before the check that needs it.
+#[allow(dead_code)]
+fn is_cip64_max_fee_exception(
+    network_chain_id: u64,
+    block_number: u64,
+    enveloped_tx: Option<&[u8]>,
+) -> bool {
+    is_pinned_exception(
+        &CIP64_MAX_FEE_EXCEPTIONS,
+        network_chain_id,
+        block_number,
+        enveloped_tx,
+    )
+}
+
+/// Whether `enveloped_tx` is one of the `(tx_hash, network_chain_id, block_number)` entries in
+/// `exceptions`.
+fn is_pinned_exception(
+    exceptions: &[(B256, u64, u64)],
     network_chain_id: u64,
     block_number: u64,
     enveloped_tx: Option<&[u8]>,
 ) -> bool {
     // Filter on (network, block_number) before hashing. Live mempool traffic
     // can never reach the keccak path: the attacker can't choose `block.number`,
-    // so any tx outside the two pinned historical blocks short-circuits.
-    let Some((expected_hash, _, _)) = LEGACY_CHAIN_ID_EXCEPTIONS
+    // so any tx outside the pinned historical blocks short-circuits. A block may
+    // pin more than one exception, so compare against every matching entry.
+    let mut matching = exceptions
         .iter()
-        .find(|(_, net, block)| *net == network_chain_id && *block == block_number)
-    else {
+        .filter(|(_, net, block)| *net == network_chain_id && *block == block_number)
+        .peekable();
+    if matching.peek().is_none() {
+        return false;
+    }
+    let Some(tx) = enveloped_tx else {
         return false;
     };
-    enveloped_tx.is_some_and(|tx| keccak256(tx) == *expected_hash)
+    let tx_hash = keccak256(tx);
+    matching.any(|(expected_hash, _, _)| tx_hash == *expected_hash)
 }
 
 pub struct CeloHandler<EVM, ERROR, FRAME> {
@@ -1840,6 +1903,118 @@ mod tests {
             42220,
             53619116,
             Some(&encoded)
+        ));
+    }
+
+    #[test]
+    fn test_pinned_exception_matches_every_entry_in_a_block() {
+        // A block may pin more than one exception; entries after the first must
+        // still match.
+        let first = b"first pinned tx";
+        let second = b"second pinned tx";
+        let exceptions = [
+            (keccak256(first), 42220, 75046581),
+            (keccak256(second), 42220, 75046581),
+        ];
+        assert!(is_pinned_exception(
+            &exceptions,
+            42220,
+            75046581,
+            Some(first)
+        ));
+        assert!(is_pinned_exception(
+            &exceptions,
+            42220,
+            75046581,
+            Some(second)
+        ));
+        assert!(!is_pinned_exception(
+            &exceptions,
+            42220,
+            75046581,
+            Some(b"unpinned tx")
+        ));
+        assert!(!is_pinned_exception(&exceptions, 42220, 75046581, None));
+        // Wrong network / block still short-circuits for both entries.
+        assert!(!is_pinned_exception(
+            &exceptions,
+            11142220,
+            75046581,
+            Some(second)
+        ));
+        assert!(!is_pinned_exception(
+            &exceptions,
+            42220,
+            75046582,
+            Some(second)
+        ));
+    }
+
+    /// Builds the EIP-2718 encoded Celo Mainnet CIP-64 max-fee exception transaction:
+    /// block 75046581, tx index 29, paying in the USD₮ adapter
+    /// 0x0E2A3e05bc9A16F5292A6170456A710cb89C6f72.
+    ///
+    /// Fields taken verbatim from `eth_getTransactionByHash` on Celo Mainnet.
+    fn build_cip64_max_fee_exception_tx() -> Bytes {
+        use alloy_consensus::SignableTransaction;
+        use alloy_primitives::{Signature, U256, address};
+        use celo_alloy_consensus::TxCip64;
+
+        let tx = TxCip64 {
+            chain_id: 42220,
+            nonce: 0x1d,
+            gas_limit: 200_000,
+            max_fee_per_gas: 29_097_136_819,
+            max_priority_fee_per_gas: 150_487_100,
+            to: address!("48065fbbe25f71c9282ddf5e1cd6d6a887483d5e").into(),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            fee_currency: Some(address!("0e2a3e05bc9a16f5292a6170456a710cb89c6f72")),
+            input: bytes!(
+                "a9059cbb00000000000000000000000003d904993bf9a19e3fe78bed6bec435603d2e6150000000000000000000000000000000000000000000000000000000000105f46"
+            ),
+        };
+
+        let signature = Signature::new(
+            U256::from_str_radix(
+                "3c6f794c1d0150430f72a84840900b64f3095bac2329b22d427cd2ce1845d5c5",
+                16,
+            )
+            .unwrap(),
+            U256::from_str_radix(
+                "6ae569be2db73db63ec20ebf618098c130949ca79b4a34cadcfe60cfb1992035",
+                16,
+            )
+            .unwrap(),
+            true,
+        );
+
+        let signed = tx.into_signed(signature);
+        let mut encoded = Vec::new();
+        signed.eip2718_encode(&mut encoded);
+        encoded.into()
+    }
+
+    /// The pinned exception must be the real Celo Mainnet transaction, and must match only at
+    /// its own (chain, block) — a same-shaped tx replayed elsewhere gets no leniency.
+    #[test]
+    fn test_cip64_max_fee_exception_tx_hash() {
+        let encoded = build_cip64_max_fee_exception_tx();
+        assert_eq!(keccak256(&encoded), CIP64_MAX_FEE_EXCEPTIONS[0].0);
+        assert!(is_cip64_max_fee_exception(42220, 75046581, Some(&encoded)));
+        // Should not match on wrong network
+        assert!(!is_cip64_max_fee_exception(
+            11142220,
+            75046581,
+            Some(&encoded)
+        ));
+        // Should not match at the wrong block height (live-traffic case)
+        assert!(!is_cip64_max_fee_exception(42220, 75046582, Some(&encoded)));
+        // Should not match a different tx in the pinned block
+        assert!(!is_cip64_max_fee_exception(
+            42220,
+            75046581,
+            Some(&bytes!("deadbeef"))
         ));
     }
 
