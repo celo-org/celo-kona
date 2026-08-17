@@ -916,6 +916,76 @@ mod tests {
         format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
     }
 
+    /// `balanceOf(address)` calldata: 4-byte selector + one word.
+    const BALANCE_OF_CALLDATA_SIZE: u8 = 36;
+    /// `debitGasFees(address,uint256)` calldata: 4-byte selector + two words.
+    const DEBIT_CALLDATA_SIZE: u8 = 68;
+    /// The `JUMPDEST` [`fee_currency_stub`] routes the fault path through. A fault that must
+    /// burn gas jumps back to it.
+    const STUB_FAULT_JUMPDEST: u8 = 0x12;
+    /// Code offset at which [`fee_currency_stub`] assembles `fault`. Faults that reference
+    /// their own position — e.g. a `CODECOPY` of data appended after them — must add it.
+    const STUB_FAULT_OFFSET: u8 = STUB_FAULT_JUMPDEST + 1;
+
+    /// Builds a fee-currency stub that answers small calls and runs `fault` on larger ones,
+    /// discriminating on calldata size.
+    ///
+    /// A stub that faults on *every* call cannot pin which system call the classifier saw:
+    /// `cip64_check_max_fee_balance`'s `balanceOf` runs before `debitGasFees` and deliberately
+    /// surfaces under the same [`FEE_DEBIT_ERROR_PREFIX`], so such a stub faults in the
+    /// pre-check and the debit never runs. Pass [`BALANCE_OF_CALLDATA_SIZE`] to fault on the
+    /// debit, or [`DEBIT_CALLDATA_SIZE`] to let the debit through and fault on the credit.
+    ///
+    /// Calls at or below `answered_calldata_size` return `type(uint256).max` — an unbounded
+    /// balance for the max-fee check, and ignored output for the void debit:
+    ///
+    ///   PUSH1 <size>, CALLDATASIZE, GT, PUSH1 <jumpdest>, JUMPI,
+    ///   PUSH1 0, NOT, PUSH1 0, MSTORE, PUSH1 0x20, PUSH1 0, RETURN,
+    ///   JUMPDEST, <fault>
+    fn fee_currency_stub(answered_calldata_size: u8, fault: &[u8]) -> Bytes {
+        let mut code = alloc::vec![
+            0x60,
+            answered_calldata_size, // PUSH1 <size>
+            0x36,                   // CALLDATASIZE
+            0x11,                   // GT       -- calldatasize > size ?
+            0x60,
+            STUB_FAULT_JUMPDEST, // PUSH1 <jumpdest>
+            0x57,                // JUMPI    -- larger: take the fault path
+            0x60,
+            0x00, // PUSH1 0
+            0x19, // NOT      -- type(uint256).max
+            0x60,
+            0x00, // PUSH1 0
+            0x52, // MSTORE
+            0x60,
+            0x20, // PUSH1 32 -- retLength
+            0x60,
+            0x00, // PUSH1 0  -- retOffset
+            0xf3, // RETURN
+            0x5b, // JUMPDEST -- STUB_FAULT_JUMPDEST
+        ];
+        // `assert`, not `debug_assert` (which `--release` compiles out): a wrong offset lands
+        // the JUMPDEST inside a `PUSH1` operand, and the resulting invalid-jump halt would let
+        // the halt-classification tests pass for the wrong reason.
+        assert_eq!(
+            code.len(),
+            usize::from(STUB_FAULT_OFFSET),
+            "stub prologue length must equal STUB_FAULT_OFFSET, or the JUMPDEST is misplaced"
+        );
+        code.extend_from_slice(fault);
+        code.into()
+    }
+
+    /// Pins that the failure came from the `debitGasFees` call rather than the max-fee check's
+    /// `balanceOf` that runs ahead of it. Both carry [`FEE_DEBIT_ERROR_PREFIX`], so the absence
+    /// of [`constants::FEE_BALANCE_READ_MARKER`] is the only thing telling the two apart.
+    fn assert_faulted_in_debit(err: &str) {
+        assert!(
+            !err.contains(constants::FEE_BALANCE_READ_MARKER),
+            "the fault must come from the debit, not the max-fee check's balanceOf: {err}"
+        );
+    }
+
     /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
     /// is registered in the per-block context and backed by `code` at the
     /// token address, so the `debitGasFees` system call genuinely executes
@@ -947,9 +1017,10 @@ mod tests {
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]),
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0x60, 0x00, 0x60, 0x00, 0xfd]),
         );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(
             !blocklist.is_blocked(fc),
             "a debit revert is ambiguous (canonically a sender fault) and must not blocklist \
@@ -964,13 +1035,15 @@ mod tests {
     fn test_debit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD1);
         let blocklist = FeeCurrencyBlocklist::default();
-        // JUMPDEST, PUSH1 0, JUMP — infinite loop, exhausts the debit budget → OOG halt.
+        // PUSH1 <jumpdest>, JUMP — loops on the stub's own JUMPDEST, exhausting the debit
+        // budget → OOG halt.
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[0x5b, 0x60, 0x00, 0x56]),
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0x60, STUB_FAULT_JUMPDEST, 0x56]),
         );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(err.contains(FEE_CURRENCY_HALT_MARKER), "expected a halt failure, got: {err}");
         assert!(
             blocklist.is_blocked(fc),
@@ -989,21 +1062,12 @@ mod tests {
     fn test_credit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD4);
         let blocklist = FeeCurrencyBlocklist::default();
-        // Branch on calldata size: `balanceOf(address)` (36 bytes) and
-        // `debitGasFees(address,uint256)` (68 bytes) both return
-        // `type(uint256).max` — an unbounded balance for the max-fee check, and
-        // ignored output for the void debit; `creditGasFees` calls carry 260
-        // bytes → jump into an infinite loop → OOG halt on the credit.
-        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x12, JUMPI,
-        //   PUSH1 0, NOT, PUSH1 0, MSTORE, PUSH1 0x20, PUSH1 0, RETURN,
-        //   JUMPDEST, PUSH1 0x12, JUMP
+        // Answer `balanceOf` and let the debit succeed; `creditGasFees` calls carry 260 bytes
+        // of calldata, so only they take the fault path and loop into an OOG halt.
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[
-                0x60, 0x64, 0x36, 0x11, 0x60, 0x12, 0x57, 0x60, 0x00, 0x19, 0x60, 0x00, 0x52, 0x60,
-                0x20, 0x60, 0x00, 0xf3, 0x5b, 0x60, 0x12, 0x56,
-            ]),
+            fee_currency_stub(DEBIT_CALLDATA_SIZE, &[0x60, STUB_FAULT_JUMPDEST, 0x56]),
         );
         assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
         assert!(
@@ -1036,25 +1100,36 @@ mod tests {
         revert_data.extend_from_slice(msg);
         revert_data.resize(revert_data.len().div_ceil(32) * 32, 0); // right-pad to a word
 
-        // CODECOPY the blob (at code offset 12, right after these 12 opcode bytes)
-        // into memory and REVERT with it.
+        // CODECOPY the blob into memory and REVERT with it. The blob sits right after these
+        // 12 opcode bytes, which the stub in turn places at `STUB_FAULT_OFFSET`.
         let len = u8::try_from(revert_data.len()).expect("revert data fits one PUSH1");
-        let mut code = alloc::vec![
-            0x60, len, // PUSH1 len
-            0x60, 0x0c, // PUSH1 12 (data offset within the code)
-            0x60, 0x00, // PUSH1 0  (memory destination)
+        let data_offset = STUB_FAULT_OFFSET + 12;
+        let mut fault = alloc::vec![
+            0x60,
+            len, // PUSH1 len
+            0x60,
+            data_offset, // PUSH1 <data offset within the code>
+            0x60,
+            0x00, // PUSH1 0  (memory destination)
             0x39, // CODECOPY
-            0x60, len, // PUSH1 len
-            0x60, 0x00, // PUSH1 0
+            0x60,
+            len, // PUSH1 len
+            0x60,
+            0x00, // PUSH1 0
             0xfd, // REVERT
         ];
-        code.extend_from_slice(&revert_data);
+        fault.extend_from_slice(&revert_data);
 
-        let err = transact_cip64_with_token_code(blocklist.clone(), fc, code.into());
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &fault),
+        );
         assert!(
             err.contains(FEE_CURRENCY_REVERT_MARKER),
             "expected a genuine revert classification, got: {err}"
         );
+        assert_faulted_in_debit(&err);
         assert!(
             err.contains(FEE_CURRENCY_HALT_MARKER),
             "the spoofed halt marker should survive into the decoded revert message: {err}"
@@ -1127,14 +1202,17 @@ mod tests {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
 
-        // Token code: PUSH1 0, SLOAD, STOP — the debit call reads the token's
-        // storage, which the wrapper DB fails with a genuine database error.
+        // Fault body: PUSH1 0, SLOAD, STOP — the debit call reads the token's storage, which
+        // the wrapper DB fails with a genuine database error. It has to sit behind the
+        // calldata-size guard: the max-fee check's `balanceOf` would otherwise hit the same
+        // failing `SLOAD` first, and the error would never come from the debit.
         let mut inner = revm::database::InMemoryDB::default();
         inner.insert_account_info(
             fc,
-            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
-                0x60, 0x00, 0x54, 0x00,
-            ]))),
+            AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
+                BALANCE_OF_CALLDATA_SIZE,
+                &[0x60, 0x00, 0x54, 0x00],
+            ))),
         );
 
         let err = metrics::with_local_recorder(&recorder, || {
@@ -1144,6 +1222,7 @@ mod tests {
         });
 
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(
             !err.contains(FEE_CURRENCY_REVERT_MARKER) && !err.contains(FEE_CURRENCY_HALT_MARKER),
             "a database error must carry neither contract-fault marker, got: {err}"

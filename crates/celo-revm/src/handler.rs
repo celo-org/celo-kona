@@ -3,7 +3,8 @@
 use crate::{
     CeloContext,
     constants::{
-        CELO_SYSTEM_ADDRESS, FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
+        CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_CREDIT_ERROR_PREFIX,
+        FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
     contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
@@ -486,7 +487,9 @@ where
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller).map_err(|e| {
-            InvalidTransaction::from(format!("{FEE_DEBIT_ERROR_PREFIX}: balanceOf: {e}"))
+            InvalidTransaction::from(format!(
+                "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
+            ))
         })?);
 
         if balance < max_gas_cost {
