@@ -989,16 +989,20 @@ mod tests {
     fn test_credit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD4);
         let blocklist = FeeCurrencyBlocklist::default();
-        // Branch on calldata size: `debitGasFees(address,uint256)` calls carry
-        // 68 bytes → STOP (debit succeeds); `creditGasFees` calls carry 260
+        // Branch on calldata size: `balanceOf(address)` (36 bytes) and
+        // `debitGasFees(address,uint256)` (68 bytes) both return
+        // `type(uint256).max` — an unbounded balance for the max-fee check, and
+        // ignored output for the void debit; `creditGasFees` calls carry 260
         // bytes → jump into an infinite loop → OOG halt on the credit.
-        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x08, JUMPI, STOP,
-        //   JUMPDEST, PUSH1 0x08, JUMP
+        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x12, JUMPI,
+        //   PUSH1 0, NOT, PUSH1 0, MSTORE, PUSH1 0x20, PUSH1 0, RETURN,
+        //   JUMPDEST, PUSH1 0x12, JUMP
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
             Bytes::from_static(&[
-                0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x08, 0x56,
+                0x60, 0x64, 0x36, 0x11, 0x60, 0x12, 0x57, 0x60, 0x00, 0x19, 0x60, 0x00, 0x52, 0x60,
+                0x20, 0x60, 0x00, 0xf3, 0x5b, 0x60, 0x12, 0x56,
             ]),
         );
         assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
