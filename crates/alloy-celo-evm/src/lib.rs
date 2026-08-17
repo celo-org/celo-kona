@@ -18,8 +18,8 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
-        FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
+        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_MALFORMED_RETURN_MARKER,
+        FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
@@ -432,6 +432,25 @@ where
                         metrics::counter!(
                             "celo_payload_skipped_total",
                             "reason" => "debit_credit_halted"
+                        )
+                        .increment(1);
+                        let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                        self.blocklist.block_currency(fc, block_timestamp);
+                    } else if err_msg.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
+                        // The currency's `balanceOf` returned data that does not
+                        // decode as a `uint256` — as unambiguous a currency fault
+                        // as a halt (see `FEE_CURRENCY_MALFORMED_RETURN_MARKER`)
+                        // and just as persistent, so blocklist to stop the payload
+                        // builder retrying every tx of this currency each block.
+                        tracing::warn!(
+                            target: "celo",
+                            "fee-currency call returned malformed data for {fc}: {e} — \
+                             blocklisting"
+                        );
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "malformed_return_data"
                         )
                         .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
@@ -1081,18 +1100,15 @@ mod tests {
         );
     }
 
-    /// A revert whose `Error(string)` payload contains the literal halt-marker
-    /// text must still classify as a revert and must NOT blocklist. The revert
-    /// message is the one attacker-controlled string in the flattened error, so
-    /// if the classifier checked the halt marker first, a sender could spoof a
-    /// "currency fault" and dark-list a healthy currency at will.
-    #[test]
-    fn test_spoofed_halt_marker_in_revert_does_not_blocklist() {
-        let fc = Address::with_last_byte(0xD3);
-        let blocklist = FeeCurrencyBlocklist::default();
+    /// Opcode bytes [`revert_with_message_fault`] emits before its `Error(string)` blob. The
+    /// blob's own code offset is this past the start of the fault, which the stub in turn
+    /// places at [`STUB_FAULT_OFFSET`].
+    const REVERT_FAULT_PROLOGUE_LEN: u8 = 12;
 
-        // ABI-encode `Error(string)` carrying the halt-marker text as revert data.
-        let msg = FEE_CURRENCY_HALT_MARKER.as_bytes();
+    /// Builds a [`fee_currency_stub`] fault that reverts with `msg` as an ABI-encoded
+    /// `Error(string)` payload: [`REVERT_FAULT_PROLOGUE_LEN`] opcode bytes that CODECOPY the
+    /// blob appended after them into memory and REVERT with it.
+    fn revert_with_message_fault(msg: &[u8]) -> Vec<u8> {
         let mut revert_data = Vec::new();
         revert_data.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) selector
         revert_data.extend_from_slice(&U256::from(0x20).to_be_bytes::<32>()); // string offset
@@ -1100,10 +1116,8 @@ mod tests {
         revert_data.extend_from_slice(msg);
         revert_data.resize(revert_data.len().div_ceil(32) * 32, 0); // right-pad to a word
 
-        // CODECOPY the blob into memory and REVERT with it. The blob sits right after these
-        // 12 opcode bytes, which the stub in turn places at `STUB_FAULT_OFFSET`.
         let len = u8::try_from(revert_data.len()).expect("revert data fits one PUSH1");
-        let data_offset = STUB_FAULT_OFFSET + 12;
+        let data_offset = STUB_FAULT_OFFSET + REVERT_FAULT_PROLOGUE_LEN;
         let mut fault = alloc::vec![
             0x60,
             len, // PUSH1 len
@@ -1118,8 +1132,30 @@ mod tests {
             0x00, // PUSH1 0
             0xfd, // REVERT
         ];
+        // `assert`, not `debug_assert` (which `--release` compiles out): a wrong offset
+        // CODECOPYs garbage that still reverts, so the spoof tests would fail on the surviving
+        // marker instead — a symptom that reads like a classifier bug, not a miscount.
+        assert_eq!(
+            fault.len(),
+            usize::from(REVERT_FAULT_PROLOGUE_LEN),
+            "prologue length must equal REVERT_FAULT_PROLOGUE_LEN, or CODECOPY reads the \
+             wrong code offset"
+        );
         fault.extend_from_slice(&revert_data);
+        fault
+    }
 
+    /// A revert whose `Error(string)` payload contains the literal halt-marker
+    /// text must still classify as a revert and must NOT blocklist. The revert
+    /// message is the one attacker-controlled string in the flattened error, so
+    /// if the classifier checked the halt marker first, a sender could spoof a
+    /// "currency fault" and dark-list a healthy currency at will.
+    #[test]
+    fn test_spoofed_halt_marker_in_revert_does_not_blocklist() {
+        let fc = Address::with_last_byte(0xD3);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        let fault = revert_with_message_fault(FEE_CURRENCY_HALT_MARKER.as_bytes());
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
@@ -1138,6 +1174,67 @@ mod tests {
             !blocklist.is_blocked(fc),
             "attacker-controlled revert text must not be able to spoof a halt and blocklist; \
              got error: {err}"
+        );
+    }
+
+    /// A fee-currency contract whose `balanceOf` returns data that does not
+    /// decode as a `uint256` (here: zero bytes) must blocklist, not land in the
+    /// EVM-infrastructure arm where the payload builder would retry the broken
+    /// currency's txs every block while metrics point at the node itself.
+    #[test]
+    fn test_malformed_balance_return_blocklists_currency() {
+        let fc = Address::with_last_byte(0xD5);
+        let blocklist = FeeCurrencyBlocklist::default();
+        // PUSH1 0, PUSH1 0, RETURN — every call succeeds with empty return data,
+        // so the max-fee check's `balanceOf` decode fails before the debit runs.
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xf3]),
+        );
+        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit-prefixed failure: {err}");
+        assert!(
+            err.contains(constants::FEE_BALANCE_READ_MARKER),
+            "the fault must come from the max-fee check's balanceOf read: {err}"
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            "expected the malformed-return marker: {err}"
+        );
+        assert!(
+            blocklist.is_blocked(fc),
+            "malformed balanceOf return data is a currency fault and must blocklist; \
+             got error: {err}"
+        );
+    }
+
+    /// A revert whose `Error(string)` payload contains the literal
+    /// malformed-return-marker text must still classify as a revert and must
+    /// NOT blocklist — same spoof-resistance requirement as the halt marker,
+    /// guaranteed by the classifier checking the revert arm first.
+    #[test]
+    fn test_spoofed_malformed_marker_in_revert_does_not_blocklist() {
+        let fc = Address::with_last_byte(0xD6);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        let fault = revert_with_message_fault(FEE_CURRENCY_MALFORMED_RETURN_MARKER.as_bytes());
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &fault),
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_REVERT_MARKER),
+            "expected a genuine revert classification, got: {err}"
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            "the spoofed marker should survive into the decoded revert message: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "attacker-controlled revert text must not be able to spoof a malformed return and \
+             blocklist; got error: {err}"
         );
     }
 

@@ -64,6 +64,25 @@ pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: re
 /// must not blocklist either.
 pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt:";
 
+/// Marker present in the `Display` output of a fee-currency failure caused by the
+/// contract returning data that does not ABI-decode as the expected type — e.g. a
+/// `balanceOf` answering with fewer than 32 bytes.
+///
+/// The full rendering is `CoreContractError::ExecutionFailed`'s
+/// `"core contract execution failed: "` prefix followed by the
+/// `"malformed return data: …"` message built in `erc20::get_balance`
+/// (`contracts/erc20.rs`), nested under [`FEE_DEBIT_ERROR_PREFIX`] by the
+/// handler's max-fee balance check. A contract fully controls its return data and
+/// the call itself *succeeded*, so — like a halt ([`FEE_CURRENCY_HALT_MARKER`])
+/// and unlike a revert or an EVM-infrastructure error — this is unambiguously the
+/// currency's fault, and the sequencing blocklist matches this marker to
+/// blocklist it. Spoof safety relies on the classifier checking
+/// [`FEE_CURRENCY_REVERT_MARKER`] first: revert payloads are the only
+/// attacker-controlled bytes in the flattened error, and a revert can never reach
+/// the decode path.
+pub const FEE_CURRENCY_MALFORMED_RETURN_MARKER: &str =
+    "core contract execution failed: malformed return data:";
+
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///
 /// Applied as `max(computed_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR)` for blocks before
