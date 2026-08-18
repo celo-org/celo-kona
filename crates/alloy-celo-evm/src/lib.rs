@@ -18,7 +18,8 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
+        FEE_BASE_FEE_OVERFLOW_PREFIX, FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER,
+        FEE_CURRENCY_MALFORMED_RETURN_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
         FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
@@ -436,6 +437,25 @@ where
                         .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
+                    } else if err_msg.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
+                        // The currency's `balanceOf` returned data that does not
+                        // decode as a `uint256` — as unambiguous a currency fault
+                        // as a halt (see `FEE_CURRENCY_MALFORMED_RETURN_MARKER`)
+                        // and just as persistent, so blocklist to stop the payload
+                        // builder retrying every tx of this currency each block.
+                        tracing::warn!(
+                            target: "celo",
+                            "fee-currency call returned malformed data for {fc}: {e} — \
+                             blocklisting"
+                        );
+                        #[cfg(feature = "std")]
+                        metrics::counter!(
+                            "celo_payload_skipped_total",
+                            "reason" => "malformed_return_data"
+                        )
+                        .increment(1);
+                        let block_timestamp: u64 = self.ctx().block.timestamp.to();
+                        self.blocklist.block_currency(fc, block_timestamp);
                     } else {
                         // Neither marker: the system call itself errored — an
                         // EVM-infrastructure failure (`CoreContractError::Evm`,
@@ -471,6 +491,23 @@ where
                     metrics::counter!(
                         "celo_payload_skipped_total",
                         "reason" => "fee_currency_not_registered"
+                    )
+                    .increment(1);
+                } else if err_msg.contains(FEE_BASE_FEE_OVERFLOW_PREFIX) {
+                    // A currency-side fault like a halt: only the base fee and the
+                    // directory-reported rate feed the conversion, so no sender-controlled
+                    // value takes part (see `FEE_BASE_FEE_OVERFLOW_PREFIX`). Log and meter so
+                    // the currency is named, but do NOT blocklist — an oracle update can
+                    // restore a sane rate well inside the eviction delay.
+                    tracing::warn!(
+                        target: "celo",
+                        "CIP-64 tx excluded from block: base fee does not fit u128 at fee \
+                         currency {fc}'s registered exchange rate ({e})"
+                    );
+                    #[cfg(feature = "std")]
+                    metrics::counter!(
+                        "celo_payload_skipped_total",
+                        "reason" => "base_fee_overflows_u128"
                     )
                     .increment(1);
                 }
@@ -916,6 +953,76 @@ mod tests {
         format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
     }
 
+    /// `balanceOf(address)` calldata: 4-byte selector + one word.
+    const BALANCE_OF_CALLDATA_SIZE: u8 = 36;
+    /// `debitGasFees(address,uint256)` calldata: 4-byte selector + two words.
+    const DEBIT_CALLDATA_SIZE: u8 = 68;
+    /// The `JUMPDEST` [`fee_currency_stub`] routes the fault path through. A fault that must
+    /// burn gas jumps back to it.
+    const STUB_FAULT_JUMPDEST: u8 = 0x12;
+    /// Code offset at which [`fee_currency_stub`] assembles `fault`. Faults that reference
+    /// their own position — e.g. a `CODECOPY` of data appended after them — must add it.
+    const STUB_FAULT_OFFSET: u8 = STUB_FAULT_JUMPDEST + 1;
+
+    /// Builds a fee-currency stub that answers small calls and runs `fault` on larger ones,
+    /// discriminating on calldata size.
+    ///
+    /// A stub that faults on *every* call cannot pin which system call the classifier saw:
+    /// `cip64_check_max_fee_balance`'s `balanceOf` runs before `debitGasFees` and deliberately
+    /// surfaces under the same [`FEE_DEBIT_ERROR_PREFIX`], so such a stub faults in the
+    /// pre-check and the debit never runs. Pass [`BALANCE_OF_CALLDATA_SIZE`] to fault on the
+    /// debit, or [`DEBIT_CALLDATA_SIZE`] to let the debit through and fault on the credit.
+    ///
+    /// Calls at or below `answered_calldata_size` return `type(uint256).max` — an unbounded
+    /// balance for the max-fee check, and ignored output for the void debit:
+    ///
+    ///   PUSH1 <size>, CALLDATASIZE, GT, PUSH1 <jumpdest>, JUMPI,
+    ///   PUSH1 0, NOT, PUSH1 0, MSTORE, PUSH1 0x20, PUSH1 0, RETURN,
+    ///   JUMPDEST, <fault>
+    fn fee_currency_stub(answered_calldata_size: u8, fault: &[u8]) -> Bytes {
+        let mut code = alloc::vec![
+            0x60,
+            answered_calldata_size, // PUSH1 <size>
+            0x36,                   // CALLDATASIZE
+            0x11,                   // GT       -- calldatasize > size ?
+            0x60,
+            STUB_FAULT_JUMPDEST, // PUSH1 <jumpdest>
+            0x57,                // JUMPI    -- larger: take the fault path
+            0x60,
+            0x00, // PUSH1 0
+            0x19, // NOT      -- type(uint256).max
+            0x60,
+            0x00, // PUSH1 0
+            0x52, // MSTORE
+            0x60,
+            0x20, // PUSH1 32 -- retLength
+            0x60,
+            0x00, // PUSH1 0  -- retOffset
+            0xf3, // RETURN
+            0x5b, // JUMPDEST -- STUB_FAULT_JUMPDEST
+        ];
+        // `assert`, not `debug_assert` (which `--release` compiles out): a wrong offset lands
+        // the JUMPDEST inside a `PUSH1` operand, and the resulting invalid-jump halt would let
+        // the halt-classification tests pass for the wrong reason.
+        assert_eq!(
+            code.len(),
+            usize::from(STUB_FAULT_OFFSET),
+            "stub prologue length must equal STUB_FAULT_OFFSET, or the JUMPDEST is misplaced"
+        );
+        code.extend_from_slice(fault);
+        code.into()
+    }
+
+    /// Pins that the failure came from the `debitGasFees` call rather than the max-fee check's
+    /// `balanceOf` that runs ahead of it. Both carry [`FEE_DEBIT_ERROR_PREFIX`], so the absence
+    /// of [`constants::FEE_BALANCE_READ_MARKER`] is the only thing telling the two apart.
+    fn assert_faulted_in_debit(err: &str) {
+        assert!(
+            !err.contains(constants::FEE_BALANCE_READ_MARKER),
+            "the fault must come from the debit, not the max-fee check's balanceOf: {err}"
+        );
+    }
+
     /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
     /// is registered in the per-block context and backed by `code` at the
     /// token address, so the `debitGasFees` system call genuinely executes
@@ -947,9 +1054,10 @@ mod tests {
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]),
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0x60, 0x00, 0x60, 0x00, 0xfd]),
         );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(
             !blocklist.is_blocked(fc),
             "a debit revert is ambiguous (canonically a sender fault) and must not blocklist \
@@ -964,13 +1072,15 @@ mod tests {
     fn test_debit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD1);
         let blocklist = FeeCurrencyBlocklist::default();
-        // JUMPDEST, PUSH1 0, JUMP — infinite loop, exhausts the debit budget → OOG halt.
+        // PUSH1 <jumpdest>, JUMP — loops on the stub's own JUMPDEST, exhausting the debit
+        // budget → OOG halt.
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[0x5b, 0x60, 0x00, 0x56]),
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0x60, STUB_FAULT_JUMPDEST, 0x56]),
         );
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(err.contains(FEE_CURRENCY_HALT_MARKER), "expected a halt failure, got: {err}");
         assert!(
             blocklist.is_blocked(fc),
@@ -989,17 +1099,12 @@ mod tests {
     fn test_credit_halt_still_blocklists_currency() {
         let fc = Address::with_last_byte(0xD4);
         let blocklist = FeeCurrencyBlocklist::default();
-        // Branch on calldata size: `debitGasFees(address,uint256)` calls carry
-        // 68 bytes → STOP (debit succeeds); `creditGasFees` calls carry 260
-        // bytes → jump into an infinite loop → OOG halt on the credit.
-        //   PUSH1 0x64, CALLDATASIZE, GT, PUSH1 0x08, JUMPI, STOP,
-        //   JUMPDEST, PUSH1 0x08, JUMP
+        // Answer `balanceOf` and let the debit succeed; `creditGasFees` calls carry 260 bytes
+        // of calldata, so only they take the fault path and loop into an OOG halt.
         let err = transact_cip64_with_token_code(
             blocklist.clone(),
             fc,
-            Bytes::from_static(&[
-                0x60, 0x64, 0x36, 0x11, 0x60, 0x08, 0x57, 0x00, 0x5b, 0x60, 0x08, 0x56,
-            ]),
+            fee_currency_stub(DEBIT_CALLDATA_SIZE, &[0x60, STUB_FAULT_JUMPDEST, 0x56]),
         );
         assert!(err.contains(FEE_CREDIT_ERROR_PREFIX), "expected a credit failure, got: {err}");
         assert!(
@@ -1013,6 +1118,51 @@ mod tests {
         );
     }
 
+    /// Opcode bytes [`revert_with_message_fault`] emits before its `Error(string)` blob. The
+    /// blob's own code offset is this past the start of the fault, which the stub in turn
+    /// places at [`STUB_FAULT_OFFSET`].
+    const REVERT_FAULT_PROLOGUE_LEN: u8 = 12;
+
+    /// Builds a [`fee_currency_stub`] fault that reverts with `msg` as an ABI-encoded
+    /// `Error(string)` payload: [`REVERT_FAULT_PROLOGUE_LEN`] opcode bytes that CODECOPY the
+    /// blob appended after them into memory and REVERT with it.
+    fn revert_with_message_fault(msg: &[u8]) -> Vec<u8> {
+        let mut revert_data = Vec::new();
+        revert_data.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) selector
+        revert_data.extend_from_slice(&U256::from(0x20).to_be_bytes::<32>()); // string offset
+        revert_data.extend_from_slice(&U256::from(msg.len()).to_be_bytes::<32>()); // string length
+        revert_data.extend_from_slice(msg);
+        revert_data.resize(revert_data.len().div_ceil(32) * 32, 0); // right-pad to a word
+
+        let len = u8::try_from(revert_data.len()).expect("revert data fits one PUSH1");
+        let data_offset = STUB_FAULT_OFFSET + REVERT_FAULT_PROLOGUE_LEN;
+        let mut fault = alloc::vec![
+            0x60,
+            len, // PUSH1 len
+            0x60,
+            data_offset, // PUSH1 <data offset within the code>
+            0x60,
+            0x00, // PUSH1 0  (memory destination)
+            0x39, // CODECOPY
+            0x60,
+            len, // PUSH1 len
+            0x60,
+            0x00, // PUSH1 0
+            0xfd, // REVERT
+        ];
+        // `assert`, not `debug_assert` (which `--release` compiles out): a wrong offset
+        // CODECOPYs garbage that still reverts, so the spoof tests would fail on the surviving
+        // marker instead — a symptom that reads like a classifier bug, not a miscount.
+        assert_eq!(
+            fault.len(),
+            usize::from(REVERT_FAULT_PROLOGUE_LEN),
+            "prologue length must equal REVERT_FAULT_PROLOGUE_LEN, or CODECOPY reads the \
+             wrong code offset"
+        );
+        fault.extend_from_slice(&revert_data);
+        fault
+    }
+
     /// A revert whose `Error(string)` payload contains the literal halt-marker
     /// text must still classify as a revert and must NOT blocklist. The revert
     /// message is the one attacker-controlled string in the flattened error, so
@@ -1023,34 +1173,17 @@ mod tests {
         let fc = Address::with_last_byte(0xD3);
         let blocklist = FeeCurrencyBlocklist::default();
 
-        // ABI-encode `Error(string)` carrying the halt-marker text as revert data.
-        let msg = FEE_CURRENCY_HALT_MARKER.as_bytes();
-        let mut revert_data = Vec::new();
-        revert_data.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) selector
-        revert_data.extend_from_slice(&U256::from(0x20).to_be_bytes::<32>()); // string offset
-        revert_data.extend_from_slice(&U256::from(msg.len()).to_be_bytes::<32>()); // string length
-        revert_data.extend_from_slice(msg);
-        revert_data.resize(revert_data.len().div_ceil(32) * 32, 0); // right-pad to a word
-
-        // CODECOPY the blob (at code offset 12, right after these 12 opcode bytes)
-        // into memory and REVERT with it.
-        let len = u8::try_from(revert_data.len()).expect("revert data fits one PUSH1");
-        let mut code = alloc::vec![
-            0x60, len, // PUSH1 len
-            0x60, 0x0c, // PUSH1 12 (data offset within the code)
-            0x60, 0x00, // PUSH1 0  (memory destination)
-            0x39, // CODECOPY
-            0x60, len, // PUSH1 len
-            0x60, 0x00, // PUSH1 0
-            0xfd, // REVERT
-        ];
-        code.extend_from_slice(&revert_data);
-
-        let err = transact_cip64_with_token_code(blocklist.clone(), fc, code.into());
+        let fault = revert_with_message_fault(FEE_CURRENCY_HALT_MARKER.as_bytes());
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &fault),
+        );
         assert!(
             err.contains(FEE_CURRENCY_REVERT_MARKER),
             "expected a genuine revert classification, got: {err}"
         );
+        assert_faulted_in_debit(&err);
         assert!(
             err.contains(FEE_CURRENCY_HALT_MARKER),
             "the spoofed halt marker should survive into the decoded revert message: {err}"
@@ -1059,6 +1192,67 @@ mod tests {
             !blocklist.is_blocked(fc),
             "attacker-controlled revert text must not be able to spoof a halt and blocklist; \
              got error: {err}"
+        );
+    }
+
+    /// A fee-currency contract whose `balanceOf` returns data that does not
+    /// decode as a `uint256` (here: zero bytes) must blocklist, not land in the
+    /// EVM-infrastructure arm where the payload builder would retry the broken
+    /// currency's txs every block while metrics point at the node itself.
+    #[test]
+    fn test_malformed_balance_return_blocklists_currency() {
+        let fc = Address::with_last_byte(0xD5);
+        let blocklist = FeeCurrencyBlocklist::default();
+        // PUSH1 0, PUSH1 0, RETURN — every call succeeds with empty return data,
+        // so the max-fee check's `balanceOf` decode fails before the debit runs.
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xf3]),
+        );
+        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit-prefixed failure: {err}");
+        assert!(
+            err.contains(constants::FEE_BALANCE_READ_MARKER),
+            "the fault must come from the max-fee check's balanceOf read: {err}"
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            "expected the malformed-return marker: {err}"
+        );
+        assert!(
+            blocklist.is_blocked(fc),
+            "malformed balanceOf return data is a currency fault and must blocklist; \
+             got error: {err}"
+        );
+    }
+
+    /// A revert whose `Error(string)` payload contains the literal
+    /// malformed-return-marker text must still classify as a revert and must
+    /// NOT blocklist — same spoof-resistance requirement as the halt marker,
+    /// guaranteed by the classifier checking the revert arm first.
+    #[test]
+    fn test_spoofed_malformed_marker_in_revert_does_not_blocklist() {
+        let fc = Address::with_last_byte(0xD6);
+        let blocklist = FeeCurrencyBlocklist::default();
+
+        let fault = revert_with_message_fault(FEE_CURRENCY_MALFORMED_RETURN_MARKER.as_bytes());
+        let err = transact_cip64_with_token_code(
+            blocklist.clone(),
+            fc,
+            fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &fault),
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_REVERT_MARKER),
+            "expected a genuine revert classification, got: {err}"
+        );
+        assert!(
+            err.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            "the spoofed marker should survive into the decoded revert message: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "attacker-controlled revert text must not be able to spoof a malformed return and \
+             blocklist; got error: {err}"
         );
     }
 
@@ -1123,14 +1317,17 @@ mod tests {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
 
-        // Token code: PUSH1 0, SLOAD, STOP — the debit call reads the token's
-        // storage, which the wrapper DB fails with a genuine database error.
+        // Fault body: PUSH1 0, SLOAD, STOP — the debit call reads the token's storage, which
+        // the wrapper DB fails with a genuine database error. It has to sit behind the
+        // calldata-size guard: the max-fee check's `balanceOf` would otherwise hit the same
+        // failing `SLOAD` first, and the error would never come from the debit.
         let mut inner = revm::database::InMemoryDB::default();
         inner.insert_account_info(
             fc,
-            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
-                0x60, 0x00, 0x54, 0x00,
-            ]))),
+            AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
+                BALANCE_OF_CALLDATA_SIZE,
+                &[0x60, 0x00, 0x54, 0x00],
+            ))),
         );
 
         let err = metrics::with_local_recorder(&recorder, || {
@@ -1140,6 +1337,7 @@ mod tests {
         });
 
         assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
+        assert_faulted_in_debit(&err);
         assert!(
             !err.contains(FEE_CURRENCY_REVERT_MARKER) && !err.contains(FEE_CURRENCY_HALT_MARKER),
             "a database error must carry neither contract-fault marker, got: {err}"
@@ -1160,6 +1358,78 @@ mod tests {
                         .key()
                         .labels()
                         .any(|l| l.key() == "reason" && l.value() == "debit_credit_evm_error")
+            })
+            .map(|(_, _, _, v)| match v {
+                DebugValue::Counter(c) => c,
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
+    }
+
+    /// An exchange rate extreme enough that the block's base fee no longer fits a `u128` once
+    /// converted is a currency-side fault by the same test the halt arm applies: only the base
+    /// fee and the directory-reported rate feed the conversion, so no sender-controlled value
+    /// takes part, and every tx in the currency fails identically while the rate stands. It must
+    /// be logged and metered so the currency is named — but must NOT blocklist, since an oracle
+    /// update can restore a sane rate well inside the blocklist's eviction delay.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_base_fee_overflow_is_metered_without_blocklisting() {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let fc = Address::with_last_byte(0xD7);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        let err = metrics::with_local_recorder(&recorder, || {
+            let mut evm = make_test_evm(blocklist.clone());
+            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            evm.ctx_mut().block.basefee = 1_000_000_000;
+            let mut currencies = alloy_primitives::map::HashMap::default();
+            currencies.insert(
+                fc,
+                FeeCurrencyInfo {
+                    // 1e9 * u128::MAX is representable in U256 but not in the u128 the base
+                    // fee is narrowed to, so the conversion fails rather than truncating.
+                    exchange_rate: (U256::from(u128::MAX), U256::from(1)),
+                    intrinsic_gas: 50_000,
+                },
+            );
+            let block_number = evm.ctx_mut().block.number;
+            evm.inner.fee_currency_context =
+                celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+            let mut tx = make_cip64_tx(fc);
+            tx.op_tx.base.gas_limit = 200_000;
+            format!(
+                "{:?}",
+                evm.transact_raw(tx).expect_err("an unrepresentable base fee must reject the tx")
+            )
+        });
+
+        assert!(
+            err.contains(FEE_BASE_FEE_OVERFLOW_PREFIX),
+            "expected the base-fee overflow error, got: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "an oracle rate can recover, so an overflowing base fee must not blocklist the \
+             currency; got error: {err}"
+        );
+
+        let skipped: u64 = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(ck, _, _, _)| {
+                ck.key().name() == "celo_payload_skipped_total"
+                    && ck
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "reason" && l.value() == "base_fee_overflows_u128")
             })
             .map(|(_, _, _, v)| match v {
                 DebugValue::Counter(c) => c,
