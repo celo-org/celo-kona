@@ -83,6 +83,21 @@ pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt
 pub const FEE_CURRENCY_MALFORMED_RETURN_MARKER: &str =
     "core contract execution failed: malformed return data:";
 
+/// Error message raised when the block's base fee, converted at a fee currency's registered
+/// exchange rate, does not fit in the `u128` gas prices are denominated in.
+///
+/// Its only inputs are the block base fee and the rate the FeeCurrencyDirectory reported, so no
+/// sender-controlled value takes part: like a halt ([`FEE_CURRENCY_HALT_MARKER`]) this is a
+/// currency-side fault, and it fails every transaction in that currency identically for as long
+/// as the rate stands. The sequencing classifier therefore logs and meters it so the currency is
+/// named — but does *not* blocklist, because an oracle update can restore a sane rate at any
+/// time and the blocklist's eviction delay would overshoot that by hours.
+///
+/// `get_exchange_rate` (`contracts/core_contracts.rs`) validates only that numerator and
+/// denominator are non-zero, never their magnitude, so an oracle reporting an extreme ratio
+/// reaches this narrowing rather than being dropped at context load.
+pub const FEE_BASE_FEE_OVERFLOW_PREFIX: &str = "base fee in ERC20 overflows u128";
+
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///
 /// Applied as `max(computed_base_fee, CELO_EIP_1559_BASE_FEE_FLOOR)` for blocks before

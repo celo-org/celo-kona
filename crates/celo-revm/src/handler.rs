@@ -3,8 +3,8 @@
 use crate::{
     CeloContext,
     constants::{
-        CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_CREDIT_ERROR_PREFIX,
-        FEE_DEBIT_ERROR_PREFIX, get_addresses,
+        CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX,
+        FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
     contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
@@ -231,7 +231,7 @@ where
         let v: u128 = base_fee_in_erc20
             .into_inner()
             .try_into()
-            .map_err(|_| InvalidTransaction::from("base fee in ERC20 overflows u128"))?;
+            .map_err(|_| InvalidTransaction::from(FEE_BASE_FEE_OVERFLOW_PREFIX))?;
         Ok(Fc::new(v))
     }
 

@@ -18,8 +18,9 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_MALFORMED_RETURN_MARKER,
-        FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
+        FEE_BASE_FEE_OVERFLOW_PREFIX, FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER,
+        FEE_CURRENCY_MALFORMED_RETURN_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
+        FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
@@ -490,6 +491,23 @@ where
                     metrics::counter!(
                         "celo_payload_skipped_total",
                         "reason" => "fee_currency_not_registered"
+                    )
+                    .increment(1);
+                } else if err_msg.contains(FEE_BASE_FEE_OVERFLOW_PREFIX) {
+                    // A currency-side fault like a halt: only the base fee and the
+                    // directory-reported rate feed the conversion, so no sender-controlled
+                    // value takes part (see `FEE_BASE_FEE_OVERFLOW_PREFIX`). Log and meter so
+                    // the currency is named, but do NOT blocklist — an oracle update can
+                    // restore a sane rate well inside the eviction delay.
+                    tracing::warn!(
+                        target: "celo",
+                        "CIP-64 tx excluded from block: base fee does not fit u128 at fee \
+                         currency {fc}'s registered exchange rate ({e})"
+                    );
+                    #[cfg(feature = "std")]
+                    metrics::counter!(
+                        "celo_payload_skipped_total",
+                        "reason" => "base_fee_overflows_u128"
                     )
                     .increment(1);
                 }
@@ -1340,6 +1358,78 @@ mod tests {
                         .key()
                         .labels()
                         .any(|l| l.key() == "reason" && l.value() == "debit_credit_evm_error")
+            })
+            .map(|(_, _, _, v)| match v {
+                DebugValue::Counter(c) => c,
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
+    }
+
+    /// An exchange rate extreme enough that the block's base fee no longer fits a `u128` once
+    /// converted is a currency-side fault by the same test the halt arm applies: only the base
+    /// fee and the directory-reported rate feed the conversion, so no sender-controlled value
+    /// takes part, and every tx in the currency fails identically while the rate stands. It must
+    /// be logged and metered so the currency is named — but must NOT blocklist, since an oracle
+    /// update can restore a sane rate well inside the blocklist's eviction delay.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_base_fee_overflow_is_metered_without_blocklisting() {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let fc = Address::with_last_byte(0xD7);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        let err = metrics::with_local_recorder(&recorder, || {
+            let mut evm = make_test_evm(blocklist.clone());
+            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            evm.ctx_mut().block.basefee = 1_000_000_000;
+            let mut currencies = alloy_primitives::map::HashMap::default();
+            currencies.insert(
+                fc,
+                FeeCurrencyInfo {
+                    // 1e9 * u128::MAX is representable in U256 but not in the u128 the base
+                    // fee is narrowed to, so the conversion fails rather than truncating.
+                    exchange_rate: (U256::from(u128::MAX), U256::from(1)),
+                    intrinsic_gas: 50_000,
+                },
+            );
+            let block_number = evm.ctx_mut().block.number;
+            evm.inner.fee_currency_context =
+                celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+            let mut tx = make_cip64_tx(fc);
+            tx.op_tx.base.gas_limit = 200_000;
+            format!(
+                "{:?}",
+                evm.transact_raw(tx).expect_err("an unrepresentable base fee must reject the tx")
+            )
+        });
+
+        assert!(
+            err.contains(FEE_BASE_FEE_OVERFLOW_PREFIX),
+            "expected the base-fee overflow error, got: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(fc),
+            "an oracle rate can recover, so an overflowing base fee must not blocklist the \
+             currency; got error: {err}"
+        );
+
+        let skipped: u64 = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(ck, _, _, _)| {
+                ck.key().name() == "celo_payload_skipped_total"
+                    && ck
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "reason" && l.value() == "base_fee_overflows_u128")
             })
             .map(|(_, _, _, v)| match v {
                 DebugValue::Counter(c) => c,
