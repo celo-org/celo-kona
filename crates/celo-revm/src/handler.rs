@@ -517,13 +517,12 @@ where
         let fee_currency_context = &evm.fee_currency_context;
 
         // For CIP-64 transactions, debit the erc20 for fees before borrowing caller_account
-        // Check if the fee currency is registered
-        if fee_currency_context
+        // Check if the fee currency is registered. Propagate the typed error rather than a
+        // literal: its `Display` carries `FEE_CURRENCY_NOT_REGISTERED_PREFIX`, which is what the
+        // sequencing classifier in `alloy-celo-evm` matches on, plus the currency address.
+        fee_currency_context
             .currency_exchange_rate(fee_currency)
-            .is_err()
-        {
-            return Err(InvalidTransaction::from("unregistered fee-currency address").into());
-        }
+            .map_err(|e| InvalidTransaction::from(e.to_string()))?;
 
         let base_fee_in_erc20: Fc = self.cip64_get_base_fee_in_erc20(evm, fee_currency, basefee)?;
         let effective_gas_price = Fc::new(
