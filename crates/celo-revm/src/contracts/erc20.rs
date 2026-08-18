@@ -9,7 +9,7 @@ use revm::{
     interpreter::InterpreterResult,
     primitives::{Address, Log, U256},
 };
-use std::vec::Vec;
+use std::{format, vec::Vec};
 
 // Define the ERC20 interface for fee currencies with Celo-specific extensions
 sol! {
@@ -54,9 +54,12 @@ where
     let (output_bytes, _, _, _) =
         core_contracts::call_read_only(evm, token_address, calldata, None)?;
 
-    // Decode the balance
+    // Decode the balance. Output that does not decode as a `uint256` is the currency's
+    // fault, not the node's, so tag it with the marker the sequencing blocklist
+    // classifies on — see `FEE_CURRENCY_MALFORMED_RETURN_MARKER` for why that
+    // attribution holds.
     IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output_bytes)
-        .map_err(CoreContractError::from)
+        .map_err(|e| CoreContractError::ExecutionFailed(format!("malformed return data: {e}")))
 }
 
 /// Call debitGasFees to deduct gas fees from the fee currency.
