@@ -224,7 +224,7 @@ hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "3915459
 
 # General
 url = { version = "2.5.8", default-features = false }
-spin = "0.10.0"
+spin = "0.10.1"
 clap = { version = "4.5.58", features = ["derive"] }
 tokio = { version = "1.49.0", default-features = false }
 futures-util = { version = "0.3.31", default-features = false }
