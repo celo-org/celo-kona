@@ -88,14 +88,21 @@ const CELO_SUBCOMMANDS: &[&str] = &[
 // (no tx decoding).
 
 /// Default snapshot manifest URLs for `celo-reth download`, served from the cLabs-operated
-/// `snapshots.celo.org` publication endpoint. Override the upstream `--manifest-url` default
+/// `celo-snapshots` Cloudflare R2 bucket. Override the upstream `--manifest-url` default
 /// (empty → interactive selection against `snapshots.reth.rs`, an Ethereum-mainnet-only host).
+///
+/// Addressed via the bucket's R2 public development URL rather than the `snapshots.celo.org`
+/// custom domain: a custom domain is always proxied through the Cloudflare CDN and its egress is
+/// billed against the `celo.org` zone, whereas `*.r2.dev` is served by R2 directly and is not.
+/// Both hostnames front the same bucket and serve byte-identical objects.
 ///
 /// The applied default is selected by `--chain`: `celo-sepolia` resolves to
 /// [`DEFAULT_MANIFEST_URL_SEPOLIA`]; every other value — including the `--chain celo` default —
 /// resolves to [`DEFAULT_MANIFEST_URL_MAINNET`]. Wired up in [`celo_cli_command`].
-const DEFAULT_MANIFEST_URL_MAINNET: &str = "https://snapshots.celo.org/mainnet/manifest.json";
-const DEFAULT_MANIFEST_URL_SEPOLIA: &str = "https://snapshots.celo.org/celo-sepolia/manifest.json";
+const DEFAULT_MANIFEST_URL_MAINNET: &str =
+    "https://pub-7841869731ea47efb0814bf3d6d003e7.r2.dev/mainnet/manifest.json";
+const DEFAULT_MANIFEST_URL_SEPOLIA: &str =
+    "https://pub-7841869731ea47efb0814bf3d6d003e7.r2.dev/celo-sepolia/manifest.json";
 
 /// Default chain ID embedded in `celo-reth snapshot-manifest` output. Overrides the upstream
 /// `--chain-id` default of `1` (Ethereum mainnet).
@@ -106,7 +113,10 @@ const DEFAULT_CHAIN_ID: &str = "42220";
 /// given). Overrides the upstream Ethereum-only `snapshots.reth.rs`; the discovery API is derived
 /// as `<SNAPSHOTS_SOURCE_URL>/api/snapshots`, a JSON index that must be published alongside the
 /// snapshots for `--list-snapshots` to return results. Wired up in [`init_celo_download_defaults`].
-const SNAPSHOTS_SOURCE_URL: &str = "https://snapshots.celo.org";
+///
+/// Uses the R2 public development URL for the same billing reason as
+/// [`DEFAULT_MANIFEST_URL_MAINNET`].
+const SNAPSHOTS_SOURCE_URL: &str = "https://pub-7841869731ea47efb0814bf3d6d003e7.r2.dev";
 
 /// Top-level Celo-only subcommand wrapper.
 ///
@@ -145,10 +155,10 @@ enum CeloCommand {
     /// Re-execute blocks in parallel to verify historical sync correctness.
     #[command(name = RE_EXECUTE)]
     ReExecute(re_execute::Command<CeloChainSpecParser>),
-    /// Download a Celo reth snapshot. Defaults `--manifest-url` to the cLabs-operated
-    /// `snapshots.celo.org` endpoint for the selected `--chain` (Mainnet or Celo Sepolia);
+    /// Download a Celo reth snapshot. Defaults `--manifest-url` to the cLabs-operated Celo
+    /// snapshot bucket for the selected `--chain` (Mainnet or Celo Sepolia);
     /// pass `--url`, `--manifest-url`, or `--manifest-path` to override. `--list-snapshots`
-    /// lists available Celo snapshots from `snapshots.celo.org`.
+    /// lists available Celo snapshots from that same bucket.
     #[command(name = DOWNLOAD)]
     Download(Box<DownloadCommand<CeloChainSpecParser>>),
     /// Generate a chunked snapshot manifest from a local datadir (publisher tool).
@@ -254,8 +264,8 @@ fn init_celo_version_metadata() {
     let _ = try_init_version_metadata(meta);
 }
 
-/// Point `celo-reth download`'s snapshot discovery at the cLabs-operated `snapshots.celo.org`
-/// endpoint instead of the upstream Ethereum-only `snapshots.reth.rs`.
+/// Point `celo-reth download`'s snapshot discovery at the cLabs-operated Celo snapshot bucket
+/// instead of the upstream Ethereum-only `snapshots.reth.rs`.
 ///
 /// This drives `--list-snapshots` and the "latest snapshot" auto-discovery (both GET
 /// `<source>/api/snapshots`), plus the generated `--url` help text. It is independent of the
@@ -702,11 +712,29 @@ mod tests {
 
     /// The Celo download source URL must derive the `/api/snapshots` discovery endpoint that
     /// `--list-snapshots` (and latest-snapshot auto-discovery) query, so the CLI lists Celo
-    /// snapshots from `snapshots.celo.org` instead of the upstream Ethereum-only
+    /// snapshots from the Celo snapshot bucket instead of the upstream Ethereum-only
     /// `snapshots.reth.rs`.
     #[test]
     fn celo_download_source_derives_celo_snapshot_api() {
         let defaults = DownloadDefaults::default().with_snapshot_source_url(SNAPSHOTS_SOURCE_URL);
-        assert_eq!(defaults.snapshot_api_url.as_ref(), "https://snapshots.celo.org/api/snapshots");
+        assert_eq!(
+            defaults.snapshot_api_url.as_ref(),
+            "https://pub-7841869731ea47efb0814bf3d6d003e7.r2.dev/api/snapshots"
+        );
+    }
+
+    /// All default snapshot URLs must share the R2 public development host; a stray
+    /// `snapshots.celo.org` default would route that traffic back through the Cloudflare CDN and
+    /// be billed against the `celo.org` zone.
+    #[test]
+    fn celo_snapshot_defaults_share_r2_public_host() {
+        for url in
+            [DEFAULT_MANIFEST_URL_MAINNET, DEFAULT_MANIFEST_URL_SEPOLIA, SNAPSHOTS_SOURCE_URL]
+        {
+            assert!(
+                url.starts_with(SNAPSHOTS_SOURCE_URL),
+                "{url} must be served from {SNAPSHOTS_SOURCE_URL}"
+            );
+        }
     }
 }
