@@ -12,6 +12,21 @@ pub const FEE_DEBIT_ERROR_PREFIX: &str = "Failed to debit gas fees";
 /// Error message prefix for CIP-64 fee currency credit failures.
 pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 
+/// Marker distinguishing a [`FEE_DEBIT_ERROR_PREFIX`] error raised by the CIP-64 max-fee
+/// check's `balanceOf` read from one raised by the `debitGasFees` call itself.
+///
+/// Both deliberately carry the debit prefix so the sequencing blocklist classifies them
+/// alike, which makes this the only thing telling the two apart. It is a diagnostic, never a
+/// classifier input, and it is `pub` only because the debit-fault tests that assert its
+/// *absence* — pinning that they still fault in the debit, not in the pre-check that now runs
+/// ahead of it — live in `alloy-celo-evm`.
+///
+/// The value is deliberately not the bare word `balanceOf`: the flattened error embeds a
+/// fee currency's revert text, and `"ERC20: balanceOf query for the zero address"` is a real
+/// message a token can revert with. A marker a contract can reproduce would make those
+/// absence assertions — and any operator reading the log — unable to tell the two apart.
+pub const FEE_BALANCE_READ_MARKER: &str = "max-fee balanceOf read";
+
 /// Error message prefix used when a CIP-64 transaction's fee currency is not
 /// present in the per-block fee-currency context (the directory read failed, or
 /// the currency was dropped while loading). It surfaces as an
@@ -48,6 +63,40 @@ pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: re
 /// `CoreContractError::Evm`) — the node's fault, not the currency's — and
 /// must not blocklist either.
 pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt:";
+
+/// Marker present in the `Display` output of a fee-currency failure caused by the
+/// contract returning data that does not ABI-decode as the expected type — e.g. a
+/// `balanceOf` answering with fewer than 32 bytes.
+///
+/// The full rendering is `CoreContractError::ExecutionFailed`'s
+/// `"core contract execution failed: "` prefix followed by the
+/// `"malformed return data: …"` message built in `erc20::get_balance`
+/// (`contracts/erc20.rs`), nested under [`FEE_DEBIT_ERROR_PREFIX`] by the
+/// handler's max-fee balance check. A contract fully controls its return data and
+/// the call itself *succeeded*, so — like a halt ([`FEE_CURRENCY_HALT_MARKER`])
+/// and unlike a revert or an EVM-infrastructure error — this is unambiguously the
+/// currency's fault, and the sequencing blocklist matches this marker to
+/// blocklist it. Spoof safety relies on the classifier checking
+/// [`FEE_CURRENCY_REVERT_MARKER`] first: revert payloads are the only
+/// attacker-controlled bytes in the flattened error, and a revert can never reach
+/// the decode path.
+pub const FEE_CURRENCY_MALFORMED_RETURN_MARKER: &str =
+    "core contract execution failed: malformed return data:";
+
+/// Error message raised when the block's base fee, converted at a fee currency's registered
+/// exchange rate, does not fit in the `u128` gas prices are denominated in.
+///
+/// Its only inputs are the block base fee and the rate the FeeCurrencyDirectory reported, so no
+/// sender-controlled value takes part: like a halt ([`FEE_CURRENCY_HALT_MARKER`]) this is a
+/// currency-side fault, and it fails every transaction in that currency identically for as long
+/// as the rate stands. The sequencing classifier therefore logs and meters it so the currency is
+/// named — but does *not* blocklist, because an oracle update can restore a sane rate at any
+/// time and the blocklist's eviction delay would overshoot that by hours.
+///
+/// `get_exchange_rate` (`contracts/core_contracts.rs`) validates only that numerator and
+/// denominator are non-zero, never their magnitude, so an oracle reporting an extreme ratio
+/// reaches this narrowing rather than being dropped at context load.
+pub const FEE_BASE_FEE_OVERFLOW_PREFIX: &str = "base fee in ERC20 overflows u128";
 
 /// The Celo EIP-1559 base fee floor in wei (25 Gwei).
 ///

@@ -93,6 +93,13 @@ Transaction accepted due to a bug in op-geth's EIP-2930 sender recovery that use
 * File: `mainnet-wrong-chain-id-eip2930_block-53619115.tar.gz`
 * Explorer: https://celo.blockscout.com/block/53619115
 
+## CIP-64 transaction below op-geth's max-fee balance requirement
+Transaction accepted because celo-revm never enforced EIP-1559's max-fee affordability rule for CIP-64 txs paying in an ERC20, while op-geth's `canPayFee` did. op-geth rejected the block and stalled. celo-revm now enforces `balanceOf(caller) >= gasLimit * maxFeePerGas` too, so this canonical tx is kept valid by a pinned hash exception (`CIP64_MAX_FEE_EXCEPTIONS`) and must stay accepted during historical sync. See https://github.com/celo-org/celo-kona/issues/292.
+* Testcase: Block with a CIP-64 tx (index 29) whose sender holds 5295000000000000 of the fee currency — enough for the 2432269020000000 actually debited at the effective gas price, but short of the 5819427363800000 that `gasLimit * maxFeePerGas` requires
+* Network: Celo Mainnet
+* File: `mainnet-cip64-max-fee-exception_block-75046581.tar.gz`
+* Explorer: https://celo.blockscout.com/block/75046581
+
 ## Uncategorized Blocks that failed (scenarios to be defined)
 - Failed for 1.0.0-rc4, fixed after 1.0.0-rc5
   * Testcase: -
