@@ -160,7 +160,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: celo-reth-log
-          path: e2e_test/celo-reth.log
+          path: |
+            e2e_test/celo-reth.log
+            e2e_test/celo-reth-golden.log
           if-no-files-found: ignore
 
   check-no-std:
