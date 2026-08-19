@@ -298,13 +298,13 @@ alloy-serde = { git = "https://github.com/celo-org/alloy", branch = "fix-fake-ex
 # Pin op-alloy / alloy-op-* / op-revm to the optimism monorepo's in-tree copies
 # at the kona-client/v1.6.0 tag, so all kona/op-reth/op-alloy dependencies resolve
 # to a single source (the kona crates use the in-tree copies).
-op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
-op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.6.0" }
+op-alloy-consensus = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-rpc-types-engine = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-rpc-types = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-network = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+alloy-op-evm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-revm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
 
 # This temporary reth fork carries two independent changes:
 # 1. Single-EVM transaction replay for tracing RPCs (paradigmxyz/reth#26523).
@@ -423,3 +423,55 @@ reth-trie-common = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d
 reth-trie-db = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d19755fe0865e7df2c95e4fbb097389" }
 reth-trie-parallel = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d19755fe0865e7df2c95e4fbb097389" }
 reth-trie-sparse = { git = "https://github.com/celo-org/reth", rev = "3cbf83522d19755fe0865e7df2c95e4fbb097389" }
+
+# op-reth's OpPayloadBuilder drops the `trie_handle` that reth's engine supplies
+# on BuildArguments, so `--engine.share-sparse-trie-with-payload-builder` does
+# nothing for the OP builder: every payload build takes the state root from the
+# blocking trie walk in `BlockBuilder::finish` rather than from the engine's
+# sparse-trie pipeline. reth's own Ethereum payload builder wires the handle
+# through; no released op-reth does the same for the OP builder.
+#
+# celo-org/optimism@jcortejoso/trie_handle is the `kona-client/v1.6.0` tag plus
+# the single commit that wires it, so nothing else moves with this patch.
+#
+# As with the reth patch above, this must cover every optimism crate in the
+# graph. A partial list resolves some crates from the fork and the rest from the
+# tag, which gives two copies of the same package and types that do not unify.
+[patch."https://github.com/ethereum-optimism/optimism"]
+alloy-op-evm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-cli = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-client = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-derive = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-driver = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-executor = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-genesis = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-host = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-mpt = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-preimage = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-proof = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-protocol = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-providers-alloy = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-registry = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-std-fpvm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-consensus = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-network = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-rpc-types = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-rpc-types-engine = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-revm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-chainspec = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-cli = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-consensus = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-evm = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-exex = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-forks = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-node = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-payload-builder = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-primitives = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-rpc = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-storage = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-trie = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
+op-alloy-provider = { git = "https://github.com/celo-org/optimism", branch = "jcortejoso/trie_handle" }
