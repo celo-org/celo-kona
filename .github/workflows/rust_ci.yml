@@ -194,6 +194,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      # Keep in sync with `rust-toolchain.toml`. The toolchain file overrides
+      # whatever the action installs, so a mismatch just makes rustup download
+      # a second toolchain before running cargo-deny.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          rust-version: 1.92
+          rust-version: "1.94"
