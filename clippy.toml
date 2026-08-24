@@ -1,4 +1,4 @@
-msrv = "1.94"
+msrv = "1.95"
 
 # These inherent methods decode payload-attribute transactions as OpTxEnvelope, which
 # rejects the CIP-64 tx type (0x7b). Celo code must use the celo_-prefixed equivalents

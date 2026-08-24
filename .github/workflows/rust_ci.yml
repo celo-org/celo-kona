@@ -170,15 +170,15 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install mold linker
         uses: rui314/setup-mold@v1
-      # `rust-toolchain.toml` pins the workspace to 1.94, so cargo auto-switches
+      # `rust-toolchain.toml` pins the workspace to 1.95, so cargo auto-switches
       # to that channel regardless of which toolchain is installed here. Install
-      # 1.94 explicitly *and* add the riscv32imac-unknown-none-elf target for
-      # it — otherwise adding the target against `stable` leaves 1.94 without
+      # 1.95 explicitly *and* add the riscv32imac-unknown-none-elf target for
+      # it — otherwise adding the target against `stable` leaves 1.95 without
       # a sysroot for the target and every cross build fails with
       # `error[E0463]: can't find crate for 'core'`.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94"
+          toolchain: "1.95"
           target: riscv32imac-unknown-none-elf
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
@@ -199,4 +199,4 @@ jobs:
       # a second toolchain before running cargo-deny.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          rust-version: "1.94"
+          rust-version: "1.95"
