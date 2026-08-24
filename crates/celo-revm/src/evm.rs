@@ -209,7 +209,7 @@ mod tests {
         },
         context_interface::result::HaltReason,
         database::{BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BenchmarkDB, EmptyDB},
-        interpreter::gas::{InitialAndFloorGas, calculate_initial_tx_gas},
+        interpreter::gas::calculate_initial_tx_gas,
         precompile::{bls12_381_const, bls12_381_utils, bn254, secp256r1, u64_to_address},
         primitives::{Address, Bytes, TxKind, U256},
         state::Bytecode,

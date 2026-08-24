@@ -1316,7 +1316,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
 
                 // Build (tip, gas_used) pairs and sort by tip
                 let mut tip_gas: Vec<(u128, u64)> =
-                    native_tips.into_iter().zip(gas_used_list.into_iter()).collect();
+                    native_tips.into_iter().zip(gas_used_list).collect();
                 if tip_gas.is_empty() {
                     continue;
                 }
