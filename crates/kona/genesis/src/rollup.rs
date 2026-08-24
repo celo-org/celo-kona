@@ -366,6 +366,8 @@ mod tests {
                 da_challenge_window: Some(1),
                 da_resolve_window: Some(1),
                 da_commitment_type: Some(String::from("GenericCommitment")),
+                // Not present in the raw config above; the limit is optional.
+                da_max_input_size: None,
             }),
         });
 
