@@ -47,6 +47,7 @@ revm.workspace = true
 # alloy-evm
 alloy-evm.workspace = true
 alloy-op-evm.workspace = true
+alloy-op-hardforks.workspace = true
 
 # General
 tracing.workspace = true

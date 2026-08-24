@@ -6,18 +6,14 @@ use crate::util::{
 };
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::{calc_next_block_base_fee, eip1559::BaseFeeParams};
-use alloy_evm::EvmEnv;
-use alloy_primitives::U256;
+use alloy_evm::{EvmEnv, eth::NextEvmEnvAttributes};
+use alloy_op_evm::evm_env_for_op_next_block;
 use celo_genesis::CeloRollupConfig;
 use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR;
 use kona_executor::{ExecutorError, ExecutorResult, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use op_revm::OpSpecId;
-use revm::{
-    context::{BlockEnv, CfgEnv},
-    context_interface::block::BlobExcessGasAndPrice,
-};
 
 impl<P, H> CeloStatelessL2Builder<'_, P, H>
 where
@@ -25,34 +21,45 @@ where
     H: TrieHinter,
 {
     /// Returns the active [`EvmEnv`] for the executor.
+    ///
+    /// Delegates to [`evm_env_for_op_next_block`], which derives the spec from the payload
+    /// timestamp (replacing the deleted `RollupConfig::spec_id`) and pins the blob env —
+    /// `BLOBBASEFEE` is always 1 on the OP Stack, and post-Jovian the parent header's
+    /// `blobGasUsed` carries the block's DA footprint and must not feed the EIP-4844
+    /// excess-blob-gas rule.
+    ///
+    /// Celo's base-fee floor is not lost in the delegation: it enters through
+    /// `next_block_base_fee`/`active_base_fee_params` below, which compute the
+    /// `base_fee_per_gas` handed to the shared builder.
+    ///
+    /// The Celo contract-code-size limit is not set here: `CeloEvmFactory::build_evm`
+    /// stamps `CELO_MAX_CODE_SIZE` onto every EVM it creates, which is the only way
+    /// this env is consumed.
     pub(crate) fn evm_env(
         &self,
-        spec_id: OpSpecId,
         parent_header: &Header,
         payload_attrs: &OpPayloadAttributes,
         base_fee_params: &BaseFeeParams,
         min_base_fee: u64,
     ) -> ExecutorResult<EvmEnv<OpSpecId>> {
-        let block_env = self.prepare_block_env(
-            spec_id,
-            parent_header,
-            payload_attrs,
-            base_fee_params,
-            min_base_fee,
-        )?;
-        let cfg_env = self.evm_cfg_env(payload_attrs.payload_attributes.timestamp);
-        Ok(EvmEnv::new(cfg_env, block_env))
-    }
+        let gas_limit = payload_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?;
+        let next_block_base_fee = self
+            .next_block_base_fee(*base_fee_params, parent_header, min_base_fee)
+            .unwrap_or_default();
 
-    /// Returns the active [CfgEnv] for the executor.
-    ///
-    /// The Celo contract-code-size limit is not set here: `CeloEvmFactory::build_evm`
-    /// stamps `CELO_MAX_CODE_SIZE` onto every EVM it creates, which is the only way
-    /// this env is consumed.
-    pub(crate) fn evm_cfg_env(&self, timestamp: u64) -> CfgEnv<OpSpecId> {
-        CfgEnv::new()
-            .with_chain_id(self.config.l2_chain_id.into())
-            .with_spec_and_mainnet_gas_params(self.config.spec_id(timestamp))
+        Ok(evm_env_for_op_next_block(
+            parent_header,
+            NextEvmEnvAttributes {
+                timestamp: payload_attrs.payload_attributes.timestamp,
+                suggested_fee_recipient: payload_attrs.payload_attributes.suggested_fee_recipient,
+                prev_randao: payload_attrs.payload_attributes.prev_randao,
+                gas_limit,
+                slot_number: None,
+            },
+            next_block_base_fee,
+            self.config,
+            self.config.l2_chain_id.id(),
+        ))
     }
 
     fn next_block_base_fee(
@@ -88,38 +95,6 @@ where
         }
 
         Some(next_block_base_fee)
-    }
-
-    /// Prepares a [BlockEnv] with the given [OpPayloadAttributes].
-    pub(crate) fn prepare_block_env(
-        &self,
-        spec_id: OpSpecId,
-        parent_header: &Header,
-        payload_attrs: &OpPayloadAttributes,
-        base_fee_params: &BaseFeeParams,
-        min_base_fee: u64,
-    ) -> ExecutorResult<BlockEnv> {
-        // On the OP Stack the BLOBBASEFEE opcode is always 1 from Ecotone onward. Post-Jovian the
-        // header's `blobGasUsed` field carries the block's DA footprint, so it must not feed the
-        // EIP-4844 excess-blob-gas rule; pin the blob env instead.
-        let blob_excess_gas_and_price = spec_id
-            .is_enabled_in(OpSpecId::ECOTONE)
-            .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
-
-        let next_block_base_fee = self
-            .next_block_base_fee(*base_fee_params, parent_header, min_base_fee)
-            .unwrap_or_default();
-
-        Ok(BlockEnv {
-            number: U256::from(parent_header.number + 1),
-            beneficiary: payload_attrs.payload_attributes.suggested_fee_recipient,
-            timestamp: U256::from(payload_attrs.payload_attributes.timestamp),
-            gas_limit: payload_attrs.gas_limit.ok_or(ExecutorError::MissingGasLimit)?,
-            basefee: next_block_base_fee,
-            prevrandao: Some(payload_attrs.payload_attributes.prev_randao),
-            blob_excess_gas_and_price,
-            ..Default::default()
-        })
     }
 
     /// Returns the active base fee parameters for the parent header.
@@ -184,8 +159,14 @@ mod tests {
     /// `blobGasUsed` carries the block's DA footprint, which must not influence the blob env. The
     /// footprint here is from op-mainnet block 152635937.
     #[test]
-    fn prepare_block_env_pins_blob_gasprice_to_one() {
-        let config = CeloRollupConfig::new(kona_genesis::RollupConfig::default());
+    fn evm_env_pins_blob_gasprice_to_one() {
+        // `evm_env` derives the spec from the config and the payload timestamp, so the
+        // fork has to be active here rather than passed in: a default config resolves to
+        // BEDROCK, which is pre-Ecotone and carries no blob env at all.
+        let config = CeloRollupConfig::new(kona_genesis::RollupConfig {
+            hardforks: kona_genesis::HardForkConfig { isthmus_time: Some(0), ..Default::default() },
+            ..Default::default()
+        });
         let parent_header = Header {
             number: 100,
             timestamp: 1_000_000,
@@ -213,18 +194,14 @@ mod tests {
             ..Default::default()
         };
 
-        let block_env = builder
-            .prepare_block_env(
-                OpSpecId::ISTHMUS,
-                &parent_header,
-                &payload_attrs,
-                &BaseFeeParams::new(250, 6),
-                0,
-            )
-            .expect("prepare_block_env should succeed");
+        let evm_env = builder
+            .evm_env(&parent_header, &payload_attrs, &BaseFeeParams::new(250, 6), 0)
+            .expect("evm_env should succeed");
 
-        let blob =
-            block_env.blob_excess_gas_and_price.expect("blob env should be present for Isthmus");
+        let blob = evm_env
+            .block_env()
+            .blob_excess_gas_and_price
+            .expect("blob env should be present from Ecotone onward");
         assert_eq!(
             blob.blob_gasprice, 1,
             "BLOBBASEFEE must be pinned to 1 on the OP Stack regardless of the parent DA footprint"
