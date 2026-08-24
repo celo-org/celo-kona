@@ -12,7 +12,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{
     OpTxError, map_op_err,
-    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext, WarmingState},
+    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext},
 };
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
@@ -36,6 +36,7 @@ use revm::{
         Cfg,
         result::{EVMError, ResultAndState},
     },
+    database_interface::DBErrorMarker,
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
@@ -721,7 +722,7 @@ impl EvmFactory for CeloEvmFactory {
     type Evm<DB: Database, I: Inspector<CeloContext<DB>>> = CeloEvm<DB, I, Self::Precompiles>;
     type Context<DB: Database> = CeloContext<DB>;
     type Tx = CeloTransaction<TxEnv>;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
@@ -752,13 +753,18 @@ impl EvmFactory for CeloEvmFactory {
 //
 // All four methods panic: if SDM is ever activated on Celo (e.g. via an upstream rebase), the
 // panic surfaces the gap immediately rather than silently returning a default value.
-// `warming_state`/`seed_warming_state` only carry SDM block-warming refund state across
-// flashblock executors (op-rbuilder), a path Celo never takes.
+// `refund_snapshot`/`seed_refund_snapshot` only carry SDM refund state across flashblock
+// executors (op-rbuilder), a path Celo never takes. Upstream parameterises `OpEvm` over a
+// `PostExecRefundInspector` and sets `Snapshot = R::Snapshot`; `CeloEvm` carries no such
+// parameter, so the snapshot type is `()`. Deliberately NOT a null refund policy: that would
+// silently return a default instead of tripping.
 impl<DB, I, P> PostExecEvm for CeloEvm<DB, I, P>
 where
     DB: Database,
     Self: Evm,
 {
+    type Snapshot = ();
+
     fn begin_post_exec_tx(&mut self, _ctx: PostExecTxContext) {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
@@ -767,11 +773,11 @@ where
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 
-    fn warming_state(&self) -> WarmingState {
+    fn refund_snapshot(&self) -> Self::Snapshot {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 
-    fn seed_warming_state(&mut self, _state: WarmingState) {
+    fn seed_refund_snapshot(&mut self, _state: Self::Snapshot) {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 }
