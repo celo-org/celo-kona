@@ -209,7 +209,7 @@ where
             // to the surrounding tx's value after each system call, deliberately keeping that
             // warmth for its other callers (the erc20 debit/credit). For context loading we
             // want the opposite, so we advance one past the id `call` restored to.
-            evm.ctx().journal_mut().transaction_id += 1;
+            evm.ctx().journal_mut().transaction_id.increment();
         }
 
         Ok(())
@@ -817,16 +817,16 @@ where
                 .map_err(|e| InvalidTransaction::from(e.to_string()))?;
             // Adding only in the initial gas, and not the floor because we never adapted the
             // eip7623 to the cip64 (discussions being taken)
-            gas.initial_total_gas = gas
-                .initial_total_gas
+            gas.initial_regular_gas = gas
+                .initial_regular_gas
                 .saturating_add(intrinsic_gas_for_erc20);
         }
 
         // Additional check to see if limit is big enough to cover initial gas.
-        if gas.initial_total_gas > gas_limit {
+        if gas.initial_total_gas() > gas_limit {
             return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                 gas_limit,
-                initial_gas: gas.initial_total_gas,
+                initial_gas: gas.initial_total_gas(),
             }
             .into());
         }
@@ -1171,9 +1171,11 @@ where
     fn last_frame_result(
         &mut self,
         evm: &mut Self::Evm,
+        original_reservoir: u64,
         frame_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        self.op.last_frame_result(evm, frame_result)
+        self.op
+            .last_frame_result(evm, original_reservoir, frame_result)
     }
 
     fn reimburse_caller(
@@ -1360,7 +1362,7 @@ mod tests {
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         handler
-            .last_frame_result(&mut evm, &mut exec_result)
+            .last_frame_result(&mut evm, 0, &mut exec_result)
             .unwrap();
         handler.refund(&mut evm, &mut exec_result, 0);
         *exec_result.gas()
@@ -2667,7 +2669,7 @@ mod tests {
         // leak returns. This deterministically guards the fix.
         assert!(
             tx_id > id_before,
-            "context loading must advance the transaction id (was {id_before}, now {tx_id})"
+            "context loading must advance the transaction id (was {id_before:?}, now {tx_id:?})"
         );
 
         // Guard against a vacuous test: loading must actually have read FeeCurrencyDirectory

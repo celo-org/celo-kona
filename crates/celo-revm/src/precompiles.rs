@@ -2,30 +2,58 @@ pub mod transfer;
 
 pub use transfer::{TRANSFER_ADDRESS, transfer_run};
 
-use core::iter;
+use crate::CeloContext;
 use op_revm::{OpSpecId, precompiles::OpPrecompiles};
 use revm::{
     context::Cfg,
     context_interface::ContextTr,
+    database::EmptyDB,
     handler::PrecompileProvider,
     interpreter::{CallInputs, InterpreterResult},
-    primitives::Address,
+    primitives::{Address, AddressSet},
 };
-use std::{boxed::Box, string::String};
+use std::string::String;
 
 // Celo precompile provider
 #[derive(Debug, Clone)]
 pub struct CeloPrecompiles {
     op_precompiles: OpPrecompiles,
+    /// The OP precompile addresses plus Celo's transfer precompile.
+    ///
+    /// `PrecompileProvider::warm_addresses` returns a borrowed set as of revm 41,
+    /// so the union has to be materialised rather than produced lazily. It is
+    /// rebuilt in both `new_with_spec` and `set_spec` so it can never lag
+    /// `op_precompiles`: this set is what pre-warms accounts under EIP-2929, so a
+    /// stale entry would change warm/cold gas accounting, and the trait's default
+    /// `contains` reads it too.
+    warm_addresses: AddressSet,
 }
 
 impl CeloPrecompiles {
     /// Create a new precompile provider with the given OpSpec.
     #[inline]
     pub fn new_with_spec(spec: OpSpecId) -> Self {
+        let op_precompiles = OpPrecompiles::new_with_spec(spec);
+        let warm_addresses = Self::warm_addresses_for(&op_precompiles);
         Self {
-            op_precompiles: OpPrecompiles::new_with_spec(spec),
+            op_precompiles,
+            warm_addresses,
         }
+    }
+
+    /// The OP warm set for `op_precompiles`, plus [`TRANSFER_ADDRESS`].
+    ///
+    /// `OpPrecompiles` exposes its warm set only through `PrecompileProvider`, which
+    /// is generic over the context, so a context type has to be named to call it.
+    /// The returned set does not depend on that type — `CeloContext<EmptyDB>` is a
+    /// type-level witness here and nothing is constructed.
+    fn warm_addresses_for(op_precompiles: &OpPrecompiles) -> AddressSet {
+        let mut warm = AddressSet::default();
+        warm.clone_from(<OpPrecompiles as PrecompileProvider<
+            CeloContext<EmptyDB>,
+        >>::warm_addresses(op_precompiles));
+        warm.insert(TRANSFER_ADDRESS);
+        warm
     }
 }
 
@@ -37,7 +65,12 @@ where
 
     #[inline]
     fn set_spec(&mut self, spec: <CTX::Cfg as Cfg>::Spec) -> bool {
-        <OpPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.op_precompiles, spec)
+        let changed =
+            <OpPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.op_precompiles, spec);
+        // Rebuild unconditionally: `set_spec` returning `false` means the spec was
+        // unchanged, not that the warm set is still current.
+        self.warm_addresses = Self::warm_addresses_for(&self.op_precompiles);
+        changed
     }
 
     #[inline]
@@ -54,11 +87,8 @@ where
     }
 
     #[inline]
-    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
-        let op_iter =
-            <OpPrecompiles as PrecompileProvider<CTX>>::warm_addresses(&self.op_precompiles);
-        let transfer_iter = iter::once(TRANSFER_ADDRESS);
-        Box::new(op_iter.chain(transfer_iter))
+    fn warm_addresses(&self) -> &AddressSet {
+        &self.warm_addresses
     }
 
     #[inline]
@@ -104,11 +134,11 @@ mod tests {
             <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
                 &celo_precompiles,
             )
-            .count();
+            .len();
         let op_count = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
             &op_precompiles,
         )
-        .count();
+        .len();
 
         assert_eq!(celo_count, op_count + 1);
     }
@@ -139,6 +169,9 @@ mod tests {
             known_bytecode: (Default::default(), Default::default()),
             scheme: CallScheme::Call,
             is_static: false,
+            // EIP-8037: this test builds the call directly rather than going through
+            // the CALL opcode, so no upfront new-account state gas was charged.
+            charged_new_account_state_gas: false,
         };
 
         let initial_balance = 100;
