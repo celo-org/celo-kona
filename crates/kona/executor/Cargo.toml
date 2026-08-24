@@ -27,7 +27,7 @@ celo-revm.workspace = true
 # Kona
 kona-executor.workspace = true
 kona-mpt.workspace = true
-kona-genesis = { workspace = true, features = ["revm"] }
+kona-genesis.workspace = true
 kona-protocol.workspace = true
 
 # Alloy
