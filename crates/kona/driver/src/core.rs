@@ -2,13 +2,10 @@
 
 use crate::CeloExecutorTr;
 use alloc::{sync::Arc, vec::Vec};
-use alloy_consensus::BlockBody;
 use alloy_primitives::{B256, Bytes};
-use alloy_rlp::Decodable;
-use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, CeloTxType};
+use celo_alloy_consensus::CeloTxType;
 use celo_executor::CeloBlockBuildingOutcome;
 use celo_genesis::CeloRollupConfig;
-use celo_protocol::CeloL2BlockInfo;
 use core::fmt::Debug;
 use kona_derive::{Pipeline, PipelineError, PipelineErrorKind, Signal, SignalReceiver};
 use kona_driver::{DriverError, DriverPipeline, DriverResult, PipelineCursor, TipCursor};
@@ -156,31 +153,18 @@ where
                 }
             };
 
-            // Construct the block.
-            let block = CeloBlock {
-                header: outcome.header.inner().clone(),
-                body: BlockBody {
-                    transactions: attributes
-                        .transactions
-                        .as_ref()
-                        .unwrap_or(&Vec::new())
-                        .iter()
-                        .map(|tx| {
-                            CeloTxEnvelope::decode(&mut tx.as_ref()).map_err(DriverError::Rlp)
-                        })
-                        .collect::<DriverResult<Vec<CeloTxEnvelope>, E::Error>>()?,
-                    ommers: Vec::new(),
-                    withdrawals: None,
-                },
-            };
-
             // Get the pipeline origin and update the tip cursor.
             let origin = self.pipeline.origin().ok_or(PipelineError::MissingOrigin.crit())?;
-            let celo_l2_info = CeloL2BlockInfo::from_block_and_genesis(
-                &block,
+            // Only the L1-info deposit — always the first transaction of a non-genesis L2
+            // block — is decoded, so this does not need Celo's envelope: a deposit is a
+            // plain `OpTxEnvelope`, and a non-deposit first transaction is rejected either
+            // way. `seal_block` seals with `seal_slow`, satisfying the contract that the
+            // seal is the header's true hash.
+            let l2_info = L2BlockInfo::from_header_and_first_tx(
+                &outcome.header,
+                attributes.transactions.as_ref().and_then(|txs| txs.first()),
                 &self.pipeline.rollup_config().genesis,
             )?;
-            let l2_info = celo_l2_info.op_l2_block_info;
             let tip_cursor = TipCursor::new(
                 l2_info,
                 outcome.header.clone(),

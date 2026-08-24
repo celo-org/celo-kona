@@ -2237,12 +2237,10 @@ version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
- "alloy-rlp",
  "async-trait",
  "celo-alloy-consensus",
  "celo-executor",
  "celo-genesis",
- "celo-protocol",
  "kona-derive",
  "kona-driver",
  "kona-protocol",
