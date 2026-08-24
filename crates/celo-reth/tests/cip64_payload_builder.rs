@@ -38,7 +38,7 @@ use reth_node_api::PayloadBuilderError;
 use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
 use reth_optimism_payload_builder::{
     OpBuiltPayload, OpPayloadBuilderAttributes,
-    builder::{ExecutionInfo, OpPayloadBuilderCtx},
+    builder::{ExecutionInfo, OpPayloadBuilderCtx, RethPayloadTransactions},
     config::OpBuilderConfig,
 };
 use reth_optimism_txpool::OpPooledTransaction as OpPoolPoolTx;
@@ -210,7 +210,12 @@ fn test_payload_config() -> PayloadConfig<OpPayloadBuilderAttributes<CeloTxEnvel
         ..Default::default()
     };
 
-    PayloadConfig { parent_header: Arc::new(parent), attributes, payload_id: Default::default() }
+    PayloadConfig {
+        parent_header: Arc::new(parent),
+        parent_block_info: None,
+        attributes,
+        payload_id: Default::default(),
+    }
 }
 
 /// CIP-64 tx with FC `max_fee` = 10 Gwei: well below the native 25 Gwei base fee, but above the
@@ -268,7 +273,7 @@ fn cip64_payload_builder_handles_low_fc_max_fee() {
         best_payload: None,
     };
 
-    let best_txs = OneTx(Some(test_cip64_pool_tx(sender, sig)));
+    let best_txs = RethPayloadTransactions(OneTx(Some(test_cip64_pool_tx(sender, sig))));
 
     // ── Drive execute_best_transactions. Pre-#20382 op-reth panicked inside the
     //    loop because consensus_tx.effective_tip_per_gas(25 Gwei) returns None for
@@ -399,7 +404,7 @@ fn payload_metrics_cover_the_whole_sequencing_path() {
         ctx.execute_best_transactions(
             &mut info,
             &mut builder,
-            OneTx(Some(test_cip64_pool_tx(sender, sig))),
+            RethPayloadTransactions(OneTx(Some(test_cip64_pool_tx(sender, sig)))),
             None,
             None,
         )

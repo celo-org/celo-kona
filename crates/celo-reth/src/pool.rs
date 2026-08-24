@@ -27,7 +27,7 @@ use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
-    BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
+    BlobStore, BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
     GetPooledTransactionLimit, NewTransactionEvent, PoolResult, PoolSize, PoolTransaction,
     PropagatedTransactions, TransactionEvents, TransactionListenerKind, TransactionOrigin,
     TransactionPool, TransactionPoolExt, TransactionValidationOutcome, TransactionValidator,
@@ -1243,6 +1243,15 @@ where
     delegate_pool!(fn pending_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<TxHash>);
     delegate_pool!(fn blob_transaction_sidecars_listener(&self) -> Receiver<reth_transaction_pool::NewBlobSidecar>);
     delegate_pool!(fn new_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<NewTransactionEvent<Self::Transaction>>);
+    delegate_pool!(fn blob_store(&self) -> Box<dyn BlobStore>);
+
+    fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: reth_eth_wire_types::HandleMempoolData,
+    {
+        self.inner.retain_contains(announcement)
+    }
+
     delegate_pool!(fn pooled_transaction_hashes(&self) -> Vec<TxHash>);
     delegate_pool!(fn pooled_transaction_hashes_max(&self, max: usize) -> Vec<TxHash>);
     delegate_pool!(fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
@@ -1296,6 +1305,7 @@ where
     delegate_pool!(fn get_blobs_for_versioned_hashes_v2(&self, versioned_hashes: &[B256]) -> Result<Option<Vec<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
     delegate_pool!(fn get_blobs_for_versioned_hashes_v3(&self, versioned_hashes: &[B256]) -> Result<Vec<Option<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
     delegate_pool!(fn get_blobs_for_versioned_hashes_v4(&self, versioned_hashes: &[B256], indices_bitarray: alloy_primitives::B128) -> Result<Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>, BlobStoreError>);
+    delegate_pool!(fn has_blobs_for_versioned_hashes(&self, versioned_hashes: &[B256]) -> Result<Vec<bool>, BlobStoreError>);
 }
 
 impl<P> TransactionPoolExt for CeloTransactionPool<P>
@@ -1673,7 +1683,7 @@ fn apply_exchange_rates_to_pool_tx(
                 access_list_storage_keys,
                 authorization_list_num,
             )
-            .initial_total_gas;
+            .initial_total_gas();
             let required = standard_intrinsic.saturating_add(fc_intrinsic);
             if tx.gas_limit() < required {
                 tracing::warn!(

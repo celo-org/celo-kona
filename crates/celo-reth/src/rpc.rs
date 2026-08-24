@@ -625,7 +625,7 @@ pub type CeloRpcConvert<N> = RpcConverter<
 ///
 /// Uses [`CeloReceiptConverter`] instead of the op-reth `OpReceiptConverter`, which has a
 /// hard `Receipt = OpReceipt` bound incompatible with [`CeloPrimitives`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CeloEthApiBuilder {
     /// Sequencer URL for transaction forwarding.
     pub sequencer_url: Option<String>,
@@ -633,6 +633,25 @@ pub struct CeloEthApiBuilder {
     pub sequencer_headers: Vec<String>,
     /// Minimum suggested priority fee (tip) in wei.
     pub min_suggested_priority_fee: u64,
+    /// Whether to retain forwarded transactions in the local pool after
+    /// forwarding to the configured sequencer if it exists.
+    pub retain_forwarded_txs: bool,
+}
+
+impl Default for CeloEthApiBuilder {
+    fn default() -> Self {
+        Self {
+            sequencer_url: None,
+            sequencer_headers: Vec::new(),
+            min_suggested_priority_fee: 0,
+            // Celo diverges from op-reth's `false` default deliberately: forwarded transactions
+            // stay in the local pool so `eth_getTransactionByHash` /
+            // `eth_getTransactionReceipt` against a non-sequencer node keep answering for a
+            // just-submitted tx. Wallets (MiniPay) poll exactly that. Deliberately not wired to
+            // `RollupArgs::retain_forwarded_txs`, whose CLI default is `false`.
+            retain_forwarded_txs: true,
+        }
+    }
 }
 
 impl CeloEthApiBuilder {
@@ -651,6 +670,13 @@ impl CeloEthApiBuilder {
     /// Sets the minimum suggested priority fee (tip) in wei.
     pub const fn with_min_suggested_priority_fee(mut self, min: u64) -> Self {
         self.min_suggested_priority_fee = min;
+        self
+    }
+
+    /// Whether to retain forwarded transactions in the local pool after
+    /// forwarding to the configured sequencer if it exists.
+    pub const fn with_retain_forwarded_txs(mut self, retain_forwarded_txs: bool) -> Self {
+        self.retain_forwarded_txs = retain_forwarded_txs;
         self
     }
 }
@@ -677,7 +703,12 @@ where
     type EthApi = OpEthApi<N, CeloRpcConvert<N>>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        let Self { sequencer_url, sequencer_headers, min_suggested_priority_fee } = self;
+        let Self {
+            sequencer_url,
+            sequencer_headers,
+            min_suggested_priority_fee,
+            retain_forwarded_txs,
+        } = self;
 
         let rpc_converter =
             RpcConverter::new(CeloReceiptConverter::new(ctx.components.provider().clone()))
@@ -695,7 +726,13 @@ where
             None
         };
 
-        Ok(OpEthApi::new(eth_api, sequencer_client, U256::from(min_suggested_priority_fee), None))
+        Ok(OpEthApi::new(
+            eth_api,
+            sequencer_client,
+            U256::from(min_suggested_priority_fee),
+            None,
+            retain_forwarded_txs,
+        ))
     }
 }
 

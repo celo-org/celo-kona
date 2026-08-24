@@ -192,6 +192,9 @@ where
     ) -> OpBlockExecutionCtx {
         OpBlockExecutionCtx {
             parent_hash: block.header().parent_hash(),
+            // No parent header on this path to detect fork-activation blocks, so the executor's
+            // check is skipped; the derivation layer enforces the rule instead.
+            no_user_tx_activation_block: false,
             parent_beacon_block_root: block.header().parent_beacon_block_root(),
             extra_data: block.header().extra_data().clone(),
             post_exec_mode: post_exec_mode.unwrap_or_default(),
@@ -207,6 +210,9 @@ where
     ) -> OpBlockExecutionCtx {
         OpBlockExecutionCtx {
             parent_hash: parent.hash(),
+            no_user_tx_activation_block: self
+                .chain_spec()
+                .is_no_user_tx_activation_block(parent.timestamp(), attributes.timestamp),
             parent_beacon_block_root: attributes.parent_beacon_block_root,
             extra_data: attributes.extra_data,
             post_exec_mode,
@@ -386,6 +392,12 @@ where
         FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
+    // `CeloEvm`'s `PostExecEvm` impl carries no refund inspector, so its snapshot type is `()`,
+    // matching upstream's bare `OpEvmConfig` impl. (Upstream's second impl, for
+    // `OpEvmConfig<.., PostExecEvmFactoryAdapter<F>>`, threads `F::Snapshot`; Celo has no
+    // counterpart to that factory adapter.)
+    type Snapshot = ();
+
     fn post_exec_executor_for_block<'a, DB: Database>(
         &'a self,
         db: &'a mut revm::database::State<DB>,
@@ -395,7 +407,7 @@ where
         impl BlockExecutor<
             Transaction = <Self::Primitives as NodePrimitives>::SignedTx,
             Receipt = <Self::Primitives as NodePrimitives>::Receipt,
-        > + PostExecExecutorExt
+        > + PostExecExecutorExt<Snapshot = Self::Snapshot>
         + 'a,
         Self::Error,
     > {
@@ -418,7 +430,7 @@ where
     ) -> Result<
         impl BlockBuilder<
             Primitives = Self::Primitives,
-            Executor: PostExecExecutorExt
+            Executor: PostExecExecutorExt<Snapshot = Self::Snapshot>
                           + BlockExecutor<
                 Evm: alloy_evm::Evm<DB: core::ops::DerefMut<Target = revm::database::State<DB>>>,
                 Result: PreRefundGasUsed,
@@ -526,7 +538,10 @@ where
         payload: &'a OpExecData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(OpBlockExecutionCtx {
-            parent_hash: payload.parent_hash(),
+            parent_hash: payload.payload.parent_hash(),
+            // No parent header on this path to detect fork-activation blocks, so the executor's
+            // check is skipped; the derivation layer enforces the rule instead.
+            no_user_tx_activation_block: false,
             parent_beacon_block_root: payload.sidecar.parent_beacon_block_root(),
             extra_data: payload.payload.as_v1().extra_data.clone(),
             post_exec_mode: PostExecMode::default(),

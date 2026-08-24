@@ -52,7 +52,7 @@ use reth_optimism_trie::{
 };
 use reth_rpc_server_types::RethRpcModule;
 use reth_tasks::TaskExecutor;
-use reth_tracing::{FileWorkerGuard, Layers};
+use reth_tracing::{Layers, TracingGuards};
 use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -530,7 +530,7 @@ fn init_tracing(
     runner: &CliRunner,
     logs: &mut LogArgs,
     traces: &mut TraceArgs,
-) -> eyre::Result<Option<FileWorkerGuard>> {
+) -> eyre::Result<TracingGuards> {
     let mut layers = Layers::new();
     let otlp_status = runner.block_on(traces.init_otlp_tracing(&mut layers))?;
     let otlp_logs_status = runner.block_on(traces.init_otlp_logs(&mut layers))?;

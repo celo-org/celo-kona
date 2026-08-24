@@ -15,7 +15,8 @@ use alloy_eips::{eip1559::INITIAL_BASE_FEE, eip2718::Encodable2718};
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
 use celo_alloy_consensus::CeloTxEnvelope;
 use op_alloy_rpc_types_engine::{
-    OpExecutionData, OpExecutionPayloadEnvelopeV3, OpExecutionPayloadEnvelopeV4,
+    OpExecutionData, OpExecutionPayloadEnvelope, OpExecutionPayloadEnvelopeV3,
+    OpExecutionPayloadEnvelopeV4,
 };
 use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
@@ -44,7 +45,7 @@ use reth_optimism_node::{
 };
 use reth_optimism_payload_builder::{
     OpExecData, OpPayloadTypes,
-    config::{OpDAConfig, OpGasLimitConfig, SdmPostExecOptIn},
+    config::{OpDAConfig, OpGasLimitConfig, OperatorSdmOptIn},
 };
 use reth_optimism_primitives::DepositReceipt;
 use reth_optimism_storage::OpStorage;
@@ -154,9 +155,12 @@ where
         >,
         _bal: Option<alloy_primitives::Bytes>,
     ) -> <T as PayloadTypes>::ExecutionData {
-        OpExecData(OpExecutionData::from_block_unchecked(
-            block.hash(),
-            &block.into_block().into_ethereum_block(),
+        OpExecData(OpExecutionData::from(
+            OpExecutionPayloadEnvelope::from_block_unchecked(
+                block.hash(),
+                &block.into_block().into_ethereum_block(),
+            )
+            .expect("built Celo blocks must normalize"),
         ))
     }
 }
@@ -444,8 +448,8 @@ where
             ),
             self.da_config.clone(),
             self.gas_limit_config.clone(),
-            // SDM is unscheduled on Celo; the default `SdmPostExecOptIn` is disabled.
-            SdmPostExecOptIn::default(),
+            // SDM is unscheduled on Celo; the default `OperatorSdmOptIn` is disabled.
+            OperatorSdmOptIn::default(),
             self.args.sequencer.clone(),
             self.args.sequencer_headers.clone(),
             self.args.historical_rpc.clone(),
