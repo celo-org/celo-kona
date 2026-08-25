@@ -374,7 +374,23 @@ describe("viem send tx", () => {
 		assert.isAbove(Number(receipt.effectiveGasPrice), 0, "effectiveGasPrice should be > 0");
 	}).timeout(10_000);
 
-	it("zero tip tx rejected", async () => {
+	// Skipped from the kona-client/v1.7.0-rc.1 bump onward.
+	//
+	// reth #25412 made eth_sendRawTransaction submit with TransactionOrigin::Local,
+	// and reth's minimum-priority-fee check is gated on `!is_local`, so the floor
+	// celo-reth sets (node.rs, `unwrap_or(1)`) no longer applies to anything
+	// arriving over RPC. Nothing in celo-kona changed; the check moved out from
+	// under us.
+	//
+	// Left skipped rather than inverted: asserting that a zero-tip tx is *accepted*
+	// would bake in a behaviour we have not decided we want, and upstream has not
+	// said whether exempting the price floor was intended or fell out of a change
+	// aimed at eviction. Asked upstream: paradigmxyz/reth#26803.
+	//
+	// Note the CIP-64 path still rejects a zero tip: celo-reth's own converted
+	// check (pool.rs, `min_tip_fc`) runs before the inner validator and never sees
+	// the origin. So native and fee-currency transactions currently disagree.
+	it.skip("zero tip tx rejected", async () => {
 		const gasPrice = await publicClient.getGasPrice();
 		let request = await walletClient.prepareTransactionRequest({
 			to: "0x00000000000000000000000000000000DeaDBeef",
