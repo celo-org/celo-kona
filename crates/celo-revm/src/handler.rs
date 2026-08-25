@@ -1303,11 +1303,39 @@ where
         Ok(exec_result)
     }
 
+    /// Error-arm counterpart to [`Self::execution_result`]'s `no_commit` gate.
+    ///
+    /// op-revm routes every non-deposit transaction error — and every unconvertible type byte,
+    /// which includes CIP-64's `0x7b` — through `discard_tx`. For a real transaction that is
+    /// exactly right: it unwinds the rejected tx so its writes and EIP-2929 warm stamps cannot
+    /// leak into the next tx built on the same EVM.
+    ///
+    /// A **non-committing system call** is not a transaction, and the journal it runs against is
+    /// not its own. `run_system_call_no_commit`'s callers bracket the call with
+    /// `checkpoint` / `checkpoint_revert` precisely so they can undo the call's own entries and
+    /// nothing else (see `core_contracts::call_read_only`). `discard_tx` drains the *entire*
+    /// shared revert log, clears transient storage and the selfdestruct list, bumps
+    /// `transaction_id` and clears coinbase/access-list warmth — so letting it run here would
+    /// discard everything the *enclosing* transaction recorded before the bracket and reset its
+    /// warm/cold accounting mid-execution. The read-only callers (`get_currencies` /
+    /// `get_exchange_rate` / `get_intrinsic_gas`) swallow the error and continue, so that damage
+    /// would be silent rather than fatal.
+    ///
+    /// Skip only the journal work: the rest of op-revm's teardown (L1-cost cache, local context,
+    /// frame stack) runs either way, matching `execution_result`. Depth is left for the caller's
+    /// bracket to restore, which is what `call_read_only`'s error arm already does.
     fn catch_error(
         &self,
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        if self.no_commit {
+            evm.ctx().chain_mut().clear_tx_l1_cost();
+            evm.ctx().local_mut().clear();
+            evm.frame_stack().clear();
+            return Err(error);
+        }
+
         self.op.catch_error(evm, error)
     }
 }
