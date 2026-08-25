@@ -1478,6 +1478,29 @@ pub fn celo_admin_module(
 mod tests {
     use super::*;
 
+    /// Celo keeps op-reth's pre-#22053 behaviour: a transaction forwarded to the sequencer is
+    /// also retained in the local pool, so `eth_getTransactionByHash` /
+    /// `eth_getTransactionReceipt` against a non-sequencer node answer for a just-submitted
+    /// transaction instead of "not found". Wallets (MiniPay) poll exactly that.
+    ///
+    /// Upstream defaults the field to `false` in four places and ships tests for it; Celo's
+    /// `true` lives only in a hand-written `Default` impl. A `#[derive(Default)]` cleanup — the
+    /// obvious tidy-up, since every other field wants its zero value — would silently flip it
+    /// back and break the wallet poll with no compile error and no failing test. This is that
+    /// failing test.
+    ///
+    /// Upstream: ethereum-optimism/optimism@a9a8dad3f1500a4cc2e4077edb480848bfdef29a
+    /// ("op-reth: make forwarded txpool admission opt-in (breaking) (#22053)").
+    #[test]
+    fn celo_retains_forwarded_txs_by_default() {
+        assert!(
+            CeloEthApiBuilder::default().retain_forwarded_txs,
+            "Celo must retain forwarded transactions in the local pool; a #[derive(Default)] on \
+             CeloEthApiBuilder would flip this to op-reth's `false` and make \
+             eth_getTransactionByHash answer \"not found\" on non-sequencer nodes"
+        );
+    }
+
     /// Compact `RateU256` constructor for tests where the rate is small enough
     /// to fit in `u64`.
     fn rate(numerator: u64, denominator: u64) -> RateU256 {
