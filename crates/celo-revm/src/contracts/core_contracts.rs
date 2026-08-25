@@ -108,8 +108,9 @@ pub fn get_revert_message(output: Bytes) -> String {
 /// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
 /// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
 /// call ends — the happy path and a system-call error alike. The balance comes from our own
-/// checkpoint bookkeeping, not from `discard_tx`: op-revm's `catch_error` override does no
-/// journal work for these non-deposit system txs (optimism@3bccc60 op-revm/src/handler.rs).
+/// checkpoint bookkeeping, not from `discard_tx`: since `kona-client/v1.7.0-rc.1` op-revm's
+/// `catch_error` *does* discard the journal on a non-deposit error, and
+/// `CeloHandler::catch_error` gates that on `no_commit` so it cannot run for these system calls.
 /// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
 /// `get_intrinsic_gas`) swallow the error and drop the currency rather than aborting the tx, so
 /// a leaked depth would be silent. The one path this guards is a *fatal* error inside the call
@@ -168,8 +169,9 @@ where
     // Undo the call: reverts state, account/slot warmth, transient storage, logs, and
     // self-destructs back to the checkpoint. Warmth is reverted here, so the surrounding
     // transaction's warm/cold gas accounting is unaffected (no `transaction_id` dance
-    // needed — the non-committing path never bumped it). `checkpoint_revert` touches only
-    // journal state, not the already-decoded `result` or the restored tx env.
+    // needed — the non-committing path never bumps it, on the error arm either, because
+    // `CeloHandler::catch_error` skips `discard_tx` under `no_commit`). `checkpoint_revert`
+    // touches only journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
     // A *fatal* (non-revert) error inside the call can leave `depth` inflated (the window
@@ -260,7 +262,9 @@ where
 /// It restores the surrounding transaction's tx env (the system call overwrote it) but,
 /// unlike [`call`], does **not** clear transient storage or restore `transaction_id`:
 /// - `transaction_id` is never bumped without `commit_tx`, so the call's warmed slots stay
-///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them.
+///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them. This holds
+///   on the error arm too, but only because `CeloHandler::catch_error` gates op-revm's
+///   `discard_tx` — which bumps `transaction_id` and clears access-list warmth — on `no_commit`.
 /// - transient storage is left in place for the enclosing checkpoint to revert on the reject
 ///   path (or for the caller to clear on the commit path — see
 ///   `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`).
