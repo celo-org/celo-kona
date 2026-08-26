@@ -23,7 +23,7 @@ where
     /// Returns the active [`EvmEnv`] for the executor.
     ///
     /// Delegates to [`evm_env_for_op_next_block`], which derives the spec from the payload
-    /// timestamp (replacing the deleted `RollupConfig::spec_id`) and pins the blob env —
+    /// timestamp and pins the blob env —
     /// `BLOBBASEFEE` is always 1 on the OP Stack, and post-Jovian the parent header's
     /// `blobGasUsed` carries the block's DA footprint and must not feed the EIP-4844
     /// excess-blob-gas rule.

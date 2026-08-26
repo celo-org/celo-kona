@@ -374,13 +374,12 @@ describe("viem send tx", () => {
 		assert.isAbove(Number(receipt.effectiveGasPrice), 0, "effectiveGasPrice should be > 0");
 	}).timeout(10_000);
 
-	// Skipped from the kona-client/v1.7.0-rc.1 bump onward.
-	//
-	// reth #25412 made eth_sendRawTransaction submit with TransactionOrigin::Local,
+	// Skipped: reth's eth_sendRawTransaction submits with TransactionOrigin::Local,
 	// and reth's minimum-priority-fee check is gated on `!is_local`, so the floor
-	// celo-reth sets (node.rs, `unwrap_or(1)`) no longer applies to anything
-	// arriving over RPC. Nothing in celo-kona changed; the check moved out from
-	// under us.
+	// celo-reth sets (node.rs, `unwrap_or(1)`) does not apply to anything arriving
+	// over RPC. The exemption comes entirely from upstream reth
+	// (paradigmxyz/reth#25412): celo-kona sets the floor but does not control when
+	// it is consulted.
 	//
 	// Left skipped rather than inverted: asserting that a zero-tip tx is *accepted*
 	// would bake in a behaviour we have not decided we want, and upstream has not
