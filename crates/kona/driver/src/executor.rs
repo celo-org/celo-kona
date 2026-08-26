@@ -23,6 +23,10 @@ pub trait CeloExecutorTr {
     fn update_safe_head(&mut self, header: Sealed<Header>);
 
     /// Execute the given [OpPayloadAttributes].
+    ///
+    /// The returned header must be sealed with `seal_slow`, not `Sealed::new_unchecked`: the
+    /// driver uses the seal directly as the safe head's block hash. Upstream's only check is a
+    /// `debug_assert_eq!`, which release builds — the FPVM client included — compile out.
     async fn execute_payload(
         &mut self,
         attributes: OpPayloadAttributes,
