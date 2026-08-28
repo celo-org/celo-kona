@@ -51,9 +51,12 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
+
+/// Leaves half of Celo's one-second slot for the synchronous state-root fallback.
+const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // CeloNode
@@ -422,6 +425,7 @@ where
                 OpPayloadBuilder::new(compute_pending_block)
                     .with_da_config(self.da_config.clone())
                     .with_gas_limit_config(self.gas_limit_config.clone())
+                    .with_state_root_wait(Some(CELO_PAYLOAD_STATE_ROOT_WAIT))
                     .with_transactions(celo_txs),
             )))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
