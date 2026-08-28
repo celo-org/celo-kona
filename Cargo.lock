@@ -2411,7 +2411,6 @@ dependencies = [
  "alloy-serde",
  "arbitrary",
  "async-trait",
- "brotli",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types",
  "derive_more",

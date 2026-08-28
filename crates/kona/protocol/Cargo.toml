@@ -47,7 +47,6 @@ async-trait.workspace = true
 tracing.workspace = true
 
 # Compression
-brotli.workspace = true
 miniz_oxide.workspace = true
 
 # `arbitrary` feature
@@ -63,7 +62,6 @@ tracing-subscriber = { workspace = true, features = ["fmt"], optional = true }
 
 [dev-dependencies]
 kona-protocol = { workspace = true, features = ["test-utils"] }
-brotli = { workspace = true, features = ["std"] }
 spin.workspace = true
 rand = { workspace = true, features = ["std", "std_rng"] }
 serde_json.workspace = true
@@ -79,7 +77,6 @@ std = [
     "kona-genesis/std",
     "op-alloy-consensus/std",
     "celo-alloy-consensus/std",
-    "brotli/std",
     "alloy-consensus/std",
     "alloy-primitives/std",
     "alloy-rlp/std",
