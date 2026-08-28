@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         target: ["native"]
-        name: ["Celo Sepolia (Isthmus) - Block #12177762"]
+        name: ["Celo Sepolia (Jovian) - Block #34620000"]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -34,15 +34,15 @@ jobs:
       # Below variables can be retrieved by running `just run-client-native`, and witness tar file can be created by compressing the generated data directory after running the command.
       - name: Set run environment
         run: |
-          if [[ ${{ contains(matrix.name, 12177762) }} == true ]]; then
-            BLOCK_NUMBER=12177762
+          if [[ ${{ contains(matrix.name, 34620000) }} == true ]]; then
+            BLOCK_NUMBER=34620000
             echo "BLOCK_NUMBER=$BLOCK_NUMBER" >> $GITHUB_ENV
-            echo "L2_CLAIM=0x5783aab680c0aabfae6d633a465d02da922247c8e8adf8c9a18f6caa9da3b40a" >> $GITHUB_ENV
-            echo "L2_OUTPUT_ROOT=0xf23a74d78b68d441fde3c2be42df34844bdd13f7c47db912946b2ba120f2cd79" >> $GITHUB_ENV
-            echo "L2_HEAD=0x594061d8101caba769b5047325840b806aaa1ab26c655a3ba0c3c878a09318b4" >> $GITHUB_ENV
-            echo "L1_HEAD=0xf56e3e0b057a7b841b06598b37b2bc99fd119224fa4328913a085d4c49efe344" >> $GITHUB_ENV
+            echo "L2_CLAIM=0xc95dc2a8a13b7c9b39636f03e35845532a18731ab57b310d14f63a34eaf6ed8e" >> $GITHUB_ENV
+            echo "L2_OUTPUT_ROOT=0xb509703c2128aef5676d53be90302a8c70d30f8b6691af1a8037e68a08911998" >> $GITHUB_ENV
+            echo "L2_HEAD=0x47cbe839a86d0b34c797438502d44d17caac2181c1b247d76b655d17b1324ed1" >> $GITHUB_ENV
+            echo "L1_HEAD=0xcc7997034fe84bc29d17f2556e33fbc6f6b72b28fbdb86640ce6adac0e347dcd" >> $GITHUB_ENV
             echo "L2_CHAIN_ID=11142220" >> $GITHUB_ENV
-            echo "WITNESS_TAR_NAME=isthmus-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
+            echo "WITNESS_TAR_NAME=jovian-celo-sepolia-$BLOCK_NUMBER-witness.tar.zst" >> $GITHUB_ENV
           fi
       - name: Decompress witness data directory
         run: |
