@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-tracing-context-v1
+  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-tracing-context-v2
 
 jobs:
   scoped-tests:
@@ -97,4 +97,6 @@ jobs:
             --no-fail-fast \
             -p reth-rpc \
             -p reth-rpc-eth-api \
-            -p reth-provider
+            -p reth-provider \
+            -p reth-trie-parallel \
+            -p reth-engine-tree
