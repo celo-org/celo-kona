@@ -76,14 +76,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    # Temporary fork carrying Celo's block-context capture/seed hook, re-cut on
-    # op-rs/reth. Every reth crate resolves through this patch, so neither
-    # op-rs/reth nor paradigmxyz/reth appears as a source in its own right.
-    "https://github.com/celo-org/reth",
     "https://github.com/sp1-patches/bn",
-    # celo-org fork of hokulea-client/v1.2.2, aligned with kona-client/v1.7.0-rc.1, while a
-    # compatible hokulea release is in flight.
-    "https://github.com/celo-org/hokulea",
     # kona and op-reth crates are pulled from the optimism monorepo via the
     # kona-client/v1.7.0-rc.1 tag.
     "https://github.com/ethereum-optimism/optimism",
@@ -92,7 +85,8 @@ allow-git = [
     "https://github.com/sigp/discv5",
 ]
 
+# celo-org repos are as trusted as this one; `allow-git` names third-party sources only.
 [sources.allow-org]
-github = []
+github = ["celo-org"]
 gitlab = []
 bitbucket = []
