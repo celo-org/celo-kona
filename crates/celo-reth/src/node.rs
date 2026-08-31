@@ -40,12 +40,12 @@ use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_consensus::OpBeaconConsensus;
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_node::{
-    OpEngineApiBuilder, OpEngineValidatorBuilder,
+    OpEngineApiBuilder, OpEngineValidatorBuilder, OpNode,
     node::{OpAddOns, OpNetworkBuilder, OpPayloadBuilder, OpPoolBuilder},
 };
 use reth_optimism_payload_builder::{
     OpExecData, OpPayloadTypes,
-    config::{OpDAConfig, OpGasLimitConfig, OperatorSdmOptIn},
+    config::{OpBuilderConfig, OpDAConfig, OpGasLimitConfig, OperatorSdmOptIn},
 };
 use reth_optimism_primitives::DepositReceipt;
 use reth_optimism_storage::OpStorage;
@@ -92,6 +92,16 @@ impl CeloNode {
             da_config: OpDAConfig::default(),
             gas_limit_config: OpGasLimitConfig::default(),
         }
+    }
+
+    /// The [`OpBuilderConfig`] the payload builder runs with, assembled by
+    /// [`OpNode::builder_config`] so fields upstream derives from [`RollupArgs`] arrive
+    /// without celo-reth naming them. Naming them here drops each one upstream adds.
+    fn builder_config(&self) -> OpBuilderConfig {
+        OpNode::new(self.args.clone())
+            .with_da_config(self.da_config.clone())
+            .with_gas_limit_config(self.gas_limit_config.clone())
+            .builder_config()
     }
 
     /// Sets the shared fee currency blocklist.
@@ -424,8 +434,10 @@ where
             .executor(CeloExecutorBuilder { blocklist })
             .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
                 OpPayloadBuilder::new(compute_pending_block)
-                    .with_da_config(self.da_config.clone())
-                    .with_gas_limit_config(self.gas_limit_config.clone())
+                    .with_builder_config(self.builder_config())
+                    // SDM is unscheduled on Celo: keep the disabled default that `add_ons`
+                    // also passes, not the `--rollup.operator-sdm-opt-in` value `OpNode` reads.
+                    .with_operator_sdm_opt_in(OperatorSdmOptIn::default())
                     .with_transactions(celo_txs),
             )))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
@@ -743,5 +755,37 @@ where
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(Arc::new(CeloConsensus::new(ctx.chain_spec())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fields `OpNode` derives from [`RollupArgs`] reach Celo's payload builder;
+    /// `max_uncompressed_block_size` stands in for the set.
+    #[test]
+    fn builder_config_carries_rollup_args_derived_fields() {
+        let args =
+            RollupArgs { max_uncompressed_block_size: Some(7_340_032), ..Default::default() };
+
+        assert_eq!(
+            CeloNode::new(args).builder_config().max_uncompressed_block_size,
+            Some(7_340_032),
+        );
+    }
+
+    /// Celo's own DA and gas-limit config survive the trip through `OpNode`, which starts
+    /// both at their defaults.
+    #[test]
+    fn builder_config_carries_celo_da_and_gas_limit_config() {
+        let config = CeloNode::new(RollupArgs::default())
+            .with_da_config(OpDAConfig::new(111, 222))
+            .with_gas_limit_config(OpGasLimitConfig::new(333))
+            .builder_config();
+
+        assert_eq!(config.da_config.max_da_tx_size(), Some(111));
+        assert_eq!(config.da_config.max_da_block_size(), Some(222));
+        assert_eq!(config.gas_limit_config.gas_limit(), Some(333));
     }
 }
