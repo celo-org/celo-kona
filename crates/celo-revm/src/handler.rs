@@ -41,7 +41,7 @@ use revm::{
     primitives::{U256, hardfork::SpecId},
 };
 use std::{boxed::Box, format, string::ToString, vec::Vec};
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 /// Transactions with wrong chain IDs that were accepted historically due to a bug in
 /// op-geth's EIP-2930 sender recovery (tx.ChainId() instead of the network's chain ID).
@@ -390,7 +390,7 @@ where
 
         // Log the gas summary for debugging and verification
         // gas_used + gas_refunded gives the raw gas before refunds (what op-geth calls gasUsed)
-        info!(
+        trace!(
             target: "celo_handler",
             "CIP-64 gas summary: fee_currency={:?}, \
             debit(gas_used={}, gas_refunded={}), \
