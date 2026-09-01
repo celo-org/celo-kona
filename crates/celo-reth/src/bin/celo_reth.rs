@@ -316,8 +316,8 @@ fn main() {
         Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
-    if let Err(err) =
-        Cli::<CeloChainSpecParser, CeloArgs>::parse().run(async move |builder, celo_args| {
+    if let Err(err) = Cli::<CeloChainSpecParser, CeloArgs>::parse_with_denied_args().run(
+        async move |builder, celo_args| {
             let rollup_args = celo_args.rollup;
 
             // Parse fee currency limits from CLI args.
@@ -403,8 +403,8 @@ fn main() {
             } else {
                 launch_celo_node::<MdbxProofsStorage>(builder, node, blocklist, None).await
             }
-        })
-    {
+        },
+    ) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
@@ -751,5 +751,28 @@ mod tests {
     #[test]
     fn test_render_fee_currency_limits_of_an_empty_map_is_empty() {
         assert_eq!(render_fee_currency_limits(&HashMap::new()), "");
+    }
+
+    /// `--minimal` prunes block bodies to a fixed 10,064-block window, which derivation cannot
+    /// tolerate. Only `parse_with_denied_args` rejects it; `clap::Parser::parse` builds the
+    /// upstream command directly and accepts it silently.
+    #[test]
+    fn minimal_is_rejected() {
+        let err = Cli::<CeloChainSpecParser, CeloArgs>::try_parse_with_denied_args_from([
+            "celo-reth",
+            "node",
+            "--minimal",
+        ])
+        .expect_err("--minimal must be rejected");
+        assert!(err.to_string().contains("--minimal is not supported"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn node_without_denied_args_still_parses() {
+        Cli::<CeloChainSpecParser, CeloArgs>::try_parse_with_denied_args_from([
+            "celo-reth",
+            "node",
+        ])
+        .expect("a plain `node` invocation must still parse");
     }
 }
