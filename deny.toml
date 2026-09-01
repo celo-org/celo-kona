@@ -58,7 +58,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
 ignore = true
-ignore-sources = ["https://github.com/Layr-Labs/hokulea", "https://github.com/celo-org/hokulea"]
+ignore-sources = ["https://github.com/celo-org/hokulea"]
 
 [bans]
 multiple-versions = "warn"
@@ -80,9 +80,9 @@ allow-git = [
     # op-rs/reth. Every reth crate resolves through this patch, so neither
     # op-rs/reth nor paradigmxyz/reth appears as a source in its own right.
     "https://github.com/celo-org/reth",
-    "https://github.com/Layr-Labs/hokulea",
     "https://github.com/sp1-patches/bn",
-    # celo-org fork at seolaoh/v2.3.1-on-upstream while a compatible hokulea release is in flight.
+    # celo-org fork of hokulea-client/v1.2.2, aligned with kona-client/v1.7.0-rc.1, while a
+    # compatible hokulea release is in flight.
     "https://github.com/celo-org/hokulea",
     # kona and op-reth crates are pulled from the optimism monorepo via the
     # kona-client/v1.7.0-rc.1 tag.
