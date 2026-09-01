@@ -812,8 +812,20 @@ where
     /// initial gas and leaves the floor alone. Carrying it in the table puts it in front of
     /// revm's checks, which therefore see the surcharged value.
     ///
+    /// The surcharge is clamped so that revm's recomputed `initial_regular_gas` saturates at
+    /// `u64::MAX` instead of wrapping: revm sums the table entries with an unchecked `+`, and
+    /// `overflow-checks` is off in every profile. An `intrinsicGas` too large for a `u64`
+    /// arrives here capped at `u64::MAX` rather than rejected, so without the clamp such a
+    /// currency would wrap the sum down to a tiny intrinsic gas and admit transactions that
+    /// must be rejected with `CallGasCostMoreThanGasLimit`.
+    ///
     /// MAINTENANCE: the bumped params must stay a local. Installing them into `cfg` would
     /// misprice every opcode for the rest of the transaction.
+    ///
+    /// The surcharge counting toward EIP-8037's `tx_gas_limit_cap` has no consensus
+    /// consequence: that check compares `initial_regular_gas().max(floor_gas())`, and
+    /// `floor_gas` — which carries no surcharge — dominates the `max()` at every size where
+    /// the cap is in reach.
     fn validate_celo_initial_tx_gas(
         &self,
         evm: &mut CeloEvm<DB, INSP, P>,
@@ -835,9 +847,11 @@ where
             cfg.gas_params()
         } else {
             let mut params = cfg.gas_params().clone();
+            let base = params.initial_tx_gas_for_tx(ctx.tx()).initial_regular_gas();
+            let clamped = surcharge.min(u64::MAX - base);
             params.override_gas([(
                 GasId::tx_base_stipend(),
-                params.tx_base_stipend().saturating_add(surcharge),
+                params.tx_base_stipend().saturating_add(clamped),
             )]);
             surcharged = params;
             &surcharged
@@ -3184,6 +3198,18 @@ mod tests {
         Bytes::new()
     )]
     #[case::cip64_floor_above_gas_limit(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), 0, 30_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 2048]))]
+    // A currency whose registered `intrinsicGas` exceeds `u64::MAX` reaches the handler capped
+    // at `u64::MAX`. revm sums the gas table with an unchecked `+`, so without the clamp the
+    // calldata case wraps to a tiny intrinsic gas and is admitted instead of rejected.
+    #[case::cip64_surcharge_saturates(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        u64::MAX,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_surcharge_saturates_with_calldata(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), u64::MAX, 1_000_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 512]))]
     #[case::unregistered_fee_currency(
         OpSpecId::ISTHMUS,
         Some(Address::repeat_byte(0x9A)),
