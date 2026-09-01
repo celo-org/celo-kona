@@ -91,7 +91,7 @@ the full set.
 ## Development
 
 Requires the nightly toolchain (for `cargo +nightly fmt`), [`just`][just],
-[`cargo-nextest`][nextest] and [`cargo-hack`][hack]. MSRV is 1.94.
+[`cargo-nextest`][nextest] and [`cargo-hack`][hack]. MSRV is 1.95.
 
 ```bash
 just setup           # install the pre-commit fmt hook
