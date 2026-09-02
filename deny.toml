@@ -84,9 +84,11 @@ allow-git = [
     # celo-org fork at seolaoh/v2.3.1-on-upstream while a compatible hokulea release is in flight.
     "https://github.com/celo-org/hokulea",
     "https://github.com/celo-org/alloy",
-    # kona crates are pulled from the optimism monorepo via the
-    # kona-node/v1.5.1 tag.
-    "https://github.com/ethereum-optimism/optimism",
+    # Keep the upstream source ready to restore when Optimism packages move back.
+    # "https://github.com/ethereum-optimism/optimism",
+    # Optimism packages currently resolve from the Celo fork carrying the sparse-trie
+    # payload-builder backports.
+    "https://github.com/celo-org/optimism",
     # discv5 is pulled in transitively by reth-discv5 from a sigp git rev;
     # reth pins it directly rather than a crates.io release.
     "https://github.com/sigp/discv5",
