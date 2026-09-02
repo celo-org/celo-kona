@@ -2748,6 +2748,33 @@ mod tests {
         );
     }
 
+    /// reth's own transaction-fee cap tests `cost() - value()`, and for a CIP-64 transaction
+    /// that difference is always zero — `native_cost` is `value()` because gas is paid in the
+    /// fee currency and checked against the ERC20 balance instead. So the inner cap can never
+    /// reject a CIP-64 transaction, and `CeloExchangeRateApplier`'s cap is the only one that
+    /// sees its gas cost. Folding FC gas back into `native_cost` would break that split, and
+    /// `CeloPoolBuilder` now wires the inner cap too, so this is the test that keeps the Celo
+    /// cap from looking redundant.
+    #[test]
+    fn cip64_is_invisible_to_reths_inner_tx_fee_cap() {
+        let fc = Address::with_last_byte(0xCE);
+        let tx = make_test_tx(Some(fc), 1_000_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        assert_eq!(
+            tx.cost().saturating_sub(tx.value()),
+            U256::ZERO,
+            "reth's inner fee cap must see a zero max-fee for a CIP-64 tx"
+        );
+
+        // Same for a native tx, the difference is the gas cost the inner cap is meant to see.
+        let native = make_test_tx(None, 1_000_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        assert_eq!(
+            native.cost().saturating_sub(native.value()),
+            U256::from(1_000_000u128 * 1_000_000_000u128),
+            "a native tx must expose its full gas cost to the inner fee cap"
+        );
+    }
+
     #[test]
     #[should_panic(expected = "numerator must not be zero")]
     fn test_exchange_rate_zero_numerator_panics() {

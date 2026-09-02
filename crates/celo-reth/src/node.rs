@@ -271,6 +271,19 @@ where
         .with_custom_tx_type(celo_alloy_consensus::CeloTxType::Cip64 as u8)
         .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
         .kzg_settings(ctx.kzg_settings()?)
+        // Matches op-reth's own pool builder. reth's inner cap defaults to `Some(1e18)`, and
+        // its check is gated on `is_local`; since reth #25412 every RPC transaction is local,
+        // so leaving the default in place would silently override `--rpc.txfeecap` above
+        // 1 CELO and ignore `0`.
+        //
+        // This leaves native transactions capped twice against the same value — redundant but
+        // upstream's shape. It does *not* make `CeloExchangeRateApplier`'s cap redundant:
+        // reth's check is `cost() - value()`, and `CeloPoolTx::cost()` is `native_cost`, which
+        // for a CIP-64 transaction is exactly `value()` (gas is paid in the fee currency and
+        // checked against the ERC20 balance instead). That difference is always zero, so the
+        // inner cap can never reject a CIP-64 transaction and the Celo wrapper is the only
+        // cap that sees its gas cost.
+        .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
         .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
         // Celo requires a minimum priority fee of 1 wei (matching op-geth's
         // Celo fork). This can be overridden via --txpool.minimum-priority-fee.
