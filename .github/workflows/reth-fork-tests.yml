@@ -24,6 +24,7 @@ permissions:
   contents: read
 
 env:
+  OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.4-sparse-trie-v1
   RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v2.4-tracing-context-v1
 
 jobs:
@@ -34,6 +35,43 @@ jobs:
     steps:
       - name: Checkout celo-kona
         uses: actions/checkout@v7
+
+      - name: Resolve pinned Optimism fork revision
+        id: optimism-rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          revs="$(
+            sed -n \
+              's/.*git = "https:\/\/github.com\/celo-org\/optimism".*rev = "\([0-9a-f]\{40\}\)".*/\1/p' \
+              Cargo.toml |
+              sort -u
+          )"
+          count="$(printf '%s\n' "$revs" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [[ "$count" != "1" ]]; then
+            echo "expected one celo-org/optimism revision, found $count" >&2
+            exit 1
+          fi
+          echo "rev=$revs" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pinned Optimism fork tag
+        env:
+          OPTIMISM_FORK_REV: ${{ steps.optimism-rev.outputs.rev }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_rev="$(
+            git ls-remote \
+              https://github.com/celo-org/optimism.git \
+              "refs/tags/${OPTIMISM_FORK_REACHABILITY_TAG}" |
+              awk '{ print $1 }'
+          )"
+          if [[ "$tag_rev" != "$OPTIMISM_FORK_REV" ]]; then
+            echo \
+              "expected ${OPTIMISM_FORK_REACHABILITY_TAG} to resolve to ${OPTIMISM_FORK_REV}, got ${tag_rev:-missing}" \
+              >&2
+            exit 1
+          fi
 
       - name: Resolve pinned reth fork revision
         id: reth-rev
