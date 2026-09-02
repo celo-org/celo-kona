@@ -2,30 +2,57 @@ pub mod transfer;
 
 pub use transfer::{TRANSFER_ADDRESS, transfer_run};
 
-use core::iter;
+use crate::CeloContext;
 use op_revm::{OpSpecId, precompiles::OpPrecompiles};
 use revm::{
     context::Cfg,
     context_interface::ContextTr,
+    database::EmptyDB,
     handler::PrecompileProvider,
     interpreter::{CallInputs, InterpreterResult},
-    primitives::Address,
+    primitives::{Address, AddressSet},
 };
-use std::{boxed::Box, string::String};
+use std::string::String;
 
 // Celo precompile provider
 #[derive(Debug, Clone)]
 pub struct CeloPrecompiles {
     op_precompiles: OpPrecompiles,
+    /// The OP precompile addresses plus Celo's transfer precompile.
+    ///
+    /// `PrecompileProvider::warm_addresses` returns a borrowed set as of revm 41,
+    /// so the union has to be materialised rather than produced lazily. It is
+    /// rebuilt in `new_with_spec` and whenever `set_spec` changes the OP set, so it
+    /// can never lag `op_precompiles`: this set is what pre-warms accounts under
+    /// EIP-2929, so a stale entry would change warm/cold gas accounting.
+    warm_addresses: AddressSet,
 }
 
 impl CeloPrecompiles {
     /// Create a new precompile provider with the given OpSpec.
     #[inline]
     pub fn new_with_spec(spec: OpSpecId) -> Self {
+        let op_precompiles = OpPrecompiles::new_with_spec(spec);
+        let warm_addresses = Self::warm_addresses_for(&op_precompiles);
         Self {
-            op_precompiles: OpPrecompiles::new_with_spec(spec),
+            op_precompiles,
+            warm_addresses,
         }
+    }
+
+    /// The OP warm set for `op_precompiles`, plus [`TRANSFER_ADDRESS`].
+    ///
+    /// `OpPrecompiles` exposes its warm set only through `PrecompileProvider`, which
+    /// is generic over the context, so a context type has to be named to call it.
+    /// The returned set does not depend on that type — `CeloContext<EmptyDB>` is a
+    /// type-level witness here and nothing is constructed.
+    fn warm_addresses_for(op_precompiles: &OpPrecompiles) -> AddressSet {
+        let mut warm = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
+            op_precompiles,
+        )
+        .clone();
+        warm.insert(TRANSFER_ADDRESS);
+        warm
     }
 }
 
@@ -37,7 +64,16 @@ where
 
     #[inline]
     fn set_spec(&mut self, spec: <CTX::Cfg as Cfg>::Spec) -> bool {
-        <OpPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.op_precompiles, spec)
+        let changed =
+            <OpPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.op_precompiles, spec);
+        // `OpPrecompiles::set_spec` returns `false` only for an unchanged spec, and then leaves
+        // itself untouched, so the derived warm set is still current. revm calls this once per
+        // transaction, so rebuilding regardless would cost an `AddressSet` allocation and copy
+        // per transaction on the block-building path and inside the FPVM client.
+        if changed {
+            self.warm_addresses = Self::warm_addresses_for(&self.op_precompiles);
+        }
+        changed
     }
 
     #[inline]
@@ -54,11 +90,8 @@ where
     }
 
     #[inline]
-    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
-        let op_iter =
-            <OpPrecompiles as PrecompileProvider<CTX>>::warm_addresses(&self.op_precompiles);
-        let transfer_iter = iter::once(TRANSFER_ADDRESS);
-        Box::new(op_iter.chain(transfer_iter))
+    fn warm_addresses(&self) -> &AddressSet {
+        &self.warm_addresses
     }
 
     #[inline]
@@ -104,13 +137,47 @@ mod tests {
             <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
                 &celo_precompiles,
             )
-            .count();
+            .len();
         let op_count = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
             &op_precompiles,
         )
-        .count();
+        .len();
 
         assert_eq!(celo_count, op_count + 1);
+    }
+
+    /// The Celo warm set must equal the OP warm set for the current spec plus the transfer
+    /// precompile -- after a spec change, and after a repeat `set_spec` that reports no change
+    /// and therefore skips the rebuild.
+    #[test]
+    fn warm_addresses_track_the_op_set_across_set_spec() {
+        let mut celo = CeloPrecompiles::new_with_spec(OpSpecId::BEDROCK);
+
+        for spec in [
+            OpSpecId::BEDROCK,
+            OpSpecId::FJORD,
+            OpSpecId::ISTHMUS,
+            OpSpecId::ISTHMUS,
+        ] {
+            <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::set_spec(
+                &mut celo, spec,
+            );
+
+            let mut want =
+                <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
+                    &OpPrecompiles::new_with_spec(spec),
+                )
+                .clone();
+            want.insert(TRANSFER_ADDRESS);
+
+            assert_eq!(
+                <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
+                    &celo,
+                ),
+                &want,
+                "warm set is stale for {spec:?}"
+            );
+        }
     }
 
     #[test]
@@ -139,6 +206,9 @@ mod tests {
             known_bytecode: (Default::default(), Default::default()),
             scheme: CallScheme::Call,
             is_static: false,
+            // EIP-8037: this test builds the call directly rather than going through
+            // the CALL opcode, so no upfront new-account state gas was charged.
+            charged_new_account_state_gas: false,
         };
 
         let initial_balance = 100;

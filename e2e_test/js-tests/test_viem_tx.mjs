@@ -374,7 +374,21 @@ describe("viem send tx", () => {
 		assert.isAbove(Number(receipt.effectiveGasPrice), 0, "effectiveGasPrice should be > 0");
 	}).timeout(10_000);
 
-	it("zero tip tx rejected", async () => {
+	// REMOVE THE SKIP once the pinned reth revision contains paradigmxyz/reth#26861.
+	//
+	// reth's eth_sendRawTransaction submits with TransactionOrigin::Local
+	// (paradigmxyz/reth#25412), and reth's minimum-priority-fee check is gated on
+	// `!is_local`, so the floor celo-reth sets (node.rs, `unwrap_or(1)`) does not
+	// apply to anything arriving over RPC. The exemption comes entirely from
+	// upstream reth: celo-kona sets the floor but does not control when it is
+	// consulted.
+	//
+	// reth#26861 removes that gate, making the floor apply to every origin -- which
+	// is what the CIP-64 path below already does, so this assertion becomes true
+	// again the moment the pin advances. Left skipped rather than inverted:
+	// asserting that a zero-tip tx is *accepted* would bake in a behaviour upstream
+	// has already reverted.
+	it.skip("zero tip tx rejected", async () => {
 		const gasPrice = await publicClient.getGasPrice();
 		let request = await walletClient.prepareTransactionRequest({
 			to: "0x00000000000000000000000000000000DeaDBeef",
@@ -384,6 +398,33 @@ describe("viem send tx", () => {
 		});
 		// op-geth: "gas tip cap 0", reth: "priority fee below minimum"
 		await expectTxFail(request, "priority fee");
+	}).timeout(10_000);
+
+	// The CIP-64 half is not skipped: celo-reth's own converted check (pool.rs,
+	// `min_tip_fc`) runs before the inner reth validator and never sees the origin,
+	// so it rejects a zero tip today and keeps rejecting it after reth#26861 makes
+	// the native path unconditional too.
+	it("zero tip CIP-64 tx rejected", async function () {
+		const fc = process.env.FEE_CURRENCY;
+		const rate = await getRate(fc);
+
+		// The minimum tip is 1 wei native converted into the fee currency. If the fee
+		// currency is worth more than CELO that conversion floors to zero, and no tip
+		// can be below zero, so there is nothing to assert.
+		if (rate.toFeeCurrency(1n) === 0n) {
+			this.skip();
+			return;
+		}
+
+		const [maxFeePerGas] = await getGasFees(publicClient, 2n, fc);
+		const request = await walletClient.prepareTransactionRequest({
+			to: "0x00000000000000000000000000000000DeaDBeef",
+			gas: await getIntrinsicGasForFeeCurrency(TX_GAS, fc),
+			feeCurrency: fc,
+			maxFeePerGas: maxFeePerGas,
+			maxPriorityFeePerGas: 0n,
+		});
+		await expectTxFail(request, "below minimum");
 	}).timeout(10_000);
 
 });

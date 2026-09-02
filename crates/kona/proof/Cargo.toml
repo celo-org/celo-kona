@@ -59,6 +59,7 @@ spin.workspace = true
 tokio = { workspace = true, features = ["full"], optional = true }
 
 [dev-dependencies]
+alloy-rlp.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [features]

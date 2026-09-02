@@ -27,7 +27,7 @@ use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
-    BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
+    BlobStore, BlobStoreError, BlockInfo, EthBlobTransactionSidecar, EthPoolTransaction,
     GetPooledTransactionLimit, NewTransactionEvent, PoolResult, PoolSize, PoolTransaction,
     PropagatedTransactions, TransactionEvents, TransactionListenerKind, TransactionOrigin,
     TransactionPool, TransactionPoolExt, TransactionValidationOutcome, TransactionValidator,
@@ -1243,6 +1243,15 @@ where
     delegate_pool!(fn pending_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<TxHash>);
     delegate_pool!(fn blob_transaction_sidecars_listener(&self) -> Receiver<reth_transaction_pool::NewBlobSidecar>);
     delegate_pool!(fn new_transactions_listener_for(&self, kind: TransactionListenerKind) -> Receiver<NewTransactionEvent<Self::Transaction>>);
+    delegate_pool!(fn blob_store(&self) -> Box<dyn BlobStore>);
+
+    fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: reth_eth_wire_types::HandleMempoolData,
+    {
+        self.inner.retain_contains(announcement)
+    }
+
     delegate_pool!(fn pooled_transaction_hashes(&self) -> Vec<TxHash>);
     delegate_pool!(fn pooled_transaction_hashes_max(&self, max: usize) -> Vec<TxHash>);
     delegate_pool!(fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>);
@@ -1296,6 +1305,7 @@ where
     delegate_pool!(fn get_blobs_for_versioned_hashes_v2(&self, versioned_hashes: &[B256]) -> Result<Option<Vec<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
     delegate_pool!(fn get_blobs_for_versioned_hashes_v3(&self, versioned_hashes: &[B256]) -> Result<Vec<Option<alloy_eips::eip4844::BlobAndProofV2>>, BlobStoreError>);
     delegate_pool!(fn get_blobs_for_versioned_hashes_v4(&self, versioned_hashes: &[B256], indices_bitarray: alloy_primitives::B128) -> Result<Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>, BlobStoreError>);
+    delegate_pool!(fn has_blobs_for_versioned_hashes(&self, versioned_hashes: &[B256]) -> Result<Vec<bool>, BlobStoreError>);
 }
 
 impl<P> TransactionPoolExt for CeloTransactionPool<P>
@@ -1673,7 +1683,7 @@ fn apply_exchange_rates_to_pool_tx(
                 access_list_storage_keys,
                 authorization_list_num,
             )
-            .initial_total_gas;
+            .initial_total_gas();
             let required = standard_intrinsic.saturating_add(fc_intrinsic);
             if tx.gas_limit() < required {
                 tracing::warn!(
@@ -2735,6 +2745,33 @@ mod tests {
             *tx.cost(),
             U256::ZERO,
             "initial native_cost for a CIP-64 tx must exclude FC-denominated gas"
+        );
+    }
+
+    /// reth's own transaction-fee cap tests `cost() - value()`, and for a CIP-64 transaction
+    /// that difference is always zero — `native_cost` is `value()` because gas is paid in the
+    /// fee currency and checked against the ERC20 balance instead. So the inner cap can never
+    /// reject a CIP-64 transaction, and `CeloExchangeRateApplier`'s cap is the only one that
+    /// sees its gas cost. Folding FC gas back into `native_cost` would break that split, and
+    /// `CeloPoolBuilder` now wires the inner cap too, so this is the test that keeps the Celo
+    /// cap from looking redundant.
+    #[test]
+    fn cip64_is_invisible_to_reths_inner_tx_fee_cap() {
+        let fc = Address::with_last_byte(0xCE);
+        let tx = make_test_tx(Some(fc), 1_000_000, 1_000_000_000, 100, Address::with_last_byte(1));
+
+        assert_eq!(
+            tx.cost().saturating_sub(tx.value()),
+            U256::ZERO,
+            "reth's inner fee cap must see a zero max-fee for a CIP-64 tx"
+        );
+
+        // Same for a native tx, the difference is the gas cost the inner cap is meant to see.
+        let native = make_test_tx(None, 1_000_000, 1_000_000_000, 100, Address::with_last_byte(1));
+        assert_eq!(
+            native.cost().saturating_sub(native.value()),
+            U256::from(1_000_000u128 * 1_000_000_000u128),
+            "a native tx must expose its full gas cost to the inner fee cap"
         );
     }
 

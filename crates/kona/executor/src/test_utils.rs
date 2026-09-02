@@ -100,6 +100,9 @@ pub fn payload_attributes_from_header(
             withdrawals: Default::default(),
             suggested_fee_recipient: header.beneficiary,
             slot_number: None,
+            // Replaying a canonical header: the block's gas limit is already fixed and
+            // carried by `gas_limit` below, so there is no separate target to express.
+            target_gas_limit: None,
         },
         gas_limit: Some(header.gas_limit),
         transactions: Some(encoded_transactions),

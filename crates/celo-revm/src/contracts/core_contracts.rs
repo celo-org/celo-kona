@@ -108,8 +108,9 @@ pub fn get_revert_message(output: Bytes) -> String {
 /// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
 /// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
 /// call ends — the happy path and a system-call error alike. The balance comes from our own
-/// checkpoint bookkeeping, not from `discard_tx`: op-revm's `catch_error` override does no
-/// journal work for these non-deposit system txs (optimism@3bccc60 op-revm/src/handler.rs).
+/// checkpoint bookkeeping, not from `discard_tx`: op-revm at `kona-client/v1.7.0-rc.1` discards
+/// the journal in `catch_error` on a non-deposit error, and `CeloHandler::catch_error` gates
+/// that on `no_commit` so it cannot run for these system calls.
 /// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
 /// `get_intrinsic_gas`) swallow the error and drop the currency rather than aborting the tx, so
 /// a leaked depth would be silent. The one path this guards is a *fatal* error inside the call
@@ -168,8 +169,9 @@ where
     // Undo the call: reverts state, account/slot warmth, transient storage, logs, and
     // self-destructs back to the checkpoint. Warmth is reverted here, so the surrounding
     // transaction's warm/cold gas accounting is unaffected (no `transaction_id` dance
-    // needed — the non-committing path never bumped it). `checkpoint_revert` touches only
-    // journal state, not the already-decoded `result` or the restored tx env.
+    // needed — the non-committing path never bumps it, on the error arm either, because
+    // `CeloHandler::catch_error` skips `discard_tx` under `no_commit`). `checkpoint_revert`
+    // touches only journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
     // A *fatal* (non-revert) error inside the call can leave `depth` inflated (the window
@@ -260,7 +262,9 @@ where
 /// It restores the surrounding transaction's tx env (the system call overwrote it) but,
 /// unlike [`call`], does **not** clear transient storage or restore `transaction_id`:
 /// - `transaction_id` is never bumped without `commit_tx`, so the call's warmed slots stay
-///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them.
+///   warm for the caller exactly as [`call`]'s `transaction_id` restore keeps them. This holds
+///   on the error arm too, but only because `CeloHandler::catch_error` gates op-revm's
+///   `discard_tx` — which bumps `transaction_id` and clears access-list warmth — on `no_commit`.
 /// - transient storage is left in place for the enclosing checkpoint to revert on the reject
 ///   path (or for the caller to clear on the commit path — see
 ///   `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`).
@@ -973,18 +977,21 @@ pub(crate) mod tests {
         }
     }
 
-    /// Rollback correctness leans on op-revm's `catch_error` doing **no** journal work for these
-    /// non-deposit system txs (optimism@3bccc60): on a fatal error inside a bracketed
-    /// non-committing call, the journal must be left intact so `checkpoint_revert` undoes exactly
-    /// the call — and nothing recorded before the bracket. If a future revm bump aligned
-    /// `catch_error` with the mainnet default (`journal.discard_tx()`), the enclosing tx's
-    /// journal would be wiped mid-tx and pre-bracket state would silently vanish. On the
-    /// error-swallowing `call_read_only` path that is a state divergence, not a crash, so it is
-    /// pinned only by comments today.
+    /// Rollback correctness requires that a fatal error inside a bracketed non-committing call
+    /// leaves the journal intact, so `checkpoint_revert` undoes exactly the call — and nothing
+    /// recorded before the bracket. On the error-swallowing `call_read_only` path a violation is
+    /// a silent state divergence, not a crash.
     ///
-    /// This pins it: a committing `call` persists slot0, then a bracketed `call_read_only` whose
-    /// target's `SLOAD` hits an injected DB error must return `Err` **and** leave the persisted
-    /// slot0 untouched.
+    /// op-revm at `kona-client/v1.7.0-rc.1` does journal work in `catch_error`: it routes
+    /// non-deposit tx errors through `discard_tx`, which drains the *whole* shared revert log.
+    /// `CeloHandler::catch_error` gates that on `no_commit` so a non-committing system call
+    /// cannot discard the enclosing transaction's journal. This test is what pins that gate.
+    ///
+    /// The pre-bracket write deliberately goes through the **non-committing** `call_no_commit`.
+    /// A committing `call` ends in `commit_tx`, whose `journal.clear()` empties the revert log —
+    /// which would leave an ungated `discard_tx` nothing to drain and make this test vacuous.
+    /// Writing through the non-committing path keeps the entry in the revert log, exactly where
+    /// an ungated `discard_tx` would revert it.
     #[test]
     fn fatal_error_in_bracketed_call_preserves_pre_bracket_journal() {
         // A second copy of the SSTORE stub, deployed at an address whose storage reads fail.
@@ -1009,10 +1016,12 @@ pub(crate) mod tests {
         };
         let mut evm = Context::celo().with_db(db).build_celo();
 
-        // Pre-bracket: a committing `call` persists slot0 == 1 in the journal — a real
-        // pre-bracket entry that `discard_tx` would wipe but `checkpoint_revert` must not.
-        let (out, _, _, _) =
-            call(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
+        // Pre-bracket: a NON-committing call writes slot0 == 1 and leaves the entry in the
+        // shared revert log — a real pre-bracket entry that an ungated `discard_tx` would wipe
+        // but `checkpoint_revert` must not. See this test's doc comment for why the committing
+        // `call` cannot be used here.
+        let (out, _, _, _) = call_no_commit(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
+            .expect("non-committing call ok");
         assert_eq!(U256::from_be_slice(out.as_ref()), U256::from(1));
 
         // Bracketed non-committing call whose target's first op is `SLOAD`, which the injected DB
@@ -1028,8 +1037,8 @@ pub(crate) mod tests {
         );
 
         // The pre-bracket slot0 must survive: `checkpoint_revert` only unwinds entries recorded
-        // after the checkpoint, and `catch_error` did no journal work. Had the journal been wiped
-        // on error, slot0 would be gone here.
+        // after the checkpoint, and `CeloHandler::catch_error` skipped `discard_tx` because the
+        // call ran in `no_commit` mode. Had the journal been discarded, slot0 would be gone here.
         let slot0 = evm
             .ctx()
             .journal_ref()
@@ -1040,8 +1049,8 @@ pub(crate) mod tests {
         assert_eq!(
             slot0,
             Some(U256::from(1)),
-            "a failed bracketed call wiped the pre-bracket committed state — catch_error must \
-             not perform journal work (e.g. discard_tx)"
+            "a failed bracketed call wiped the enclosing journal — CeloHandler::catch_error must \
+             skip op-revm's discard_tx while `no_commit` is set"
         );
     }
 

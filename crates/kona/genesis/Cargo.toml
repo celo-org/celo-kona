@@ -36,15 +36,11 @@ derive_more = { workspace = true, default-features = false, features = [
     "deref_mut",
 ] }
 
-# `revm` feature
-op-revm = { workspace = true, optional = true }
-
 # `arbitrary` feature
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 
 # `serde` feature
 serde = { workspace = true, optional = true }
-serde_repr = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -55,7 +51,6 @@ alloy-primitives = { workspace = true, features = ["rand", "arbitrary"] }
 
 [features]
 default = []
-revm = ["dep:op-revm"]
 std = [
     "alloy-primitives/std",
     "alloy-sol-types/std",
@@ -74,7 +69,6 @@ arbitrary = [
 ]
 serde = [
     "dep:serde",
-    "dep:serde_repr",
     "dep:serde_json",
     "alloy-primitives/serde",
     "alloy-eips/serde",

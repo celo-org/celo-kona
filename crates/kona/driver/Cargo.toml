@@ -19,7 +19,6 @@ workspace = true
 # Workspace
 celo-alloy-consensus.workspace = true
 celo-executor.workspace = true
-celo-protocol.workspace = true
 celo-genesis.workspace = true
 
 # Kona
@@ -28,7 +27,6 @@ kona-protocol.workspace = true
 kona-driver.workspace = true
 
 # Alloy
-alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 

@@ -21,13 +21,13 @@ celo-registry.workspace = true
 alloy-celo-evm.workspace = true
 celo-alloy-consensus.workspace = true
 celo-alloy-rpc-types-engine = { workspace = true, features = ["k256"] }
-celo-genesis = { workspace = true, features = ["revm"] }
+celo-genesis.workspace = true
 celo-revm.workspace = true
 
 # Kona
 kona-executor.workspace = true
 kona-mpt.workspace = true
-kona-genesis = { workspace = true, features = ["revm"] }
+kona-genesis.workspace = true
 kona-protocol.workspace = true
 
 # Alloy
@@ -47,6 +47,7 @@ revm.workspace = true
 # alloy-evm
 alloy-evm.workspace = true
 alloy-op-evm.workspace = true
+alloy-op-hardforks.workspace = true
 
 # General
 tracing.workspace = true

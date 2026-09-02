@@ -8,7 +8,7 @@ use crate::{
     },
     contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
-    fee_currency_context::{FeeCurrencyContext, non_native_fee_currency},
+    fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
     units::{Fc, FcU256, NativeU256},
 };
@@ -25,20 +25,20 @@ use revm::{
     context::{LocalContextTr, journal::JournalInner, result::InvalidTransaction},
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
+        cfg::GasId,
         journaled_state::account::JournaledAccountTr,
         result::{ExecutionResult, FromStringError},
     },
     handler::{
-        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS, evm::FrameTr,
-        handler::EvmTrError, pre_execution::validate_account_nonce_and_code,
-        validation::validate_priority_fee_tx,
+        EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS,
+        evm::FrameTr,
+        handler::EvmTrError,
+        pre_execution::validate_account_nonce_and_code,
+        validation::{validate_initial_tx_gas_with_gas_params, validate_priority_fee_tx},
     },
     inspector::InspectorHandler,
-    interpreter::{
-        InitialAndFloorGas, InterpreterResult, gas::calculate_initial_tx_gas_for_tx,
-        interpreter::EthInterpreter,
-    },
-    primitives::{U256, hardfork::SpecId},
+    interpreter::{InitialAndFloorGas, InterpreterResult, interpreter::EthInterpreter},
+    primitives::U256,
 };
 use std::{boxed::Box, format, string::ToString, vec::Vec};
 use tracing::{info, warn};
@@ -209,7 +209,7 @@ where
             // to the surrounding tx's value after each system call, deliberately keeping that
             // warmth for its other callers (the erc20 debit/credit). For context loading we
             // want the opposite, so we advance one past the id `call` restored to.
-            evm.ctx().journal_mut().transaction_id += 1;
+            evm.ctx().journal_mut().transaction_id.increment();
         }
 
         Ok(())
@@ -798,50 +798,74 @@ where
         Ok(())
     }
 
+    /// Validates the transaction's intrinsic gas.
+    ///
+    /// [`validate_initial_tx_gas_with_gas_params`] holds every gas rule revm knows: the
+    /// EIP-7623 floor override, the EIP-8037 state-gas gate, and the EIP-8037
+    /// `tx_gas_limit_cap` check. It reads its values from `cfg().gas_params()`, so a
+    /// configured gas table applies.
+    ///
+    /// CIP-64's per-currency intrinsic surcharge is the one Celo-specific input, and it
+    /// reaches revm as a bumped `tx_base_stipend` on a local `GasParams`. That table entry
+    /// feeds `initial_regular_gas` and nothing else — the EIP-7623 floor is built from the
+    /// separate `tx_floor_cost_base_gas` — which is CIP-64's rule: the surcharge raises the
+    /// initial gas and leaves the floor alone. Carrying it in the table puts it in front of
+    /// revm's checks, which therefore see the surcharged value.
+    ///
+    /// The surcharge is clamped so that revm's recomputed `initial_regular_gas` saturates at
+    /// `u64::MAX` instead of wrapping: revm sums the table entries with an unchecked `+`, and
+    /// `overflow-checks` is off in every profile. An `intrinsicGas` too large for a `u64`
+    /// arrives here capped at `u64::MAX` rather than rejected, so without the clamp such a
+    /// currency would wrap the sum down to a tiny intrinsic gas and admit transactions that
+    /// must be rejected with `CallGasCostMoreThanGasLimit`.
+    ///
+    /// MAINTENANCE: the bumped params must stay a local. Installing them into `cfg` would
+    /// misprice every opcode for the rest of the transaction.
+    ///
+    /// The surcharge counting toward EIP-8037's `tx_gas_limit_cap` has no consensus
+    /// consequence: that check compares `initial_regular_gas().max(floor_gas())`, and
+    /// `floor_gas` — which carries no surcharge — dominates the `max()` at every size where
+    /// the cap is in reach.
     fn validate_celo_initial_tx_gas(
         &self,
         evm: &mut CeloEvm<DB, INSP, P>,
     ) -> Result<InitialAndFloorGas, ERROR> {
-        // Extract needed values first to avoid borrowing conflicts
-        let ctx = evm.ctx();
-        let fee_currency = ctx.tx().fee_currency();
-        let gas_limit = ctx.tx().gas_limit();
-        let spec = *ctx.cfg().spec();
+        // Read the surcharge first: it borrows `fee_currency_context`, which cannot be held
+        // across the `ctx_ref()` borrow below. Native transactions resolve to 0.
+        let fee_currency = evm.ctx().tx().fee_currency();
+        let surcharge = evm
+            .fee_currency_context
+            .currency_intrinsic_gas_cost(fee_currency)
+            .map_err(|e| InvalidTransaction::from(e.to_string()))?;
 
-        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
+        let ctx = evm.ctx_ref();
+        let cfg = ctx.cfg();
+        let spec = *cfg.spec();
 
-        if non_native_fee_currency(fee_currency).is_some() {
-            let intrinsic_gas_for_erc20 = evm
-                .fee_currency_context
-                .currency_intrinsic_gas_cost(fee_currency)
-                .map_err(|e| InvalidTransaction::from(e.to_string()))?;
-            // Adding only in the initial gas, and not the floor because we never adapted the
-            // eip7623 to the cip64 (discussions being taken)
-            gas.initial_total_gas = gas
-                .initial_total_gas
-                .saturating_add(intrinsic_gas_for_erc20);
-        }
-
-        // Additional check to see if limit is big enough to cover initial gas.
-        if gas.initial_total_gas > gas_limit {
-            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                gas_limit,
-                initial_gas: gas.initial_total_gas,
-            }
-            .into());
-        }
-
-        // EIP-7623: Increase calldata cost
-        // floor gas should be less than gas limit.
-        if spec.into_eth_spec().is_enabled_in(SpecId::PRAGUE) && gas.floor_gas > gas_limit {
-            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                gas_floor: gas.floor_gas,
-                gas_limit,
-            }
-            .into());
+        let surcharged;
+        let gas_params = if surcharge == 0 {
+            cfg.gas_params()
+        } else {
+            let mut params = cfg.gas_params().clone();
+            let base = params.initial_tx_gas_for_tx(ctx.tx()).initial_regular_gas();
+            let clamped = surcharge.min(u64::MAX - base);
+            params.override_gas([(
+                GasId::tx_base_stipend(),
+                params.tx_base_stipend().saturating_add(clamped),
+            )]);
+            surcharged = params;
+            &surcharged
         };
 
-        Ok(gas)
+        validate_initial_tx_gas_with_gas_params(
+            ctx.tx(),
+            spec.into_eth_spec(),
+            gas_params,
+            cfg.is_eip7623_disabled(),
+            cfg.is_amsterdam_eip8037_enabled(),
+            cfg.tx_gas_limit_cap(),
+        )
+        .map_err(Into::into)
     }
 
     /// Builds the [`ExecutionResult`] for a finished transaction **without**
@@ -1171,9 +1195,11 @@ where
     fn last_frame_result(
         &mut self,
         evm: &mut Self::Evm,
+        original_reservoir: u64,
         frame_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        self.op.last_frame_result(evm, frame_result)
+        self.op
+            .last_frame_result(evm, original_reservoir, frame_result)
     }
 
     fn reimburse_caller(
@@ -1301,11 +1327,39 @@ where
         Ok(exec_result)
     }
 
+    /// Error-arm counterpart to [`Self::execution_result`]'s `no_commit` gate.
+    ///
+    /// op-revm routes every non-deposit transaction error — and every unconvertible type byte,
+    /// which includes CIP-64's `0x7b` — through `discard_tx`. For a real transaction that is
+    /// exactly right: it unwinds the rejected tx so its writes and EIP-2929 warm stamps cannot
+    /// leak into the next tx built on the same EVM.
+    ///
+    /// A **non-committing system call** is not a transaction, and the journal it runs against is
+    /// not its own. `run_system_call_no_commit`'s callers bracket the call with
+    /// `checkpoint` / `checkpoint_revert` precisely so they can undo the call's own entries and
+    /// nothing else (see `core_contracts::call_read_only`). `discard_tx` drains the *entire*
+    /// shared revert log, clears transient storage and the selfdestruct list, bumps
+    /// `transaction_id` and clears coinbase/access-list warmth — so letting it run here would
+    /// discard everything the *enclosing* transaction recorded before the bracket and reset its
+    /// warm/cold accounting mid-execution. The read-only callers (`get_currencies` /
+    /// `get_exchange_rate` / `get_intrinsic_gas`) swallow the error and continue, so that damage
+    /// would be silent rather than fatal.
+    ///
+    /// Skip only the journal work: the rest of op-revm's teardown (L1-cost cache, local context,
+    /// frame stack) runs either way, matching `execution_result`. Depth is left for the caller's
+    /// bracket to restore, which is what `call_read_only`'s error arm already does.
     fn catch_error(
         &self,
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        if self.no_commit {
+            evm.ctx().chain_mut().clear_tx_l1_cost();
+            evm.ctx().local_mut().clear();
+            evm.frame_stack().clear();
+            return Err(error);
+        }
+
         self.op.catch_error(evm, error)
     }
 }
@@ -1360,7 +1414,7 @@ mod tests {
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
         handler
-            .last_frame_result(&mut evm, &mut exec_result)
+            .last_frame_result(&mut evm, 0, &mut exec_result)
             .unwrap();
         handler.refund(&mut evm, &mut exec_result, 0);
         *exec_result.gas()
@@ -2667,7 +2721,7 @@ mod tests {
         // leak returns. This deterministically guards the fix.
         assert!(
             tx_id > id_before,
-            "context loading must advance the transaction id (was {id_before}, now {tx_id})"
+            "context loading must advance the transaction id (was {id_before:?}, now {tx_id:?})"
         );
 
         // Guard against a vacuous test: loading must actually have read FeeCurrencyDirectory
@@ -2996,5 +3050,258 @@ mod tests {
             "rejected CIP-64 tx leaked a native mutation made by the fee currency's debitGasFees; \
              the rollbackable debit must revert native balance changes, not only the ERC20 slot"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Initial transaction gas
+    // -----------------------------------------------------------------------
+
+    /// An independent implementation of Celo's intrinsic-gas rules, computed straight from
+    /// revm's primitives instead of through `validate_initial_tx_gas_with_gas_params`.
+    ///
+    /// It covers the rules that apply below Amsterdam: base intrinsic gas plus the CIP-64
+    /// surcharge on the initial gas alone, the gas-limit check, and the EIP-7623 floor check
+    /// from Prague onward. It has no EIP-8037 state-gas gate and no `tx_gas_limit_cap`
+    /// check, so it agrees with the handler exactly while EIP-8037 is disabled and is
+    /// expected to disagree once an Amsterdam-equivalent `OpSpecId` enables it. Retire it at
+    /// that point rather than teaching it the EIP-8037 rules: a second implementation that
+    /// tracks every upstream gas rule is worth nothing against the one it checks.
+    fn reference_validate_celo_initial_tx_gas(
+        evm: &mut CeloEvm<InMemoryDB, NoOpInspector>,
+    ) -> Result<InitialAndFloorGas, InvalidTransaction> {
+        use crate::fee_currency_context::non_native_fee_currency;
+        use revm::{
+            interpreter::gas::calculate_initial_tx_gas_for_tx, primitives::hardfork::SpecId,
+        };
+
+        let ctx = evm.ctx();
+        let fee_currency = ctx.tx().fee_currency();
+        let gas_limit = ctx.tx().gas_limit();
+        let spec = *ctx.cfg().spec();
+
+        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
+
+        if non_native_fee_currency(fee_currency).is_some() {
+            let intrinsic_gas_for_erc20 = evm
+                .fee_currency_context
+                .currency_intrinsic_gas_cost(fee_currency)
+                .map_err(|e| InvalidTransaction::from(e.to_string()))?;
+            gas.initial_regular_gas = gas
+                .initial_regular_gas
+                .saturating_add(intrinsic_gas_for_erc20);
+        }
+
+        if gas.initial_total_gas() > gas_limit {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: gas.initial_total_gas(),
+            });
+        }
+
+        if spec.into_eth_spec().is_enabled_in(SpecId::PRAGUE) && gas.floor_gas > gas_limit {
+            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                gas_floor: gas.floor_gas,
+                gas_limit,
+            });
+        };
+
+        Ok(gas)
+    }
+
+    /// A `CeloEvm` carrying a synthetic fee-currency context, so the CIP-64 surcharge is a
+    /// direct test input instead of something read back out of a seeded directory contract.
+    fn evm_for_initial_gas(
+        spec: OpSpecId,
+        fee_currency: Option<Address>,
+        surcharge: u64,
+        gas_limit: u64,
+        kind: TxKind,
+        data: Bytes,
+    ) -> CeloEvm<InMemoryDB, NoOpInspector> {
+        let mut evm = Context::celo()
+            .with_db(InMemoryDB::default())
+            .modify_tx_chained(|tx| {
+                tx.fee_currency = fee_currency;
+                tx.op_tx.base.gas_limit = gas_limit;
+                tx.op_tx.base.kind = kind;
+                tx.op_tx.base.data = data;
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_cfg_chained(|cfg| cfg.spec = spec)
+            .build_celo();
+
+        evm.fee_currency_context = FeeCurrencyContext::new(
+            [(
+                TEST_FEE_CURRENCY,
+                crate::fee_currency_context::FeeCurrencyInfo {
+                    exchange_rate: (U256::from(1), U256::from(1)),
+                    intrinsic_gas: surcharge,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            Some(U256::ZERO),
+        );
+        evm
+    }
+
+    #[rstest]
+    #[case::native_no_surcharge(
+        OpSpecId::ISTHMUS,
+        None,
+        0,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::native_ignores_context_surcharge(
+        OpSpecId::ISTHMUS,
+        None,
+        50_000,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_plain_call(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        50_000,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_zero_surcharge(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        0,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_with_calldata(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), 50_000, 1_000_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 512]))]
+    #[case::cip64_zero_calldata(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), 50_000, 1_000_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0x00; 512]))]
+    #[case::cip64_create(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), 50_000, 1_000_000, TxKind::Create, Bytes::from(vec![0xAB; 128]))]
+    #[case::cip64_gas_limit_below_intrinsic(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        50_000,
+        21_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_gas_limit_exactly_intrinsic(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        50_000,
+        71_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_floor_above_gas_limit(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), 0, 30_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 2048]))]
+    // A currency whose registered `intrinsicGas` exceeds `u64::MAX` reaches the handler capped
+    // at `u64::MAX`. revm sums the gas table with an unchecked `+`, so without the clamp the
+    // calldata case wraps to a tiny intrinsic gas and is admitted instead of rejected.
+    #[case::cip64_surcharge_saturates(
+        OpSpecId::ISTHMUS,
+        Some(TEST_FEE_CURRENCY),
+        u64::MAX,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::cip64_surcharge_saturates_with_calldata(OpSpecId::ISTHMUS, Some(TEST_FEE_CURRENCY), u64::MAX, 1_000_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 512]))]
+    #[case::unregistered_fee_currency(
+        OpSpecId::ISTHMUS,
+        Some(Address::repeat_byte(0x9A)),
+        50_000,
+        1_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    #[case::pre_prague_skips_floor_check(OpSpecId::HOLOCENE, Some(TEST_FEE_CURRENCY), 50_000, 30_000, TxKind::Call(Address::ZERO), Bytes::from(vec![0xAB; 2048]))]
+    #[case::osaka_gas_limit_cap_inert_without_eip8037(
+        OpSpecId::KARST,
+        Some(TEST_FEE_CURRENCY),
+        50_000,
+        20_000_000,
+        TxKind::Call(Address::ZERO),
+        Bytes::new()
+    )]
+    fn initial_tx_gas_matches_reference_below_amsterdam(
+        #[case] spec: OpSpecId,
+        #[case] fee_currency: Option<Address>,
+        #[case] surcharge: u64,
+        #[case] gas_limit: u64,
+        #[case] kind: TxKind,
+        #[case] data: Bytes,
+    ) {
+        let mut handler_evm =
+            evm_for_initial_gas(spec, fee_currency, surcharge, gas_limit, kind, data.clone());
+        let mut reference_evm =
+            evm_for_initial_gas(spec, fee_currency, surcharge, gas_limit, kind, data);
+
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        let from_handler = handler.validate_celo_initial_tx_gas(&mut handler_evm);
+        let from_reference = reference_validate_celo_initial_tx_gas(&mut reference_evm);
+
+        match (&from_handler, &from_reference) {
+            (Ok(got), Ok(want)) => assert_eq!(got, want),
+            (Err(got), Err(want)) => assert!(
+                format!("{got:?}").contains(&format!("{want:?}")),
+                "error mismatch: handler {got:?} does not carry reference {want:?}"
+            ),
+            _ => {
+                panic!("outcome mismatch: handler {from_handler:?} vs reference {from_reference:?}")
+            }
+        }
+    }
+
+    /// CIP-64's surcharge reaches revm as a bumped `tx_base_stipend`, and that table entry
+    /// feeds `initial_regular_gas` alone. If revm routes the base stipend into the EIP-7623
+    /// floor as well, this fails — the signal to stop carrying the surcharge in the gas table.
+    #[test]
+    fn cip64_surcharge_bumps_initial_gas_and_leaves_the_eip7623_floor_untouched() {
+        const SURCHARGE: u64 = 50_000;
+        let data = Bytes::from(vec![0xAB; 512]);
+
+        let mut native_evm = evm_for_initial_gas(
+            OpSpecId::ISTHMUS,
+            None,
+            SURCHARGE,
+            5_000_000,
+            TxKind::Call(Address::ZERO),
+            data.clone(),
+        );
+        let mut cip64_evm = evm_for_initial_gas(
+            OpSpecId::ISTHMUS,
+            Some(TEST_FEE_CURRENCY),
+            SURCHARGE,
+            5_000_000,
+            TxKind::Call(Address::ZERO),
+            data,
+        );
+
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+
+        let native = handler
+            .validate_celo_initial_tx_gas(&mut native_evm)
+            .unwrap();
+        let cip64 = handler
+            .validate_celo_initial_tx_gas(&mut cip64_evm)
+            .unwrap();
+
+        assert_eq!(
+            cip64.initial_regular_gas,
+            native.initial_regular_gas + SURCHARGE,
+            "the CIP-64 surcharge must land in the initial regular gas"
+        );
+        assert_eq!(
+            cip64.floor_gas, native.floor_gas,
+            "CIP-64 must not surcharge the EIP-7623 floor"
+        );
+        assert_eq!(cip64.initial_state_gas, native.initial_state_gas);
     }
 }
