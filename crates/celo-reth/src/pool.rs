@@ -1071,13 +1071,28 @@ impl Drop for SenderAdmissionLock {
 /// each later admission observe the prior insertion, while unrelated senders
 /// remain concurrent.
 ///
-/// Batch methods preserve input order and process each sender's transactions
-/// sequentially while processing different senders concurrently. Each item
-/// uses the raw pool's single-transaction path because its batch path validates
-/// every item before inserting any of them. Consequently, capacity enforcement
-/// and insertion events occur per item, as they do for sequential single
-/// submissions. If a batch future is cancelled, items whose single-transaction
-/// futures already completed remain inserted.
+/// Batch methods preserve input order, and split the batch by sender. A sender
+/// with at least one CIP-64 transaction in the batch is walked item by item
+/// through the raw pool's single-transaction path, because its batch path
+/// validates every item before inserting any of them. For those senders,
+/// capacity enforcement and insertion events therefore occur per item, as they
+/// do for sequential single submissions.
+///
+/// Every remaining sender keeps the raw pool's batch path, forwarded in one
+/// call and in input order, because de-batching it would only cost reth's
+/// amortized capacity enforcement. The pooled expenditure fold sums only
+/// same-fee-currency transactions, so such a sender contributes no cost to any
+/// admission total. It can still contribute a *nonce*: the fold walks a
+/// contiguous prefix, so a native transaction bridges it past its own nonce to
+/// the sender's CIP-64 transactions above. Whether a concurrent CIP-64
+/// admission observes that bridge was already a race before these senders
+/// skipped the guard, which grants mutual exclusion and not an order, and
+/// missing it yields the same shortfall as the gap-close case documented on
+/// [`pooled_fc_costs_reader`]. Single-transaction admission still takes the
+/// guard unconditionally, so only batched submission is affected.
+///
+/// If a batch future is cancelled, items whose inner futures already completed
+/// remain inserted.
 #[derive(Clone, Debug)]
 pub struct CeloTransactionPool<P>
 where
@@ -1121,32 +1136,69 @@ where
         P: 'static,
     {
         let result_count = transactions.len();
-        let mut sender_groups: HashMap<Address, Vec<(usize, TransactionOrigin, CeloPoolTx)>> =
-            HashMap::new();
-        for (index, (origin, transaction)) in transactions.into_iter().enumerate() {
-            sender_groups.entry(transaction.sender()).or_default().push((
-                index,
-                origin,
-                transaction,
-            ));
+
+        // Only senders that pay in a fee currency somewhere in this batch need
+        // the serialized walk; the rest keep reth's batch path (see the type
+        // docs for why that is safe).
+        let serialized_senders: HashSet<Address> = transactions
+            .iter()
+            .filter(|(_, transaction)| transaction.fee_currency().is_some())
+            .map(|(_, transaction)| transaction.sender())
+            .collect();
+
+        // The common case on a mostly-native batch: nothing here reads
+        // fee-currency expenditure, so hand it to reth untouched. One scan of a
+        // `Copy` field is the entire cost of the split for such a batch; the
+        // empty `collect` above does not allocate.
+        if serialized_senders.is_empty() {
+            return self.inner.add_transactions_with_origins(transactions).await;
         }
 
-        let mut indexed_results: Vec<_> = futures_util::future::join_all(
-            sender_groups.into_iter().map(|(sender, group)| async move {
-                let sender_lock = self.sender_locks.lock(sender);
-                let _guard = sender_lock.lock.lock().await;
-                let mut results = Vec::with_capacity(group.len());
-                for (index, origin, transaction) in group {
-                    let result = self.inner.add_transaction(origin, transaction).await;
-                    results.push((index, result));
+        let mut sender_groups: HashMap<Address, Vec<(usize, TransactionOrigin, CeloPoolTx)>> =
+            HashMap::new();
+        let mut batched: Vec<(usize, TransactionOrigin, CeloPoolTx)> = Vec::new();
+        for (index, (origin, transaction)) in transactions.into_iter().enumerate() {
+            let sender = transaction.sender();
+            if serialized_senders.contains(&sender) {
+                sender_groups.entry(sender).or_default().push((index, origin, transaction));
+            } else {
+                batched.push((index, origin, transaction));
+            }
+        }
+
+        let (batched_results, grouped_results) = futures_util::future::join(
+            async {
+                if batched.is_empty() {
+                    return Vec::new();
                 }
-                results
-            }),
+                let mut indices = Vec::with_capacity(batched.len());
+                let mut items = Vec::with_capacity(batched.len());
+                for (index, origin, transaction) in batched {
+                    indices.push(index);
+                    items.push((origin, transaction));
+                }
+                indices
+                    .into_iter()
+                    .zip(self.inner.add_transactions_with_origins(items).await)
+                    .collect::<Vec<_>>()
+            },
+            futures_util::future::join_all(sender_groups.into_iter().map(
+                |(sender, group)| async move {
+                    let sender_lock = self.sender_locks.lock(sender);
+                    let _guard = sender_lock.lock.lock().await;
+                    let mut results = Vec::with_capacity(group.len());
+                    for (index, origin, transaction) in group {
+                        let result = self.inner.add_transaction(origin, transaction).await;
+                        results.push((index, result));
+                    }
+                    results
+                },
+            )),
         )
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+        .await;
+
+        let mut indexed_results: Vec<_> =
+            batched_results.into_iter().chain(grouped_results.into_iter().flatten()).collect();
 
         debug_assert_eq!(indexed_results.len(), result_count);
         indexed_results.sort_unstable_by_key(|(index, _)| *index);
@@ -4392,12 +4444,21 @@ mod tests {
             assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
         }
 
-        /// Separate same-sender admission futures must not validate against the
-        /// same pre-insertion pool snapshot. The first validation is held after
-        /// its cumulative check so the second future can prove it waits at the
-        /// sender lock rather than entering the raw validator.
+        /// Concurrent same-sender admissions must not validate against the same
+        /// pre-insertion pool snapshot, whichever entry points they arrive on.
+        ///
+        /// The two entry points take *different* guards: a batch runs inside
+        /// `add_grouped_transactions`'s group future, while a single admission
+        /// goes through `with_sender_lock`. Mixing them here covers both, and
+        /// both are live in production: the network manager drives one import
+        /// future per peer message (batch) while RPC submits per connection
+        /// (single), so two peers relaying one sender hit exactly this pairing.
+        ///
+        /// Holding the batch admission at the validation gate must therefore
+        /// block the single admission. Deleting either guard lets the second
+        /// validator run early and fails the `entered` assertions below.
         #[tokio::test]
-        async fn concurrent_same_sender_admissions_are_serialized() {
+        async fn concurrent_batch_and_single_admissions_are_serialized() {
             let fc = Address::with_last_byte(0xAA);
             let sender = Address::with_last_byte(1);
             let barrier = Arc::new(Barrier::new(2));
@@ -4408,34 +4469,108 @@ mod tests {
                 Some(ValidationGate { barrier: barrier.clone(), entered: entered.clone() }),
             );
 
-            let first_tx = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
-            let second_tx = make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, sender);
+            let batched_tx = make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, sender);
+            let single_tx = make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, sender);
 
-            let first = pool.add_transaction(TransactionOrigin::External, first_tx);
-            tokio::pin!(first);
-            assert!(first.as_mut().now_or_never().is_none());
+            let batch = pool.add_transactions(TransactionOrigin::External, vec![batched_tx]);
+            tokio::pin!(batch);
+            assert!(batch.as_mut().now_or_never().is_none());
             assert_eq!(entered.load(AtomicOrdering::SeqCst), 1);
 
-            let second = pool.add_transaction(TransactionOrigin::External, second_tx);
-            tokio::pin!(second);
+            let single = pool.add_transaction(TransactionOrigin::External, single_tx);
+            tokio::pin!(single);
             assert!(
-                second.as_mut().now_or_never().is_none(),
-                "the second admission must wait on the sender lock"
+                single.as_mut().now_or_never().is_none(),
+                "the single admission must wait on the batch's sender lock"
             );
             assert_eq!(
                 entered.load(AtomicOrdering::SeqCst),
                 1,
-                "the second validator must not run before the first insertion completes"
+                "the single validator must not run before the batch insertion completes"
             );
 
             barrier.wait().await;
-            first.as_mut().await.expect("the first transaction must be admitted");
+            let batch_results = batch.as_mut().await;
+            assert!(batch_results[0].is_ok(), "the batched transaction must be admitted");
 
-            let (second_result, _) = tokio::join!(second.as_mut(), barrier.wait());
-            let err = second_result
-                .expect_err("the second transaction must observe the first expenditure");
+            let (single_result, _) = tokio::join!(single.as_mut(), barrier.wait());
+            let err = single_result
+                .expect_err("the single admission must observe the batch's expenditure");
             assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
             assert_eq!(entered.load(AtomicOrdering::SeqCst), 2);
+        }
+
+        /// A sender with no CIP-64 transaction in the batch keeps reth's batch
+        /// path, which validates the whole batch before inserting any of it.
+        /// The serialized walk cannot do that: it would hold the first
+        /// validation at the gate and never start the second. So `entered == 2`
+        /// on a single poll is what distinguishes the two paths.
+        #[tokio::test]
+        async fn native_only_senders_keep_the_raw_batch_path() {
+            let sender = Address::with_last_byte(1);
+            // Two validators plus this test all wait on the gate.
+            let barrier = Arc::new(Barrier::new(3));
+            let entered = Arc::new(AtomicUsize::new(0));
+            let pool = test_pool_with_controls(
+                25_000,
+                Arc::new(AtomicU64::new(0)),
+                Some(ValidationGate { barrier: barrier.clone(), entered: entered.clone() }),
+            );
+
+            let txs = vec![
+                make_test_tx_with_nonce(None, 0, 21_000, 100, 10, sender),
+                make_test_tx_with_nonce(None, 1, 21_000, 100, 10, sender),
+            ];
+
+            let batch = pool.add_transactions(TransactionOrigin::External, txs);
+            tokio::pin!(batch);
+            assert!(batch.as_mut().now_or_never().is_none());
+            assert_eq!(
+                entered.load(AtomicOrdering::SeqCst),
+                2,
+                "both native transactions must be validated before either is inserted"
+            );
+
+            barrier.wait().await;
+            let results = batch.as_mut().await;
+            assert!(
+                results.iter().all(Result::is_ok),
+                "both native transactions must be admitted: {results:?}"
+            );
+            assert_eq!(pool.pool_size().total, 2);
+        }
+
+        /// Splitting the batch must not disturb result ordering or outcomes:
+        /// a mixed batch interleaving a serialized CIP-64 sender with
+        /// native-only senders returns one result per input, in input order.
+        #[tokio::test]
+        async fn mixed_batch_preserves_input_order_across_both_paths() {
+            let fc = Address::with_last_byte(0xAA);
+            let cip64_sender = Address::with_last_byte(1);
+            let native_sender = Address::with_last_byte(2);
+            let pool = test_pool(25_000);
+
+            // Indices 0 and 2 are the CIP-64 sender (serialized walk); 15_000
+            // each, so the second one overdraws the 25_000 balance. Indices 1
+            // and 3 are a native-only sender and keep the raw batch path.
+            let txs = vec![
+                make_test_tx_with_nonce(Some(fc), 0, 150, 100, 10, cip64_sender),
+                make_test_tx_with_nonce(None, 0, 21_000, 100, 10, native_sender),
+                make_test_tx_with_nonce(Some(fc), 1, 150, 100, 10, cip64_sender),
+                make_test_tx_with_nonce(None, 1, 21_000, 100, 10, native_sender),
+            ];
+
+            let results = pool.add_transactions(TransactionOrigin::External, txs).await;
+
+            assert_eq!(results.len(), 4, "one result per input transaction");
+            assert!(results[0].is_ok(), "the first CIP-64 transaction fits the balance");
+            assert!(results[1].is_ok(), "native transactions are unaffected");
+            let err = results[2]
+                .as_ref()
+                .expect_err("the second CIP-64 transaction must observe the first");
+            assert!(err.to_string().contains("cumulative"), "unexpected error: {err}");
+            assert!(results[3].is_ok(), "native transactions are unaffected");
+            assert_eq!(pool.pool_size().total, 3);
         }
 
         /// A per-item rejection must not abort the rest of a sender group, and
