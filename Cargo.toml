@@ -290,16 +290,52 @@ opentelemetry-appender-tracing = "0.32"
 uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
-# Pin op-alloy / alloy-op-* / op-revm to the optimism monorepo's in-tree copies
-# at the kona-client/v1.7.0-rc.1 tag, so all kona/op-reth/op-alloy dependencies resolve
-# to a single source (the kona crates use the in-tree copies).
-op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
-op-revm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0-rc.1" }
+# This fork is the exact kona-client/v1.7.0-rc.1 pin plus the payload-builder
+# sparse-trie handle, bounded wait, root-source metrics, canonical-root e2e,
+# shared execution cache, and its cache-wiring regression assertion. Keep the
+# pinned SHA reachable via the `celo-kona/op-reth-v2.4-sparse-trie-v1` tag in
+# celo-org/optimism. The fork-test workflow verifies the tag against this rev.
+# Pin the registry versions of op-alloy / alloy-op-* / op-revm to the same fork
+# so all Optimism packages resolve from one source.
+op-alloy-consensus = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+op-alloy-rpc-types-engine = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+op-alloy-rpc-types = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+op-alloy-network = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+alloy-op-evm = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+op-revm = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+
+# Redirect packages requested through the upstream Optimism git source to the
+# same fork revision without duplicating their workspace dependency entries.
+[patch."https://github.com/ethereum-optimism/optimism"]
+kona-cli = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-client = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-derive = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-driver = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-executor = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-genesis = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-host = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-mpt = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-preimage = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-proof = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-protocol = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-providers-alloy = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-registry = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-std-fpvm = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+kona-std-fpvm-proc = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-chainspec = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-cli = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-consensus = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-evm = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-exex = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-forks = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-node = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-payload-builder = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-primitives = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-rpc = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-storage = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-trie = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
+reth-optimism-txpool = { git = "https://github.com/celo-org/optimism", rev = "e31a64b916c4e13dd7db8a39a68c4d9a19eeb2e6" }
 
 # This temporary reth fork carries Celo's block-context capture/seed hook and
 # its fresh-call integrations (`debug_traceCall` with a tx index,
