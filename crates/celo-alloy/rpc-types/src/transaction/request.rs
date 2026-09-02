@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use alloy_consensus::{
-    Sealed, SignableTransaction, Signed, TxEip1559, TxEip4844, TypedTransaction,
+    Sealed, SignableTransaction, Signed, TxEip1559, TxEip4844, TxEip4844Variant, TypedTransaction,
 };
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_network_primitives::TransactionBuilder7702;
@@ -60,11 +60,16 @@ impl<'de> Deserialize<'de> for CeloTransactionRequest {
         // A missing key or JSON `null` means native fee. Anything else that fails to parse
         // is a hard error, so a CIP-64 request never falls back to native fees unnoticed.
         let mut fee_currency = None;
-        if let Some(obj) = value.as_object_mut()
-            && let Some(key) = obj.keys().find(|k| k.eq_ignore_ascii_case("feecurrency")).cloned()
-        {
-            let raw = obj.remove(&key).expect("key just found above");
-            fee_currency = serde_json::from_value(raw).map_err(D::Error::custom)?;
+        if let Some(obj) = value.as_object_mut() {
+            let keys: Vec<_> =
+                obj.keys().filter(|key| key.eq_ignore_ascii_case("feecurrency")).cloned().collect();
+            if keys.len() > 1 {
+                return Err(D::Error::custom("duplicate feeCurrency fields"));
+            }
+            if let Some(key) = keys.into_iter().next() {
+                let raw = obj.remove(&key).expect("key just found above");
+                fee_currency = serde_json::from_value(raw).map_err(D::Error::custom)?;
+            }
         }
 
         let inner = serde_json::from_value(value).map_err(D::Error::custom)?;
@@ -287,6 +292,18 @@ impl From<Signed<alloy_consensus::TxEip2930>> for CeloTransactionRequest {
 
 impl From<Signed<TxEip1559>> for CeloTransactionRequest {
     fn from(value: Signed<TxEip1559>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<TxEip4844>> for CeloTransactionRequest {
+    fn from(value: Signed<TxEip4844>) -> Self {
+        from_signed(value)
+    }
+}
+
+impl From<Signed<TxEip4844Variant>> for CeloTransactionRequest {
+    fn from(value: Signed<TxEip4844Variant>) -> Self {
         from_signed(value)
     }
 }
@@ -578,6 +595,17 @@ mod tests {
         assert!(!reser.contains("feecurrency"), "lowercase key leaked: {reser}");
     }
 
+    #[test]
+    fn serde_duplicate_fee_currency_aliases_error() {
+        let json = r#"{
+            "feeCurrency": "0x765DE816845861e75A25fCA122bb6898B8B1282a",
+            "FeeCurrency": "0x0000000000000000000000000000000000000000",
+            "to": "0x0000000000000000000000000000000000000000"
+        }"#;
+        let err = serde_json::from_str::<CeloTransactionRequest>(json).unwrap_err();
+        assert!(err.to_string().contains("duplicate feeCurrency fields"));
+    }
+
     // -----------------------------------------------------------------------
     // Building CIP-64 typed transactions.
     // -----------------------------------------------------------------------
@@ -723,6 +751,21 @@ mod tests {
         let signed = tx.into_signed(Signature::test_signature());
         let req: CeloTransactionRequest = signed.into();
         assert_eq!(req.fee_currency, Some(sample_fc()));
+    }
+
+    #[test]
+    fn from_signed_eip4844_variants_remain_supported() {
+        let tx = TxEip4844 { max_fee_per_blob_gas: 42, ..Default::default() };
+        let signed = tx.clone().into_signed(Signature::test_signature());
+        let req: CeloTransactionRequest = signed.into();
+        assert_eq!(req.as_ref().transaction_type, Some(3));
+        assert_eq!(req.as_ref().max_fee_per_blob_gas, Some(42));
+
+        let variant = TxEip4844Variant::TxEip4844(tx);
+        let signed = variant.into_signed(Signature::test_signature());
+        let req: CeloTransactionRequest = signed.into();
+        assert_eq!(req.as_ref().transaction_type, Some(3));
+        assert_eq!(req.as_ref().max_fee_per_blob_gas, Some(42));
     }
 
     #[test]
