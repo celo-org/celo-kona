@@ -129,9 +129,12 @@ impl CeloGasFiller {
 
 /// Builds the request used to estimate a CIP-64 transaction's gas limit.
 ///
-/// The node checks the fee fields against the *native* base fee before it simulates, and a
-/// six-decimal currency's cap sits far below that, so forwarding them fails the estimate. Gas
-/// does not depend on them, so they are dropped. `fee_currency` stays: it is what makes the
+/// celo-reth checks the fee fields against the *native* base fee before it simulates, and a
+/// cap denominated in a currency worth more per unit than CELO sits below it, so forwarding
+/// them fails the estimate with `max fee per gas less than block base fee`. Without them the
+/// node simulates at a gas price of zero, the same footing as an estimate that never carried
+/// fees, so only a contract that branches on `GASPRICE` can tell the difference; such a caller
+/// sets `gas` itself, which skips the estimate. `fee_currency` stays: it is what makes the
 /// estimate include the CIP-64 intrinsic surcharge.
 fn estimation_request(
     tx: &CeloTransactionRequest,
