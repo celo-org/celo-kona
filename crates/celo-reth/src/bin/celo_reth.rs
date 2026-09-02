@@ -31,6 +31,7 @@ use reth_cli_commands::{
     p2p, prune, re_execute, stage,
 };
 use reth_cli_runner::CliRunner;
+use reth_cli_util::parse_duration_from_secs_or_ms;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
 use reth_node_builder::{FullNodeComponents, NodeBuilder, WithLaunchContext};
@@ -212,6 +213,18 @@ pub struct CeloArgs {
     #[command(flatten)]
     pub rollup: RollupArgs,
 
+    /// How long the payload builder waits for the shared sparse trie before falling back to a
+    /// synchronous state-root calculation. Defaults to 500ms.
+    ///
+    /// This only takes effect when `--engine.share-sparse-trie-with-payload-builder` is enabled,
+    /// non-legacy state-root mode is active, and reth detects at least five available CPUs.
+    #[arg(
+        long = "builder.state-root-wait",
+        value_name = "DURATION",
+        value_parser = parse_duration_from_secs_or_ms,
+    )]
+    pub payload_state_root_wait: Option<Duration>,
+
     /// Per-fee-currency block space limits as fraction of block gas.
     ///
     /// Format: `address=fraction,address=fraction,...`
@@ -367,6 +380,11 @@ fn main() {
             let node = CeloNode::new(rollup_args)
                 .with_blocklist(blocklist.clone())
                 .with_fee_currency_limits(fee_currency_limits);
+            let node = if let Some(wait) = celo_args.payload_state_root_wait {
+                node.with_payload_state_root_wait(wait)
+            } else {
+                node
+            };
 
             // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
             // set, dispatch on the on-disk schema version (--proofs-history.storage-version)
@@ -730,6 +748,19 @@ fn spawn_proofs_db_metrics<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Args as _;
+
+    #[test]
+    fn test_builder_state_root_wait_accepts_duration_override() {
+        let matches = CeloArgs::augment_args(clap::Command::new("test"))
+            .try_get_matches_from(["test", "--builder.state-root-wait", "750ms"])
+            .expect("state-root wait override should parse");
+
+        assert_eq!(
+            matches.get_one::<Duration>("payload_state_root_wait"),
+            Some(&Duration::from_millis(750)),
+        );
+    }
 
     /// The Celo download source URL must derive the `/api/snapshots` discovery endpoint that
     /// `--list-snapshots` (and latest-snapshot auto-discovery) query, so the CLI lists Celo
