@@ -52,9 +52,12 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
+
+/// Leaves half of Celo's one-second slot for the synchronous state-root fallback.
+const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // CeloNode
@@ -98,10 +101,12 @@ impl CeloNode {
     /// [`OpNode::builder_config`] so fields upstream derives from [`RollupArgs`] arrive
     /// without celo-reth naming them. Naming them here drops each one upstream adds.
     fn builder_config(&self) -> OpBuilderConfig {
-        OpNode::new(self.args.clone())
+        let mut config = OpNode::new(self.args.clone())
             .with_da_config(self.da_config.clone())
             .with_gas_limit_config(self.gas_limit_config.clone())
-            .builder_config()
+            .builder_config();
+        config.state_root_wait = Some(CELO_PAYLOAD_STATE_ROOT_WAIT);
+        config
     }
 
     /// Sets the shared fee currency blocklist.
@@ -800,5 +805,13 @@ mod tests {
         assert_eq!(config.da_config.max_da_tx_size(), Some(111));
         assert_eq!(config.da_config.max_da_block_size(), Some(222));
         assert_eq!(config.gas_limit_config.gas_limit(), Some(333));
+    }
+
+    #[test]
+    fn builder_config_caps_state_root_wait_for_celo_slot() {
+        assert_eq!(
+            CeloNode::new(RollupArgs::default()).builder_config().state_root_wait,
+            Some(CELO_PAYLOAD_STATE_ROOT_WAIT),
+        );
     }
 }
