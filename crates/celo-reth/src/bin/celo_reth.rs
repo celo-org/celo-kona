@@ -683,7 +683,7 @@ where
             // the methods on http/ws/ipc only when that transport's configured selection
             // contains `admin` (it checks `contains_http`/`contains_ws`/`contains_ipc`).
             // The default selection is eth/net/web3, which excludes admin, so these
-            // blocklist mutators are not exposed unless the operator opts in — on every
+            // blocklist methods are not exposed unless the operator opts in — on every
             // transport, IPC included. (`merge_configured` would instead install them on
             // all transports unconditionally, which is the exposure we are avoiding.)
             let admin_module = celo_admin_module(blocklist);
