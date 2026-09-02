@@ -69,6 +69,8 @@ const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
 pub struct CeloNode {
     /// The inner OP node (shared args, DA config, etc.).
     pub args: RollupArgs,
+    /// Optional override for how long the payload builder waits for the shared sparse trie.
+    pub payload_state_root_wait: Option<Duration>,
     /// Shared fee currency blocklist for CIP-64 transactions.
     pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     /// Per-fee-currency block space limits.
@@ -90,6 +92,7 @@ impl CeloNode {
     pub fn new(args: RollupArgs) -> Self {
         Self {
             args,
+            payload_state_root_wait: None,
             blocklist: Default::default(),
             fee_currency_limits: Default::default(),
             da_config: OpDAConfig::default(),
@@ -105,7 +108,9 @@ impl CeloNode {
             .with_da_config(self.da_config.clone())
             .with_gas_limit_config(self.gas_limit_config.clone())
             .builder_config();
-        config.state_root_wait = Some(CELO_PAYLOAD_STATE_ROOT_WAIT);
+        config.state_root_wait = Some(
+            self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT),
+        );
         config
     }
 
@@ -124,6 +129,12 @@ impl CeloNode {
         self
     }
 
+    /// Overrides how long the payload builder waits for the shared sparse trie.
+    pub const fn with_payload_state_root_wait(mut self, wait: Duration) -> Self {
+        self.payload_state_root_wait = Some(wait);
+        self
+    }
+
     /// Configure the data availability configuration for the payload builder.
     pub fn with_da_config(mut self, da_config: OpDAConfig) -> Self {
         self.da_config = da_config;
@@ -135,6 +146,7 @@ impl CeloNode {
         self.gas_limit_config = gas_limit_config;
         self
     }
+
 }
 
 impl NodeTypes for CeloNode {
@@ -808,10 +820,20 @@ mod tests {
     }
 
     #[test]
-    fn builder_config_caps_state_root_wait_for_celo_slot() {
+    fn builder_config_defaults_state_root_wait_to_500ms() {
         assert_eq!(
             CeloNode::new(RollupArgs::default()).builder_config().state_root_wait,
-            Some(CELO_PAYLOAD_STATE_ROOT_WAIT),
+            Some(Duration::from_millis(500)),
         );
+    }
+
+    #[test]
+    fn builder_config_uses_custom_state_root_wait() {
+        let wait = Duration::from_millis(750);
+        let config = CeloNode::new(RollupArgs::default())
+            .with_payload_state_root_wait(wait)
+            .builder_config();
+
+        assert_eq!(config.state_root_wait, Some(wait));
     }
 }
