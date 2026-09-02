@@ -1,0 +1,19 @@
+{
+  "post": {
+    "0x000000000000000000000000000000000000dead": {
+      "balance": "0x1"
+    },
+    "0x42cf1bbc38baaa3c4898ce8790e21ed2738c6a4a": {
+      "balance": "0x152d02c7e14af67fffff",
+      "nonce": 1
+    }
+  },
+  "pre": {
+    "0x000000000000000000000000000000000000dead": {
+      "balance": "0x0"
+    },
+    "0x42cf1bbc38baaa3c4898ce8790e21ed2738c6a4a": {
+      "balance": "0x152d02c7e14af6800000"
+    }
+  }
+}

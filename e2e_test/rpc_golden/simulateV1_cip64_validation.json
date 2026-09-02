@@ -1,0 +1,16 @@
+[
+  {
+    "baseFeePerGas": "0x3a699d00",
+    "calls": [
+      {
+        "error": null,
+        "gasUsed": "0x11558",
+        "logs": [],
+        "returnData": "0x",
+        "status": "0x1"
+      }
+    ],
+    "gasUsed": "0x11558",
+    "number": "0x1"
+  }
+]
