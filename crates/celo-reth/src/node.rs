@@ -108,9 +108,8 @@ impl CeloNode {
             .with_da_config(self.da_config.clone())
             .with_gas_limit_config(self.gas_limit_config.clone())
             .builder_config();
-        config.state_root_wait = Some(
-            self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT),
-        );
+        config.state_root_wait =
+            Some(self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT));
         config
     }
 
@@ -146,7 +145,6 @@ impl CeloNode {
         self.gas_limit_config = gas_limit_config;
         self
     }
-
 }
 
 impl NodeTypes for CeloNode {
