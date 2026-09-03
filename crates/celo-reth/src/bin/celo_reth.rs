@@ -214,7 +214,7 @@ pub struct CeloArgs {
     pub rollup: RollupArgs,
 
     /// How long the payload builder waits for the shared sparse trie before falling back to a
-    /// synchronous state-root calculation. Defaults to 500ms.
+    /// synchronous state-root calculation. Defaults to 750ms.
     ///
     /// This only takes effect when `--engine.share-sparse-trie-with-payload-builder` is enabled,
     /// non-legacy state-root mode is active, and reth detects at least five available CPUs.
