@@ -256,6 +256,18 @@ fn render_fee_currency_limits(limits: &HashMap<Address, f64>) -> String {
     entries.iter().map(|(addr, frac)| format!("{addr}={frac}")).collect::<Vec<_>>().join(",")
 }
 
+/// Rejects shared sparse-trie configurations that Reth would silently leave inactive.
+fn validate_shared_sparse_trie(
+    share_sparse_trie_with_payload_builder: bool,
+    use_state_root_task: bool,
+) -> eyre::Result<()> {
+    eyre::ensure!(
+        !share_sparse_trie_with_payload_builder || use_state_root_task,
+        "--engine.share-sparse-trie-with-payload-builder requires non-legacy state-root mode and at least five available CPUs"
+    );
+    Ok(())
+}
+
 /// Augment reth's version metadata with the celo-kona git SHA so `celo-reth --version` shows
 /// both the upstream reth commit and the celo-kona commit that built the binary.
 ///
@@ -331,6 +343,12 @@ fn main() {
 
     if let Err(err) = Cli::<CeloChainSpecParser, CeloArgs>::parse_with_denied_args().run(
         async move |builder, celo_args| {
+            let engine_args = &builder.config().engine;
+            validate_shared_sparse_trie(
+                engine_args.share_sparse_trie_with_payload_builder,
+                engine_args.tree_config().use_state_root_task(),
+            )?;
+
             let rollup_args = celo_args.rollup;
 
             // Parse fee currency limits from CLI args.
@@ -752,6 +770,18 @@ mod tests {
         assert_eq!(
             matches.get_one::<Duration>("payload_state_root_wait"),
             Some(&Duration::from_millis(750)),
+        );
+    }
+
+    #[test]
+    fn test_shared_sparse_trie_requires_state_root_task() {
+        assert!(validate_shared_sparse_trie(false, false).is_ok());
+        assert!(validate_shared_sparse_trie(true, true).is_ok());
+
+        let err = validate_shared_sparse_trie(true, false).unwrap_err();
+        assert!(
+            err.to_string().contains("at least five available CPUs"),
+            "unexpected error: {err}"
         );
     }
 
