@@ -28,7 +28,6 @@ use celo_alloy_rpc_types::{
 use celo_revm::{
     CeloTransaction,
     contracts::core_contracts::getExchangeRateCall,
-    non_native_fee_currency,
     units::{Fc, FcU256, Native, NativeU256},
 };
 use op_alloy_rpc_types::OpTransactionRequest;
@@ -894,9 +893,8 @@ impl CeloFeeApi {
         &self,
         request: &mut CeloTransactionRequest,
     ) -> Result<(), jsonrpsee_types::ErrorObjectOwned> {
-        let fc = match non_native_fee_currency(request.fee_currency) {
-            Some(fc) => fc,
-            None => return Ok(()),
+        let Some(fc) = request.fee_currency else {
+            return Ok(());
         };
 
         if request.as_ref().max_fee_per_gas.is_some() &&
@@ -1014,11 +1012,10 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
         .register_async_method("eth_gasPrice", |params, ctx, _| async move {
             let fee_currency: Option<Address> = params.sequence().optional_next()?;
             let base_price = (ctx.gas_price)().await?;
-            // `feeCurrency == 0x000…000` is the native-CELO sentinel, same as
-            // an absent parameter. Normalize here so zero doesn't trigger an
-            // exchange-rate lookup (which would fail — zero is never registered
-            // in the FeeCurrencyDirectory) and error out to the caller.
-            match non_native_fee_currency(fee_currency) {
+            // Any address given, the zero address included, is looked up in the directory
+            // and fails as unregistered when absent from it, as op-geth's `eth_gasPrice`
+            // does. Only an omitted parameter means native CELO.
+            match fee_currency {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_price), rate)
@@ -1034,7 +1031,7 @@ pub fn celo_gas_price_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<C
         .register_async_method("eth_maxPriorityFeePerGas", |params, ctx, _| async move {
             let fee_currency: Option<Address> = params.sequence().optional_next()?;
             let base_tip = (ctx.priority_fee)().await?;
-            match non_native_fee_currency(fee_currency) {
+            match fee_currency {
                 Some(fc) => {
                     let rate = ctx.exchange_rate(fc, None).await?;
                     scale_to_fc(NativeU256::new(base_tip), rate)
@@ -1262,20 +1259,11 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 for tx in txs {
                     let bf = base_fee.unwrap_or(0);
 
-                    // A CIP-64 tx with `fee_currency = None` or
-                    // `Some(Address::ZERO)` pays fees in native CELO (matching
-                    // `is_fee_in_celo`), so its `max_fee` / `priority_fee`
-                    // fields are already native-denominated. Route it through
-                    // the native `effective_tip_per_gas` path rather than the
-                    // FC exchange-rate conversion below — otherwise we'd look
-                    // up the rate for `Address::ZERO`, the directory call
-                    // would fail, and `cip64_fee_history_tip` would return 0,
-                    // underreporting tips in reward percentiles.
-                    let cip64_fc = if tx.ty() == cip64_ty {
-                        non_native_fee_currency(tx.fee_currency())
-                    } else {
-                        None
-                    };
+                    // A CIP-64 tx pays fees in native CELO only when `fee_currency` is
+                    // absent; any address it carries is looked up and converted. A tx whose
+                    // currency has no rate at this block reports a zero tip (see
+                    // `cip64_fee_history_tip`) rather than failing the whole call.
+                    let cip64_fc = if tx.ty() == cip64_ty { tx.fee_currency() } else { None };
 
                     let tip = match cip64_fc {
                         Some(fc) => {
@@ -2202,6 +2190,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fill_cip64_fee_defaults_looks_up_zero_fee_currency() {
+        // A zero-address `fee_currency` is a currency like any other here: the rate lookup
+        // runs and its failure surfaces, instead of the request being filled as native.
+        let api = Arc::new(CeloFeeApi {
+            gas_price: Box::new(|| Box::pin(async { Ok(U256::from(25_000_000_000u64)) })),
+            priority_fee: Box::new(|| Box::pin(async { Ok(U256::from(1_000_000_000u64)) })),
+            eth_call: Box::new(|_, _| {
+                Box::pin(async {
+                    Err(jsonrpsee_types::ErrorObject::owned(3, "execution reverted", None::<()>))
+                })
+            }),
+            fee_history: Box::new(|_, _, _| {
+                Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
+            }),
+            block_by_number: Box::new(|_| Box::pin(async { Ok(None) })),
+            block_receipts: Box::new(|_| Box::pin(async { Ok(None) })),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fee_currency_directory: Address::ZERO,
+        });
+
+        let mut request = CeloTransactionRequest {
+            inner: OpTransactionRequest::default(),
+            fee_currency: Some(Address::ZERO),
+        };
+
+        let err = api
+            .fill_cip64_fee_defaults(&mut request)
+            .await
+            .expect_err("zero-address fee currency must fail the rate lookup");
+        assert!(err.message().contains("execution reverted"), "got: {err:?}");
+        assert_eq!(request.as_ref().max_fee_per_gas, None, "no fee must have been filled");
+    }
+
     #[test]
     fn try_into_sim_tx_fee_currency_wraps_eip1559() {
         use alloy_eips::Typed2718;
@@ -2461,16 +2485,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gas_price_treats_zero_fee_currency_as_native() {
-        // `feeCurrency = 0x000…000` is the native-CELO sentinel. It must NOT
-        // trigger an exchange-rate lookup (which would fail — zero is never
-        // registered). Use an eth_call mock that panics if invoked, so the
-        // assertion is "no lookup happened".
+    async fn gas_price_looks_up_zero_fee_currency_and_fails_as_unregistered() {
+        // The zero address is not a native-CELO sentinel. `eth_gasPrice` and
+        // `eth_maxPriorityFeePerGas` must look it up like any other currency, so the
+        // directory's revert reaches the caller; op-geth's `eth_gasPrice` fails the same way
+        // (`internal/celoapi/api.go`, `convertedCurrencyValue`).
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let lookups = Arc::new(AtomicUsize::new(0));
         let api = Arc::new(CeloFeeApi {
             gas_price: Box::new(|| Box::pin(async { Ok(U256::from(25_000_000_000u64)) })),
             priority_fee: Box::new(|| Box::pin(async { Ok(U256::from(1_000_000u64)) })),
-            eth_call: Box::new(|_, _| {
-                panic!("exchange_rate lookup must not be invoked for zero-address feeCurrency")
+            eth_call: Box::new({
+                let lookups = lookups.clone();
+                move |_, _| {
+                    lookups.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async {
+                        Err(jsonrpsee_types::ErrorObject::owned(
+                            3,
+                            "execution reverted",
+                            None::<()>,
+                        ))
+                    })
+                }
             }),
             fee_history: Box::new(|_, _, _| {
                 Box::pin(async { Ok(alloy_rpc_types_eth::FeeHistory::default()) })
@@ -2484,17 +2521,13 @@ mod tests {
         });
         let module = celo_gas_price_module(api);
 
-        let gas_price: U256 = module
-            .call("eth_gasPrice", [Address::ZERO])
-            .await
-            .expect("eth_gasPrice with zero-address should succeed");
-        assert_eq!(gas_price, U256::from(25_000_000_000u64));
+        let gas_price: Result<U256, _> = module.call("eth_gasPrice", [Address::ZERO]).await;
+        assert!(gas_price.is_err(), "eth_gasPrice with the zero address must fail");
 
-        let tip: U256 = module
-            .call("eth_maxPriorityFeePerGas", [Address::ZERO])
-            .await
-            .expect("eth_maxPriorityFeePerGas with zero-address should succeed");
-        assert_eq!(tip, U256::from(1_000_000u64));
+        let tip: Result<U256, _> = module.call("eth_maxPriorityFeePerGas", [Address::ZERO]).await;
+        assert!(tip.is_err(), "eth_maxPriorityFeePerGas with the zero address must fail");
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 2, "each method must look the zero address up");
     }
 
     #[tokio::test]
