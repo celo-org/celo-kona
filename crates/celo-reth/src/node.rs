@@ -829,7 +829,8 @@ mod tests {
 
     #[test]
     fn builder_config_uses_custom_state_root_wait() {
-        let wait = Duration::from_millis(750);
+        let wait = Duration::from_secs(2);
+        assert_ne!(wait, CELO_PAYLOAD_STATE_ROOT_WAIT);
         let config = CeloNode::new(RollupArgs::default())
             .with_payload_state_root_wait(wait)
             .builder_config();
