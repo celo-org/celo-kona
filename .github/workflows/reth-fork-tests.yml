@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.3.1-sparse-trie-v1
+  OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.3.1-sparse-trie-v2
   RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-tracing-context-v3
 
 jobs:
