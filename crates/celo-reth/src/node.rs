@@ -55,8 +55,8 @@ use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
 
-/// Leaves half of Celo's one-second slot for the synchronous state-root fallback.
-const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
+/// Gives the shared sparse trie 750ms before allowing a synchronous state-root fallback.
+const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(750);
 
 // ---------------------------------------------------------------------------
 // CeloNode
@@ -68,6 +68,8 @@ const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
 pub struct CeloNode {
     /// The inner OP node (shared args, DA config, etc.).
     pub args: RollupArgs,
+    /// Optional override for how long the payload builder waits for the shared sparse trie.
+    pub payload_state_root_wait: Option<Duration>,
     /// Shared fee currency blocklist for CIP-64 transactions.
     pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     /// Per-fee-currency block space limits.
@@ -89,6 +91,7 @@ impl CeloNode {
     pub fn new(args: RollupArgs) -> Self {
         Self {
             args,
+            payload_state_root_wait: None,
             blocklist: Default::default(),
             fee_currency_limits: Default::default(),
             da_config: OpDAConfig::default(),
@@ -111,6 +114,12 @@ impl CeloNode {
         self
     }
 
+    /// Overrides how long the payload builder waits for the shared sparse trie.
+    pub const fn with_payload_state_root_wait(mut self, wait: Duration) -> Self {
+        self.payload_state_root_wait = Some(wait);
+        self
+    }
+
     /// Configure the data availability configuration for the payload builder.
     pub fn with_da_config(mut self, da_config: OpDAConfig) -> Self {
         self.da_config = da_config;
@@ -121,6 +130,19 @@ impl CeloNode {
     pub fn with_gas_limit_config(mut self, gas_limit_config: OpGasLimitConfig) -> Self {
         self.gas_limit_config = gas_limit_config;
         self
+    }
+
+    /// Creates the configured OP payload builder used by the node components.
+    fn payload_builder(&self) -> OpPayloadBuilder<CeloPayloadTransactions> {
+        let celo_txs =
+            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), self.blocklist.clone());
+        OpPayloadBuilder::new(self.args.compute_pending_block)
+            .with_da_config(self.da_config.clone())
+            .with_gas_limit_config(self.gas_limit_config.clone())
+            .with_state_root_wait(Some(
+                self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT),
+            ))
+            .with_transactions(celo_txs)
     }
 }
 
@@ -412,21 +434,14 @@ where
     >;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        let RollupArgs { disable_txpool_gossip, compute_pending_block, discovery_v4, .. } =
-            self.args;
+        let RollupArgs { disable_txpool_gossip, discovery_v4, .. } = self.args;
         let blocklist = self.blocklist.clone();
-        let celo_txs =
-            CeloPayloadTransactions::new(self.fee_currency_limits.clone(), blocklist.clone());
         ComponentsBuilder::default()
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
             .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
-                OpPayloadBuilder::new(compute_pending_block)
-                    .with_da_config(self.da_config.clone())
-                    .with_gas_limit_config(self.gas_limit_config.clone())
-                    .with_state_root_wait(Some(CELO_PAYLOAD_STATE_ROOT_WAIT))
-                    .with_transactions(celo_txs),
+                self.payload_builder(),
             )))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
@@ -743,5 +758,27 @@ where
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
         Ok(Arc::new(CeloConsensus::new(ctx.chain_spec())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_builder_defaults_state_root_wait_to_750ms() {
+        let builder = CeloNode::new(RollupArgs::default()).payload_builder();
+
+        assert_eq!(builder.state_root_wait, Some(Duration::from_millis(750)));
+    }
+
+    #[test]
+    fn payload_builder_uses_custom_state_root_wait() {
+        let wait = Duration::from_millis(750);
+        let builder = CeloNode::new(RollupArgs::default())
+            .with_payload_state_root_wait(wait)
+            .payload_builder();
+
+        assert_eq!(builder.state_root_wait, Some(wait));
     }
 }
