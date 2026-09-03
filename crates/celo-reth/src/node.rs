@@ -55,8 +55,8 @@ use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
 
-/// Leaves half of Celo's one-second slot for the synchronous state-root fallback.
-const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(500);
+/// Gives the shared sparse trie 750ms before allowing a synchronous state-root fallback.
+const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(750);
 
 // ---------------------------------------------------------------------------
 // CeloNode
@@ -766,10 +766,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn payload_builder_defaults_state_root_wait_to_500ms() {
+    fn payload_builder_defaults_state_root_wait_to_750ms() {
         let builder = CeloNode::new(RollupArgs::default()).payload_builder();
 
-        assert_eq!(builder.state_root_wait, Some(Duration::from_millis(500)));
+        assert_eq!(builder.state_root_wait, Some(Duration::from_millis(750)));
     }
 
     #[test]
