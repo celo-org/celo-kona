@@ -203,14 +203,8 @@ mod tests {
             context.currency_exchange_rate(None),
             Ok((U256::ONE, U256::ONE))
         );
-        assert_eq!(
-            context.celo_to_currency(None, native),
-            Ok(FcU256::new(U256::from(7)))
-        );
-        assert_eq!(
-            context.currency_to_celo(None, fc),
-            Ok(NativeU256::new(U256::from(7)))
-        );
+        assert_eq!(context.celo_to_currency(None, native), Ok(fc));
+        assert_eq!(context.currency_to_celo(None, fc), Ok(native));
 
         // Spelled out per call: the four `Result`s have four different `Ok` types, so one
         // shared `Err` binding would not type-check against all of them.
