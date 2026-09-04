@@ -223,11 +223,11 @@ const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated bef
 
 /// Extract the fee currency address from a pool transaction without cloning.
 ///
-/// The value is returned as signed: only an absent `feeCurrency` pays in native CELO. A
-/// CIP-64 tx carrying the zero address goes through the exchange-rate lookup like any other
-/// currency and is rejected as unregistered, the verdict op-geth reaches in
-/// `core/txpool/celo_validation.go` (`IsCurrencyAllowed`). Mapping zero to native here would
-/// let this node build a block that op-geth rejects.
+/// The value is returned exactly as the sender signed it: only an absent `feeCurrency` pays
+/// in native CELO. A CIP-64 tx carrying the zero address goes through the exchange-rate
+/// lookup like any other currency and is rejected as unregistered, the verdict op-geth
+/// reaches in `core/txpool/celo_validation.go` (`IsCurrencyAllowed`). Mapping zero to native
+/// here would let this node build a block that op-geth rejects.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
     inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency)
 }
