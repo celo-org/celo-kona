@@ -2144,6 +2144,7 @@ mod tests {
             .expect_err("zero-address fee currency must fail the rate lookup");
         assert!(err.message().contains("execution reverted"), "got: {err:?}");
         assert_eq!(request.as_ref().max_fee_per_gas, None, "no fee must have been filled");
+        assert_eq!(request.as_ref().max_priority_fee_per_gas, None, "no tip must have been filled");
     }
 
     #[test]
@@ -2442,10 +2443,12 @@ mod tests {
         let module = celo_gas_price_module(api);
 
         let gas_price: Result<U256, _> = module.call("eth_gasPrice", [Address::ZERO]).await;
-        assert!(gas_price.is_err(), "eth_gasPrice with the zero address must fail");
+        let err = gas_price.expect_err("eth_gasPrice with the zero address must fail");
+        assert!(err.to_string().contains("execution reverted"), "got: {err}");
 
         let tip: Result<U256, _> = module.call("eth_maxPriorityFeePerGas", [Address::ZERO]).await;
-        assert!(tip.is_err(), "eth_maxPriorityFeePerGas with the zero address must fail");
+        let err = tip.expect_err("eth_maxPriorityFeePerGas with the zero address must fail");
+        assert!(err.to_string().contains("execution reverted"), "got: {err}");
 
         assert_eq!(lookups.load(Ordering::SeqCst), 2, "each method must look the zero address up");
     }
