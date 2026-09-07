@@ -1139,7 +1139,7 @@ where
         // `Cip64Info` here so the receipt carries `base_fee: Some(..)` rather than `None`.
         //
         // Three shapes reach this branch:
-        //   - native-fee CIP-64 (`feeCurrency` unset / 0x0): always, block execution included.
+        //   - native-fee CIP-64 (`feeCurrency` unset): always, block execution included.
         //     Consensus-critical — without it the receipt encoding would differ from the
         //     historical behavior and break receipt roots.
         //   - ERC20-fee CIP-64 with the base-fee check off on a *receipt-building* executor:
@@ -1207,10 +1207,9 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        // For CIP-64 transactions with a non-zero fee currency, we credit the fee
-        // currency all in the same place (in reward_beneficiary). Txs that pay fees in
-        // native CELO — including CIP-64 txs with `feeCurrency == Address::ZERO` —
-        // use the native reimbursement path here.
+        // For CIP-64 transactions with a fee currency, we credit the fee currency all in
+        // the same place (in reward_beneficiary). Txs that pay fees in native CELO (no
+        // `feeCurrency`) use the native reimbursement path here.
         let fees_in_celo = evm.ctx().tx().is_fee_in_celo();
         if fees_in_celo {
             self.op.mainnet.reimburse_caller(evm, exec_result)?;
@@ -1244,9 +1243,8 @@ where
         let is_deposit = evm.ctx().tx().tx_type() == DEPOSIT_TRANSACTION_TYPE;
 
         // Transfer fee to coinbase/beneficiary.
-        // For CIP-64 txs paying in a non-zero fee currency, fee distribution happens in
-        // `cip64_credit_fee_currency`; native-fee txs (including CIP-64 with zero fee
-        // currency) go through the normal payout path below.
+        // For CIP-64 txs paying in a fee currency, fee distribution happens in
+        // `cip64_credit_fee_currency`; native-fee txs go through the normal payout path below.
         if is_deposit || !evm.ctx().tx().is_fee_in_celo() {
             return Ok(());
         }
@@ -2556,17 +2554,79 @@ mod tests {
     }
 
     #[test]
-    fn test_cip64_zero_address_fee_currency_uses_native_path() {
-        // A CIP-64 tx with `feeCurrency = Address::ZERO` must be treated as a
-        // native-fee tx throughout the handler. Otherwise the tx gets charged in
-        // native CELO (via `validate_against_state_and_deduct_caller`) but the
-        // reimbursement and beneficiary payouts get skipped (they used to be
-        // gated on `fee_currency().is_none()`), which over-charges the sender
-        // and mis-distributes block fees. See PR #144 review.
+    fn test_cip64_native_fee_uses_native_path() {
+        // A CIP-64 tx with no `feeCurrency` pays in native CELO throughout the handler:
+        // charged in `validate_against_state_and_deduct_caller`, reimbursed in
+        // `reimburse_caller`, beneficiary paid in `reward_beneficiary`. See PR #144 review.
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         // Use fc_balance=0 — the tx must NOT touch any ERC20 state.
         let db = make_celo_test_db_with_fee_currency(sender, U256::ZERO);
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = None;
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+            });
+
+        let mut evm = ctx.build_celo();
+        let output = evm
+            .replay()
+            .expect("native-fee CIP-64 should use the native path");
+        assert!(
+            output.result.is_success(),
+            "Execution should succeed: {:?}",
+            output.result
+        );
+
+        // Native fee path: caller's CELO balance must have dropped to cover gas,
+        // and the beneficiary must have received a portion. Verify both sides of
+        // the balance accounting.
+        let sender_balance = output
+            .state
+            .get(&sender)
+            .map(|a| a.info.balance)
+            .expect("sender account should exist in post-state");
+        let beneficiary_balance = output
+            .state
+            .get(&beneficiary)
+            .map(|a| a.info.balance)
+            .unwrap_or(U256::ZERO);
+        assert!(
+            sender_balance < U256::from(1_000_000_000_000_000_000u128),
+            "Sender CELO balance should have decreased: {sender_balance}"
+        );
+        assert!(
+            beneficiary_balance > U256::ZERO,
+            "Beneficiary should receive native CELO fees, got {beneficiary_balance}"
+        );
+    }
+
+    #[test]
+    fn test_cip64_zero_address_fee_currency_is_unregistered() {
+        // The zero address is not a native-fee alias. op-geth's `feeCurrency` is a nil-able
+        // pointer where only nil means native, so it rejects this shape at the pool and
+        // marks a block containing it invalid. Reject it here the same way, so celo-reth
+        // and kona never accept a block op-geth cannot execute.
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let db = make_celo_test_db_with_fee_currency(sender, U256::from(1_000_000u64));
 
         let ctx = Context::celo()
             .with_db(db)
@@ -2591,36 +2651,64 @@ mod tests {
             });
 
         let mut evm = ctx.build_celo();
-        let output = evm
-            .replay()
-            .expect("CIP-64 with zero-address fee currency should use native path");
+        let result = evm.replay();
         assert!(
-            output.result.is_success(),
-            "Execution should succeed: {:?}",
-            output.result
+            result.is_err(),
+            "zero-address fee currency must be rejected: {result:?}"
         );
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains("not registered"),
+            "Error should mention an unregistered currency: {err_str}"
+        );
+    }
 
-        // Native fee path: caller's CELO balance must have dropped to cover gas,
-        // and the beneficiary must have received a portion. Verify both sides of
-        // the balance accounting (this would fail if reward_beneficiary's early
-        // return still matched `fee_currency().is_some()`).
-        let sender_balance = output
-            .state
-            .get(&sender)
-            .map(|a| a.info.balance)
-            .expect("sender account should exist in post-state");
-        let beneficiary_balance = output
-            .state
-            .get(&beneficiary)
-            .map(|a| a.info.balance)
-            .unwrap_or(U256::ZERO);
+    /// With the base-fee check on, `validate_env` rejects the zero address first, through the
+    /// base-fee conversion; with it off (the `eth_call` / `eth_estimateGas` shape) the rejection
+    /// must come from `validate_celo_initial_tx_gas`. The release-line backports carry an extra
+    /// guard there, so this pins the path a backport rewrite could reopen.
+    ///
+    /// `CfgEnv::disable_base_fee` only exists behind revm's `optional_no_base_fee` feature.
+    #[cfg(feature = "optional_no_base_fee")]
+    #[test]
+    fn test_cip64_zero_address_fee_currency_is_unregistered_without_base_fee_check() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let db = make_celo_test_db_with_fee_currency(sender, U256::from(1_000_000u64));
+
+        let ctx = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(Address::ZERO);
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.gas_price = 100;
+                tx.op_tx.base.gas_priority_fee = Some(10);
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_block_chained(|block| {
+                block.basefee = 1;
+                block.beneficiary = beneficiary;
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::REGOLITH;
+                cfg.chain_id = 0;
+                cfg.disable_base_fee = true;
+            });
+
+        let mut evm = ctx.build_celo();
+        let result = evm.replay();
         assert!(
-            sender_balance < U256::from(1_000_000_000_000_000_000u128),
-            "Sender CELO balance should have decreased: {sender_balance}"
+            result.is_err(),
+            "zero-address fee currency must be rejected: {result:?}"
         );
+        let err_str = format!("{:?}", result.unwrap_err());
         assert!(
-            beneficiary_balance > U256::ZERO,
-            "Beneficiary should receive native CELO fees, got {beneficiary_balance}"
+            err_str.contains("not registered"),
+            "Error should mention an unregistered currency: {err_str}"
         );
     }
 
@@ -3069,7 +3157,6 @@ mod tests {
     fn reference_validate_celo_initial_tx_gas(
         evm: &mut CeloEvm<InMemoryDB, NoOpInspector>,
     ) -> Result<InitialAndFloorGas, InvalidTransaction> {
-        use crate::fee_currency_context::non_native_fee_currency;
         use revm::{
             interpreter::gas::calculate_initial_tx_gas_for_tx, primitives::hardfork::SpecId,
         };
@@ -3081,7 +3168,7 @@ mod tests {
 
         let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
 
-        if non_native_fee_currency(fee_currency).is_some() {
+        if fee_currency.is_some() {
             let intrinsic_gas_for_erc20 = evm
                 .fee_currency_context
                 .currency_intrinsic_gas_cost(fee_currency)

@@ -78,7 +78,7 @@ impl FeeCurrencyContext {
     }
 
     /// Look up a registered currency, erroring for unregistered addresses.
-    /// Callers handle the native case (see [`non_native_fee_currency`]) first.
+    /// Callers handle the native (`None`) case first.
     fn registered(&self, currency: Address) -> Result<&FeeCurrencyInfo, FeeCurrencyError> {
         self.currencies
             .get(&currency)
@@ -89,7 +89,7 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
     ) -> Result<u64, FeeCurrencyError> {
-        let Some(currency) = non_native_fee_currency(currency) else {
+        let Some(currency) = currency else {
             return Ok(0);
         };
         Ok(self.registered(currency)?.intrinsic_gas)
@@ -111,7 +111,7 @@ impl FeeCurrencyContext {
         &self,
         currency: Option<Address>,
     ) -> Result<(U256, U256), FeeCurrencyError> {
-        let Some(currency) = non_native_fee_currency(currency) else {
+        let Some(currency) = currency else {
             return Ok((U256::ONE, U256::ONE));
         };
         Ok(self.registered(currency)?.exchange_rate)
@@ -120,16 +120,15 @@ impl FeeCurrencyContext {
     /// Convert a native-CELO amount to its fee-currency equivalent at the
     /// rate registered for `currency`.
     ///
-    /// When `currency` is `None` or `Address::ZERO` the input is treated as
-    /// native CELO and wrapped unchanged in `FcU256` to keep the return shape
-    /// uniform — callers on that branch must know they're reading a native
-    /// value back out, since the type tag is no longer load-bearing there.
+    /// When `currency` is `None` the input is native CELO and is wrapped unchanged in
+    /// `FcU256` to keep the return shape uniform — callers on that branch must know they're
+    /// reading a native value back out, since the type tag is no longer load-bearing there.
     pub fn celo_to_currency(
         &self,
         currency: Option<Address>,
         amount: NativeU256,
     ) -> Result<FcU256, FeeCurrencyError> {
-        let Some(currency) = non_native_fee_currency(currency) else {
+        let Some(currency) = currency else {
             return Ok(FcU256::new(amount.into_inner()));
         };
         let (numerator, denominator) = self.registered(currency)?.exchange_rate;
@@ -139,13 +138,13 @@ impl FeeCurrencyContext {
     }
 
     /// Convert a fee-currency amount to its native-CELO equivalent. Same
-    /// no-currency / zero-address passthrough as [`Self::celo_to_currency`].
+    /// no-currency passthrough as [`Self::celo_to_currency`].
     pub fn currency_to_celo(
         &self,
         currency: Option<Address>,
         amount: FcU256,
     ) -> Result<NativeU256, FeeCurrencyError> {
-        let Some(currency) = non_native_fee_currency(currency) else {
+        let Some(currency) = currency else {
             return Ok(NativeU256::new(amount.into_inner()));
         };
         let (numerator, denominator) = self.registered(currency)?.exchange_rate;
@@ -153,14 +152,6 @@ impl FeeCurrencyContext {
             amount.into_inner().saturating_mul(denominator) / numerator,
         ))
     }
-}
-
-/// Normalize a fee-currency field to `Some(addr)` only for a real ERC20 fee
-/// currency: `None` and `Address::ZERO` both denote native CELO (the zero
-/// address cannot host an ERC20 contract). This is the same rule as
-/// [`crate::CeloTxTr::is_fee_in_celo`], in `Option` form for lookups.
-pub fn non_native_fee_currency(currency: Option<Address>) -> Option<Address> {
-    currency.filter(|c| *c != Address::ZERO)
 }
 
 #[cfg(test)]
@@ -193,6 +184,45 @@ mod tests {
         assert_eq!(
             fee_currency_context.updated_at_block.unwrap(),
             evm.ctx().block().number
+        );
+    }
+
+    /// Only `None` is native. The zero address is looked up like any other address and,
+    /// being registered on no Celo chain, fails as `NotRegistered` at every lookup. Each
+    /// method is asserted on its own: the handler tests reach `celo_to_currency` first and
+    /// would not notice a stale alias left in one of the other three.
+    #[test]
+    fn test_zero_address_is_not_a_native_alias() {
+        let context = FeeCurrencyContext::default();
+        let zero = Some(Address::ZERO);
+        let native = NativeU256::new(U256::from(7));
+        let fc = FcU256::new(U256::from(7));
+
+        assert_eq!(context.currency_intrinsic_gas_cost(None), Ok(0));
+        assert_eq!(
+            context.currency_exchange_rate(None),
+            Ok((U256::ONE, U256::ONE))
+        );
+        assert_eq!(context.celo_to_currency(None, native), Ok(fc));
+        assert_eq!(context.currency_to_celo(None, fc), Ok(native));
+
+        // Spelled out per call: the four `Result`s have four different `Ok` types, so one
+        // shared `Err` binding would not type-check against all of them.
+        assert_eq!(
+            context.currency_intrinsic_gas_cost(zero),
+            Err(FeeCurrencyError::NotRegistered(Address::ZERO))
+        );
+        assert_eq!(
+            context.currency_exchange_rate(zero),
+            Err(FeeCurrencyError::NotRegistered(Address::ZERO))
+        );
+        assert_eq!(
+            context.celo_to_currency(zero, native),
+            Err(FeeCurrencyError::NotRegistered(Address::ZERO))
+        );
+        assert_eq!(
+            context.currency_to_celo(zero, fc),
+            Err(FeeCurrencyError::NotRegistered(Address::ZERO))
         );
     }
 }
