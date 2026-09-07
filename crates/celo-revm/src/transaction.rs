@@ -29,12 +29,13 @@ pub trait CeloTxTr: OpTxTr {
 
     /// Returns `true` if this transaction pays fees in native CELO.
     ///
-    /// A CIP-64 tx that sets `feeCurrency` to the zero address is treated as native,
-    /// because the zero address cannot host an ERC20 fee currency contract. This
-    /// matches op-geth's `feeCurrency == nil` check (Go's nil `common.Address` is
-    /// the zero value).
+    /// Only an absent `feeCurrency` is native. The zero address is a currency like any
+    /// other and fails the directory lookup as unregistered. op-geth's field is a nil-able
+    /// pointer where only nil means native (`core/types/celo_dynamic_fee_tx_v2.go`), so a
+    /// CIP-64 tx carrying twenty zero bytes is invalid there and a block containing one is
+    /// rejected; treating it as native here would let celo-reth build such a block.
     fn is_fee_in_celo(&self) -> bool {
-        self.fee_currency().is_none_or(|addr| addr == Address::ZERO)
+        self.fee_currency().is_none()
     }
 }
 

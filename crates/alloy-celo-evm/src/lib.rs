@@ -819,6 +819,13 @@ mod tests {
         }
     }
 
+    /// A CIP-64 tx that pays fees in native CELO: type `0x7b` with no fee currency.
+    fn make_native_fee_cip64_tx() -> CeloTransaction<TxEnv> {
+        let mut tx = make_cip64_tx(Address::with_last_byte(0xFC));
+        tx.fee_currency = None;
+        tx
+    }
+
     /// `transact_raw` must NOT reject a blocklisted currency: `base_fee_check_enabled`
     /// is also true during block import / derivation re-execution, so rejecting here
     /// would let a node's locally-accumulated blocklist reject a valid canonical block.
@@ -919,6 +926,27 @@ mod tests {
         let result = evm.transact_raw(tx);
         assert!(result.is_err(), "Expected tx to fail");
         assert!(!blocklist.is_blocked(fc), "Non-debit/credit error should not cause blocklisting");
+    }
+
+    /// The zero address is not a native-fee alias: a CIP-64 tx carrying it fails as an
+    /// unregistered currency, as it does on op-geth, and like any other unregistered
+    /// currency it is not blocklisted.
+    #[test]
+    fn test_zero_address_fee_currency_is_unregistered() {
+        let blocklist = FeeCurrencyBlocklist::default();
+        let mut evm = make_test_evm(blocklist.clone());
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+
+        let result = evm.transact_raw(make_cip64_tx(Address::ZERO));
+        let err = format!("{:?}", result.expect_err("zero-address fee currency must not execute"));
+        assert!(
+            err.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX),
+            "expected an unregistered-currency failure, got: {err}"
+        );
+        assert!(
+            !blocklist.is_blocked(Address::ZERO),
+            "unregistered currencies are not blocklisted"
+        );
     }
 
     /// Put the given sequencing-mode EVM in block-building mode, register `fc`
@@ -1505,9 +1533,8 @@ mod tests {
     /// there. Call-style simulation (`eth_call` / `eth_estimateGas`) uses loose store-disabled
     /// EVMs and is covered by [`test_loose_evm_replays_cip64_txs_without_storing`].
     ///
-    /// The handler populates `cip64_tx_info` for native-fee CIP-64 txs
-    /// (`feeCurrency == 0x0`) even when the base fee is disabled, so the tx
-    /// below reaches the store gate.
+    /// The handler populates `cip64_tx_info` for native-fee CIP-64 txs (no `feeCurrency`)
+    /// even when the base fee is disabled, so the tx below reaches the store gate.
     #[test]
     fn test_cip64_info_stored_when_base_fee_check_disabled() {
         use revm::state::AccountInfo;
@@ -1525,8 +1552,7 @@ mod tests {
         // eth_simulateV1 validation=false mode.
         evm.ctx_mut().cfg.disable_base_fee = true;
 
-        let mut tx = make_cip64_tx(Address::ZERO);
-        tx.fee_currency = Some(Address::ZERO);
+        let tx = make_native_fee_cip64_tx();
         let result = evm.transact_raw(tx);
         assert!(result.is_ok(), "simulated tx should succeed: {result:?}");
 
@@ -1727,8 +1753,7 @@ mod tests {
             // Two native-fee CIP-64 txs through the same EVM. `transact_raw` does not commit, so
             // the nonce stays 0 and both nonce-0 txs validate — enough to attempt the store twice.
             for i in 0..2 {
-                let mut tx = make_cip64_tx(Address::ZERO);
-                tx.fee_currency = Some(Address::ZERO);
+                let tx = make_native_fee_cip64_tx();
                 let result = evm.transact_raw(tx);
                 assert!(result.is_ok(), "loose replay tx {i} should succeed: {result:?}");
             }
@@ -1754,8 +1779,7 @@ mod tests {
             AccountInfo { balance: U256::from(10u128.pow(20)), nonce: 0, ..Default::default() },
         );
 
-        let mut tx = make_cip64_tx(Address::ZERO);
-        tx.fee_currency = Some(Address::ZERO);
+        let tx = make_native_fee_cip64_tx();
         let result = evm.transact_raw(tx);
         assert!(result.is_ok(), "tx should succeed: {result:?}");
 
