@@ -253,16 +253,13 @@ const NATIVE_FEES_NOT_SET: &str = "CeloPoolTx::native_fees must be populated bef
 
 /// Extract the fee currency address from a pool transaction without cloning.
 ///
-/// A `feeCurrency` of `Address::ZERO` is treated as native CELO (mapped to `None`) —
-/// the zero address cannot host an ERC20 fee currency contract, and the celo-revm
-/// handler already treats it as native during execution. Normalizing here ensures
-/// the pool and the execution layer agree on which txs use the native fee path.
+/// The value is returned exactly as the sender signed it: only an absent `feeCurrency` pays
+/// in native CELO. A CIP-64 tx carrying the zero address goes through the exchange-rate
+/// lookup like any other currency and is rejected as unregistered, the verdict op-geth
+/// reaches in `core/txpool/celo_validation.go` (`IsCurrencyAllowed`). Mapping zero to native
+/// here would let this node build a block that op-geth rejects.
 fn extract_fee_currency(inner: &InnerPoolTx) -> Option<Address> {
-    inner
-        .transaction()
-        .as_cip64()
-        .and_then(|signed| signed.tx().fee_currency)
-        .filter(|addr| *addr != Address::ZERO)
+    inner.transaction().as_cip64().and_then(|signed| signed.tx().fee_currency)
 }
 
 impl CeloPoolTx {
@@ -2716,9 +2713,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_fee_currency_zero_address_treated_as_native() {
-        // A CIP-64 tx that sets `feeCurrency = 0x000…000` should be routed through the
-        // native fee path, matching how the celo-revm handler treats the zero address.
+    fn test_extract_fee_currency_zero_address_is_kept() {
+        // Only an absent `feeCurrency` pays in native CELO. The zero address is passed
+        // through so the validator looks it up and rejects it as unregistered, as op-geth's
+        // pool does (`core/txpool/celo_validation.go`, `IsCurrencyAllowed`).
         let tx = make_test_tx(
             Some(Address::ZERO),
             21_000,
@@ -2726,7 +2724,7 @@ mod tests {
             100,
             Address::with_last_byte(1),
         );
-        assert_eq!(tx.fee_currency(), None);
+        assert_eq!(tx.fee_currency(), Some(Address::ZERO));
     }
 
     #[test]
@@ -3167,6 +3165,39 @@ mod tests {
             &no_pooled_txs,
         );
         assert!(matches!(result, Err(CeloPoolRejection::UnregisteredCurrency(_))));
+    }
+
+    /// A CIP-64 tx whose `feeCurrency` is the zero address is not a native-fee tx. The
+    /// validator must look the zero address up like any other currency and reject it as
+    /// unregistered: op-geth does the same, and a pool that admitted it as native would let
+    /// the payload builder produce a block op-geth marks invalid.
+    #[test]
+    fn test_apply_rates_rejects_zero_address_as_unregistered() {
+        let mut tx = make_test_tx(
+            Some(Address::ZERO),
+            21_000,
+            1_000_000_000,
+            100,
+            Address::with_last_byte(1),
+        );
+
+        // No directory entry for the zero address, as on every Celo chain.
+        let mock = MockFcLookup { rate: None, balance: None, debit_ok: None, intrinsic_gas: None };
+        let result = apply_exchange_rates_to_pool_tx(
+            &mock,
+            &mut tx,
+            Address::ZERO,
+            0,
+            0,
+            None,
+            &no_pooled_txs,
+        );
+        match result {
+            Err(CeloPoolRejection::UnregisteredCurrency(fc)) => assert_eq!(fc, Address::ZERO),
+            other => {
+                panic!("zero-address feeCurrency must be rejected as unregistered, got {other:?}")
+            }
+        }
     }
 
     #[test]
