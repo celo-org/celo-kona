@@ -15,13 +15,15 @@ rpc_body() {
 }
 
 # The pool reports any unregistered currency as `unregistered fee-currency address <addr>`.
+# The address is part of the match: without it this passes for any unregistered currency, so a
+# raw tx that no longer carries the zero address would still look like a zero-address rejection.
 assert_unregistered() {
-	local what="$1" resp="$2"
+	local what="$1" resp="$2" currency="$3"
 	if [ "$(echo "$resp" | jq -r '.error // empty')" = "" ]; then
 		echo "FAIL: $what did not return a JSON-RPC error: $resp"
 		exit 1
 	fi
-	if ! echo "$resp" | grep -q 'unregistered fee-currency address'; then
+	if ! echo "$resp" | grep -q "unregistered fee-currency address $currency"; then
 		echo "FAIL: $what failed with an unexpected error: $resp"
 		exit 1
 	fi
@@ -33,7 +35,7 @@ assert_unregistered() {
 #    whatever the sender's nonce is, exactly as op-geth's pool does.
 RAW_ZERO_FC_TX=0x7bf88282053980843b9aca00850ba43b740082520894dededededededededededededededededededede0180c094000000000000000000000000000000000000000001a00368eab33099f38298396666398920d71a5fbf7804afdeb7f099c0b1668fafb3a0564f7176f299b5a0a3a7ddea27415c923675413f89bdb916e7eca6905898c505
 resp=$(rpc_body '{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["'$RAW_ZERO_FC_TX'"]}')
-assert_unregistered "eth_sendRawTransaction with zero-address feeCurrency" "$resp"
+assert_unregistered "eth_sendRawTransaction with zero-address feeCurrency" "$resp" "$ZERO_ADDRESS"
 
 # 2. eth_gasPrice takes a bare address parameter and looks it up in the FeeCurrencyDirectory,
 #    so the zero address fails with the directory's revert like any other unregistered
