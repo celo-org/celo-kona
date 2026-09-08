@@ -22,22 +22,25 @@ use {
     reth_tracing as _, reth_transaction_pool as _, tracing as _,
 };
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, string::ToString, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
+use alloy_primitives::U256;
 use core::any::Any;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
-    BlockExecutorForEvm, ConfigureEvm, Database, EvmEnv, EvmEnvFor, EvmFor, InspectorFor,
+    BlockExecutorForEvm, CallerGasAllowanceError, ConfigureEvm, Database, EvmEnv, EvmEnvFor,
+    EvmFor, InspectorFor, TxEnvFor,
     eth::NextEvmEnvAttributes,
     execute::{BasicBlockBuilder, BlockBuilder, BlockExecutor},
 };
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
 use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
+use revm::context::Transaction;
 
 pub mod primitives;
 pub mod receipt;
@@ -315,6 +318,55 @@ where
         if let Some(fee_currency_context) = ctx.downcast_ref::<celo_revm::FeeCurrencyContext>() {
             evm.set_fee_currency_context(fee_currency_context.clone());
         }
+    }
+
+    /// A CIP-64 request pays gas in its fee currency, so the allowance is the caller's ERC20
+    /// balance divided by the fee-currency cap. `value` still moves native CELO: it must fit the
+    /// native balance, but it is not taken out of the fee balance. Native requests divide the
+    /// native balance less `value`, as the default does. Mirrors op-geth's estimator.
+    fn caller_gas_allowance<DB: Database>(
+        &self,
+        db: &mut DB,
+        evm_env: &EvmEnvFor<Self>,
+        tx_env: &TxEnvFor<Self>,
+    ) -> Result<u64, CallerGasAllowanceError<DB::Error>> {
+        let caller = tx_env.caller();
+        let value = tx_env.value();
+        let native_balance = db
+            .basic(caller)
+            .map_err(CallerGasAllowanceError::Database)?
+            .map(|account| account.balance)
+            .unwrap_or_default();
+        let Some(native_spendable) = native_balance.checked_sub(value) else {
+            return Err(CallerGasAllowanceError::InsufficientFunds {
+                cost: value,
+                balance: native_balance,
+            });
+        };
+
+        let spendable = match tx_env.fee_currency {
+            None => native_spendable,
+            Some(fee_currency) => {
+                let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
+                evm.erc20_balance(fee_currency, caller).map_err(|err| {
+                    // The simulation would reject an unregistered currency with a clearer message
+                    // than the failed `balanceOf` gives; report it that way.
+                    let context = evm.create_fee_currency_context();
+                    match context.currency_intrinsic_gas_cost(Some(fee_currency)) {
+                        Err(not_registered) => {
+                            CallerGasAllowanceError::FeeBalance(not_registered.to_string())
+                        }
+                        Ok(_) => CallerGasAllowanceError::FeeBalance(err.to_string()),
+                    }
+                })?
+            }
+        };
+
+        Ok(spendable
+            .checked_div(U256::from(tx_env.gas_price()))
+            // Zero when the gas price is zero; callers only ask with a non-zero price.
+            .unwrap_or_default()
+            .saturating_to())
     }
 
     fn context_for_block(
@@ -597,6 +649,110 @@ mod tests {
                 .jovian_activated()
                 .build(),
         )
+    }
+
+    mod caller_gas_allowance {
+        use super::*;
+        use alloy_primitives::{Address, Bytes, hex};
+        use celo_revm::CeloTransaction;
+        use core::convert::Infallible;
+        use op_revm::OpTransaction;
+        use revm::{
+            context::TxEnv,
+            database::InMemoryDB,
+            state::{AccountInfo, Bytecode},
+        };
+
+        const CALLER: Address = Address::with_last_byte(0xCA);
+        const TOKEN: Address = Address::with_last_byte(0x70);
+        const GAS_PRICE: u128 = 10;
+
+        /// Stand-in for `balanceOf`: answers every call with storage slot 0.
+        const SLOT0_RETURNER: &[u8] = &hex!("60005460005260206000f3");
+
+        fn db(native_balance: U256, fee_balance: Option<U256>) -> InMemoryDB {
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                CALLER,
+                AccountInfo { balance: native_balance, ..Default::default() },
+            );
+            if let Some(fee_balance) = fee_balance {
+                let code = Bytecode::new_raw(Bytes::from_static(SLOT0_RETURNER));
+                db.insert_account_info(
+                    TOKEN,
+                    AccountInfo {
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    },
+                );
+                db.insert_account_storage(TOKEN, U256::ZERO, fee_balance).unwrap();
+            }
+            db
+        }
+
+        fn tx_env(fee_currency: Option<Address>, value: U256) -> CeloTransaction<TxEnv> {
+            let mut tx = CeloTransaction::new(OpTransaction {
+                base: TxEnv { caller: CALLER, gas_price: GAS_PRICE, value, ..Default::default() },
+                enveloped_tx: Some(Bytes::new()),
+                deposit: Default::default(),
+            });
+            tx.fee_currency = fee_currency;
+            tx
+        }
+
+        fn allowance(
+            db: &mut InMemoryDB,
+            tx: &CeloTransaction<TxEnv>,
+        ) -> Result<u64, CallerGasAllowanceError<Infallible>> {
+            CeloEvmConfig::celo(pre_jovian_chain_spec()).caller_gas_allowance(
+                db,
+                &EvmEnv::default(),
+                tx,
+            )
+        }
+
+        #[test]
+        fn native_request_divides_native_balance_less_value() {
+            let mut db = db(U256::from(1_000), None);
+            assert_eq!(allowance(&mut db, &tx_env(None, U256::from(100))).unwrap(), 90);
+        }
+
+        /// The fee is paid in the currency, so a caller without any CELO is fine.
+        #[test]
+        fn cip64_request_divides_fee_currency_balance() {
+            let mut db = db(U256::ZERO, Some(U256::from(5_000)));
+            assert_eq!(allowance(&mut db, &tx_env(Some(TOKEN), U256::ZERO)).unwrap(), 500);
+        }
+
+        #[test]
+        fn cip64_value_must_fit_the_native_balance() {
+            let mut db = db(U256::from(50), Some(U256::from(5_000)));
+            let err = allowance(&mut db, &tx_env(Some(TOKEN), U256::from(100))).unwrap_err();
+            assert!(matches!(
+                err,
+                CallerGasAllowanceError::InsufficientFunds { cost, balance }
+                    if cost == U256::from(100) && balance == U256::from(50)
+            ));
+        }
+
+        #[test]
+        fn cip64_value_is_not_taken_from_the_fee_balance() {
+            let mut db = db(U256::from(1_000), Some(U256::from(5_000)));
+            assert_eq!(allowance(&mut db, &tx_env(Some(TOKEN), U256::from(100))).unwrap(), 500);
+        }
+
+        /// No code at the token, so `balanceOf` yields nothing; no directory registers it either,
+        /// so the error is the one the simulation would have given.
+        #[test]
+        fn cip64_unreadable_fee_balance_reports_an_unregistered_currency() {
+            let mut db = db(U256::ZERO, None);
+            let err = allowance(&mut db, &tx_env(Some(TOKEN), U256::ZERO)).unwrap_err();
+            assert!(
+                matches!(&err, CallerGasAllowanceError::FeeBalance(msg) if msg.contains("not registered")),
+                "{err}"
+            );
+        }
     }
 
     #[test]
