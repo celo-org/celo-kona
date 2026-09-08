@@ -2145,9 +2145,14 @@ version = "1.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
+ "alloy-primitives",
+ "alloy-provider",
  "alloy-rpc-types-eth",
+ "alloy-signer-local",
+ "alloy-transport",
  "celo-alloy-consensus",
  "celo-alloy-rpc-types",
+ "tokio",
 ]
 
 [[package]]

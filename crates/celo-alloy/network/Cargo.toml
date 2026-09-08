@@ -21,7 +21,17 @@ celo-alloy-rpc-types = { workspace = true, features = ["std"] }
 # Alloy
 alloy-consensus.workspace = true
 alloy-network.workspace = true
+alloy-primitives.workspace = true
+alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
+alloy-transport.workspace = true
+
+[dev-dependencies]
+# `reqwest` gives the example an HTTP transport for `connect`.
+alloy-provider = { workspace = true, features = ["reqwest"] }
+alloy-signer-local.workspace = true
+celo-alloy-consensus = { workspace = true, features = ["k256"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 std = [
