@@ -127,10 +127,15 @@ describe("viem send tx", () => {
 	}).timeout(10_000);
 
 	it("send fee currency tx using viem gas estimation and check receipt", async () => {
+		// viem estimates with the fee-currency-denominated maxFeePerGas attached. Locally
+		// FEE_CURRENCY2 is worth two CELO, so that cap sits below the native base fee and the
+		// node must not compare the two (celo-kona #312). On a network FEE_CURRENCY (USDC)
+		// already has that shape.
+		const fc = process.env.NETWORK == null ? process.env.FEE_CURRENCY2 : process.env.FEE_CURRENCY;
 		const request = await walletClient.prepareTransactionRequest({
 			to: "0x00000000000000000000000000000000DeaDBeef",
 			value: 2,
-			feeCurrency: process.env.FEE_CURRENCY,
+			feeCurrency: fc,
 		});
 		const signature = await walletClient.signTransaction(request);
 		const hash = await walletClient.sendRawTransaction({
