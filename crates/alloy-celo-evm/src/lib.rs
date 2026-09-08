@@ -226,6 +226,20 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
 
+    /// Reads `account`'s balance of the ERC20 at `token` through a read-only call that leaves
+    /// the journal as it found it.
+    pub fn erc20_balance(
+        &mut self,
+        token: Address,
+        account: Address,
+    ) -> Result<U256, celo_revm::contracts::CoreContractError>
+    where
+        I: Inspector<CeloContext<DB>>,
+        P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
+        celo_revm::contracts::get_balance(&mut self.inner, token, account)
+    }
+
     /// Replaces the EVM's fee currency context, e.g. with a block-start context captured before
     /// simulating a call at a mid-block position. The context's `updated_at_block` stamp makes
     /// the handler skip its lazy per-block load as long as the block environment matches.
