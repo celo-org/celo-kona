@@ -1,5 +1,8 @@
 //! Transaction types for Celo.
 
+mod canonical;
+pub use canonical::decode_2718_canonical;
+
 pub mod cip64;
 pub mod envelope;
 pub mod pooled;

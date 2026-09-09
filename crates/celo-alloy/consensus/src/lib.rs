@@ -12,6 +12,7 @@ pub use receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelo
 pub mod transaction;
 pub use transaction::{
     CeloPooledTransaction, CeloTxEnvelope, CeloTxType, CeloTypedTransaction, cip64::TxCip64,
+    decode_2718_canonical,
 };
 
 mod block;
