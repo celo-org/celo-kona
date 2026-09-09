@@ -5,11 +5,12 @@ set -eo pipefail
 source shared.sh
 
 # A CIP-64 request's maxFeePerGas and maxPriorityFeePerGas are denominated in its fee
-# currency. FEE_CURRENCY2 is worth two CELO, so its base fee is half the native one and a
-# cap a client derives from eth_gasPrice(feeCurrency) sits below the native base fee.
-# eth_estimateGas and eth_call must price such a request in the fee currency instead of
-# rejecting it against the native base fee, and the gas allowance must come from the
-# fee-currency balance rather than the native one (celo-kona #312).
+# currency. In the dev genesis one FEE_CURRENCY2 buys about 515 CELO (rate 0.001943), so
+# its base fee is a small fraction of the native one and a cap a client derives from
+# eth_gasPrice(feeCurrency) sits far below the native base fee. eth_estimateGas and
+# eth_call must price such a request in the fee currency instead of rejecting it against
+# the native base fee, and the gas allowance must come from the fee-currency balance
+# rather than the native one (celo-kona #312).
 
 DEAD=0x00000000000000000000000000000000DeaDBeef
 fc=$FEE_CURRENCY2
@@ -33,7 +34,7 @@ cap_hex=$(cast to-hex $cap_fc)
 tip_hex=$(cast to-hex $tip_fc)
 
 if [ "$(echo "$cap_fc < $base_fee" | bc)" != "1" ]; then
-	echo "cap $cap_fc is not below the native base fee $base_fee; the test needs a currency worth more than CELO"
+	echo "cap $cap_fc is not below the native base fee $base_fee; the test needs a currency worth more than two CELO (rate below 0.5)"
 	exit 1
 fi
 

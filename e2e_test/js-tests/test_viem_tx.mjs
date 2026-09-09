@@ -127,10 +127,10 @@ describe("viem send tx", () => {
 	}).timeout(10_000);
 
 	it("send fee currency tx using viem gas estimation and check receipt", async () => {
-		// viem estimates with the fee-currency-denominated maxFeePerGas attached. Locally
-		// FEE_CURRENCY2 is worth two CELO, so that cap sits below the native base fee and the
-		// node must not compare the two (celo-kona #312). On a network FEE_CURRENCY (USDC)
-		// already has that shape.
+		// viem estimates with the fee-currency-denominated maxFeePerGas attached. Locally one
+		// FEE_CURRENCY2 buys about 515 CELO (dev genesis rate 0.001943), so that cap sits far
+		// below the native base fee and the node must not compare the two (celo-kona #312). On
+		// a network FEE_CURRENCY (USDC) already has that shape.
 		const fc = process.env.NETWORK == null ? process.env.FEE_CURRENCY2 : process.env.FEE_CURRENCY;
 		const request = await walletClient.prepareTransactionRequest({
 			to: "0x00000000000000000000000000000000DeaDBeef",
@@ -294,9 +294,9 @@ describe("viem send tx", () => {
 		// doesn't take into account the fee currency then it will reject the
 		// transaction because the maxFeePerGas will be too low.
 
-		// If we are running local tests we use FEE_CURRENCY2 since it is worth
-		// double the value of celo, otherwise we use FEE_CURRENCY which is USDC
-		// end currently worth roughly double the value of celo.
+		// If we are running local tests we use FEE_CURRENCY2, worth about 515 CELO
+		// in the dev genesis (rate 0.001943), otherwise we use FEE_CURRENCY which
+		// is USDC and currently worth several CELO.
 		const fc = process.env.NETWORK == null ? process.env.FEE_CURRENCY2 : process.env.FEE_CURRENCY;
 		const rate = await getRate(fc);
 		const block = await publicClient.getBlock({});
