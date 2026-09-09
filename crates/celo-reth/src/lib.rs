@@ -22,7 +22,7 @@ use {
     reth_tracing as _, reth_transaction_pool as _, tracing as _,
 };
 
-use alloc::{boxed::Box, string::ToString, sync::Arc};
+use alloc::{boxed::Box, format, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
@@ -353,17 +353,13 @@ where
             None => native_spendable,
             Some(fee_currency) => {
                 let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
-                evm.erc20_balance(fee_currency, caller, FEE_BALANCE_READ_GAS_LIMIT).map_err(|err| {
-                    // The simulation would reject an unregistered currency with a clearer message
-                    // than the failed `balanceOf` gives; report it that way.
-                    let context = evm.create_fee_currency_context();
-                    match context.currency_intrinsic_gas_cost(Some(fee_currency)) {
-                        Err(not_registered) => {
-                            CallerGasAllowanceError::FeeBalance(not_registered.to_string())
-                        }
-                        Ok(_) => CallerGasAllowanceError::FeeBalance(err.to_string()),
-                    }
-                })?
+                evm.erc20_balance(fee_currency, caller, FEE_BALANCE_READ_GAS_LIMIT).map_err(
+                    |err| {
+                        CallerGasAllowanceError::FeeBalance(format!(
+                            "balanceOf({caller}) on fee currency {fee_currency} failed: {err}"
+                        ))
+                    },
+                )?
             }
         };
 
@@ -747,14 +743,15 @@ mod tests {
             assert_eq!(allowance(&mut db, &tx_env(Some(TOKEN), U256::from(100))).unwrap(), 500);
         }
 
-        /// No code at the token, so `balanceOf` yields nothing; no directory registers it either,
-        /// so the error is the one the simulation would have given.
+        /// No code at the token, so `balanceOf` yields nothing to decode. The error names the
+        /// token and the caller and does not guess at why the read failed.
         #[test]
-        fn cip64_unreadable_fee_balance_reports_an_unregistered_currency() {
+        fn cip64_unreadable_fee_balance_is_an_error_naming_the_token() {
             let mut db = db(U256::ZERO, None);
             let err = allowance(&mut db, &tx_env(Some(TOKEN), U256::ZERO)).unwrap_err();
             assert!(
-                matches!(&err, CallerGasAllowanceError::FeeBalance(msg) if msg.contains("not registered")),
+                matches!(&err, CallerGasAllowanceError::FeeBalance(msg)
+                    if msg.contains(&format!("{TOKEN}")) && msg.contains(&format!("{CALLER}"))),
                 "{err}"
             );
         }
