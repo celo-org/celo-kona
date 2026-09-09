@@ -226,8 +226,10 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         celo_revm::FeeCurrencyContext::new_from_evm(&mut self.inner)
     }
 
-    /// Reads `account`'s balance of the ERC20 at `token` through a read-only call, bounded by
-    /// `gas_limit`, that leaves the journal as it found it.
+    /// Reads `account`'s balance of the ERC20 at `token` through a read-only call bounded by
+    /// `gas_limit`. State, warmth, logs and transient storage are reverted afterwards; on a
+    /// fatal (non-revert) failure the call depth is repaired by assignment and `ctx.error` may
+    /// remain set, so callers should not reuse the EVM for consensus work after an `Err`.
     pub fn erc20_balance(
         &mut self,
         token: Address,
