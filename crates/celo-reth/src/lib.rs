@@ -104,6 +104,11 @@ use {
 
 pub use celo_revm::constants::CELO_EIP_1559_BASE_FEE_FLOOR as CELO_BASE_FEE_FLOOR;
 
+/// Gas limit for the `balanceOf` read behind a CIP-64 gas allowance. The token is caller-chosen,
+/// so the read must not get the 30M system-call default; 1M is the bound the pool validator uses
+/// for the same call.
+const FEE_BALANCE_READ_GAS_LIMIT: u64 = 1_000_000;
+
 /// Compute the next block's base fee for Celo.
 ///
 /// Pre-Jovian, applies the 25 Gwei base fee floor. Post-Jovian, the chain spec already
@@ -342,7 +347,7 @@ where
             None => native_spendable,
             Some(fee_currency) => {
                 let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
-                evm.erc20_balance(fee_currency, caller).map_err(|err| {
+                evm.erc20_balance(fee_currency, caller, FEE_BALANCE_READ_GAS_LIMIT).map_err(|err| {
                     // The simulation would reject an unregistered currency with a clearer message
                     // than the failed `balanceOf` gives; report it that way.
                     let context = evm.create_fee_currency_context();
