@@ -2350,6 +2350,7 @@ dependencies = [
  "alloy-eips 2.0.5",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-rlp",
  "async-trait",
  "celo-alloy-consensus",
  "celo-driver",
