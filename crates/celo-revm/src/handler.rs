@@ -344,12 +344,12 @@ where
         // gasUsed = maxIntrinsicGasCost - leftoverGas (no refund adjustment).
         let ctx = evm.ctx();
         let cip64_info = ctx.tx().cip64_tx_info.as_ref().unwrap();
-        let debit_raw_gas = cip64_info.debit_gas_used + cip64_info.debit_gas_refunded;
+        let debit_raw_gas = cip64_info.debit_gas_spent;
         let max_allowed_gas_cost = self
             .cip64_max_allowed_gas_cost(evm, fee_currency)?
             .saturating_sub(debit_raw_gas);
 
-        let (logs, credit_gas_used, credit_gas_refunded) = erc20::credit_gas_fees(
+        let (logs, credit_gas_spent, credit_gas_refunded) = erc20::credit_gas_fees(
             evm,
             fee_currency.unwrap(),
             caller,
@@ -364,7 +364,7 @@ where
 
         // Collect logs from the system call to be included in the final receipt
         let info = evm.ctx().tx.cip64_tx_info.as_mut().unwrap();
-        info.credit_gas_used = credit_gas_used;
+        info.credit_gas_spent = credit_gas_spent;
         info.credit_gas_refunded = credit_gas_refunded;
         info.logs_post = logs;
         self.log_and_warn_gas_cost(evm, fee_currency)?;
@@ -392,22 +392,19 @@ where
         info!(
             target: "celo_handler",
             "CIP-64 gas summary: fee_currency={:?}, \
-            debit(gas_used={}, gas_refunded={}), \
-            credit(gas_used={}, gas_refunded={}), \
+            debit(gas_spent={}, gas_refunded={}), \
+            credit(gas_spent={}, gas_refunded={}), \
             intrinsic_gas={}",
             fee_currency,
-            info.debit_gas_used,
+            info.debit_gas_spent,
             info.debit_gas_refunded,
-            info.credit_gas_used,
+            info.credit_gas_spent,
             info.credit_gas_refunded,
             intrinsic_gas_cost
         );
 
         // Compare raw gas (before refunds) against intrinsic gas limit
-        let total_raw_gas = info.debit_gas_used
-            + info.debit_gas_refunded
-            + info.credit_gas_used
-            + info.credit_gas_refunded;
+        let total_raw_gas = info.debit_gas_spent + info.credit_gas_spent;
         if total_raw_gas > intrinsic_gas_cost {
             if total_raw_gas > intrinsic_gas_cost * 2 {
                 warn!(
@@ -558,7 +555,7 @@ where
         // For CIP-64 transactions, deduct gas from the fee currency by calling erc20::debit_gas_fees.
         // Note: load_fee_currency_context() already advanced the journal transaction_id after
         // context loading, so the accounts and storage slots it warmed now read cold here.
-        let (logs, debit_gas_used, debit_gas_refunded) = erc20::debit_gas_fees(
+        let (logs, debit_gas_spent, debit_gas_refunded) = erc20::debit_gas_fees(
             evm,
             fee_currency_addr,
             caller_addr,
@@ -571,9 +568,9 @@ where
         // types; we narrow back to `u128` at this boundary rather than widening them.
         let tx = &mut evm.ctx().tx;
         tx.cip64_tx_info = Some(Cip64Info {
-            debit_gas_used,
+            debit_gas_spent,
             debit_gas_refunded,
-            credit_gas_used: 0,
+            credit_gas_spent: 0,
             credit_gas_refunded: 0,
             logs_pre: logs,
             logs_post: Vec::new(),
@@ -2761,14 +2758,11 @@ mod tests {
         let info = cip64_info.unwrap();
 
         // Debit and credit should have used some gas
-        assert!(info.debit_gas_used > 0, "Debit should use gas");
-        assert!(info.credit_gas_used > 0, "Credit should use gas");
+        assert!(info.debit_gas_spent > 0, "Debit should use gas");
+        assert!(info.credit_gas_spent > 0, "Credit should use gas");
 
         // Total raw gas (before refunds) should be within the max allowed (50_000 * 3 = 150_000)
-        let total_raw = info.debit_gas_used
-            + info.debit_gas_refunded
-            + info.credit_gas_used
-            + info.credit_gas_refunded;
+        let total_raw = info.debit_gas_spent + info.credit_gas_spent;
         assert!(
             total_raw <= 150_000,
             "Total debit+credit gas ({total_raw}) should be within intrinsic budget (150_000)"
@@ -3390,5 +3384,67 @@ mod tests {
             "CIP-64 must not surcharge the EIP-7623 floor"
         );
         assert_eq!(cip64.initial_state_gas, native.initial_state_gas);
+    }
+
+    /// The credit's refund counter is signed, and routinely negative.
+    ///
+    /// A debit that takes the payer's fee-currency balance to exactly zero clears the slot; the
+    /// credit writes it back, which EIP-3529 charges `SSTORE_CLEARS_SCHEDULE` back for. The two
+    /// halves land in different `Gas` meters, so the credit's finishes below zero — something a
+    /// whole transaction's counter can never do, which is why revm narrows it to `u64` when it
+    /// builds the result. Held in a `u64` the value read as ~1.8e19, which saturated
+    /// `tx_gas_used` to zero and wrapped the debit+credit budget summary.
+    ///
+    /// basefee 1 and the fixture's 20/10 rate put the base fee at 2 in the fee currency, so a
+    /// cap of 12 with a 10 tip prices the tx at 12 and a 100_000 gas limit debits exactly
+    /// 1_200_000.
+    #[test]
+    fn cip64_credit_gas_refund_is_signed() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let gas_limit = 100_000u64;
+        let debit = U256::from(gas_limit as u128 * 12);
+
+        let db = make_celo_test_db_with_fee_currency(sender, debit);
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            gas_limit,
+            12,
+            10,
+            1,
+        );
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let result = handler.run(&mut evm).expect("the tx must be accepted");
+        assert!(result.is_success(), "{result:?}");
+
+        let info = evm
+            .ctx()
+            .tx()
+            .cip64_tx_info
+            .as_ref()
+            .expect("the debit ran")
+            .clone();
+
+        assert!(
+            info.debit_gas_refunded > 0,
+            "the debit must have cleared the payer's balance slot"
+        );
+        assert!(
+            info.credit_gas_refunded < 0,
+            "the credit re-creates what the debit cleared, so its counter goes negative \
+             (got {})",
+            info.credit_gas_refunded
+        );
+        // Both were mis-read as zero while the counter was narrowed to `u64`.
+        assert!(info.debit_gas_spent > 0 && info.credit_gas_spent > 0);
+        assert!(
+            info.debit_gas_spent + info.credit_gas_spent <= 150_000,
+            "the debit+credit budget summary must not wrap"
+        );
     }
 }

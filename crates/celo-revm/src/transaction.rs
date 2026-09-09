@@ -43,14 +43,15 @@ pub trait CeloTxTr: OpTxTr {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Logs and gas tracking for CIP-64 debit and credit EVM calls.
 pub struct Cip64Info {
-    /// Gas used by the debit call (net, after refunds)
-    pub debit_gas_used: u64,
+    /// Gas spent by the debit call, raw — before its refund
+    pub debit_gas_spent: u64,
     /// Gas refunded by the debit call
-    pub debit_gas_refunded: u64,
-    /// Gas used by the credit call (net, after refunds)
-    pub credit_gas_used: u64,
-    /// Gas refunded by the credit call
-    pub credit_gas_refunded: u64,
+    pub debit_gas_refunded: i64,
+    /// Gas spent by the credit call, raw — before its refund
+    pub credit_gas_spent: u64,
+    /// Gas refunded by the credit call. Signed: the credit re-creates slots the debit
+    /// cleared, so it routinely finishes negative.
+    pub credit_gas_refunded: i64,
     /// Logs from system calls (debit/credit) that need to be merged into the final receipt
     pub logs_pre: Vec<Log>,
     pub logs_post: Vec<Log>,

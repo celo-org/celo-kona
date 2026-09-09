@@ -1620,9 +1620,9 @@ mod tests {
         );
         assert_eq!(
             (
-                info.debit_gas_used,
+                info.debit_gas_spent,
                 info.debit_gas_refunded,
-                info.credit_gas_used,
+                info.credit_gas_spent,
                 info.credit_gas_refunded
             ),
             (0, 0, 0, 0),
