@@ -254,17 +254,17 @@ mod cip64_gas_tests {
         const EXPECTED_DEBIT_RAW_GAS: u64 = 47756;
         const EXPECTED_CREDIT_RAW_GAS: u64 = 22997;
 
-        let debit_raw_gas = cip64_info.debit_gas_used + cip64_info.debit_gas_refunded;
-        let credit_raw_gas = cip64_info.credit_gas_used + cip64_info.credit_gas_refunded;
+        let debit_raw_gas = cip64_info.debit_gas_spent;
+        let credit_raw_gas = cip64_info.credit_gas_spent;
 
         assert_eq!(
             debit_raw_gas, EXPECTED_DEBIT_RAW_GAS,
-            "Debit raw gas (gas_used + gas_refunded) should match op-geth"
+            "Debit raw gas (spent before refunds) should match op-geth"
         );
 
         assert_eq!(
             credit_raw_gas, EXPECTED_CREDIT_RAW_GAS,
-            "Credit raw gas (gas_used + gas_refunded) should match op-geth"
+            "Credit raw gas (spent before refunds) should match op-geth"
         );
     }
 }
