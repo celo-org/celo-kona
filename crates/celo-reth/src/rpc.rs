@@ -259,7 +259,8 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
 /// `gas_price` to the cap and `gas_priority_fee` to the tip, as a signed CIP-64 tx does, and
 /// leaves the base-fee comparison and the effective price to celo-revm's handler, which does
 /// both in the fee currency (the comparison is off for these APIs). A tip above the cap is
-/// still an error; a tip without a cap prices the call at zero, as on op-geth.
+/// still an error; a tip without a cap prices the call at zero, as on op-geth, and reth then
+/// also zeroes the block base fee for that simulation, as it does for any zero-priced call.
 impl<Spec, Block: BlockEnvironment>
     alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv>, Spec, Block> for CeloTransactionRequest
 {
