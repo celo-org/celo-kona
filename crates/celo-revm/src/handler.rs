@@ -1228,7 +1228,51 @@ where
         Ok(())
     }
 
+    /// Folds the CIP-64 fee debit's storage refund into the transaction's own refund counter.
+    ///
+    /// op-geth debits through `subFees` on the transaction's `StateDB`
+    /// (`core/celo_state_transition.go`), so a storage clear inside `debitGasFees` lands in the
+    /// *global* refund counter and is capped once, together with the transaction's own refunds,
+    /// at `gasUsed / RefundQuotientEIP3529` (`calcRefund`, `core/state_transition.go`). celo-revm
+    /// meters the debit in a separate system-call `Gas` that never reaches the transaction, so
+    /// the refund is re-attached here, before `self.op.refund` runs `set_final_refund` and
+    /// applies the EIP-3529 cap. Dropping it costs a debit that zeroes the payer's fee-currency
+    /// balance `SSTORE_CLEARS_SCHEDULE` more gas than op-geth charges, which moves `gasUsed` and
+    /// the receipts root, and — because the fee split is metered on this same `Gas` — the state
+    /// root as well.
+    ///
+    /// The credit's refund is excluded: op-geth's `creditGasFees` runs after `calcRefund` and can
+    /// never feed `gasUsed`, and folding it in would be circular, since `gasUsed` is what sets
+    /// the credit's own arguments.
+    ///
+    /// `debit_gas_refunded` is the raw, uncapped counter — `Handler::run_system_call` skips
+    /// `post_execution`, so `set_final_refund` never touches the system call's `Gas` — matching
+    /// op-geth, where the `StateDB` counter is likewise uncapped at the sub-call. It is
+    /// non-negative in practice: every slot the debit touches reads cold, so its journal
+    /// original equals its value at debit entry and the debit can only clear a slot, never
+    /// net-recreate one.
+    ///
+    /// This runs after `last_frame_result` has zeroed the frame's own refund on a revert or a
+    /// halt, and that is op-geth's behaviour too: `evm.Call` snapshots *after* `subFees`, so
+    /// reverting the transaction body cannot unwind a refund the debit already recorded.
     fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
+        let ctx = evm.ctx();
+        let tx = ctx.tx();
+        // `cip64_tx_info` is a public field, so gate on the transaction shape that actually
+        // runs a debit rather than on the field alone.
+        if !tx.is_fee_in_celo()
+            && let Some(info) = tx.cip64_tx_info.as_ref()
+        {
+            debug_assert_eq!(
+                info.credit_gas_refunded, 0,
+                "the CIP-64 credit runs from `build_execution_result`, after this"
+            );
+            debug_assert!(
+                info.debit_gas_refunded >= 0,
+                "the debit cannot net-recreate a slot"
+            );
+            exec_result.gas_mut().record_refund(info.debit_gas_refunded);
+        }
         self.op.refund(evm, exec_result, eip7702_refund)
     }
 
@@ -3445,6 +3489,355 @@ mod tests {
         assert!(
             info.debit_gas_spent + info.credit_gas_spent <= 150_000,
             "the debit+credit budget summary must not wrap"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A storage clear inside the CIP-64 fee debit belongs to the transaction's gas.
+    //
+    // op-geth debits on the transaction's own `StateDB`, so the clear lands in the refund
+    // counter `calcRefund` reads; celo-revm meters the debit in a separate system-call `Gas`
+    // and re-attaches it in `CeloHandler::refund`. Reaching a clearing debit needs the payer's
+    // fee-currency balance to land on exactly `gas_limit * effective_gas_price`, which nothing
+    // else in the suite does.
+    //
+    // The fixture's 20/10 rate puts a basefee of 1 at 2 in the fee currency, so a cap of 12
+    // with a 10 tip prices the transaction at 12 and a 100_000 gas limit debits exactly
+    // 1_200_000.
+
+    const CLEARING_GAS_LIMIT: u64 = 100_000;
+    const CLEARING_MAX_FEE: u128 = 12;
+    const CLEARING_TIP: u128 = 10;
+    const CLEARING_BASE_FEE: u128 = 2;
+    /// EIP-3529 `SSTORE_CLEARS_SCHEDULE`.
+    const SSTORE_CLEARS_SCHEDULE: u64 = 4_800;
+    /// The same quantity in the refund counter's signed type.
+    const SSTORE_CLEARS_REFUND: i64 = SSTORE_CLEARS_SCHEDULE as i64;
+    /// 21_000 plus the 50_000 intrinsic surcharge the fixture's FeeCurrencyDirectory registers.
+    const CLEARING_INTRINSIC_GAS: u64 = 71_000;
+    /// A supply nowhere near the debit, as a real token has. The fixture otherwise seeds
+    /// `_totalSupply` to the payer's balance, so a zeroing debit would clear a second slot.
+    const LARGE_TOTAL_SUPPLY: u128 = 10u128.pow(24);
+
+    /// Runs one CIP-64 transaction priced so the debit is exactly
+    /// `CLEARING_GAS_LIMIT * CLEARING_MAX_FEE`, with the payer holding `balance` and
+    /// `target_code` deployed at the call target.
+    ///
+    /// Returns the execution result, the debit's recorded refund, and the post-state
+    /// fee-currency balances of (payer, coinbase, fee handler) — the three legs the credit
+    /// splits the debit across.
+    fn run_clearing_debit_cip64_tx(
+        balance: U256,
+        target_code: &[u8],
+    ) -> (ExecutionResult<OpHaltReason>, i64, (U256, U256, U256)) {
+        run_clearing_debit_cip64_tx_with_supply(balance, target_code, LARGE_TOTAL_SUPPLY)
+    }
+
+    /// [`run_clearing_debit_cip64_tx`] with the fee currency's `_totalSupply` set explicitly.
+    fn run_clearing_debit_cip64_tx_with_supply(
+        balance: U256,
+        target_code: &[u8],
+        total_supply: u128,
+    ) -> (ExecutionResult<OpHaltReason>, i64, (U256, U256, U256)) {
+        use revm::state::Bytecode;
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let fee_handler = get_addresses(0).fee_handler;
+        let target = address!("0x00000000000000000000000000000000000000dd");
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, balance);
+        db.insert_account_storage(TEST_FEE_CURRENCY, U256::from(2), U256::from(total_supply))
+            .unwrap();
+        if !target_code.is_empty() {
+            let bytecode = Bytecode::new_raw(target_code.to_vec().into());
+            db.insert_account_info(
+                target,
+                AccountInfo {
+                    balance: U256::ZERO,
+                    nonce: 0,
+                    code_hash: bytecode.hash_slow(),
+                    account_id: None,
+                    code: Some(bytecode),
+                },
+            );
+        }
+
+        let mut evm = build_cip64_evm(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(if target_code.is_empty() {
+                Address::ZERO
+            } else {
+                target
+            }),
+            CLEARING_GAS_LIMIT,
+            CLEARING_MAX_FEE,
+            CLEARING_TIP,
+            1,
+        );
+
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let result = handler.run(&mut evm).expect("the tx must be accepted");
+        let debit_refund = evm
+            .ctx()
+            .tx()
+            .cip64_tx_info
+            .as_ref()
+            .expect("the debit ran")
+            .debit_gas_refunded;
+
+        let state = evm.finalize();
+        let balance_of = |account: Address| {
+            state
+                .get(&TEST_FEE_CURRENCY)
+                .and_then(|acct| acct.storage.get(&fee_currency_balance_slot(account)))
+                .map(|slot| slot.present_value)
+                .unwrap_or(U256::ZERO)
+        };
+
+        (
+            result,
+            debit_refund,
+            (
+                balance_of(sender),
+                balance_of(beneficiary),
+                balance_of(fee_handler),
+            ),
+        )
+    }
+
+    /// A debit that zeroes the payer's balance refunds the transaction, and one wei more
+    /// leaves it untouched — the whole trigger is that single equality.
+    #[test]
+    fn cip64_debit_storage_clear_refunds_the_transaction() {
+        let debit = U256::from(CLEARING_GAS_LIMIT as u128 * CLEARING_MAX_FEE);
+
+        let (result, debit_refund, (payer, coinbase, fee_handler)) =
+            run_clearing_debit_cip64_tx(debit, &[]);
+        assert!(result.is_success(), "the tx must succeed: {result:?}");
+        assert_eq!(
+            debit_refund, SSTORE_CLEARS_REFUND,
+            "the debit must have cleared the payer's balance slot"
+        );
+
+        let gas_used = CLEARING_INTRINSIC_GAS - SSTORE_CLEARS_SCHEDULE;
+        assert_eq!(
+            result.tx_gas_used(),
+            gas_used,
+            "the debit's storage refund must reach the transaction's gas"
+        );
+
+        // The credit splits the debit three ways off this same `gas_used`, so the refund moves
+        // the state root as well as the receipts root. The three legs still sum to the debit:
+        // the refund re-apportions the fee, it never mints or burns it.
+        let unused = (CLEARING_GAS_LIMIT - gas_used) as u128;
+        assert_eq!(payer, U256::from(unused * CLEARING_MAX_FEE));
+        assert_eq!(coinbase, U256::from(gas_used as u128 * CLEARING_TIP));
+        assert_eq!(
+            fee_handler,
+            U256::from(gas_used as u128 * CLEARING_BASE_FEE)
+        );
+        assert_eq!(
+            payer + coinbase + fee_handler,
+            debit,
+            "the credit must conserve the debit"
+        );
+
+        // One wei more and the slot survives, so there is no refund and the transaction pays
+        // the full intrinsic cost.
+        let (result, debit_refund, _) = run_clearing_debit_cip64_tx(debit + U256::from(1), &[]);
+        assert_eq!(debit_refund, 0, "a surviving slot must not refund");
+        assert_eq!(result.tx_gas_used(), CLEARING_INTRINSIC_GAS);
+    }
+
+    /// What is folded in is the debit's actual refund counter, not a constant: a currency whose
+    /// supply also lands on zero clears two slots and refunds twice as much. This is the shape
+    /// the fixture builds by default — a real token's supply is nowhere near one payer's fee.
+    #[test]
+    fn cip64_debit_folds_the_whole_refund_counter() {
+        let debit = U256::from(CLEARING_GAS_LIMIT as u128 * CLEARING_MAX_FEE);
+        let (result, debit_refund, _) = run_clearing_debit_cip64_tx_with_supply(
+            debit,
+            &[],
+            CLEARING_GAS_LIMIT as u128 * CLEARING_MAX_FEE,
+        );
+
+        assert_eq!(
+            debit_refund,
+            2 * SSTORE_CLEARS_REFUND,
+            "the payer's balance and the total supply must both clear"
+        );
+        assert_eq!(
+            result.tx_gas_used(),
+            CLEARING_INTRINSIC_GAS - 2 * SSTORE_CLEARS_SCHEDULE
+        );
+    }
+
+    /// The debit's refund survives a reverting or out-of-gas transaction body. op-geth's
+    /// `evm.Call` snapshots *after* `subFees`, so reverting the body cannot unwind a refund the
+    /// debit already recorded; `CeloHandler::refund` runs after `last_frame_result` has zeroed
+    /// the frame's own refund, which reproduces that.
+    #[test]
+    fn cip64_debit_storage_clear_refunds_a_failed_transaction() {
+        let debit = U256::from(CLEARING_GAS_LIMIT as u128 * CLEARING_MAX_FEE);
+
+        // PUSH1 00 PUSH1 00 REVERT — six gas on top of the intrinsic cost.
+        const REVERT: &[u8] = &[0x60, 0x00, 0x60, 0x00, 0xfd];
+        let (result, debit_refund, _) = run_clearing_debit_cip64_tx(debit, REVERT);
+        assert!(
+            matches!(result, ExecutionResult::Revert { .. }),
+            "{result:?}"
+        );
+        assert_eq!(debit_refund, SSTORE_CLEARS_REFUND);
+        assert_eq!(
+            result.tx_gas_used(),
+            CLEARING_INTRINSIC_GAS + 6 - SSTORE_CLEARS_SCHEDULE,
+            "a reverted body still keeps the debit's refund"
+        );
+
+        // JUMPDEST PUSH1 00 JUMP — an infinite loop, so the body consumes the whole limit.
+        const OOG: &[u8] = &[0x5b, 0x60, 0x00, 0x56];
+        let (result, debit_refund, _) = run_clearing_debit_cip64_tx(debit, OOG);
+        assert!(matches!(result, ExecutionResult::Halt { .. }), "{result:?}");
+        assert_eq!(debit_refund, SSTORE_CLEARS_REFUND);
+        assert_eq!(
+            result.tx_gas_used(),
+            CLEARING_GAS_LIMIT - SSTORE_CLEARS_SCHEDULE,
+            "an out-of-gas body still keeps the debit's refund"
+        );
+    }
+
+    /// The debit's refund is capped *with* the transaction's own, at `gas_used / 5`, not granted
+    /// on top of the cap — op-geth reads one counter through one `calcRefund`.
+    #[test]
+    fn cip64_debit_refund_shares_the_transaction_eip3529_cap() {
+        let ctx = Context::celo()
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = CeloTxType::Cip64 as u8;
+                tx.fee_currency = Some(TEST_FEE_CURRENCY);
+                tx.op_tx.base.gas_limit = 100;
+                tx.op_tx.enveloped_tx = None;
+                tx.cip64_tx_info = Some(Cip64Info {
+                    debit_gas_refunded: 1_000,
+                    ..Default::default()
+                });
+            })
+            .modify_cfg_chained(|cfg| cfg.spec = OpSpecId::REGOLITH);
+
+        let gas = call_last_frame_return(ctx, InstructionResult::Stop, Gas::new(90));
+        assert_eq!(gas.total_gas_spent(), 10);
+        assert_eq!(gas.refunded(), 2, "min(1_000, 10 / 5), not 1_000");
+    }
+
+    /// The counterpart divergence, in the opposite direction: when the transaction body
+    /// re-creates the slot the debit cleared, EIP-3529 charges the re-creation
+    /// `SSTORE_CLEARS_SCHEDULE` back. op-geth nets that against the clear in the one counter it
+    /// keeps, so the two cancel. With the debit's clear metered in a `Gas` of its own, only the
+    /// negative half reached the transaction, and `Gas::set_final_refund`'s
+    /// `(self.refunded() as u64).min(gas_used / quotient)` reads that negative counter as ~1.8e19
+    /// — handing the payer the *full* EIP-3529 cap. Folding the debit's refund in restores the
+    /// cancellation.
+    ///
+    /// The trigger is as cheap as the plain one: pay the fee to zero in a currency, then send one
+    /// unit of it back to the payer.
+    #[test]
+    fn cip64_debit_clear_and_body_recreate_cancel_out() {
+        use revm::state::Bytecode;
+
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let stub = address!("0x00000000000000000000000000000000000000dd");
+        let debit = U256::from(CLEARING_GAS_LIMIT as u128 * CLEARING_MAX_FEE);
+
+        // A stub whose only action is `TEST_FEE_CURRENCY.transfer(sender, 1)`, which writes the
+        // payer's balance slot back to non-zero:
+        //   PUSH4 a9059cbb PUSH1 e0 SHL PUSH1 00 MSTORE   selector at [0x00]
+        //   PUSH20 sender  PUSH1 04 MSTORE                arg 0 at [0x04]
+        //   PUSH1 01       PUSH1 24 MSTORE                arg 1 at [0x24]
+        //   PUSH1 00 PUSH1 00 PUSH1 44 PUSH1 00 PUSH1 00  ret/args/value
+        //   PUSH20 TEST_FEE_CURRENCY GAS CALL POP STOP
+        let mut code: Vec<u8> = vec![
+            0x63, 0xa9, 0x05, 0x9c, 0xbb, 0x60, 0xe0, 0x1b, 0x60, 0x00, 0x52,
+        ];
+        code.push(0x73);
+        code.extend_from_slice(sender.as_slice());
+        code.extend_from_slice(&[0x60, 0x04, 0x52]);
+        code.extend_from_slice(&[0x60, 0x01, 0x60, 0x24, 0x52]);
+        code.extend_from_slice(&[0x60, 0x00, 0x60, 0x00, 0x60, 0x44, 0x60, 0x00, 0x60, 0x00]);
+        code.push(0x73);
+        code.extend_from_slice(TEST_FEE_CURRENCY.as_slice());
+        code.extend_from_slice(&[0x5a, 0xf1, 0x50, 0x00]);
+
+        let run = |balance: U256| {
+            let mut db = make_celo_test_db_with_fee_currency(sender, balance);
+            db.insert_account_storage(
+                TEST_FEE_CURRENCY,
+                U256::from(2),
+                U256::from(LARGE_TOTAL_SUPPLY),
+            )
+            .unwrap();
+            // Fund the stub so its transfer succeeds.
+            db.insert_account_storage(
+                TEST_FEE_CURRENCY,
+                fee_currency_balance_slot(stub),
+                U256::from(1_000),
+            )
+            .unwrap();
+            let bytecode = Bytecode::new_raw(code.clone().into());
+            db.insert_account_info(
+                stub,
+                AccountInfo {
+                    balance: U256::ZERO,
+                    nonce: 0,
+                    code_hash: bytecode.hash_slow(),
+                    account_id: None,
+                    code: Some(bytecode),
+                },
+            );
+
+            let mut evm = build_cip64_evm(
+                db,
+                sender,
+                beneficiary,
+                0,
+                TxKind::Call(stub),
+                CLEARING_GAS_LIMIT,
+                CLEARING_MAX_FEE,
+                CLEARING_TIP,
+                1,
+            );
+            let mut handler =
+                CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+            let result = handler.run(&mut evm).expect("the tx must be accepted");
+            let debit_refund = evm
+                .ctx()
+                .tx()
+                .cip64_tx_info
+                .as_ref()
+                .expect("the debit ran")
+                .debit_gas_refunded;
+            assert!(result.is_success(), "the tx must succeed: {result:?}");
+            (result.tx_gas_used(), debit_refund)
+        };
+
+        let (cleared_gas, debit_refund) = run(debit);
+        assert_eq!(
+            debit_refund, SSTORE_CLEARS_REFUND,
+            "the debit must have cleared the payer's balance slot"
+        );
+
+        // One wei more: the debit clears nothing, so the body's write is an ordinary non-zero
+        // update and no refund is in play either way. That is the number the clearing run has
+        // to match.
+        let (baseline_gas, debit_refund) = run(debit + U256::from(1));
+        assert_eq!(debit_refund, 0);
+        assert_eq!(
+            cleared_gas, baseline_gas,
+            "a clear inside the debit and a re-creation in the body must net to nothing"
         );
     }
 }
