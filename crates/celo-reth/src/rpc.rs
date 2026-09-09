@@ -258,9 +258,10 @@ impl TryIntoSimTx<CeloTransactionSigned> for CeloTransactionRequest {
 /// base fee and otherwise mixes two denominations into one price. The CIP-64 path sets
 /// `gas_price` to the cap and `gas_priority_fee` to the tip, as a signed CIP-64 tx does, and
 /// leaves the base-fee comparison and the effective price to celo-revm's handler, which does
-/// both in the fee currency (the comparison is off for these APIs). A tip above the cap is
-/// still an error; a tip without a cap prices the call at zero, as on op-geth, and reth then
-/// also zeroes the block base fee for that simulation, as it does for any zero-priced call.
+/// both in the fee currency (the comparison is off for these APIs). A tip above the cap, or
+/// without one, is still an error, as it is in the handler and on op-geth. A request without fee
+/// fields is priced at zero, and reth then also zeroes the block base fee for that simulation,
+/// as it does for any zero-priced call.
 impl<Spec, Block: BlockEnvironment>
     alloy_evm::rpc::TryIntoTxEnv<CeloTransaction<TxEnv>, Spec, Block> for CeloTransactionRequest
 {
@@ -294,9 +295,8 @@ impl<Spec, Block: BlockEnvironment>
             .map(|_| (base_req.max_fee_per_gas.take(), base_req.max_priority_fee_per_gas.take()));
         let mut base: TxEnv = base_req.try_into_tx_env(evm_env)?;
         if let Some((max_fee_per_gas, max_priority_fee_per_gas)) = cip64_fees {
-            if let Some(cap) = max_fee_per_gas &&
-                cap < max_priority_fee_per_gas.unwrap_or_default()
-            {
+            // A missing cap is a zero cap: the handler and op-geth both reject a tip above it.
+            if max_fee_per_gas.unwrap_or_default() < max_priority_fee_per_gas.unwrap_or_default() {
                 return Err(CallFeesError::TipAboveFeeCap.into());
             }
             base.gas_price = max_fee_per_gas.unwrap_or_default();
@@ -1986,17 +1986,29 @@ mod tests {
         assert!(matches!(result, Err(EthTxEnvError::CallFees(CallFeesError::TipAboveFeeCap))));
     }
 
-    /// op-geth prices a request with a tip but no cap at zero; so do we.
+    /// A tip without a cap would reach the handler as a tip above a zero cap and be rejected
+    /// there (op-geth rejects it too); reject it up front.
     #[test]
-    fn try_into_tx_env_cip64_tip_without_cap_prices_the_call_at_zero() {
+    fn try_into_tx_env_cip64_tip_without_cap_is_rejected() {
         use alloy_evm::rpc::TryIntoTxEnv;
 
         let fc = Address::with_last_byte(0xCC);
-        let tx: CeloTransaction<TxEnv> = fee_request(Some(fc), None, Some(CUSD_TIP))
+        let result: Result<CeloTransaction<TxEnv>, EthTxEnvError> =
+            fee_request(Some(fc), None, Some(CUSD_TIP))
+                .try_into_tx_env(&evm_env_with_base_fee(NATIVE_BASE_FEE));
+        assert!(matches!(result, Err(EthTxEnvError::CallFees(CallFeesError::TipAboveFeeCap))));
+    }
+
+    #[test]
+    fn try_into_tx_env_cip64_without_fee_fields_prices_the_call_at_zero() {
+        use alloy_evm::rpc::TryIntoTxEnv;
+
+        let fc = Address::with_last_byte(0xCC);
+        let tx: CeloTransaction<TxEnv> = fee_request(Some(fc), None, None)
             .try_into_tx_env(&evm_env_with_base_fee(NATIVE_BASE_FEE))
             .unwrap();
         assert_eq!(tx.op_tx.base.gas_price, 0);
-        assert_eq!(tx.op_tx.base.gas_priority_fee, Some(CUSD_TIP));
+        assert_eq!(tx.op_tx.base.gas_priority_fee, None);
     }
 
     /// CIP-64 has no `authorizationList` field. A request that pairs `feeCurrency`
