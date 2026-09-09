@@ -45,6 +45,8 @@ pub trait CeloTxTr: OpTxTr {
 pub struct Cip64Info {
     /// Gas spent by the debit call, raw — before refunds
     pub debit_gas_spent: u64,
+    /// The debit call's raw, uncapped refund counter
+    pub debit_gas_refunded: i64,
     /// Gas spent by the credit call, raw — before refunds
     pub credit_gas_spent: u64,
     /// Logs from system calls (debit/credit) that need to be merged into the final receipt
