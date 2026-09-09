@@ -104,3 +104,8 @@ assert_estimate_band "eth_estimateGas for a fee-currency-only sender" "$(cast to
 
 resp=$(rpc '{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"from":"'$sender'","to":"'$DEAD'",'$fee_fields'},"'$block_hex'"]}')
 assert_error_contains "eth_estimateGas for a sender without the fee currency" "$resp" "exceeds allowance"
+
+# eth_call applies the same cap: with no fee-currency balance the call gets zero gas and
+# fails, as it does on op-geth. Holding CELO does not help; the fee is not paid from it.
+resp=$(rpc '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"from":"'$ACC_ADDR'","to":"'$DEAD'",'$fee_fields'},"'$block_hex'",{"'$fc'":{"stateDiff":{"'$(cast index address $ACC_ADDR 0)'":"0x0000000000000000000000000000000000000000000000000000000000000000"}}}]}')
+assert_error_contains "eth_call for a sender without the fee currency" "$resp" "intrinsic gas too low"
