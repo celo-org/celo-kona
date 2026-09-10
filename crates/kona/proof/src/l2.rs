@@ -2,10 +2,9 @@
 //! program.
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use alloy_consensus::{BlockBody, Header};
-use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
-use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, decode_2718_canonical};
 use celo_protocol::{
     CeloL2BlockInfo, convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked,
 };
@@ -201,12 +200,12 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie.
+        // Decode the transactions within the transactions trie. Celo requires each trie leaf to
+        // be its canonical EIP-2718 encoding, which is stricter than upstream kona-proof's lenient
+        // trie-leaf decode. This is a deliberate Celo-only choice, not part of optimism#22778.
         let transactions = trie_walker
             .into_iter()
-            // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
-            // EIP-2718 decoding rather than standard RLP decoding.
-            .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
+            .map(|(_, rlp)| Ok(decode_2718_canonical::<CeloTxEnvelope>(rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
         Ok(CeloBlock {
@@ -232,6 +231,19 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
         number: u64,
     ) -> Result<L2BlockInfo, OracleProviderError> {
         let block = self.celo_block_by_number(number).await?;
+        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
+            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
+            .map(|celo_info| celo_info.op_l2_block_info)
+            .map_err(OracleProviderError::BlockInfo)
+    }
+
+    async fn l2_block_info_by_hash(
+        &mut self,
+        hash: B256,
+    ) -> Result<L2BlockInfo, OracleProviderError> {
+        // A hash addresses the header directly, sparing the walk back from the safe head that a
+        // lookup by number requires.
+        let block = self.celo_block_from_header(self.header_by_hash(hash)?, hash).await?;
         CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
             .map(|celo_info| celo_info.op_l2_block_info)
