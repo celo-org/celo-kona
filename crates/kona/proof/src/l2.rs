@@ -2,9 +2,10 @@
 //! program.
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use alloy_consensus::{BlockBody, Header};
+use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
-use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, decode_2718_canonical};
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
 use celo_protocol::{
     CeloL2BlockInfo, convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked,
 };
@@ -200,12 +201,17 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie. Celo requires each trie leaf to
-        // be its canonical EIP-2718 encoding, which is stricter than upstream kona-proof's lenient
-        // trie-leaf decode. This is a deliberate Celo-only choice, not part of optimism#22778.
+        // Decode the transactions within the transactions trie. This reads committed block data,
+        // so it must decode leniently: the in-protocol trie may commit legacy transactions in
+        // either the `0x00`-tagged or raw form (see `CeloTxEnvelope`), and the node's execution
+        // path accepts both, so enforcing a canonical re-encode here would reject protocol-valid
+        // leaves. Canonical enforcement belongs at the payload-attributes boundary
+        // (`celo_decoded_transactions`), not while reading trie leaves.
         let transactions = trie_walker
             .into_iter()
-            .map(|(_, rlp)| Ok(decode_2718_canonical::<CeloTxEnvelope>(rlp.as_ref())?))
+            // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
+            // EIP-2718 decoding rather than standard RLP decoding.
+            .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
         Ok(CeloBlock {
