@@ -398,7 +398,7 @@ dependencies = [
 [[package]]
 name = "alloy-op-evm"
 version = "0.32.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -415,7 +415,7 @@ dependencies = [
 [[package]]
 name = "alloy-op-hardforks"
 version = "0.5.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-chains",
  "alloy-hardforks",
@@ -1707,7 +1707,7 @@ dependencies = [
  "bitflags 2.13.1",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2179,7 +2179,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
- "alloy-rlp",
  "celo-alloy-consensus",
  "op-alloy-rpc-types-engine",
 ]
@@ -5552,7 +5551,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -5572,7 +5571,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5611,7 +5610,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5635,7 +5634,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -5655,7 +5654,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5692,7 +5691,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -5712,7 +5711,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -5727,7 +5726,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5776,7 +5775,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5787,7 +5786,6 @@ dependencies = [
  "async-trait",
  "derive_more",
  "kona-genesis",
- "kona-protocol",
  "kona-registry",
  "op-alloy-consensus",
  "serde",
@@ -5798,12 +5796,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -5815,7 +5813,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -5829,7 +5827,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5866,7 +5864,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5898,7 +5896,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -5932,7 +5930,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5966,7 +5964,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-local"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5984,7 +5982,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-chains",
  "alloy-eips",
@@ -6003,7 +6001,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -6016,7 +6014,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",
@@ -6879,7 +6877,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "op-alloy"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "op-alloy-consensus",
  "op-alloy-network",
@@ -6891,7 +6889,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-consensus"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6921,7 +6919,7 @@ checksum = "a79f352fc3893dcd670172e615afef993a41798a1d3fc0db88a3e60ef2e70ecc"
 [[package]]
 name = "op-alloy-network"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -6934,7 +6932,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-provider"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -6948,7 +6946,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-rpc-jsonrpsee"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-primitives",
  "jsonrpsee",
@@ -6957,7 +6955,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-rpc-types"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6979,7 +6977,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-rpc-types-engine"
 version = "2.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6999,7 +6997,7 @@ dependencies = [
 [[package]]
 name = "op-revm"
 version = "20.0.0"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-eips",
  "auto_impl",
@@ -7843,7 +7841,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9876,7 +9874,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-chainspec"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -9908,7 +9906,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-cli"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9961,7 +9959,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-consensus"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9986,7 +9984,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-evm"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10016,7 +10014,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-exex"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10034,7 +10032,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-flashblocks"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10074,7 +10072,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-forks"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-op-hardforks",
  "alloy-primitives",
@@ -10085,7 +10083,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-node"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -10137,7 +10135,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-payload-builder"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10179,7 +10177,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-post-exec-replay"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10199,7 +10197,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-primitives"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10214,7 +10212,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-rpc"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10287,7 +10285,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-storage"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "reth-optimism-primitives",
@@ -10297,7 +10295,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-trie"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -10332,7 +10330,7 @@ dependencies = [
 [[package]]
 name = "reth-optimism-txpool"
 version = "1.11.3"
-source = "git+https://github.com/celo-org/optimism?rev=e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9#e750c3fed2760ada848bfd06f3bcdf26d4dd3ec9"
+source = "git+https://github.com/celo-org/optimism?rev=83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce#83ba8bfd2cefff5ccd1a93f3ebe2f0e390cc01ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
