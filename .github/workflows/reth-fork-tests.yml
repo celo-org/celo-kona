@@ -25,7 +25,7 @@ permissions:
 
 env:
   OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.3.1-sparse-trie-v3
-  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-tracing-context-v3
+  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-celo-hooks-v2
 
 jobs:
   scoped-tests:
