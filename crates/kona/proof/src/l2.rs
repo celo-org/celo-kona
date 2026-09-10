@@ -2,10 +2,9 @@
 //! program.
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_consensus::{BlockBody, Header};
-use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
-use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, decode_2718_canonical};
 use celo_protocol::{
     CeloL2BlockInfo, convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked,
 };
@@ -140,12 +139,12 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie.
+        // Decode the transactions within the transactions trie. Celo requires each trie leaf to
+        // be its canonical EIP-2718 encoding, which is stricter than upstream kona-proof's lenient
+        // trie-leaf decode. This is a deliberate Celo-only choice, not part of optimism#22778.
         let transactions = trie_walker
             .into_iter()
-            // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
-            // EIP-2718 decoding rather than standard RLP decoding.
-            .map(|(_, rlp)| Ok(CeloTxEnvelope::decode_2718(&mut rlp.as_ref())?))
+            .map(|(_, rlp)| Ok(decode_2718_canonical::<CeloTxEnvelope>(rlp.as_ref())?))
             .collect::<Result<Vec<_>, _>>()
             .map_err(OracleProviderError::Rlp)?;
         Ok(CeloBlock {
@@ -252,5 +251,98 @@ impl<T: CommsClient> TrieHinter for CeloOracleL2ChainProvider<T> {
     ) -> Result<(), Self::Error> {
         self.to_oracle_l2_chain_provider()
             .hint_execution_witness(parent_hash, op_payload_attributes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_eips::Encodable2718;
+    use alloy_primitives::{Signature, TxKind, U256, keccak256};
+    use alloy_rlp::Encodable;
+    use kona_mpt::ordered_trie_with_encoder;
+    use kona_preimage::{
+        HintWriterClient, PreimageKey, PreimageKeyType, PreimageOracleClient,
+        errors::PreimageOracleResult,
+    };
+
+    #[derive(Clone)]
+    struct MockOracle {
+        preimages: Arc<BTreeMap<PreimageKey, Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl PreimageOracleClient for MockOracle {
+        async fn get(&self, key: PreimageKey) -> PreimageOracleResult<Vec<u8>> {
+            Ok(self.preimages.get(&key).expect("missing preimage in mock").clone())
+        }
+
+        async fn get_exact(&self, key: PreimageKey, buf: &mut [u8]) -> PreimageOracleResult<()> {
+            let value = self.get(key).await?;
+            buf.copy_from_slice(&value);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl HintWriterClient for MockOracle {
+        async fn write(&self, _hint: &str) -> PreimageOracleResult<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_by_number_rejects_non_canonical_transaction_encoding() {
+        let mut encoded = TxEip1559 {
+            chain_id: 42_220,
+            nonce: 1,
+            gas_limit: 21_000,
+            max_fee_per_gas: 2,
+            max_priority_fee_per_gas: 1,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature())
+        .encoded_2718();
+        assert_eq!(encoded[0], 0x02);
+        encoded.push(0);
+        let non_canonical = Bytes::from(encoded);
+
+        let mut trie =
+            ordered_trie_with_encoder(core::slice::from_ref(&non_canonical), |tx, buf| {
+                buf.put_slice(tx.as_ref());
+            });
+        let transactions_root = trie.root();
+        let mut preimages = trie.take_proof_nodes().into_inner().into_iter().fold(
+            BTreeMap::new(),
+            |mut preimages, (_, value)| {
+                preimages.insert(
+                    PreimageKey::new(*keccak256(value.as_ref()), PreimageKeyType::Keccak256),
+                    value.to_vec(),
+                );
+                preimages
+            },
+        );
+
+        let header = Header { number: 0, transactions_root, ..Default::default() };
+        let header_hash = header.hash_slow();
+        let mut encoded_header = Vec::new();
+        header.encode(&mut encoded_header);
+        preimages
+            .insert(PreimageKey::new(*header_hash, PreimageKeyType::Keccak256), encoded_header);
+
+        let oracle = MockOracle { preimages: Arc::new(preimages) };
+        let mut provider = CeloOracleL2ChainProvider::new(
+            header_hash,
+            Arc::new(RollupConfig::default()),
+            Arc::new(oracle),
+        );
+
+        let result = provider.celo_block_by_number(0).await;
+        assert!(matches!(&result, Err(OracleProviderError::Rlp(_))), "{result:?}");
     }
 }
