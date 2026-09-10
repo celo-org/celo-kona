@@ -545,10 +545,7 @@ where
 
         let transactions = payload.payload.transactions().clone();
         let convert = |encoded: Bytes| {
-            // Require the canonical EIP-2718 encoding: a body that decodes to a typed transaction
-            // but does not re-encode to itself (for example a typed body with its type byte
-            // stripped) is rejected rather than normalised. See ethereum-optimism/optimism#22778.
-            let tx = celo_alloy_consensus::decode_2718_canonical::<TxTy<Self::Primitives>>(
+            let tx = <TxTy<Self::Primitives> as alloy_eips::Decodable2718>::decode_2718_exact(
                 encoded.as_ref(),
             )
             .map_err(AnyError::new)?;

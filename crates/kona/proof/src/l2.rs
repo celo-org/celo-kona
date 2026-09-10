@@ -139,7 +139,9 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie.
+        // Decode the transactions within the transactions trie. Celo requires each trie leaf to
+        // be its canonical EIP-2718 encoding, which is stricter than upstream kona-proof's lenient
+        // trie-leaf decode. This is a deliberate Celo-only choice, not part of optimism#22778.
         let transactions = trie_walker
             .into_iter()
             .map(|(_, rlp)| Ok(decode_2718_canonical::<CeloTxEnvelope>(rlp.as_ref())?))
