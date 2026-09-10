@@ -34,11 +34,14 @@ sol! {
     }
 }
 
-/// Get the balance of an account for a given ERC20 token
+/// Get the balance of an account for a given ERC20 token.
+///
+/// `gas_limit` bounds the `balanceOf` call; `None` uses the system-call default.
 pub fn get_balance<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     token_address: Address,
     account: Address,
+    gas_limit: Option<u64>,
 ) -> Result<U256, CoreContractError>
 where
     DB: Database,
@@ -52,7 +55,7 @@ where
 
     // Use the read-only call function to ensure no state changes
     let (output_bytes, _, _, _) =
-        core_contracts::call_read_only(evm, token_address, calldata, None)?;
+        core_contracts::call_read_only(evm, token_address, calldata, gas_limit)?;
 
     // Decode the balance. Output that does not decode as a `uint256` is the currency's
     // fault, not the node's, so tag it with the marker the sequencing blocklist

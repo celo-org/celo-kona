@@ -487,11 +487,13 @@ where
         // Reuse the debit prefix: the sequencing blocklist in `alloy-celo-evm` only classifies
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
-        let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller).map_err(|e| {
-            InvalidTransaction::from(format!(
-                "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
-            ))
-        })?);
+        let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
+            |e| {
+                InvalidTransaction::from(format!(
+                    "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
+                ))
+            },
+        )?);
 
         if balance < max_gas_cost {
             return Err(InvalidTransaction::LackOfFundForMaxFee {
