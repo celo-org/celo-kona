@@ -492,13 +492,13 @@ async function traceParityCallMany(blockNumber, baseFeePerGas) {
       fail(`trace_callMany: tx ${txIndex} failed: ${JSON.stringify(result)}`);
     }
   }
-  // Celo's call-request conversion currently caps the effective price at the
-  // native base fee plus priority before fee-currency conversion. Rates above
-  // 1 therefore return this cap, while the 1:2 override remains distinguishable.
+  // The probe reads the fee-currency price at the sequence-start 100:1 rate:
+  // base fee * 100 plus the tip, below the request's cap of base fee * 200. A
+  // leaked 1:2 context would read base fee / 2 plus the tip instead.
   assertProbeOutput(
     "trace_callMany",
     traces[1].output,
-    baseFeePerGas + PRIORITY_FEE,
+    baseFeePerGas * 100n + PRIORITY_FEE,
     blockNumber,
   );
 }
