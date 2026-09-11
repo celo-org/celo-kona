@@ -1,0 +1,36 @@
+{
+  "baseFeePerBlobGas": [
+    "0x1",
+    "0x1",
+    "0x1",
+    "0x1"
+  ],
+  "baseFeePerGas": [
+    "0x390dadad",
+    "0x38d45f65",
+    "0x389b1eeb",
+    "0x386243b4"
+  ],
+  "blobGasUsedRatio": [
+    0,
+    0,
+    0
+  ],
+  "gasUsedRatio": [
+    3186,
+    2697,
+    3186
+  ],
+  "oldestBlock": "0x7",
+  "reward": [
+    [
+      "0x3b9aca00"
+    ],
+    [
+      "0x64"
+    ],
+    [
+      "0x1dcd6500"
+    ]
+  ]
+}

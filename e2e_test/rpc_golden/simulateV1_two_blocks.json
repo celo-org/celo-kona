@@ -1,0 +1,47 @@
+[
+  {
+    "baseFeePerGas": "0x0",
+    "calls": [
+      {
+        "error": null,
+        "gasUsed": "0x83c9",
+        "logs": [
+          {
+            "address": "0x471ece3750da237f93b8e339c536989b8978a438",
+            "blockHash": "0x48123ef66c0d038b500045eb0d390b42ec6ff9f9f8cdbd089fd0fd4b37799dfc",
+            "blockNumber": "0x1",
+            "blockTimestamp": "0x6490fdde",
+            "data": "0x0000000000000000000000000000000000000000000000000000000000000064",
+            "logIndex": "0x0",
+            "removed": false,
+            "topics": [
+              "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+              "0x00000000000000000000000042cf1bbc38baaa3c4898ce8790e21ed2738c6a4a",
+              "0x000000000000000000000000000000000000000000000000000000000000dead"
+            ],
+            "transactionHash": "0x0d23f1693a16c9358e367c48b5c66d8b516041c9c128da190b914d4799976480",
+            "transactionIndex": "0x0"
+          }
+        ],
+        "returnData": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "status": "0x1"
+      }
+    ],
+    "gasUsed": "0x83c9",
+    "number": "0x1"
+  },
+  {
+    "baseFeePerGas": "0x0",
+    "calls": [
+      {
+        "error": null,
+        "gasUsed": "0x11558",
+        "logs": [],
+        "returnData": "0x",
+        "status": "0x1"
+      }
+    ],
+    "gasUsed": "0x11558",
+    "number": "0x2"
+  }
+]
