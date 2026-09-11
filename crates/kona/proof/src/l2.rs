@@ -201,12 +201,9 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie. This reads committed block data,
-        // so it must decode leniently: the in-protocol trie may commit legacy transactions in
-        // either the `0x00`-tagged or raw form (see `CeloTxEnvelope`), and the node's execution
-        // path accepts both, so enforcing a canonical re-encode here would reject protocol-valid
-        // leaves. Canonical enforcement belongs at the payload-attributes boundary
-        // (`celo_decoded_transactions`), not while reading trie leaves.
+        // Decode the transactions within the transactions trie leniently, matching upstream
+        // kona-proof's trie-leaf read. Canonical enforcement belongs at the payload-attributes
+        // boundary (`celo_decoded_transactions`), not while reading committed block data.
         let transactions = trie_walker
             .into_iter()
             // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
