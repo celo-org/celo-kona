@@ -1,10 +1,7 @@
 //! Celo-specific payload attribute helpers.
 
-use alloy_eips::{
-    Decodable2718,
-    eip2718::{Eip2718Result, WithEncoded},
-};
-use celo_alloy_consensus::CeloTxEnvelope;
+use alloy_eips::eip2718::{Eip2718Result, WithEncoded};
+use celo_alloy_consensus::{CeloTxEnvelope, decode_2718_canonical};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// Celo extension methods for [`OpPayloadAttributes`].
@@ -58,14 +55,11 @@ impl CeloPayloadAttributesExt for OpPayloadAttributes {
     fn celo_decoded_transactions(
         &self,
     ) -> impl Iterator<Item = Eip2718Result<CeloTxEnvelope>> + '_ {
-        self.transactions.iter().flatten().map(|tx_bytes| {
-            let mut buf = tx_bytes.as_ref();
-            let tx = CeloTxEnvelope::decode_2718(&mut buf).map_err(alloy_rlp::Error::from)?;
-            if !buf.is_empty() {
-                return Err(alloy_rlp::Error::UnexpectedLength.into());
-            }
-            Ok(tx)
-        })
+        // Require each entry to be the transaction's canonical EIP-2718 encoding: a body that
+        // decodes to a typed transaction but does not re-encode to itself (for example a typed
+        // body with its type byte stripped, or a `0x00`-tagged legacy) is rejected rather than
+        // normalised. See ethereum-optimism/optimism#22778.
+        self.transactions.iter().flatten().map(|tx_bytes| decode_2718_canonical(tx_bytes))
     }
 
     fn celo_decoded_transactions_with_encoded(
@@ -158,6 +152,21 @@ mod test {
         encoded.push(0x00);
         let attributes =
             OpPayloadAttributes { transactions: Some(vec![encoded.into()]), ..Default::default() };
+
+        assert!(attributes.celo_decoded_transactions().next().unwrap().is_err());
+    }
+
+    /// A bare CIP-64 body (type byte stripped) decodes to a transaction but re-encodes
+    /// differently, so it must be rejected rather than silently canonicalised. See
+    /// ethereum-optimism/optimism#22778.
+    #[test]
+    fn test_celo_decoded_transactions_reject_non_canonical_encoding() {
+        let encoded = cip64_envelope().encoded_2718();
+        assert_eq!(encoded[0], 0x7b);
+        let bare: alloy_primitives::Bytes = alloy_primitives::Bytes::copy_from_slice(&encoded[1..]);
+
+        let attributes =
+            OpPayloadAttributes { transactions: Some(vec![bare]), ..Default::default() };
 
         assert!(attributes.celo_decoded_transactions().next().unwrap().is_err());
     }

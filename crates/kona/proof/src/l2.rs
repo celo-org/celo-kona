@@ -201,7 +201,9 @@ impl<T: CommsClient + Send + Sync> CeloOracleL2ChainProvider<T> {
             .await?;
         let trie_walker = OrderedListWalker::try_new_hydrated(transactions_root, self)
             .map_err(OracleProviderError::TrieWalker)?;
-        // Decode the transactions within the transactions trie.
+        // Decode the transactions within the transactions trie leniently, matching upstream
+        // kona-proof's trie-leaf read. Canonical enforcement belongs at the payload-attributes
+        // boundary (`celo_decoded_transactions`), not while reading committed block data.
         let transactions = trie_walker
             .into_iter()
             // Use `CeloTxEnvelope::decode_2718` to decode CIP-64 transactions, as they require
@@ -232,6 +234,19 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
         number: u64,
     ) -> Result<L2BlockInfo, OracleProviderError> {
         let block = self.celo_block_by_number(number).await?;
+        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
+            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
+            .map(|celo_info| celo_info.op_l2_block_info)
+            .map_err(OracleProviderError::BlockInfo)
+    }
+
+    async fn l2_block_info_by_hash(
+        &mut self,
+        hash: B256,
+    ) -> Result<L2BlockInfo, OracleProviderError> {
+        // A hash addresses the header directly, sparing the walk back from the safe head that a
+        // lookup by number requires.
+        let block = self.celo_block_from_header(self.header_by_hash(hash)?, hash).await?;
         CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
             .map(|celo_info| celo_info.op_l2_block_info)
