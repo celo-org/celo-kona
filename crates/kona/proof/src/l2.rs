@@ -238,6 +238,20 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
             .map_err(OracleProviderError::BlockInfo)
     }
 
+    async fn l2_block_info_by_hash(
+        &mut self,
+        hash: B256,
+    ) -> Result<L2BlockInfo, OracleProviderError> {
+        // A hash addresses the header directly, sparing the walk back from the safe head that a
+        // lookup by number requires.
+        let block = self.celo_block_from_header(self.header_by_hash(hash)?, hash).await?;
+
+        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
+            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
+            .map(|celo_info| celo_info.op_l2_block_info)
+            .map_err(OracleProviderError::BlockInfo)
+    }
+
     async fn block_by_number(&mut self, number: u64) -> Result<Arc<OpBlock>, OracleProviderError> {
         // Fail closed on CIP-64: this is the transaction-content-sensitive consumer (it feeds the
         // span-batch overlap check), so a silently dropped CIP-64 tx here could let a forged block

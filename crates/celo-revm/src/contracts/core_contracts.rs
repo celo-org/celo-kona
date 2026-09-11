@@ -108,7 +108,7 @@ pub fn get_revert_message(output: Bytes) -> String {
 /// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
 /// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
 /// call ends — the happy path and a system-call error alike. The balance comes from our own
-/// checkpoint bookkeeping, not from `discard_tx`: op-revm at `kona-client/v1.7.0-rc.1` discards
+/// checkpoint bookkeeping, not from `discard_tx`: op-revm at `kona-client/v1.7.0` discards
 /// the journal in `catch_error` on a non-deposit error, and `CeloHandler::catch_error` gates
 /// that on `no_commit` so it cannot run for these system calls.
 /// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
@@ -982,7 +982,7 @@ pub(crate) mod tests {
     /// recorded before the bracket. On the error-swallowing `call_read_only` path a violation is
     /// a silent state divergence, not a crash.
     ///
-    /// op-revm at `kona-client/v1.7.0-rc.1` does journal work in `catch_error`: it routes
+    /// op-revm at `kona-client/v1.7.0` does journal work in `catch_error`: it routes
     /// non-deposit tx errors through `discard_tx`, which drains the *whole* shared revert log.
     /// `CeloHandler::catch_error` gates that on `no_commit` so a non-committing system call
     /// cannot discard the enclosing transaction's journal. This test is what pins that gate.
