@@ -214,10 +214,11 @@ pub struct CeloArgs {
     pub rollup: RollupArgs,
 
     /// How long the payload builder waits for the shared sparse trie before falling back to a
-    /// synchronous state-root calculation. Defaults to 750ms.
+    /// synchronous state-root calculation. Bare values are interpreted as seconds; use an
+    /// explicit unit such as `500ms` or `2s`. Defaults to 750ms.
     ///
     /// This only takes effect when `--engine.share-sparse-trie-with-payload-builder` is enabled,
-    /// non-legacy state-root mode is active, and reth detects at least five available CPUs.
+    /// state-root computation is enabled, and reth detects at least five available CPUs.
     #[arg(
         long = "builder.state-root-wait",
         value_name = "DURATION",
@@ -259,11 +260,20 @@ fn render_fee_currency_limits(limits: &HashMap<Address, f64>) -> String {
 /// Rejects shared sparse-trie configurations that Reth would silently leave inactive.
 fn validate_shared_sparse_trie(
     share_sparse_trie_with_payload_builder: bool,
-    use_state_root_task: bool,
+    skip_state_root: bool,
+    has_enough_parallelism: bool,
 ) -> eyre::Result<()> {
+    if !share_sparse_trie_with_payload_builder {
+        return Ok(())
+    }
+
     eyre::ensure!(
-        !share_sparse_trie_with_payload_builder || use_state_root_task,
-        "--engine.share-sparse-trie-with-payload-builder requires non-legacy state-root mode and at least five available CPUs"
+        !skip_state_root,
+        "--engine.share-sparse-trie-with-payload-builder cannot be used with --debug.skip-state-root"
+    );
+    eyre::ensure!(
+        has_enough_parallelism,
+        "--engine.share-sparse-trie-with-payload-builder requires at least five available CPUs"
     );
     Ok(())
 }
@@ -343,10 +353,11 @@ fn main() {
 
     if let Err(err) = Cli::<CeloChainSpecParser, CeloArgs>::parse_with_denied_args().run(
         async move |builder, celo_args| {
-            let engine_args = &builder.config().engine;
+            let tree_config = builder.config().tree_config();
             validate_shared_sparse_trie(
-                engine_args.share_sparse_trie_with_payload_builder,
-                engine_args.tree_config().use_state_root_task(),
+                tree_config.share_sparse_trie_with_payload_builder(),
+                tree_config.skip_state_root(),
+                tree_config.has_enough_parallelism(),
             )?;
 
             let rollup_args = celo_args.rollup;
@@ -764,21 +775,24 @@ mod tests {
     #[test]
     fn test_builder_state_root_wait_accepts_duration_override() {
         let matches = CeloArgs::augment_args(clap::Command::new("test"))
-            .try_get_matches_from(["test", "--builder.state-root-wait", "750ms"])
+            .try_get_matches_from(["test", "--builder.state-root-wait", "2s"])
             .expect("state-root wait override should parse");
 
         assert_eq!(
             matches.get_one::<Duration>("payload_state_root_wait"),
-            Some(&Duration::from_millis(750)),
+            Some(&Duration::from_secs(2)),
         );
     }
 
     #[test]
-    fn test_shared_sparse_trie_requires_state_root_task() {
-        assert!(validate_shared_sparse_trie(false, false).is_ok());
-        assert!(validate_shared_sparse_trie(true, true).is_ok());
+    fn test_shared_sparse_trie_validation_matches_payload_builder_gate() {
+        assert!(validate_shared_sparse_trie(false, true, false).is_ok());
+        assert!(validate_shared_sparse_trie(true, false, true).is_ok());
 
-        let err = validate_shared_sparse_trie(true, false).unwrap_err();
+        let err = validate_shared_sparse_trie(true, true, true).unwrap_err();
+        assert!(err.to_string().contains("--debug.skip-state-root"), "unexpected error: {err}");
+
+        let err = validate_shared_sparse_trie(true, false, false).unwrap_err();
         assert!(
             err.to_string().contains("at least five available CPUs"),
             "unexpected error: {err}"
