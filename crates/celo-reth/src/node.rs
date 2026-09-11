@@ -52,9 +52,12 @@ use reth_optimism_storage::OpStorage;
 use reth_primitives_traits::{
     Block, GotExpected, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
+
+/// Gives the shared sparse trie 750ms before allowing a synchronous state-root fallback.
+const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(750);
 
 // ---------------------------------------------------------------------------
 // CeloNode
@@ -66,6 +69,8 @@ pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
 pub struct CeloNode {
     /// The inner OP node (shared args, DA config, etc.).
     pub args: RollupArgs,
+    /// Optional override for how long the payload builder waits for the shared sparse trie.
+    pub payload_state_root_wait: Option<Duration>,
     /// Shared fee currency blocklist for CIP-64 transactions.
     pub blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     /// Per-fee-currency block space limits.
@@ -87,6 +92,7 @@ impl CeloNode {
     pub fn new(args: RollupArgs) -> Self {
         Self {
             args,
+            payload_state_root_wait: None,
             blocklist: Default::default(),
             fee_currency_limits: Default::default(),
             da_config: OpDAConfig::default(),
@@ -98,10 +104,13 @@ impl CeloNode {
     /// [`OpNode::builder_config`] so fields upstream derives from [`RollupArgs`] arrive
     /// without celo-reth naming them. Naming them here drops each one upstream adds.
     fn builder_config(&self) -> OpBuilderConfig {
-        OpNode::new(self.args.clone())
+        let mut config = OpNode::new(self.args.clone())
             .with_da_config(self.da_config.clone())
             .with_gas_limit_config(self.gas_limit_config.clone())
-            .builder_config()
+            .builder_config();
+        config.state_root_wait =
+            Some(self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT));
+        config
     }
 
     /// Sets the shared fee currency blocklist.
@@ -116,6 +125,12 @@ impl CeloNode {
     /// Sets the per-fee-currency block space limits.
     pub fn with_fee_currency_limits(mut self, limits: FeeCurrencyLimits) -> Self {
         self.fee_currency_limits = limits;
+        self
+    }
+
+    /// Overrides how long the payload builder waits for the shared sparse trie.
+    pub const fn with_payload_state_root_wait(mut self, wait: Duration) -> Self {
+        self.payload_state_root_wait = Some(wait);
         self
     }
 
@@ -800,5 +815,24 @@ mod tests {
         assert_eq!(config.da_config.max_da_tx_size(), Some(111));
         assert_eq!(config.da_config.max_da_block_size(), Some(222));
         assert_eq!(config.gas_limit_config.gas_limit(), Some(333));
+    }
+
+    #[test]
+    fn builder_config_defaults_state_root_wait_to_750ms() {
+        assert_eq!(
+            CeloNode::new(RollupArgs::default()).builder_config().state_root_wait,
+            Some(Duration::from_millis(750)),
+        );
+    }
+
+    #[test]
+    fn builder_config_uses_custom_state_root_wait() {
+        let wait = Duration::from_secs(2);
+        assert_ne!(wait, CELO_PAYLOAD_STATE_ROOT_WAIT);
+        let config = CeloNode::new(RollupArgs::default())
+            .with_payload_state_root_wait(wait)
+            .builder_config();
+
+        assert_eq!(config.state_root_wait, Some(wait));
     }
 }

@@ -31,6 +31,7 @@ use reth_cli_commands::{
     p2p, prune, re_execute, stage,
 };
 use reth_cli_runner::CliRunner;
+use reth_cli_util::parse_duration_from_secs_or_ms;
 use reth_db::DatabaseEnv;
 use reth_db_api::database_metrics::DatabaseMetrics;
 use reth_node_builder::{FullNodeComponents, NodeBuilder, WithLaunchContext};
@@ -212,6 +213,19 @@ pub struct CeloArgs {
     #[command(flatten)]
     pub rollup: RollupArgs,
 
+    /// How long the payload builder waits for the shared sparse trie before falling back to a
+    /// synchronous state-root calculation. Bare values are interpreted as seconds; use an
+    /// explicit unit such as `500ms` or `2s`. Defaults to 750ms.
+    ///
+    /// This only takes effect when `--engine.share-sparse-trie-with-payload-builder` is enabled,
+    /// state-root computation is enabled, and reth detects at least five available CPUs.
+    #[arg(
+        long = "builder.state-root-wait",
+        value_name = "DURATION",
+        value_parser = parse_duration_from_secs_or_ms,
+    )]
+    pub payload_state_root_wait: Option<Duration>,
+
     /// Per-fee-currency block space limits as fraction of block gas.
     ///
     /// Format: `address=fraction,address=fraction,...`
@@ -241,6 +255,27 @@ fn render_fee_currency_limits(limits: &HashMap<Address, f64>) -> String {
     let mut entries: Vec<(&Address, &f64)> = limits.iter().collect();
     entries.sort_unstable_by_key(|(addr, _)| *addr);
     entries.iter().map(|(addr, frac)| format!("{addr}={frac}")).collect::<Vec<_>>().join(",")
+}
+
+/// Rejects shared sparse-trie configurations that Reth would silently leave inactive.
+fn validate_shared_sparse_trie(
+    share_sparse_trie_with_payload_builder: bool,
+    skip_state_root: bool,
+    has_enough_parallelism: bool,
+) -> eyre::Result<()> {
+    if !share_sparse_trie_with_payload_builder {
+        return Ok(())
+    }
+
+    eyre::ensure!(
+        !skip_state_root,
+        "--engine.share-sparse-trie-with-payload-builder cannot be used with --debug.skip-state-root"
+    );
+    eyre::ensure!(
+        has_enough_parallelism,
+        "--engine.share-sparse-trie-with-payload-builder requires at least five available CPUs"
+    );
+    Ok(())
 }
 
 /// Augment reth's version metadata with the celo-kona git SHA so `celo-reth --version` shows
@@ -318,6 +353,13 @@ fn main() {
 
     if let Err(err) = Cli::<CeloChainSpecParser, CeloArgs>::parse_with_denied_args().run(
         async move |builder, celo_args| {
+            let tree_config = builder.config().tree_config();
+            validate_shared_sparse_trie(
+                tree_config.share_sparse_trie_with_payload_builder(),
+                tree_config.skip_state_root(),
+                tree_config.has_enough_parallelism(),
+            )?;
+
             let rollup_args = celo_args.rollup;
 
             // Parse fee currency limits from CLI args.
@@ -364,6 +406,11 @@ fn main() {
             let node = CeloNode::new(rollup_args)
                 .with_blocklist(blocklist.clone())
                 .with_fee_currency_limits(fee_currency_limits);
+            let node = if let Some(wait) = celo_args.payload_state_root_wait {
+                node.with_payload_state_root_wait(wait)
+            } else {
+                node
+            };
 
             // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
             // set, dispatch on the on-disk schema version (--proofs-history.storage-version) and
@@ -723,6 +770,34 @@ fn spawn_proofs_db_metrics<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Args as _;
+
+    #[test]
+    fn test_builder_state_root_wait_accepts_duration_override() {
+        let matches = CeloArgs::augment_args(clap::Command::new("test"))
+            .try_get_matches_from(["test", "--builder.state-root-wait", "2s"])
+            .expect("state-root wait override should parse");
+
+        assert_eq!(
+            matches.get_one::<Duration>("payload_state_root_wait"),
+            Some(&Duration::from_secs(2)),
+        );
+    }
+
+    #[test]
+    fn test_shared_sparse_trie_validation_matches_payload_builder_gate() {
+        assert!(validate_shared_sparse_trie(false, true, false).is_ok());
+        assert!(validate_shared_sparse_trie(true, false, true).is_ok());
+
+        let err = validate_shared_sparse_trie(true, true, true).unwrap_err();
+        assert!(err.to_string().contains("--debug.skip-state-root"), "unexpected error: {err}");
+
+        let err = validate_shared_sparse_trie(true, false, false).unwrap_err();
+        assert!(
+            err.to_string().contains("at least five available CPUs"),
+            "unexpected error: {err}"
+        );
+    }
 
     /// The Celo download source URL must derive the `/api/snapshots` discovery endpoint that
     /// `--list-snapshots` (and latest-snapshot auto-discovery) query, so the CLI lists Celo
