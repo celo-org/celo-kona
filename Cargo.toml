@@ -210,19 +210,22 @@ reth-optimism-storage = { git = "https://github.com/ethereum-optimism/optimism",
 reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0" }
 reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.7.0" }
 
-# Hokulea
-# 
-# Celo fork based on Layr-Labs hokulea-client/v1.2.2, aligned to kona-client/v1.7.0.
-# It keeps EigenDADataSource generic over DataAvailabilityProvider for Celo's custom source and 
-# The alignment moves reth to op-rs/reth, revm to 41 and alloy-evm to 0.37, and drops
-# canoe-sp1-cc/steel (sp1-contract-call has no reth-2.4.x tag yet), matching kona v1.7.0.
-# 
+# Hokulea (Layr-Labs upstream, no Celo fork).
+#
+# Pinned to the merge of Layr-Labs/hokulea#334, which is on kona-client/v1.7.0 and:
+# - generalizes EigenDADataSource over any DataAvailabilityProvider<Item = Bytes>, the API
+#   Celo's custom L1 source (crates/kona/derive) needs, and
+# - gates canoe-verifier's chain-spec helpers (which pull reth 2.2 / revm 38) behind an
+#   optional `chain-spec` feature. With default-features = false we exclude that older stack,
+#   so the graph resolves a single reth 2.4 / revm 41 / alloy-evm 0.37, matching kona v1.7.0.
+# No tag carries #334 yet, so the pin is the merge commit.
+#
 # hokulea-proof's KZG batch-verifier backend is selected via feature:
 # `sp1-bn` swaps the arkworks verifier for one built on the sp1 `bn` precompile,
 # cutting KZG batch verification ~74% on the zkVM proving path.
-hokulea-eigenda = { git = "https://github.com/celo-org/hokulea", rev = "ff13478661e31fb601bf902e027949129f99bf3b", default-features = false }
-hokulea-proof = { git = "https://github.com/celo-org/hokulea", rev = "ff13478661e31fb601bf902e027949129f99bf3b", default-features = false, features = ["sp1-bn"] }
-hokulea-host-bin = { git = "https://github.com/celo-org/hokulea", rev = "ff13478661e31fb601bf902e027949129f99bf3b", default-features = false }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", rev = "f03d492a1a824b9a37c0b7e856a74390709177b3", default-features = false }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", rev = "f03d492a1a824b9a37c0b7e856a74390709177b3", default-features = false, features = ["sp1-bn"] }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", rev = "f03d492a1a824b9a37c0b7e856a74390709177b3", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
