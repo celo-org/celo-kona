@@ -1,10 +1,8 @@
 //! Celo-specific payload attribute helpers.
 
-use alloy_eips::{
-    Decodable2718,
-    eip2718::{Eip2718Result, WithEncoded},
-};
+use alloy_eips::eip2718::{Eip2718Result, WithEncoded};
 use celo_alloy_consensus::CeloTxEnvelope;
+use op_alloy_consensus::decode_2718_canonical;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
 /// Celo extension methods for [`OpPayloadAttributes`].
@@ -58,14 +56,7 @@ impl CeloPayloadAttributesExt for OpPayloadAttributes {
     fn celo_decoded_transactions(
         &self,
     ) -> impl Iterator<Item = Eip2718Result<CeloTxEnvelope>> + '_ {
-        self.transactions.iter().flatten().map(|tx_bytes| {
-            let mut buf = tx_bytes.as_ref();
-            let tx = CeloTxEnvelope::decode_2718(&mut buf).map_err(alloy_rlp::Error::from)?;
-            if !buf.is_empty() {
-                return Err(alloy_rlp::Error::UnexpectedLength.into());
-            }
-            Ok(tx)
-        })
+        self.transactions.iter().flatten().map(|tx_bytes| decode_2718_canonical(tx_bytes))
     }
 
     fn celo_decoded_transactions_with_encoded(
@@ -150,6 +141,48 @@ mod test {
             .collect::<Eip2718Result<Vec<_>>>()
             .expect("decoding should succeed");
         assert_eq!(decoded, vec![envelope]);
+    }
+
+    /// A transaction that decodes but does not re-encode to the same bytes (here: a legacy
+    /// transaction carrying a `0x00` type tag) must be rejected, not silently canonicalised.
+    #[test]
+    fn test_celo_decoded_transactions_reject_non_canonical_encoding() {
+        let legacy = CeloTxEnvelope::Legacy(
+            alloy_consensus::TxLegacy {
+                chain_id: Some(42220),
+                nonce: 1,
+                gas_price: 2,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Default::default(),
+            }
+            .into_signed(Signature::test_signature()),
+        )
+        .encoded_2718();
+        assert!(legacy[0] > 0x7F, "legacy transactions are untyped");
+        let mut tagged = vec![0x00];
+        tagged.extend_from_slice(&legacy);
+
+        let attributes =
+            OpPayloadAttributes { transactions: Some(vec![tagged.into()]), ..Default::default() };
+
+        let err = attributes.celo_decoded_transactions().next().unwrap().unwrap_err();
+        assert!(err.to_string().contains("non-canonical"), "{err}");
+    }
+
+    /// A CIP-64 body stripped of its `0x7b` type byte must not be resurrected as a CIP-64
+    /// transaction.
+    #[test]
+    fn test_celo_decoded_transactions_reject_bare_cip64_body() {
+        let encoded = cip64_envelope().encoded_2718();
+        assert_eq!(encoded[0], 0x7b);
+        let attributes = OpPayloadAttributes {
+            transactions: Some(vec![encoded[1..].to_vec().into()]),
+            ..Default::default()
+        };
+
+        assert!(attributes.celo_decoded_transactions().next().unwrap().is_err());
     }
 
     #[test]
