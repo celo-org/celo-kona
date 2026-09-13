@@ -1,0 +1,553 @@
+[
+  {
+    "name": "traceCall_native_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x186a0"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer"
+      }
+    ]
+  },
+  {
+    "name": "traceCall_native_structLogs",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x186a0"
+      },
+      "0x0",
+      {
+        "enableMemory": false,
+        "disableStack": false,
+        "disableStorage": true,
+        "enableReturnData": false
+      }
+    ],
+    "note": "Callee is an EOA, so structLogs is empty and the value that matters is the gas accounting. Steps are rendered one per line, as in the ERC20 scenario, so both goldens read the same way.",
+    "filter": "@STRUCTLOG_FILTER@"
+  },
+  {
+    "name": "traceCall_erc20_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer"
+      }
+    ],
+    "note": "A CELO-token transfer routes through the token-duality transfer precompile. Locks how that precompile is represented as a call frame."
+  },
+  {
+    "name": "traceCall_erc20_callTracer_withLog",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer",
+        "tracerConfig": {
+          "withLog": true
+        }
+      }
+    ],
+    "note": "Token duality emits the ERC20 Transfer event from a native balance move; withLog pins that the event surfaces on the right frame."
+  },
+  {
+    "name": "traceCall_erc20_structLogs",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      "0x0",
+      {
+        "enableMemory": false,
+        "disableStack": false,
+        "disableStorage": true,
+        "enableReturnData": false
+      }
+    ],
+    "note": "Opcode-level trace of the token-duality path. Steps are rendered one per line: keeping the full per-step stack would make this golden ~10k lines and unreviewable, while the stack depth still moves whenever the opcode sequence does. Stack contents are covered by the prestate and callTracer goldens, and the sender's genesis balance by the call_cip64 scenario.",
+    "filter": "@STRUCTLOG_FILTER@"
+  },
+  {
+    "name": "traceCall_erc20_4byteTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      "0x0",
+      {
+        "tracer": "4byteTracer"
+      }
+    ]
+  },
+  {
+    "name": "traceCall_erc20_prestateTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      "0x0",
+      {
+        "tracer": "prestateTracer"
+      }
+    ],
+    "filter": "with_entries(.value |= del(.code))",
+    "note": "Full prestate is deterministic at the genesis block (the dev fee recipient, which prestateTracer would otherwise include as a random top-level key, is the zero address there). Contract bytecode is dropped so the golden stays reviewable; codeHash coverage lives in the celo-alloy serde tests."
+  },
+  {
+    "name": "traceCall_cip64_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x30d40",
+        "feeCurrency": "@FEE_CURRENCY@",
+        "maxFeePerGas": "0xba43b7400",
+        "maxPriorityFeePerGas": "0x64"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer"
+      }
+    ],
+    "note": "CIP-64 with real gas prices. What this pins is the intrinsic gas: gasUsed covers the fee currency's registered surcharge, 0x11558 against 0x5208 for the same transfer paid natively. It does NOT pin the fee-currency debit -- the call env runs with the base fee disabled, so no fee is charged at all on this path; traceCall_cip64_prestateTracer_diff shows the resulting state diff carrying no fee-currency account. The debit and credit are pinned by the mined receipt goldens."
+  },
+  {
+    "name": "traceCall_cip64_no_fees_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x30d40",
+        "feeCurrency": "@FEE_CURRENCY@"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer"
+      }
+    ],
+    "note": "Same call with defaulted (zero) gas prices: exercises the exchange-rate lookup without a debit."
+  },
+  {
+    "name": "traceCall_cip64_prestateTracer_diff",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x30d40",
+        "feeCurrency": "@FEE_CURRENCY@",
+        "maxFeePerGas": "0xba43b7400",
+        "maxPriorityFeePerGas": "0x64"
+      },
+      "0x0",
+      {
+        "tracer": "prestateTracer",
+        "tracerConfig": {
+          "diffMode": true
+        }
+      }
+    ],
+    "filter": "{pre: (.pre | with_entries(.value |= del(.code))), post: (.post | with_entries(.value |= del(.code)))}",
+    "note": "State diff of a CIP-64 call. What it pins is that the traceCall path charges no fee at all: the diff is the 1 wei of value plus the nonce, and no fee-currency account is touched, because the call env runs with the base fee disabled. The exchange rate is therefore NOT observable here \u2014 it is pinned by gas_price_at_genesis, fillTransaction_cip64_defaults, the mined receipt goldens and feeHistory_across_rate_change."
+  },
+  {
+    "name": "traceCall_cip64_second_currency_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x30d40",
+        "feeCurrency": "@FEE_CURRENCY2@",
+        "maxFeePerGas": "0xba43b7400",
+        "maxPriorityFeePerGas": "0x64"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer"
+      }
+    ],
+    "note": "The second genesis fee currency, wired to a different oracle at a different rate. The callTracer frame carries no fee-currency data, so this golden is byte-identical to the first currency's; what it pins is that the second currency resolves and executes at all. The rates are told apart by gas_price_at_genesis, which covers both currencies."
+  },
+  {
+    "name": "traceCall_state_override_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x186a0"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer",
+        "stateOverrides": {
+          "0x1111111111111111111111111111111111111111": {
+            "balance": "0x8ac7230489e80000"
+          }
+        }
+      }
+    ],
+    "note": "Unfunded EOA made solvent through stateOverrides; covers the override plumbing on the trace path."
+  },
+  {
+    "name": "traceCall_cip64_block_override_callTracer",
+    "method": "debug_traceCall",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "gas": "0x30d40",
+        "feeCurrency": "@FEE_CURRENCY@",
+        "maxFeePerGas": "0xba43b7400",
+        "maxPriorityFeePerGas": "0x64"
+      },
+      "0x0",
+      {
+        "tracer": "callTracer",
+        "blockOverrides": {
+          "number": "0x3e8"
+        }
+      }
+    ],
+    "note": "Block overrides must be applied before the fee-currency context is captured, otherwise the CIP-64 debit runs against a different block env than the call does. The callTracer frame cannot show which env the context came from, so this pins that an override does not break the CIP-64 path \u2014 a wrong-env context that still executes is invisible here."
+  },
+  {
+    "name": "call_cip64",
+    "method": "eth_call",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@BALANCE_OF_DATA@",
+        "feeCurrency": "@FEE_CURRENCY@"
+      },
+      "0x0"
+    ],
+    "note": "eth_call accepting feeCurrency: the balanceOf result is the sender's genesis native balance, read through token duality."
+  },
+  {
+    "name": "estimateGas_native",
+    "method": "eth_estimateGas",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1"
+      },
+      "0x0"
+    ]
+  },
+  {
+    "name": "estimateGas_cip64",
+    "method": "eth_estimateGas",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "feeCurrency": "@FEE_CURRENCY@"
+      },
+      "0x0"
+    ],
+    "note": "Binary-search estimate over the fee currency's intrinsic gas. Deterministic for a given estimator, so a golden \u2014 a moved value means the estimator or the intrinsic-gas surcharge changed, both of which are worth a review."
+  },
+  {
+    "name": "createAccessList_cip64",
+    "method": "eth_createAccessList",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "feeCurrency": "@FEE_CURRENCY@"
+      },
+      "0x0"
+    ],
+    "note": "The access-list path builds its own EVM; feeCurrency must survive the request conversion there too."
+  },
+  {
+    "name": "fillTransaction_cip64_defaults",
+    "method": "eth_fillTransaction",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@DEAD@",
+        "value": "0x1",
+        "feeCurrency": "@FEE_CURRENCY@"
+      }
+    ],
+    "note": "The only coverage of `fill_cip64_fee_defaults` over the wire. A CIP-64 request omitting both fee fields must come back with them denominated in the fee currency -- op-geth's setLondonFeeDefaults, so 2 * base_fee_fc + tip_fc -- not with native wei values that the handler would then misread as fee-currency units. No signer is involved: the Celo fill runs before the delegation that `eth_sendTransaction` and `eth_signTransaction` need an unlocked account for."
+  },
+  {
+    "name": "simulateV1_native",
+    "method": "eth_simulateV1",
+    "params": [
+      {
+        "blockStateCalls": [
+          {
+            "calls": [
+              {
+                "from": "@ACC@",
+                "to": "@DEAD@",
+                "value": "0x1"
+              }
+            ]
+          }
+        ]
+      },
+      "0x0"
+    ],
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "note": "The simulated block carries a wall-clock timestamp and derived hashes; compare the execution outcome and the synthesized block env instead."
+  },
+  {
+    "name": "simulateV1_cip64",
+    "method": "eth_simulateV1",
+    "params": [
+      {
+        "blockStateCalls": [
+          {
+            "calls": [
+              {
+                "from": "@ACC@",
+                "to": "@DEAD@",
+                "value": "0x1",
+                "feeCurrency": "@FEE_CURRENCY@"
+              }
+            ]
+          }
+        ]
+      },
+      "0x0"
+    ],
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "note": "Regression guard for the base-fee-check store gate: a CIP-64 call under the default validation=false must simulate rather than panic or be rejected."
+  },
+  {
+    "name": "simulateV1_cip64_validation",
+    "method": "eth_simulateV1",
+    "params": [
+      {
+        "blockStateCalls": [
+          {
+            "calls": [
+              {
+                "from": "@ACC@",
+                "to": "@DEAD@",
+                "value": "0x1",
+                "gas": "0x30d40",
+                "feeCurrency": "@FEE_CURRENCY@",
+                "maxFeePerGas": "0xba43b7400",
+                "maxPriorityFeePerGas": "0x64"
+              }
+            ]
+          }
+        ],
+        "validation": true
+      },
+      "0x0"
+    ],
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "note": "validation=true keeps the base fee and the balance checks live; the visible effect is the non-zero baseFeePerGas in the synthesized block. The fee debit runs outside the call frame, so it contributes no entry to this response's `logs` \u2014 its Transfer events are pinned by the mined receipt goldens instead."
+  },
+  {
+    "name": "simulateV1_two_blocks",
+    "method": "eth_simulateV1",
+    "params": [
+      {
+        "blockStateCalls": [
+          {
+            "calls": [
+              {
+                "from": "@ACC@",
+                "to": "@TOKEN@",
+                "data": "@ERC20_DATA@"
+              }
+            ]
+          },
+          {
+            "calls": [
+              {
+                "from": "@ACC@",
+                "to": "@DEAD@",
+                "value": "0x1",
+                "feeCurrency": "@FEE_CURRENCY@"
+              }
+            ]
+          }
+        ]
+      },
+      "0x0"
+    ],
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "note": "Two simulated blocks in one request: the second must start from the first's post-state while still resolving its own fee-currency context."
+  },
+  {
+    "name": "traceCallMany_two_bundles",
+    "method": "debug_traceCallMany",
+    "params": [
+      [
+        {
+          "transactions": [
+            {
+              "from": "@ACC@",
+              "to": "@TOKEN@",
+              "data": "@ERC20_DATA@",
+              "gas": "0x30d40"
+            }
+          ]
+        },
+        {
+          "transactions": [
+            {
+              "from": "@ACC@",
+              "to": "@DEAD@",
+              "value": "0x1",
+              "gas": "0x30d40",
+              "feeCurrency": "@FEE_CURRENCY@",
+              "maxFeePerGas": "0xba43b7400",
+              "maxPriorityFeePerGas": "0x64"
+            }
+          ]
+        }
+      ],
+      {
+        "blockNumber": "0x0"
+      },
+      {
+        "tracer": "callTracer"
+      }
+    ],
+    "note": "Per-bundle fee-currency context capture: two bundles touching different currencies in one request."
+  },
+  {
+    "name": "trace_call_erc20",
+    "method": "trace_call",
+    "params": [
+      {
+        "from": "@ACC@",
+        "to": "@TOKEN@",
+        "data": "@ERC20_DATA@",
+        "gas": "0x30d40"
+      },
+      [
+        "trace"
+      ],
+      "0x0"
+    ],
+    "note": "The parity namespace renders the same execution differently, and what it pins is an omission: subtraces is 0 and the transfer precompile frame that callTracer and ots_traceTransaction both report is absent. That is upstream behaviour -- revm-inspectors sets exclude_precompile_calls for the parity config -- so token duality is deliberately invisible to trace_*. A frame appearing here is as much a regression as one disappearing from the callTracer goldens."
+  },
+  {
+    "name": "trace_callMany_cip64",
+    "method": "trace_callMany",
+    "params": [
+      [
+        [
+          {
+            "from": "@ACC@",
+            "to": "@TOKEN@",
+            "data": "@ERC20_DATA@",
+            "gas": "0x30d40"
+          },
+          [
+            "trace"
+          ]
+        ],
+        [
+          {
+            "from": "@ACC@",
+            "to": "@DEAD@",
+            "value": "0x1",
+            "gas": "0x30d40",
+            "feeCurrency": "@FEE_CURRENCY@",
+            "maxFeePerGas": "0xba43b7400",
+            "maxPriorityFeePerGas": "0x64"
+          },
+          [
+            "trace"
+          ]
+        ]
+      ],
+      "0x0"
+    ],
+    "note": "trace_callMany builds a fresh EVM per call; every call in the sequence must still use the context captured before the first one ran."
+  },
+  {
+    "name": "callMany_cip64",
+    "method": "eth_callMany",
+    "params": [
+      [
+        {
+          "transactions": [
+            {
+              "from": "@ACC@",
+              "to": "@TOKEN@",
+              "data": "@ERC20_DATA@",
+              "gas": "0x30d40"
+            }
+          ]
+        },
+        {
+          "transactions": [
+            {
+              "from": "@ACC@",
+              "to": "@DEAD@",
+              "value": "0x1",
+              "gas": "0x30d40",
+              "feeCurrency": "@FEE_CURRENCY@",
+              "maxFeePerGas": "0xba43b7400",
+              "maxPriorityFeePerGas": "0x64"
+            }
+          ]
+        }
+      ],
+      {
+        "blockNumber": "0x0"
+      }
+    ]
+  }
+]
