@@ -286,22 +286,19 @@ where
         let charge =
             self.pending_charge.take_if(|charge| charge.sender == sender && charge.nonce == nonce);
 
-        if let Some(charge) = charge {
-            if let std::collections::hash_map::Entry::Occupied(mut entry) =
+        if let Some(charge) = charge &&
+            let std::collections::hash_map::Entry::Occupied(mut entry) =
                 self.gas_used_per_currency.entry(charge.fee_currency)
-            {
-                let remaining = entry.get().saturating_sub(charge.gas_limit);
-                if remaining == 0 {
-                    entry.remove();
-                } else {
-                    *entry.get_mut() = remaining;
-                }
+        {
+            let remaining = entry.get().saturating_sub(charge.gas_limit);
+            if remaining == 0 {
+                entry.remove();
+            } else {
+                *entry.get_mut() = remaining;
             }
-
-            self.inner.mark_invalid(sender, nonce);
-        } else {
-            self.inner.mark_invalid(sender, nonce);
         }
+
+        self.inner.mark_invalid(sender, nonce);
     }
 }
 
