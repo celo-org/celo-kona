@@ -2088,6 +2088,7 @@ enum DebitRecheck {
     Success,
     Revert,
     Halt,
+    InvalidEvidence,
     Uncertain,
     BudgetExhausted,
 }
@@ -2177,7 +2178,9 @@ where
                 plan.drained_credit += 1;
             }
             RevertReason::Debit => match recheck_debit(&tx.transaction) {
-                DebitRecheck::Success => plan.drained_debit += 1,
+                DebitRecheck::Success | DebitRecheck::InvalidEvidence => {
+                    plan.drained_debit += 1;
+                }
                 DebitRecheck::Revert => {
                     plan.debit.insert(record.tx_hash);
                     plan.drained_debit += 1;
@@ -2422,7 +2425,12 @@ where
         };
 
         let Some(fee_currency) = tx.fee_currency() else {
-            return DebitRecheck::Uncertain;
+            tracing::warn!(
+                target: "celo::pool",
+                tx_hash = ?tx.hash(),
+                "Dropping payload debit-revert evidence for transaction without fee currency"
+            );
+            return DebitRecheck::InvalidEvidence;
         };
         let calldata =
             IFeeCurrencyERC20::debitGasFeesCall { from: tx.sender(), value: tx.fc_gas_cost() }
@@ -4822,6 +4830,67 @@ mod tests {
         #[tokio::test]
         async fn head_confirmation_error_requeues_the_entire_batch_in_on_new_block() {
             assert_on_new_block_requeues_taken_batch(HeadConfirmationOutcome::ProviderError).await;
+        }
+
+        #[tokio::test]
+        async fn invalid_debit_evidence_for_native_tx_is_drained() {
+            let fee_currency_directory = Address::with_last_byte(0xF0);
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            provider.add_account(
+                fee_currency_directory,
+                reth_provider::test_utils::ExtendedAccount::new(0, U256::ZERO).with_bytecode(
+                    Bytes::from_static(&[
+                        0x60, 0x20, 0x60, 0x00, 0x52, // mstore(0, 32)
+                        0x60, 0x40, 0x60, 0x00, 0xf3, // return(0, 64)
+                    ]),
+                ),
+            );
+            let parent_hash = B256::with_last_byte(1);
+            let inserted = SealedHeader::seal_slow(Header {
+                number: 11,
+                parent_hash,
+                timestamp: 1,
+                ..Default::default()
+            });
+            provider.add_block(
+                inserted.hash(),
+                crate::primitives::CeloBlock::new(inserted.header().clone(), Default::default()),
+            );
+
+            let pool = test_pool(25_000);
+            let target = make_test_tx_with_nonce(None, 0, 100, 100, 10, Address::with_last_byte(1));
+            let target_hash = *target.hash();
+            pool.add_transaction(TransactionOrigin::External, target)
+                .await
+                .expect("transaction must be admitted");
+
+            let failure_policies = CeloFailurePolicies::default();
+            failure_policies.revert_evictions().record(RevertEviction::new(
+                target_hash,
+                RevertReason::Debit,
+                PayloadGeneration::new(10, parent_hash),
+            ));
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider,
+                fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
+                failure_policies.clone(),
+            );
+            maintainer.usable_currencies = Some(HashSet::new());
+
+            maintainer.on_new_block();
+
+            assert!(pool.get(&target_hash).is_some(), "invalid evidence must not evict the tx");
+            assert!(
+                failure_policies.revert_evictions().is_empty(),
+                "invalid evidence must not be requeued"
+            );
         }
 
         /// Balance maintenance follows op-geth's executable-list behavior: nonce-gapped queued
