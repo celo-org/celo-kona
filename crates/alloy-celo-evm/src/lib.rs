@@ -449,11 +449,6 @@ where
                     // often a sender who drained after pool admission, but paused or custom hook
                     // logic can revert the same way. Record exact, generation-bound evidence and
                     // let canonical maintenance decide without blocklisting the whole currency.
-                    tracing::warn!(
-                        target: "celo",
-                        "fee-currency debit/credit reverted for {fc}: {e}; \
-                         dropping tx without blocklisting the currency"
-                    );
                     if let (Some(envelope), Some(generation)) =
                         (revert_eviction_envelope, self.failure_policy_generation)
                     {
@@ -462,18 +457,26 @@ where
                             reason,
                             generation,
                         );
-                        if !self.failure_policies.record_revert_if_current(eviction) {
+                        if self.failure_policies.record_revert_if_current(eviction) {
+                            tracing::warn!(
+                                target: "celo",
+                                "fee-currency debit/credit reverted for {fc}: {e}; recorded tx for \
+                                 canonical pool eviction without blocklisting the currency"
+                            );
+                        } else {
                             tracing::debug!(
                                 target: "celo",
                                 ?generation,
-                                "Ignoring revert evidence from a non-current payload parent"
+                                "Ignoring revert evidence from a non-current payload parent; tx is \
+                                 skipped only for this payload attempt"
                             );
                         }
                     } else {
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit reverted without encoded transaction bytes or \
-                             payload generation; skipping pool eviction record"
+                             payload generation; skipping tx for this payload attempt without \
+                             recording canonical pool eviction"
                         );
                     }
                     #[cfg(feature = "std")]
@@ -556,7 +559,8 @@ where
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit failed with an EVM-level error for \
-                             {fc}: {e} — dropping tx without blocklisting the currency"
+                             {fc}: {e}; skipping tx for this payload attempt and leaving it in the \
+                             pool for retry without blocklisting the currency"
                         );
                         #[cfg(feature = "std")]
                         metrics::counter!(
