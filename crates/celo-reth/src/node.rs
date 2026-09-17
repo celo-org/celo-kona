@@ -813,7 +813,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_celo_evm::revert_evictions::{PayloadGeneration, RevertEviction, RevertReason};
+    use alloy_celo_evm::revert_evictions::{PayloadBlock, RevertEviction, RevertReason};
     use alloy_primitives::B256;
 
     /// Fields `OpNode` derives from [`RollupArgs`] reach Celo's payload builder;
@@ -866,15 +866,13 @@ mod tests {
     fn replacing_blocklist_preserves_shared_revert_eviction_channel() {
         let node = CeloNode::default();
         let policies = node.failure_policies.clone();
-        let generation = PayloadGeneration::new(1, B256::with_last_byte(2));
-        policies.set_canonical_head(generation);
         let node = node.with_blocklist(Default::default());
-        assert!(policies.record_revert_if_current(RevertEviction::new(
+        policies.revert_evictions().record(RevertEviction::new(
             B256::with_last_byte(1),
             RevertReason::Credit,
-            generation,
-        )));
+            PayloadBlock::new(1, B256::with_last_byte(2)),
+        ));
 
-        assert_eq!(node.failure_policies.revert_evictions().take_batch(1).records.len(), 1);
+        assert_eq!(node.failure_policies.revert_evictions().take_all().len(), 1);
     }
 }

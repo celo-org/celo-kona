@@ -46,6 +46,8 @@ pub mod primitives;
 pub mod receipt;
 pub mod receipts;
 
+mod failure_policy;
+
 #[cfg(feature = "std")]
 pub mod node;
 
@@ -452,18 +454,29 @@ where
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
         let evm = self.evm_with_env(db, evm_env);
-        let evm = if attributes.failure_policies_enabled {
+        let revert_attempt = attributes
+            .failure_policies_enabled
+            .then(alloy_celo_evm::revert_evictions::RevertEvictionAttempt::default);
+        let evm = if let Some(attempt) = &revert_attempt {
             evm.with_failure_policies_enabled(
                 alloy_celo_evm::revert_evictions::PayloadGeneration::new(
                     parent.number,
                     parent.hash(),
                 ),
+                attempt.clone(),
             )
         } else {
             evm
         };
         let ctx = self.context_for_next_block(parent, attributes)?;
         let builder = self.create_block_builder(evm, parent, ctx);
+        let promotion = revert_attempt.map(|attempt| {
+            (
+                attempt,
+                self.executor_factory.evm_factory().failure_policies().revert_evictions().clone(),
+            )
+        });
+        let builder = failure_policy::FailurePolicyBlockBuilder::new(builder, promotion);
         // Sequencing-only observability: the decorator is transparent, and it emits nothing
         // unless a `PayloadMetricsBuilder` attempt is active on this thread. no-std proof
         // builds return the bare builder.
@@ -550,12 +563,16 @@ where
         // local failure policies to pool-backed sequencing, while every receipt-building payload
         // still needs its own CIP-64 storage.
         let evm = self.evm_with_env(db, evm_env);
-        let evm = if attributes.failure_policies_enabled {
+        let revert_attempt = attributes
+            .failure_policies_enabled
+            .then(alloy_celo_evm::revert_evictions::RevertEvictionAttempt::default);
+        let evm = if let Some(attempt) = &revert_attempt {
             evm.with_failure_policies_enabled(
                 alloy_celo_evm::revert_evictions::PayloadGeneration::new(
                     parent.number,
                     parent.hash(),
                 ),
+                attempt.clone(),
             )
         } else {
             evm
@@ -577,6 +594,13 @@ where
             parent,
             assembler: self.block_assembler(),
         };
+        let promotion = revert_attempt.map(|attempt| {
+            (
+                attempt,
+                self.executor_factory.evm_factory().failure_policies().revert_evictions().clone(),
+            )
+        });
+        let builder = failure_policy::FailurePolicyBlockBuilder::new(builder, promotion);
         // Same sequencing-side instrumentation as `builder_for_next_block`; see there for the
         // std-only rationale.
         #[cfg(feature = "std")]

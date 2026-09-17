@@ -159,7 +159,7 @@ impl OpPayloadTransactions<CeloPoolTx> for CeloPayloadTransactions {
         Pool: TransactionPool<Transaction = CeloPoolTx>,
     {
         // Do not clear revert markers here. Reth can run multiple payload jobs concurrently, and
-        // the canonical pool maintainer owns draining generation-tagged evidence.
+        // the canonical pool maintainer owns draining exact-payload evidence.
         // Evict stale blocklist entries before filtering. Otherwise transactions using an expired
         // entry would continue to be rejected by `CeloFeeCurrencyFilter` below even past the 7200s
         // TTL. Wall clock is a safe time source here: block timestamps track wall time within
@@ -614,7 +614,7 @@ mod tests {
         evictions.record(alloy_celo_evm::revert_evictions::RevertEviction::new(
             target_hash,
             alloy_celo_evm::revert_evictions::RevertReason::Debit,
-            alloy_celo_evm::revert_evictions::PayloadGeneration::new(1, B256::with_last_byte(1)),
+            alloy_celo_evm::revert_evictions::PayloadBlock::new(1, B256::with_last_byte(1)),
         ));
         let mut filter = CeloFeeCurrencyFilter {
             inner: VecPayloadTransactions { txs: vec![target.clone()], invalid: vec![] },
@@ -636,7 +636,7 @@ mod tests {
         assert!(pool.get(&descendant_hash).is_some());
         assert!(pool.get(&other_hash).is_some());
         assert_eq!(
-            evictions.take_batch(16).records.len(),
+            evictions.take_all().len(),
             1,
             "payload invalidation must leave canonical eviction evidence untouched"
         );
@@ -654,7 +654,7 @@ mod tests {
         evictions.record(alloy_celo_evm::revert_evictions::RevertEviction::new(
             tx_hash,
             alloy_celo_evm::revert_evictions::RevertReason::Debit,
-            alloy_celo_evm::revert_evictions::PayloadGeneration::new(1, B256::with_last_byte(1)),
+            alloy_celo_evm::revert_evictions::PayloadBlock::new(1, B256::with_last_byte(1)),
         ));
         let mut filter = eviction_filter(vec![tx], evictions.clone());
 
@@ -662,7 +662,7 @@ mod tests {
         filter.mark_invalid(Address::with_last_byte(9), 0);
 
         assert!(pool.get(&tx_hash).is_some());
-        assert_eq!(evictions.take_batch(16).records.len(), 1);
+        assert_eq!(evictions.take_all().len(), 1);
     }
 
     #[tokio::test]
@@ -677,14 +677,14 @@ mod tests {
         evictions.record(alloy_celo_evm::revert_evictions::RevertEviction::new(
             tx_hash,
             alloy_celo_evm::revert_evictions::RevertReason::Debit,
-            alloy_celo_evm::revert_evictions::PayloadGeneration::new(1, B256::with_last_byte(1)),
+            alloy_celo_evm::revert_evictions::PayloadBlock::new(1, B256::with_last_byte(1)),
         ));
         let mut filter = eviction_filter(vec![tx], evictions.clone());
         filter.failure_policies.blocklist().block_currency(fc, 1);
 
         assert!(filter.next(()).is_none());
         assert!(pool.get(&tx_hash).is_some());
-        assert_eq!(evictions.take_batch(16).records.len(), 1);
+        assert_eq!(evictions.take_all().len(), 1);
     }
 
     #[tokio::test]
@@ -699,14 +699,14 @@ mod tests {
         evictions.record(alloy_celo_evm::revert_evictions::RevertEviction::new(
             tx_hash,
             alloy_celo_evm::revert_evictions::RevertReason::Debit,
-            alloy_celo_evm::revert_evictions::PayloadGeneration::new(1, B256::with_last_byte(1)),
+            alloy_celo_evm::revert_evictions::PayloadBlock::new(1, B256::with_last_byte(1)),
         ));
         let mut filter = eviction_filter(vec![tx], evictions.clone());
         filter.limits.default_limit = 0.0;
 
         assert!(filter.next(()).is_none());
         assert!(pool.get(&tx_hash).is_some());
-        assert_eq!(evictions.take_batch(16).records.len(), 1);
+        assert_eq!(evictions.take_all().len(), 1);
     }
 
     #[test]
@@ -716,7 +716,7 @@ mod tests {
         evictions.record(alloy_celo_evm::revert_evictions::RevertEviction::new(
             tx_hash,
             alloy_celo_evm::revert_evictions::RevertReason::Debit,
-            alloy_celo_evm::revert_evictions::PayloadGeneration::new(1, B256::with_last_byte(1)),
+            alloy_celo_evm::revert_evictions::PayloadBlock::new(1, B256::with_last_byte(1)),
         ));
         let payload_transactions = CeloPayloadTransactions::new(
             FeeCurrencyLimits::default(),
@@ -728,7 +728,7 @@ mod tests {
             reth_transaction_pool::BestTransactionsAttributes::new(0, None),
         );
 
-        assert_eq!(evictions.take_batch(16).records.len(), 1);
+        assert_eq!(evictions.take_all().len(), 1);
     }
 
     #[test]

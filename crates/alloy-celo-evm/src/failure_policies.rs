@@ -2,26 +2,35 @@
 
 use crate::{
     blocklist::FeeCurrencyBlocklist,
-    revert_evictions::{PayloadGeneration, RevertEviction, RevertEvictions},
+    revert_evictions::{PayloadGeneration, RevertEvictionAttempt, RevertEvictions, RevertReason},
 };
 use alloc::sync::Arc;
+use alloy_primitives::B256;
 use spin::Mutex;
 
-/// Shared blocklist, revert evidence, and canonical-head state for pool-backed sequencing.
+/// Shared blocklist, completed-payload revert evidence, and canonical-head state for pool-backed
+/// sequencing, plus an optional buffer scoped to one payload attempt.
 ///
 /// Keeping these channels in one value prevents the EVM producer and canonical pool consumer from
-/// being configured independently. Cloning this value preserves every shared channel.
+/// being configured independently. Cloning a policy-enabled EVM preserves its attempt buffer;
+/// factory policies have no attempt until the sequencing builder attaches one.
 #[derive(Debug, Clone, Default)]
 pub struct CeloFailurePolicies {
     blocklist: FeeCurrencyBlocklist,
     revert_evictions: RevertEvictions,
     canonical_head: Arc<Mutex<Option<PayloadGeneration>>>,
+    revert_eviction_attempt: Option<RevertEvictionAttempt>,
 }
 
 impl CeloFailurePolicies {
     /// Creates a policy bundle from its blocklist and revert-evidence channels.
     pub fn new(blocklist: FeeCurrencyBlocklist, revert_evictions: RevertEvictions) -> Self {
-        Self { blocklist, revert_evictions, canonical_head: Default::default() }
+        Self {
+            blocklist,
+            revert_evictions,
+            canonical_head: Default::default(),
+            revert_eviction_attempt: None,
+        }
     }
 
     /// Returns the shared fee currency blocklist.
@@ -40,7 +49,14 @@ impl CeloFailurePolicies {
             blocklist,
             revert_evictions: self.revert_evictions,
             canonical_head: self.canonical_head,
+            revert_eviction_attempt: self.revert_eviction_attempt,
         }
+    }
+
+    /// Binds a payload-attempt-local revert buffer while preserving every shared channel.
+    pub fn with_revert_eviction_attempt(mut self, attempt: RevertEvictionAttempt) -> Self {
+        self.revert_eviction_attempt = Some(attempt);
+        self
     }
 
     /// Updates the canonical parent generation accepted by sequencing EVMs.
@@ -48,13 +64,21 @@ impl CeloFailurePolicies {
         *self.canonical_head.lock() = Some(generation);
     }
 
-    /// Records evidence only while its attempted parent is still the canonical head.
-    pub fn record_revert_if_current(&self, eviction: RevertEviction) -> bool {
+    /// Records into this payload attempt only while its parent is still the canonical head.
+    pub fn record_revert_if_current(
+        &self,
+        generation: PayloadGeneration,
+        tx_hash: B256,
+        reason: RevertReason,
+    ) -> bool {
         let canonical_head = self.canonical_head.lock();
-        if *canonical_head != Some(eviction.generation) {
+        if *canonical_head != Some(generation) {
             return false;
         }
-        self.revert_evictions.record(eviction);
+        let Some(attempt) = &self.revert_eviction_attempt else {
+            return false;
+        };
+        attempt.record(tx_hash, reason);
         true
     }
 
@@ -77,7 +101,9 @@ impl CeloFailurePolicies {
 #[cfg(test)]
 mod tests {
     use super::CeloFailurePolicies;
-    use crate::revert_evictions::{PayloadGeneration, RevertEviction, RevertReason};
+    use crate::revert_evictions::{
+        PayloadBlock, PayloadGeneration, RevertEviction, RevertEvictionAttempt, RevertReason,
+    };
     use alloy_primitives::{Address, B256};
 
     #[test]
@@ -91,30 +117,37 @@ mod tests {
         policies.revert_evictions().record(RevertEviction::new(
             tx_hash,
             RevertReason::Debit,
-            PayloadGeneration::new(1, B256::with_last_byte(3)),
+            PayloadBlock::new(1, B256::with_last_byte(3)),
         ));
 
         assert!(clone.blocklist().is_blocked(fee_currency));
-        assert_eq!(clone.revert_evictions().take_batch(1).records[0].tx_hash, tx_hash);
+        assert_eq!(clone.revert_evictions().take_all()[0].tx_hash, tx_hash);
     }
 
     #[test]
     fn records_only_evidence_built_on_the_current_canonical_head() {
-        let policies = CeloFailurePolicies::default();
+        let attempt = RevertEvictionAttempt::default();
+        let policies = CeloFailurePolicies::default().with_revert_eviction_attempt(attempt.clone());
         let current = PayloadGeneration::new(10, B256::with_last_byte(1));
         let old = PayloadGeneration::new(9, B256::with_last_byte(2));
         policies.set_canonical_head(current);
 
-        assert!(!policies.record_revert_if_current(RevertEviction::new(
+        assert!(!policies.record_revert_if_current(
+            old,
             B256::with_last_byte(3),
             RevertReason::Debit,
-            old,
-        )));
-        assert!(policies.record_revert_if_current(RevertEviction::new(
+        ));
+        assert!(policies.record_revert_if_current(
+            current,
             B256::with_last_byte(4),
             RevertReason::Credit,
-            current,
-        )));
-        assert_eq!(policies.revert_evictions().take_batch(16).records.len(), 1);
+        ));
+        assert_eq!(
+            policies
+                .revert_evictions()
+                .promote_attempt(&attempt, PayloadBlock::new(11, B256::with_last_byte(5)),),
+            1,
+        );
+        assert_eq!(policies.revert_evictions().take_all().len(), 1);
     }
 }

@@ -17,7 +17,9 @@
 use alloy_celo_evm::{
     CeloFailurePolicies,
     blocklist::FeeCurrencyBlocklist,
-    revert_evictions::{PayloadGeneration, RevertEviction, RevertEvictions, RevertReason},
+    revert_evictions::{
+        PayloadBlock, PayloadGeneration, RevertEviction, RevertEvictions, RevertReason,
+    },
 };
 use alloy_consensus::{Header, Signed};
 use alloy_eips::eip2718::Encodable2718;
@@ -288,8 +290,11 @@ fn explicit_payload_records_revert_eviction(no_tx_pool: bool) -> bool {
     builder.apply_pre_execution_changes().expect("pre-execution");
     ctx.execute_sequencer_transactions(&mut builder, None)
         .expect("invalid derived transaction is skipped");
+    builder
+        .finish(NoopProvider::default(), None)
+        .expect("explicit payload finalization must succeed");
 
-    revert_evictions.take_batch(16).records.iter().any(|record| record.tx_hash == tx_hash)
+    revert_evictions.take_all().iter().any(|record| record.tx_hash == tx_hash)
 }
 
 #[test]
@@ -346,9 +351,10 @@ fn pending_block_builder_does_not_record_revert_eviction() {
         .execute_transaction(WithEncoded::new(encoded, Recovered::new_unchecked(envelope, sender)));
 
     assert!(result.is_err(), "underfunded CIP-64 transaction must fail");
+    builder.finish(NoopProvider::default(), None).expect("pending block finalization must succeed");
     assert!(
         revert_evictions.is_empty(),
-        "pending block execution must not mutate sequencing failure policies"
+        "pending block finalization must not publish sequencing failure policies"
     );
 }
 
@@ -421,10 +427,19 @@ fn tx_pool_payload_records_revert_eviction() {
     )
     .expect("invalid pool transaction is skipped");
 
+    assert!(
+        revert_evictions.is_empty(),
+        "an unfinished payload attempt must not publish eviction evidence"
+    );
+    let outcome =
+        builder.finish(NoopProvider::default(), None).expect("payload finalization must succeed");
+    let block = outcome.block.sealed_block();
+    let payload = PayloadBlock::new(block.header().number, block.hash());
+
     assert_eq!(
-        revert_evictions.take_batch(16).records,
-        vec![RevertEviction::new(tx_hash, RevertReason::Debit, generation)],
-        "sequencing txpool execution must record the exact parent-bound debit evidence"
+        revert_evictions.take_all(),
+        vec![RevertEviction::new(tx_hash, RevertReason::Debit, payload)],
+        "sequencing txpool execution must record the exact completed-child debit evidence"
     );
 }
 

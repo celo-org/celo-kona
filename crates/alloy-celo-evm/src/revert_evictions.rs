@@ -1,6 +1,6 @@
 //! Reverted CIP-64 transactions awaiting local pool eviction.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
 use alloy_primitives::B256;
 use spin::Mutex;
 
@@ -20,73 +20,121 @@ impl PayloadGeneration {
     }
 }
 
-/// Fee-currency hook that reverted.
+/// Exact block produced by one completed payload attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PayloadBlock {
+    /// Built block number.
+    pub number: u64,
+    /// Built block hash.
+    pub hash: B256,
+}
+
+impl PayloadBlock {
+    /// Creates an exact built-payload identity.
+    pub const fn new(number: u64, hash: B256) -> Self {
+        Self { number, hash }
+    }
+}
+
+/// Fee-currency operation that reverted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RevertReason {
     /// `debitGasFees` reverted before user execution.
     Debit,
+    /// The max-fee `balanceOf` read reverted before `debitGasFees`.
+    BalanceRead,
     /// `creditGasFees` reverted after user execution.
     Credit,
 }
 
-/// Exact transaction evidence recorded by a sequencing payload attempt.
+/// Exact transaction evidence recorded by a completed sequencing payload attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RevertEviction {
     /// Exact transaction hash.
     pub tx_hash: B256,
-    /// Reverted fee-currency hook.
+    /// Reverted fee-currency operation.
     pub reason: RevertReason,
-    /// Payload parent against which the revert was observed.
-    pub generation: PayloadGeneration,
+    /// Exact completed payload block that produced the evidence.
+    payload: PayloadBlock,
 }
 
 impl RevertEviction {
-    /// Creates revert evidence for one exact transaction and payload generation.
-    pub const fn new(tx_hash: B256, reason: RevertReason, generation: PayloadGeneration) -> Self {
-        Self { tx_hash, reason, generation }
+    /// Creates revert evidence associated with one exact completed payload block.
+    pub const fn new(tx_hash: B256, reason: RevertReason, payload: PayloadBlock) -> Self {
+        Self { tx_hash, reason, payload }
+    }
+
+    /// Returns the exact completed payload block that produced this evidence.
+    pub const fn payload(&self) -> PayloadBlock {
+        self.payload
     }
 }
 
-/// Bounded set of records removed from the shared queue for one maintenance pass.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct RevertEvictionBatch {
-    /// Owned records. No channel lock remains held while they are processed.
-    pub records: Vec<RevertEviction>,
-    /// Records still queued after this batch was removed.
-    pub remaining: usize,
+/// Revert records produced by one in-progress payload attempt.
+///
+/// This buffer is shared only by that attempt's EVM and block-builder wrapper. Dropping the
+/// wrapper without successfully finishing the block drops the records. A successful finish
+/// promotes them to [`RevertEvictions`] with the exact built child identity.
+#[derive(Debug, Clone, Default)]
+pub struct RevertEvictionAttempt {
+    inner: Arc<Mutex<BTreeSet<(B256, RevertReason)>>>,
 }
 
-/// Shared sequencing revert evidence awaiting canonical maintenance.
+impl RevertEvictionAttempt {
+    /// Records one transaction operation failure within this payload attempt.
+    pub fn record(&self, tx_hash: B256, reason: RevertReason) {
+        self.inner.lock().insert((tx_hash, reason));
+    }
+
+    fn take_all(&self) -> BTreeSet<(B256, RevertReason)> {
+        core::mem::take(&mut *self.inner.lock())
+    }
+}
+
+/// Shared completed-payload revert evidence awaiting canonical maintenance.
 #[derive(Debug, Clone, Default)]
 pub struct RevertEvictions {
-    inner: Arc<Mutex<BTreeMap<(PayloadGeneration, B256), RevertReason>>>,
+    inner: Arc<Mutex<BTreeSet<(PayloadBlock, B256, RevertReason)>>>,
 }
 
 impl RevertEvictions {
-    /// Records or merges exact transaction evidence.
+    /// Records exact transaction-operation evidence.
     pub fn record(&self, eviction: RevertEviction) {
-        let mut records = self.inner.lock();
-        Self::merge(&mut records, eviction);
+        self.inner.lock().insert((eviction.payload, eviction.tx_hash, eviction.reason));
     }
 
-    /// Removes at most `limit` records for processing without retaining the channel lock.
-    pub fn take_batch(&self, limit: usize) -> RevertEvictionBatch {
-        let mut queued = self.inner.lock();
-        let mut records = Vec::with_capacity(limit.min(queued.len()));
-        while records.len() < limit {
-            let Some(((generation, tx_hash), reason)) = queued.pop_first() else {
-                break;
-            };
-            records.push(RevertEviction::new(tx_hash, reason, generation));
+    /// Promotes one successful attempt's records with the exact block it produced.
+    pub fn promote_attempt(&self, attempt: &RevertEvictionAttempt, payload: PayloadBlock) -> usize {
+        let attempt_records = attempt.take_all();
+        let count = attempt_records.len();
+        if count == 0 {
+            return 0;
         }
-        RevertEvictionBatch { records, remaining: queued.len() }
+
+        let mut records = self.inner.lock();
+        for (tx_hash, reason) in attempt_records {
+            records.insert((payload, tx_hash, reason));
+        }
+        count
+    }
+
+    /// Removes every queued record without retaining the channel lock while it is processed.
+    ///
+    /// Draining all records lets callers discard stale payloads before applying a separate limit
+    /// to canonical EVM rechecks. Concurrent writes land in a fresh map and are not lost.
+    pub fn take_all(&self) -> Vec<RevertEviction> {
+        let queued = core::mem::take(&mut *self.inner.lock());
+        queued
+            .into_iter()
+            .map(|(payload, tx_hash, reason)| RevertEviction { tx_hash, reason, payload })
+            .collect()
     }
 
     /// Merges records back into the shared queue without losing concurrent writes.
     pub fn requeue(&self, records: impl IntoIterator<Item = RevertEviction>) {
         let mut queued = self.inner.lock();
         for record in records {
-            Self::merge(&mut queued, record);
+            queued.insert((record.payload, record.tx_hash, record.reason));
         }
     }
 
@@ -99,16 +147,6 @@ impl RevertEvictions {
     pub fn is_empty(&self) -> bool {
         self.inner.lock().is_empty()
     }
-
-    fn merge(
-        records: &mut BTreeMap<(PayloadGeneration, B256), RevertReason>,
-        eviction: RevertEviction,
-    ) {
-        records
-            .entry((eviction.generation, eviction.tx_hash))
-            .and_modify(|reason| *reason = (*reason).max(eviction.reason))
-            .or_insert(eviction.reason);
-    }
 }
 
 #[cfg(test)]
@@ -116,73 +154,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn credit_dominates_debit_for_one_generation() {
+    fn distinct_operations_are_preserved_for_one_payload() {
         let evictions = RevertEvictions::default();
-        let generation = PayloadGeneration::new(10, B256::with_last_byte(1));
+        let payload = PayloadBlock::new(10, B256::with_last_byte(1));
         let hash = B256::with_last_byte(2);
 
-        evictions.record(RevertEviction::new(hash, RevertReason::Debit, generation));
-        evictions.record(RevertEviction::new(hash, RevertReason::Credit, generation));
+        evictions.record(RevertEviction::new(hash, RevertReason::Debit, payload));
+        evictions.record(RevertEviction::new(hash, RevertReason::Credit, payload));
 
-        let batch = evictions.take_batch(16);
-        assert_eq!(
-            batch.records,
-            vec![RevertEviction::new(hash, RevertReason::Credit, generation)]
-        );
-        assert_eq!(batch.remaining, 0);
+        let records = evictions.take_all();
+        assert_eq!(records.len(), 2);
+        assert!(records.contains(&RevertEviction::new(hash, RevertReason::Debit, payload)));
+        assert!(records.contains(&RevertEviction::new(hash, RevertReason::Credit, payload)));
     }
 
     #[test]
-    fn same_hash_in_different_generations_is_preserved() {
+    fn requeued_rechecks_preserve_exact_payload_and_distinct_operations() {
+        let evictions = RevertEvictions::default();
+        let payload = PayloadBlock::new(10, B256::with_last_byte(1));
+        let hash = B256::with_last_byte(2);
+
+        evictions.record(RevertEviction::new(hash, RevertReason::Debit, payload));
+        evictions.record(RevertEviction::new(hash, RevertReason::BalanceRead, payload));
+        let records = evictions.take_all();
+        evictions.requeue(records);
+
+        let records = evictions.take_all();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().any(|record| record.reason == RevertReason::Debit));
+        assert!(records.iter().any(|record| record.reason == RevertReason::BalanceRead));
+        assert!(records.iter().all(|record| record.payload() == payload));
+    }
+
+    #[test]
+    fn sibling_attempts_are_preserved_with_exact_children() {
         let evictions = RevertEvictions::default();
         let hash = B256::with_last_byte(1);
-        let first = PayloadGeneration::new(10, B256::with_last_byte(2));
-        let second = PayloadGeneration::new(11, B256::with_last_byte(3));
+        let first = PayloadBlock::new(10, B256::with_last_byte(2));
+        let second = PayloadBlock::new(10, B256::with_last_byte(3));
+        let first_attempt = RevertEvictionAttempt::default();
+        let second_attempt = RevertEvictionAttempt::default();
 
-        evictions.record(RevertEviction::new(hash, RevertReason::Debit, first));
-        evictions.record(RevertEviction::new(hash, RevertReason::Debit, second));
+        first_attempt.record(hash, RevertReason::Debit);
+        second_attempt.record(hash, RevertReason::Debit);
+        evictions.promote_attempt(&first_attempt, first);
+        evictions.promote_attempt(&second_attempt, second);
 
-        let batch = evictions.take_batch(16);
-        assert_eq!(batch.records.len(), 2);
-        assert!(batch.records.contains(&RevertEviction::new(hash, RevertReason::Debit, first)));
-        assert!(batch.records.contains(&RevertEviction::new(hash, RevertReason::Debit, second)));
+        let records = evictions.take_all();
+        assert_eq!(records.len(), 2);
+        assert!(records.contains(&RevertEviction::new(hash, RevertReason::Debit, first)));
+        assert!(records.contains(&RevertEviction::new(hash, RevertReason::Debit, second)));
     }
 
     #[test]
-    fn take_batch_leaves_overflow_queued() {
+    fn successful_attempt_is_promoted_with_exact_payload() {
+        let attempt = RevertEvictionAttempt::default();
         let evictions = RevertEvictions::default();
-        let generation = PayloadGeneration::new(10, B256::with_last_byte(1));
-        for byte in 1..=3 {
-            evictions.record(RevertEviction::new(
-                B256::with_last_byte(byte),
-                RevertReason::Debit,
-                generation,
-            ));
-        }
+        let payload = PayloadBlock::new(10, B256::with_last_byte(1));
+        let hash = B256::with_last_byte(2);
+        attempt.record(hash, RevertReason::Credit);
 
-        let first = evictions.take_batch(2);
-        assert_eq!(first.records.len(), 2);
-        assert_eq!(first.remaining, 1);
-        let second = evictions.take_batch(2);
-        assert_eq!(second.records.len(), 1);
-        assert_eq!(second.remaining, 0);
+        assert_eq!(evictions.promote_attempt(&attempt, payload), 1);
+
+        assert_eq!(
+            evictions.take_all(),
+            vec![RevertEviction::new(hash, RevertReason::Credit, payload)]
+        );
+    }
+
+    #[test]
+    fn unpromoted_attempt_does_not_reach_shared_queue() {
+        let attempt = RevertEvictionAttempt::default();
+        let evictions = RevertEvictions::default();
+        attempt.record(B256::with_last_byte(1), RevertReason::Debit);
+
+        drop(attempt);
+
+        assert!(evictions.is_empty());
     }
 
     #[test]
     fn requeue_merges_without_losing_concurrent_records() {
         let evictions = RevertEvictions::default();
         let clone = evictions.clone();
-        let generation = PayloadGeneration::new(10, B256::with_last_byte(1));
-        let drained = RevertEviction::new(B256::with_last_byte(2), RevertReason::Debit, generation);
+        let payload = PayloadBlock::new(10, B256::with_last_byte(1));
+        let drained = RevertEviction::new(B256::with_last_byte(2), RevertReason::Debit, payload);
         let concurrent =
-            RevertEviction::new(B256::with_last_byte(3), RevertReason::Credit, generation);
+            RevertEviction::new(B256::with_last_byte(3), RevertReason::Credit, payload);
 
         evictions.record(drained);
-        let batch = evictions.take_batch(16);
+        let records = evictions.take_all();
         clone.record(concurrent);
-        evictions.requeue(batch.records);
+        evictions.requeue(records);
 
-        let records = evictions.take_batch(16).records;
+        let records = evictions.take_all();
         assert_eq!(records.len(), 2);
         assert!(records.contains(&drained));
         assert!(records.contains(&concurrent));
