@@ -18,9 +18,9 @@ use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
     CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
     constants::{
-        FEE_BASE_FEE_OVERFLOW_PREFIX, FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER,
-        FEE_CURRENCY_MALFORMED_RETURN_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
-        FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
+        FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX, FEE_CREDIT_ERROR_PREFIX,
+        FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_MALFORMED_RETURN_MARKER,
+        FEE_CURRENCY_NOT_REGISTERED_PREFIX, FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
     precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
@@ -29,6 +29,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles};
+use revert_evictions::{PayloadGeneration, RevertEvictionAttempt, RevertReason};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{BlockEnv, TxEnv},
@@ -43,12 +44,49 @@ use revm::{
     precompile::{PrecompileHalt, PrecompileOutput},
 };
 
+/// Classifies a genuine fee-hook revert by the first outer handler prefix.
+///
+/// Solidity revert strings are attacker-controlled and can embed the other phase's prefix after
+/// the genuine prefix added by the Celo handler. Selecting the first occurrence preserves the
+/// outer phase instead of trusting nested revert text.
+fn revert_reason_from_error(error: &str) -> Option<RevertReason> {
+    if !error.contains(FEE_CURRENCY_REVERT_MARKER) {
+        return None;
+    }
+
+    let debit_reason = |debit: usize| {
+        let suffix = &error[debit + FEE_DEBIT_ERROR_PREFIX.len()..];
+        if suffix
+            .strip_prefix(": ")
+            .and_then(|suffix| suffix.strip_prefix(FEE_BALANCE_READ_MARKER))
+            .is_some_and(|suffix| suffix.starts_with(':'))
+        {
+            RevertReason::BalanceRead
+        } else {
+            RevertReason::Debit
+        }
+    };
+    match (error.find(FEE_DEBIT_ERROR_PREFIX), error.find(FEE_CREDIT_ERROR_PREFIX)) {
+        (Some(debit), Some(credit)) if debit < credit => Some(debit_reason(debit)),
+        (Some(_), Some(_)) => Some(RevertReason::Credit),
+        (Some(debit), None) => Some(debit_reason(debit)),
+        (None, Some(_)) => Some(RevertReason::Credit),
+        (None, None) => None,
+    }
+}
+
 pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
+pub mod failure_policies;
+pub mod revert_evictions;
 
-use blocklist::FeeCurrencyBlocklist;
+pub use failure_policies::CeloFailurePolicies;
+
 use cip64_storage::Cip64Storage;
+
+#[cfg(test)]
+use {blocklist::FeeCurrencyBlocklist, revert_evictions::RevertEvictions};
 
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
@@ -166,23 +204,27 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
-    blocklist: FeeCurrencyBlocklist,
-    /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
+    failure_policies: CeloFailurePolicies,
+    /// Payload parent generation when this EVM may write local next-block failure-policy state.
     ///
-    /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls *halted* while the node was building a block from its own mempool, so the sequencer
-    /// can skip them for a while. Halts are the only failures that blocklist: contract *reverts*
-    /// are ambiguous (canonically an underfunded sender), and EVM-level call errors are the
-    /// node's own infrastructure faults — neither is evidence against the currency. It must
-    /// therefore only be touched on the sequencing path.
-    /// Block import and derivation re-execute already-canonical blocks and must produce identical
-    /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
+    /// The local policies blocklist currencies whose fee-currency calls *halted* and record exact
+    /// transaction hashes in an attempt-local buffer when those calls *reverted*. A successful
+    /// block finish promotes that buffer to [`revert_evictions::RevertEvictions`] with the exact
+    /// built child hash; aborted attempts never reach canonical maintenance.
+    /// Contract reverts are ambiguous (canonically an underfunded sender), so they never blocklist
+    /// a whole currency.
+    /// EVM-level call errors are the node's own infrastructure faults and affect neither policy.
+    /// These shared policy objects must therefore only be touched while the sequencer executes
+    /// candidates from its local transaction pool. Block import, derivation, pending-block
+    /// construction, and explicit witness/debug execution must produce results without mutating a
+    /// node-local heuristic, so they leave it alone entirely.
     ///
-    /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). It is flipped to `true` only by the sequencing-side
-    /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
-    /// its dormant post-exec sibling — which import/derivation deliberately bypass.
-    blocklist_enabled: bool,
+    /// EVMs are created with `None` by default ([`CeloEvmFactory::create_evm`], used by the
+    /// import/derivation executor and ordinary replay/call RPCs). Celo-reth attaches the sealed
+    /// parent and fresh attempt buffer only when its next-block context identifies pool-backed
+    /// sequencing. Recording also checks that this parent is still the shared canonical head, so
+    /// late old-parent jobs cannot add evidence after the chain advances.
+    failure_policy_generation: Option<PayloadGeneration>,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
     ///
@@ -193,10 +235,10 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
     /// flipped to `true` only for receipt-building executors:
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
-    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
-    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
-    /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), used by
+    /// import, derivation, base next-block builders, and kona proofs, plus celo-reth's post-exec
+    /// executor and next-block builder, which enable storage outside `create_executor`. The RPC
+    /// layer also builds loose per-tx EVMs, including parity `trace_*`, otterscan `ots_*`, and
     /// `replay_transactions_until` — that run a whole block through one EVM without building
     /// receipts, and leave it off.
     cip64_store_enabled: bool,
@@ -265,18 +307,23 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             inner: evm,
             inspect,
             cip64_storage: Cip64Storage::default(),
-            blocklist: FeeCurrencyBlocklist::default(),
-            blocklist_enabled: false,
+            failure_policies: CeloFailurePolicies::default(),
+            failure_policy_generation: None,
             cip64_store_enabled: false,
         }
     }
 
-    /// Enables fee currency blocklist reads/writes for this EVM. Called only on the sequencing
-    /// path (`CeloEvmConfig::builder_for_next_block`); import, derivation and RPC leave it off so
-    /// they never touch the shared blocklist.
+    /// Enables local fee-currency failure policies for this EVM. Celo-reth calls this only for
+    /// pool-backed sequencing payload construction. Import, derivation, pending-block construction,
+    /// and ordinary replay/call RPCs leave it off.
     #[must_use]
-    pub const fn with_blocklist_enabled(mut self) -> Self {
-        self.blocklist_enabled = true;
+    pub fn with_failure_policies_enabled(
+        mut self,
+        generation: PayloadGeneration,
+        attempt: RevertEvictionAttempt,
+    ) -> Self {
+        self.failure_policy_generation = Some(generation);
+        self.failure_policies = self.failure_policies.with_revert_eviction_attempt(attempt);
         self
     }
 
@@ -345,23 +392,31 @@ where
         // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
-        // the sequencing path: `blocklist_enabled` is set on EVMs built via
-        // `CeloEvmConfig::builder_for_next_block` (the payload builder) and left off for import /
-        // derivation re-execution and RPC. Import and derivation therefore neither read nor write
-        // it. (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
-        // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
+        // The fee currency blocklist and revert-eviction channel are local sequencing policies.
+        // `failure_policy_generation` is set only for pool-backed sequencing payload construction,
+        // and left off for import, derivation, pending-block construction, explicit witness/debug
+        // execution, and ordinary replay/call RPCs. The `base_fee_check_enabled` conjunct is
+        // redundant given `failure_policy_generation`, but remains an explicit guard against ever
+        // enabling these policies on a call-style RPC simulation EVM.
         //
-        // NOTE: blocklist *rejection* is intentionally NOT performed here even on the sequencing
-        // path; it is enforced upstream in `CeloFeeCurrencyFilter` (see `celo-reth`'s
-        // `payload.rs`). Performing it here would also catch import/derivation EVMs were
-        // `blocklist_enabled` ever set on them, letting a node's locally-accumulated
-        // blocklist reject a valid canonical block built by another sequencer. Below we
-        // only *populate* the blocklist, and only when `apply_blocklist` holds — so import
-        // and derivation neither read nor write it. Stale-entry eviction also lives upstream
-        // in `CeloPayloadTransactions::best_transactions`, since that is the one place
+        // NOTE: blocklist *rejection* is intentionally NOT performed here even when failure
+        // policies are enabled; the payload path enforces it in `CeloFeeCurrencyFilter` (see
+        // `celo-reth`'s `payload.rs`). Performing it here would also catch import/derivation EVMs
+        // were `failure_policy_generation` ever set on them, letting a node's
+        // locally-accumulated blocklist reject a valid canonical block built by another
+        // sequencer. Below we only populate local failure-policy state when
+        // `apply_failure_policies` holds. Stale blocklist eviction also lives upstream in
+        // `CeloPayloadTransactions::best_transactions`, since that is the one place
         // `is_blocked` is read.
-        let apply_blocklist = self.blocklist_enabled && base_fee_check_enabled;
+        let apply_failure_policies =
+            self.failure_policy_generation.is_some() && base_fee_check_enabled;
+        // `Bytes::clone` is cheap. Preserve the envelope only for policy-enabled CIP-64 candidates,
+        // then hash it only if execution proves a fee-currency operation reverted.
+        let revert_eviction_envelope = if apply_failure_policies && fee_currency.is_some() {
+            tx.op_tx.enveloped_tx.clone()
+        } else {
+            None
+        };
 
         let result = if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
             .map_err(map_op_err);
@@ -385,9 +440,9 @@ where
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
-            Err(e) if apply_blocklist && fee_currency.is_some() => {
+            Err(e) if apply_failure_policies && fee_currency.is_some() => {
                 // Classify why this CIP-64 tx failed during block building. Only a
-                // fee-currency debit/credit failure should blocklist the currency, not
+                // fee-currency hook or max-fee balance-read failure should affect policy, not
                 // unrelated validation errors (nonce, gas limit, etc.) that happen to
                 // involve a CIP-64 tx.
                 //
@@ -399,9 +454,9 @@ where
                 // signal that survives the boundary is the Display string.
                 let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
-                if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
-                    || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
-                {
+                let fee_hook_error = err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
+                    || err_msg.contains(FEE_CREDIT_ERROR_PREFIX);
+                if let Some(reason) = revert_reason_from_error(&err_msg) {
                     // ORDER MATTERS: the revert arm must be checked first. A revert
                     // message embeds attacker-controlled bytes (the decoded
                     // `Error(string)` payload), so a sender could revert with the
@@ -410,70 +465,111 @@ where
                     // The genuine markers are prepended by `process_call_result`
                     // before any contract output, and halt reasons carry no
                     // attacker bytes, so revert-first is spoof-proof both ways.
-                    if err_msg.contains(FEE_CURRENCY_REVERT_MARKER) {
-                        // The fee-currency contract *reverted* the debit/credit.
-                        // Canonically that is a sender (`ERC20: transfer amount
-                        // exceeds balance`) who was funded at pool admission but
-                        // drained afterwards — but a paused or blacklisting token
-                        // reverts the same way, so a revert is ambiguous and
-                        // insufficient evidence to blocklist a whole currency.
-                        // The tx is dropped from the payload either way;
-                        // blocklisting here let a single underfunded sender
-                        // suppress an entire healthy currency until the
-                        // blocklist's timed expiry (`BLOCKLIST_EVICTION_SECONDS`,
-                        // 2h) or a manual `admin_unblockFeeCurrency`.
+                    // A fee-currency operation reverted. The cause may depend on the sender or
+                    // payload state, so record exact attempt-local evidence and let successful
+                    // block finalization bind it to the built child before canonical maintenance
+                    // rechecks it without blocklisting the whole currency.
+                    if let (Some(envelope), Some(generation)) =
+                        (revert_eviction_envelope, self.failure_policy_generation)
+                    {
+                        if self.failure_policies.record_revert_if_current(
+                            generation,
+                            alloy_primitives::keccak256(envelope),
+                            reason,
+                        ) {
+                            tracing::warn!(
+                                target: "celo",
+                                ?reason,
+                                "fee-currency operation reverted for {fc}: {e}; recorded tx in the \
+                                 payload attempt for canonical maintenance after block finish"
+                            );
+                        } else {
+                            tracing::debug!(
+                                target: "celo",
+                                ?generation,
+                                "Ignoring revert evidence from a non-current payload parent or an \
+                                 EVM without an attempt buffer; tx is skipped only for this payload \
+                                 attempt"
+                            );
+                        }
+                    } else {
                         tracing::warn!(
                             target: "celo",
-                            "fee-currency debit/credit reverted for {fc}: {e} — \
-                             dropping tx without blocklisting the currency"
+                            "fee-currency operation reverted without encoded transaction bytes or \
+                             payload generation; skipping tx for this payload attempt without \
+                             recording eviction evidence"
                         );
-                        #[cfg(feature = "std")]
-                        metrics::counter!(
-                            "celo_payload_skipped_total",
-                            "reason" => "debit_credit_reverted"
-                        )
-                        .increment(1);
-                    } else if err_msg.contains(FEE_CURRENCY_HALT_MARKER) {
+                    }
+                    #[cfg(feature = "std")]
+                    metrics::counter!(
+                        "celo_payload_skipped_total",
+                        "reason" => "debit_credit_reverted"
+                    )
+                    .increment(1);
+                } else if fee_hook_error {
+                    if err_msg.contains(FEE_CURRENCY_HALT_MARKER) {
                         // Halt (e.g. the debit exhausted its gas budget, or the
                         // contract executed invalid bytecode) — the one failure
                         // that is unambiguously the currency's fault: blocklist
                         // so the payload builder stops retrying every tx of this
                         // currency.
-                        tracing::warn!(
-                            target: "celo",
-                            "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
-                        );
-                        // The one arm that blocklists: meter it so a blocklist
-                        // addition is alertable on its own, not only via the
-                        // downstream `reason="blocklisted"` skips that fire
-                        // only while further txs of this currency arrive.
-                        #[cfg(feature = "std")]
-                        metrics::counter!(
-                            "celo_payload_skipped_total",
-                            "reason" => "debit_credit_halted"
-                        )
-                        .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
-                        self.blocklist.block_currency(fc, block_timestamp);
+                        if self.failure_policy_generation.is_some_and(|generation| {
+                            self.failure_policies.block_currency_if_current(
+                                generation,
+                                fc,
+                                block_timestamp,
+                            )
+                        }) {
+                            tracing::warn!(
+                                target: "celo",
+                                "fee-currency debit/credit halted for {fc}: {e}; blocklisting"
+                            );
+                            // The one arm that blocklists: meter it so a blocklist
+                            // addition is alertable on its own, not only via the
+                            // downstream `reason="blocklisted"` skips that fire
+                            // only while further txs of this currency arrive.
+                            #[cfg(feature = "std")]
+                            metrics::counter!(
+                                "celo_payload_skipped_total",
+                                "reason" => "debit_credit_halted"
+                            )
+                            .increment(1);
+                        } else {
+                            tracing::debug!(
+                                target: "celo",
+                                "Ignoring halt evidence from a non-current payload parent"
+                            );
+                        }
                     } else if err_msg.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
-                        // The currency's `balanceOf` returned data that does not
-                        // decode as a `uint256` — as unambiguous a currency fault
-                        // as a halt (see `FEE_CURRENCY_MALFORMED_RETURN_MARKER`)
-                        // and just as persistent, so blocklist to stop the payload
-                        // builder retrying every tx of this currency each block.
-                        tracing::warn!(
-                            target: "celo",
-                            "fee-currency call returned malformed data for {fc}: {e} — \
-                             blocklisting"
-                        );
-                        #[cfg(feature = "std")]
-                        metrics::counter!(
-                            "celo_payload_skipped_total",
-                            "reason" => "malformed_return_data"
-                        )
-                        .increment(1);
+                        // The currency's `balanceOf` returned data that does not decode as a
+                        // `uint256`. Treat it as a persistent currency fault, but only when the
+                        // evidence belongs to the current sequencing generation.
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
-                        self.blocklist.block_currency(fc, block_timestamp);
+                        if self.failure_policy_generation.is_some_and(|generation| {
+                            self.failure_policies.block_currency_if_current(
+                                generation,
+                                fc,
+                                block_timestamp,
+                            )
+                        }) {
+                            tracing::warn!(
+                                target: "celo",
+                                "fee-currency call returned malformed data for {fc}: {e}; \
+                                 blocklisting"
+                            );
+                            #[cfg(feature = "std")]
+                            metrics::counter!(
+                                "celo_payload_skipped_total",
+                                "reason" => "malformed_return_data"
+                            )
+                            .increment(1);
+                        } else {
+                            tracing::debug!(
+                                target: "celo",
+                                "Ignoring malformed-return evidence from a non-current payload parent"
+                            );
+                        }
                     } else {
                         // Neither marker: the system call itself errored — an
                         // EVM-infrastructure failure (`CoreContractError::Evm`,
@@ -484,7 +580,8 @@ where
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit failed with an EVM-level error for \
-                             {fc}: {e} — dropping tx without blocklisting the currency"
+                             {fc}: {e}; skipping tx for this payload attempt and leaving it in the \
+                             pool for retry without blocklisting the currency"
                         );
                         #[cfg(feature = "std")]
                         metrics::counter!(
@@ -597,22 +694,31 @@ where
 /// is owned by the EVM instance, not the factory, so two consumers (e.g. the main-chain
 /// executor and a re-executing ExEx) running through the same factory get independent
 /// slots and never overwrite each other's pending CIP-64 receipt data.
+///
+/// The factory also clones one shared [`CeloFailurePolicies`] bundle into every EVM. Only
+/// pool-backed sequencing on the current canonical parent enables policy writes: a fee-currency
+/// halt blocklists the currency, while a revert is buffered locally until successful
+/// payload finalization attaches the exact built child for later canonical pool maintenance.
+/// Import, derivation, pending-block construction, and ordinary replay/call RPCs leave the policies
+/// disabled. Blocklist rejection remains in the sequencing payload filter rather than
+/// [`CeloEvm::transact_raw`]. The default factory uses empty policies.
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
-    /// Shared fee currency blocklist. EVMs created by this factory *populate* this blocklist
-    /// when a CIP-64 fee-currency debit/credit fails during execution, but only on the sequencing
-    /// path (`CeloEvm::with_blocklist_enabled`); import/derivation EVMs leave it untouched. The
-    /// sequencing-time payload filter (`CeloFeeCurrencyFilter` in `celo-reth`) reads it to skip
-    /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
-    /// empty.
-    pub blocklist: FeeCurrencyBlocklist,
+    /// Shared local sequencing failure policies. EVMs produced by this factory write these
+    /// policies only after [`CeloEvm::with_failure_policies_enabled`] is applied.
+    failure_policies: CeloFailurePolicies,
 }
 
 impl CeloEvmFactory {
-    /// Sets the shared fee currency blocklist.
-    pub fn with_blocklist(mut self, blocklist: FeeCurrencyBlocklist) -> Self {
-        self.blocklist = blocklist;
+    /// Sets the shared local sequencing failure policies.
+    pub fn with_failure_policies(mut self, failure_policies: CeloFailurePolicies) -> Self {
+        self.failure_policies = failure_policies;
         self
+    }
+
+    /// Returns the shared local sequencing failure policies.
+    pub const fn failure_policies(&self) -> &CeloFailurePolicies {
+        &self.failure_policies
     }
 }
 
@@ -625,6 +731,9 @@ fn make_test_evm_with_db<DB: Database>(
     let spec_id = OpSpecId::FJORD;
     let mut cfg = revm::context::CfgEnv::<OpSpecId>::default();
     cfg.chain_id = 42220;
+    let generation = PayloadGeneration::new(0, alloy_primitives::B256::ZERO);
+    let failure_policies = CeloFailurePolicies::new(blocklist, RevertEvictions::default());
+    failure_policies.set_canonical_head(generation);
     CeloEvm {
         inner: Context::celo()
             .with_db(db)
@@ -634,9 +743,9 @@ fn make_test_evm_with_db<DB: Database>(
             .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
         inspect: false,
         cip64_storage: Cip64Storage::default(),
-        blocklist,
-        // Tests here exercise the sequencing-path blocklist behaviour, so enable it.
-        blocklist_enabled: true,
+        failure_policies,
+        // Tests here exercise policy-enabled next-block behavior, so enable the policies.
+        failure_policy_generation: Some(generation),
         // Default to the receipt-building executor path; loose-EVM tests build through the
         // factory instead (`make_loose_test_evm`).
         cip64_store_enabled: true,
@@ -649,6 +758,22 @@ fn make_test_evm(
     blocklist: FeeCurrencyBlocklist,
 ) -> CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector> {
     make_test_evm_with_db(revm::database::InMemoryDB::default(), blocklist)
+}
+
+/// Creates a policy-enabled next-block test EVM with local failure-policy state.
+#[cfg(test)]
+fn make_test_evm_with_evictions(
+    blocklist: FeeCurrencyBlocklist,
+    revert_evictions: revert_evictions::RevertEvictions,
+) -> (CeloEvm<revm::database::InMemoryDB, revm::inspector::NoOpInspector>, RevertEvictionAttempt) {
+    let mut evm = make_test_evm(blocklist);
+    let attempt = RevertEvictionAttempt::default();
+    evm.failure_policies =
+        CeloFailurePolicies::new(evm.failure_policies.blocklist().clone(), revert_evictions)
+            .with_revert_eviction_attempt(attempt.clone());
+    evm.failure_policies
+        .set_canonical_head(evm.failure_policy_generation.expect("test generation is enabled"));
+    (evm, attempt)
 }
 
 /// Creates a loose RPC-style [`CeloEvm`] through the factory, the way reth's RPC layer does:
@@ -724,11 +849,11 @@ impl CeloEvmFactory {
                 .with_precompiles(celo_precompiles_map(spec_id)),
             inspect,
             cip64_storage: Cip64Storage::default(),
-            blocklist: self.blocklist.clone(),
-            // Off by default: the import/derivation executor and RPC create EVMs through the
-            // factory and must not touch the blocklist. Sequencing flips it on via
-            // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
-            blocklist_enabled: false,
+            failure_policies: self.failure_policies.clone(),
+            // Off by default: import, derivation, pending-block construction, witness/debug
+            // execution, and ordinary replay/call RPCs must not touch local failure-policy state.
+            // Celo-reth opts in only for pool-backed sequencing.
+            failure_policy_generation: None,
             // Off by default; `create_executor` flips it on for receipt-building executors.
             cip64_store_enabled: false,
         }
@@ -935,7 +1060,7 @@ mod tests {
         let blocklist = FeeCurrencyBlocklist::default();
 
         let mut evm = make_test_evm(blocklist.clone());
-        // Set a non-zero basefee so the EVM is in "block building" mode
+        // Use a non-zero base fee for block-style validation; the helper enables failure policies.
         evm.ctx_mut().block.basefee = 1_000_000_000;
 
         // This CIP-64 tx will fail (fee currency not registered), but the
@@ -967,7 +1092,7 @@ mod tests {
         );
     }
 
-    /// Put the given sequencing-mode EVM in block-building mode, register `fc`
+    /// Put the given policy-enabled EVM in block-style validation mode, register `fc`
     /// in the per-block fee-currency context, and run a CIP-64 tx through
     /// `transact_raw`, driving the `debitGasFees` system call against whatever
     /// state the EVM's database holds. Returns the resulting error, stringified.
@@ -980,7 +1105,7 @@ mod tests {
     {
         use celo_revm::fee_currency_context::FeeCurrencyInfo;
 
-        // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+        // Use a non-zero base fee for block-style validation; the helper enables failure policies.
         evm.ctx_mut().block.basefee = 1_000_000_000;
         // Register the currency in the per-block fee-currency context, pinned
         // to the current block so the handler uses it as-is instead of
@@ -1074,7 +1199,39 @@ mod tests {
         );
     }
 
-    /// Run a CIP-64 tx through a sequencing-mode EVM whose fee currency `fc`
+    /// Like [`run_cip64_debit`], but returns the exact encoded transaction hash that the
+    /// local next-block failure policy must record.
+    fn run_cip64_debit_with_hash<DB: Database>(
+        evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
+        fc: Address,
+    ) -> (String, alloy_primitives::B256)
+    where
+        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
+        use celo_revm::fee_currency_context::FeeCurrencyInfo;
+
+        evm.ctx_mut().block.basefee = 1_000_000_000;
+        let mut currencies = alloy_primitives::map::HashMap::default();
+        currencies.insert(
+            fc,
+            FeeCurrencyInfo {
+                exchange_rate: (U256::from(1), U256::from(1)),
+                intrinsic_gas: 50_000,
+            },
+        );
+        let block_number = evm.ctx_mut().block.number;
+        evm.inner.fee_currency_context =
+            celo_revm::FeeCurrencyContext::new(currencies, Some(block_number));
+
+        let mut tx = make_cip64_tx(fc);
+        tx.op_tx.base.gas_limit = 200_000;
+        tx.op_tx.enveloped_tx = Some(Bytes::from_static(b"cip64-revert-eviction-test"));
+        let tx_hash = alloy_primitives::keccak256(tx.op_tx.enveloped_tx.as_ref().unwrap());
+        let result = evm.transact_raw(tx);
+        (format!("{:?}", result.expect_err("failing fee-currency call must error")), tx_hash)
+    }
+
+    /// Run a CIP-64 tx through a policy-enabled EVM whose fee currency `fc`
     /// is registered in the per-block context and backed by `code` at the
     /// token address, so the `debitGasFees` system call genuinely executes
     /// that bytecode. Returns the resulting error, stringified.
@@ -1116,6 +1273,89 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_debit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD0);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let (mut evm, attempt) =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
+                BALANCE_OF_CALLDATA_SIZE,
+                &[0x60, 0x00, 0x60, 0x00, 0xfd],
+            ))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+        evictions.promote_attempt(
+            &attempt,
+            revert_evictions::PayloadBlock::new(1, alloy_primitives::B256::with_last_byte(1)),
+        );
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert_faulted_in_debit(&err);
+        let record = evictions.take_all()[0];
+        assert_eq!(record.tx_hash, tx_hash);
+        assert_eq!(record.reason, revert_evictions::RevertReason::Debit);
+    }
+
+    #[test]
+    fn test_balance_read_revert_records_separate_reason() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD4);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let (mut evm, attempt) =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
+                0,
+                &[0x60, 0x00, 0x60, 0x00, 0xfd],
+            ))),
+        );
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+        evictions.promote_attempt(
+            &attempt,
+            revert_evictions::PayloadBlock::new(1, alloy_primitives::B256::with_last_byte(1)),
+        );
+
+        assert!(err.contains(constants::FEE_BALANCE_READ_MARKER));
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        let record = evictions.take_all()[0];
+        assert_eq!(record.tx_hash, tx_hash);
+        assert_eq!(record.reason, revert_evictions::RevertReason::BalanceRead);
+    }
+
+    #[test]
+    fn test_credit_revert_records_exact_transaction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD5);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let (mut evm, attempt) =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        let code = fee_currency_stub(DEBIT_CALLDATA_SIZE, &[0x60, 0x00, 0x60, 0x00, 0xfd]);
+        evm.db_mut().insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+
+        let (err, tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+        evictions.promote_attempt(
+            &attempt,
+            revert_evictions::PayloadBlock::new(1, alloy_primitives::B256::with_last_byte(1)),
+        );
+
+        assert!(err.contains(FEE_CREDIT_ERROR_PREFIX));
+        assert!(!err.contains(FEE_DEBIT_ERROR_PREFIX));
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        let record = evictions.take_all()[0];
+        assert_eq!(record.tx_hash, tx_hash);
+        assert_eq!(record.reason, revert_evictions::RevertReason::Credit);
+    }
+
     /// A fee-currency contract that *halts* the debit (burns through the
     /// debit call's gas budget) is a genuine currency fault and must still be
     /// blocklisted.
@@ -1137,6 +1377,88 @@ mod tests {
             blocklist.is_blocked(fc),
             "a debit halt (out-of-gas) is a currency fault and must blocklist; got error: {err}"
         );
+    }
+
+    #[test]
+    fn test_debit_halt_still_blocklists_without_recording_revert_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD1);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let evictions = revert_evictions::RevertEvictions::default();
+        let (mut evm, attempt) = make_test_evm_with_evictions(blocklist.clone(), evictions.clone());
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x5b, 0x60, 0x00, 0x56,
+            ]))),
+        );
+
+        let (err, _tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+        assert_eq!(
+            evictions.promote_attempt(
+                &attempt,
+                revert_evictions::PayloadBlock::new(1, alloy_primitives::B256::with_last_byte(1),),
+            ),
+            0,
+        );
+
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER));
+        assert!(blocklist.is_blocked(fc));
+        assert!(evictions.is_empty());
+    }
+
+    #[test]
+    fn test_old_parent_halt_does_not_blocklist_currency() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD2);
+        let blocklist = FeeCurrencyBlocklist::default();
+        let mut evm = make_test_evm(blocklist.clone());
+        evm.failure_policies.set_canonical_head(PayloadGeneration::new(
+            1,
+            alloy_primitives::B256::with_last_byte(1),
+        ));
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x5b, 0x60, 0x00, 0x56,
+            ]))),
+        );
+
+        let err = run_cip64_debit(&mut evm, fc);
+
+        assert!(err.contains(FEE_CURRENCY_HALT_MARKER));
+        assert!(!blocklist.is_blocked(fc));
+    }
+
+    #[test]
+    fn test_disabled_failure_policies_revert_does_not_record_eviction() {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let fc = Address::with_last_byte(0xD6);
+        let evictions = revert_evictions::RevertEvictions::default();
+        let (mut evm, attempt) =
+            make_test_evm_with_evictions(FeeCurrencyBlocklist::default(), evictions.clone());
+        evm.failure_policy_generation = None;
+        evm.db_mut().insert_account_info(
+            fc,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+
+        let (err, _tx_hash) = run_cip64_debit_with_hash(&mut evm, fc);
+        assert_eq!(
+            evictions.promote_attempt(
+                &attempt,
+                revert_evictions::PayloadBlock::new(1, alloy_primitives::B256::with_last_byte(1),),
+            ),
+            0,
+        );
+
+        assert!(err.contains(FEE_CURRENCY_REVERT_MARKER));
+        assert!(evictions.is_empty());
     }
 
     /// A fee-currency contract that debits fine but *halts* the post-execution
@@ -1509,7 +1831,7 @@ mod tests {
 
         let err_msg = metrics::with_local_recorder(&recorder, || {
             let mut evm = make_test_evm(blocklist.clone());
-            // Non-zero basefee puts the EVM in block-building mode (apply_blocklist on).
+            // Non-zero basefee puts the EVM in block-building mode (failure policies on).
             evm.ctx_mut().block.basefee = 1_000_000_000;
             let result = evm.transact_raw(make_cip64_tx(fc));
             format!("{:?}", result.expect_err("unregistered fee currency must fail"))
@@ -1835,9 +2157,9 @@ mod tests {
         );
     }
 
-    /// Verify that the blocklist is NOT enforced during RPC simulation
-    /// (eth_call / eth_estimateGas). RPC mode disables the base fee check,
-    /// which `transact_raw` uses as the signal for "not block building".
+    /// Verify that `transact_raw` does not enforce the blocklist during call-style RPC simulation.
+    /// Blocklist rejection belongs to the sequencing payload filter, while disabling the base-fee
+    /// check here also suppresses failure-policy writes.
     #[test]
     fn test_blocklist_bypassed_in_rpc_simulation() {
         let fc = Address::with_last_byte(0xAA);
@@ -1849,8 +2171,8 @@ mod tests {
         // Enable RPC simulation mode: disable base fee check
         evm.ctx_mut().cfg.disable_base_fee = true;
 
-        // Even though the currency is blocklisted, transact_raw should NOT
-        // reject it — the blocklist only applies during block building.
+        // Even though the currency is blocklisted, `transact_raw` must not reject it; rejection
+        // belongs to the sequencing payload filter.
         let tx = make_cip64_tx(fc);
         let result = evm.transact_raw(tx);
         if let Err(e) = &result {
@@ -1861,4 +2183,33 @@ mod tests {
             );
         }
     }
+}
+#[test]
+fn first_revert_prefix_selects_genuine_debit_phase() {
+    let error = alloc::format!(
+        "{FEE_DEBIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER}: attacker says \
+             {FEE_CREDIT_ERROR_PREFIX}"
+    );
+
+    assert_eq!(revert_reason_from_error(&error), Some(revert_evictions::RevertReason::Debit));
+}
+
+#[test]
+fn first_revert_prefix_selects_genuine_credit_phase() {
+    let error = alloc::format!(
+        "{FEE_CREDIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER}: attacker says \
+             {FEE_DEBIT_ERROR_PREFIX}"
+    );
+
+    assert_eq!(revert_reason_from_error(&error), Some(revert_evictions::RevertReason::Credit));
+}
+
+#[test]
+fn nested_balance_marker_does_not_change_debit_phase() {
+    let error = alloc::format!(
+        "{FEE_DEBIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER}: attacker says \
+         {FEE_BALANCE_READ_MARKER}"
+    );
+
+    assert_eq!(revert_reason_from_error(&error), Some(revert_evictions::RevertReason::Debit));
 }
