@@ -4878,6 +4878,29 @@ mod tests {
     }
 
     #[test]
+    fn shuffled_evidence_remains_fair_across_classification_and_cursor_rotation() {
+        let payload = PayloadBlock::new(10, B256::with_last_byte(0xAA));
+        let records = [9, 1, 17, 4, 12, 2, 15, 7, 11, 3, 16, 6, 14, 5, 13, 8, 10].map(|byte| {
+            RevertEviction::new(B256::with_last_byte(byte), RevertReason::Debit, payload)
+        });
+        let provider =
+            reth_provider::test_utils::MockEthProvider::<crate::primitives::CeloPrimitives>::new();
+
+        let mut canonical =
+            classify_revert_records_for_head(&provider, &records, payload.number, payload.hash)
+                .canonical;
+        let first_pass_cursor = canonical[MAX_REVERT_EVICTIONS_PER_PASS - 1];
+
+        assert_eq!(first_pass_cursor.tx_hash, B256::with_last_byte(16));
+        rotate_revert_records_after(
+            &mut canonical,
+            Some((first_pass_cursor.tx_hash, first_pass_cursor.reason)),
+        );
+        assert_eq!(canonical[0].tx_hash, B256::with_last_byte(17));
+        assert_eq!(canonical[1].tx_hash, B256::with_last_byte(1));
+    }
+
+    #[test]
     fn revert_recheck_budget_always_allows_the_first_attempt() {
         let old_start = Instant::now()
             .checked_sub(REVERT_EVICTION_RECHECK_TIME_BUDGET)
