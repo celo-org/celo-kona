@@ -389,9 +389,10 @@ where
         // Infallible: this is the only `set` call and it runs once.
         let _ = pooled_fc_costs.set(crate::pool::pooled_fc_costs_reader(raw_pool.clone()));
 
-        // All insertions, including backup reloads and canonical-chain
-        // reinjections, must pass through the Celo wrapper so same-sender
-        // validation and insertion stay serialized.
+        // Route every insertion source, including backup reloads and
+        // canonical-chain reinjections, through the Celo wrapper. It
+        // serializes senders with CIP-64 transactions while retaining reth's
+        // raw batch path for native-only senders.
         let transaction_pool = CeloTransactionPool::new(raw_pool);
         reth_node_builder::components::spawn_maintenance_tasks(
             ctx,
