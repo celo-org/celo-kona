@@ -139,13 +139,14 @@ pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
 /// returns. See the module docs for why the committing [`call`] path cannot provide this
 /// guarantee.
 ///
-/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (output, logs, gas_spent, gas_refunded), the raw gas before refunds and the
+/// signed refund counter.
 pub fn call_read_only<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, i64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -187,13 +188,14 @@ where
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
-/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (output, logs, gas_spent, gas_refunded), the raw gas before refunds and the
+/// signed refund counter.
 pub fn call<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, i64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -216,7 +218,7 @@ fn call_inner<DB, INSP, P>(
     calldata: Bytes,
     gas_limit: Option<u64>,
     commit: bool,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, i64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -275,7 +277,7 @@ pub(crate) fn call_no_commit<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64, i64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -284,12 +286,20 @@ where
     call_inner(evm, address, calldata, gas_limit, false)
 }
 
-/// Decode a finished system-call result into (output, logs, gas_used, gas_refunded),
+/// Decode a finished system-call result into (output, logs, gas_spent, gas_refunded),
 /// mapping halts/reverts/errors to [`CoreContractError`]. Shared by [`call`] and
 /// [`call_read_only`].
+///
+/// `gas_refunded` is signed. revm narrows its `i64` counter to `u64` when it builds the
+/// result, which is lossless for a whole transaction — a slot re-creation only ever follows
+/// the clear that banked the refund, in the same counter — but not for a CIP-64 system call,
+/// which meters in a `Gas` of its own over the enclosing transaction's journal. The credit
+/// re-creates slots the debit cleared and so finishes negative. `total_gas_spent` is used
+/// rather than `tx_gas_used` for the same reason: the latter subtracts the refund and
+/// saturates to zero once it goes negative.
 fn process_call_result<E: core::fmt::Display>(
     call_result: Result<ExecutionResult<OpHaltReason>, E>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError> {
+) -> Result<(Bytes, Vec<Log>, u64, i64), CoreContractError> {
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o,
@@ -302,7 +312,12 @@ fn process_call_result<E: core::fmt::Display>(
             gas,
             logs,
             ..
-        } => Ok((bytes, logs, gas.tx_gas_used(), gas.inner_refunded())),
+        } => Ok((
+            bytes,
+            logs,
+            gas.total_gas_spent(),
+            gas.inner_refunded() as i64,
+        )),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),
