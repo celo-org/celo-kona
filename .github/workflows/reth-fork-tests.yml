@@ -25,7 +25,7 @@ permissions:
 
 env:
   OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.3.1-sparse-trie-v3
-  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-celo-hooks-v2
+  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v1.0-celo-hooks-v3
 
 jobs:
   scoped-tests:
@@ -137,4 +137,5 @@ jobs:
             -p reth-rpc-eth-api \
             -p reth-provider \
             -p reth-trie-parallel \
-            -p reth-engine-tree
+            -p reth-engine-tree \
+            -p reth-transaction-pool
