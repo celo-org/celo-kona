@@ -164,7 +164,7 @@ impl CeloPayloadTransactions {
         inner: I,
         block_gas_limit: u64,
         attr: reth_transaction_pool::BestTransactionsAttributes,
-    ) -> impl PayloadTransactions<Transaction = CeloPoolTx>
+    ) -> impl PayloadTransactions<Transaction = CeloPoolTx> + use<I>
     where
         I: PayloadTransactions<Transaction = CeloPoolTx>,
     {
