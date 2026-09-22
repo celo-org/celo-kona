@@ -13,12 +13,18 @@
 //! ERC20 into an in-memory state); it guards against a future op-reth bump
 //! reintroducing a consensus-layer `effective_tip_per_gas` call, which would
 //! silently break CIP-64 payload building again.
+//!
+//! The same machinery also drives `CeloPayloadTransactions` over a transaction the base fee
+//! prices out, guarding the filter that keeps such a transaction away from the builder's
+//! `expect` (celo-org/celo-blockchain-planning#1463).
 
-use alloy_consensus::{Header, Signed};
+use alloy_celo_evm::blocklist::FeeCurrencyBlocklist;
+use alloy_consensus::{Header, Signed, Transaction, TxEip1559};
 use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
     CeloEvmConfig,
+    payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     payload_metrics::PayloadMetricsBuilder,
     pool::{CeloPoolTx, ExchangeRate},
     primitives::CeloPrimitives,
@@ -33,7 +39,7 @@ use reth_basic_payload_builder::{
     PayloadConfig,
 };
 use reth_chainspec::Chain;
-use reth_evm::execute::BlockBuilder;
+use reth_evm::{Evm, execute::BlockBuilder};
 use reth_node_api::PayloadBuilderError;
 use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
 use reth_optimism_payload_builder::{
@@ -155,6 +161,25 @@ impl PayloadTransactions for OneTx {
         self.0.take()
     }
     fn mark_invalid(&mut self, _sender: Address, _nonce: u64) {}
+}
+
+/// `PayloadTransactions` impl yielding several `CeloPoolTx` in order, dropping a sender's
+/// remaining transactions when it is marked invalid, the way the pool's iterator does. The
+/// record of `mark_invalid` calls is shared because the iterator is moved into the filter.
+struct QueuedTxs {
+    txs: Vec<CeloPoolTx>,
+    invalid: Arc<Mutex<Vec<(Address, u64)>>>,
+}
+
+impl PayloadTransactions for QueuedTxs {
+    type Transaction = CeloPoolTx;
+    fn next(&mut self, _ctx: ()) -> Option<Self::Transaction> {
+        if self.txs.is_empty() { None } else { Some(self.txs.remove(0)) }
+    }
+    fn mark_invalid(&mut self, sender: Address, nonce: u64) {
+        self.invalid.lock().unwrap().push((sender, nonce));
+        self.txs.retain(|tx| tx.sender() != sender);
+    }
 }
 
 /// Sender address behind `Signature::test_signature`, derived from a dummy CIP-64 tx.
@@ -294,6 +319,105 @@ fn cip64_payload_builder_handles_low_fc_max_fee() {
         U256::from(EXPECTED_TIP_PER_GAS) * U256::from(info.cumulative_gas_used),
         "miner fee must equal the native-equivalent tip (10 Gwei) times gas used, \
          not merely be positive"
+    );
+}
+
+/// Sender of the underpriced transaction. It is dropped before execution, so it is never
+/// funded and its signature never has to recover to this address.
+const UNDERPRICED_SENDER: Address = address!("2222222222222222222222222222222222222222");
+
+/// Native EIP-1559 tx with a 20 Gwei fee cap, below the block's 25 Gwei base fee, so
+/// `effective_tip_per_gas` returns `None` for it.
+fn underpriced_native_pool_tx(sig: Signature) -> CeloPoolTx {
+    let eip1559 = TxEip1559 {
+        chain_id: 42220,
+        nonce: 0,
+        gas_limit: 21_000,
+        max_fee_per_gas: 20_000_000_000,
+        max_priority_fee_per_gas: 1_000_000_000,
+        to: TxKind::Call(Address::ZERO),
+        value: U256::ZERO,
+        access_list: Default::default(),
+        input: Default::default(),
+    };
+    let envelope = CeloTxEnvelope::Eip1559(Signed::new_unhashed(eip1559, sig));
+    let pooled = CeloPooledTransaction::try_from(envelope).unwrap();
+    CeloPoolTx::new(OpPoolPoolTx::<CeloTxEnvelope, CeloPooledTransaction>::from_pooled(
+        Recovered::new_unchecked(pooled, UNDERPRICED_SENDER),
+    ))
+}
+
+/// Guard for celo-org/celo-blockchain-planning#1463.
+///
+/// `execute_best_transactions` unwraps the miner tip of every transaction the iterator yields,
+/// before executing it, so one priced below the base fee aborts the payload task. This drives
+/// the real builder over the real `CeloPayloadTransactions` filter to prove the two agree on
+/// which transactions are underpriced: without the filter's guard the `expect` inside the
+/// builder panics and this test fails.
+#[test]
+fn payload_filter_drops_an_underpriced_tx_before_the_builder_unwraps_its_tip() {
+    let sig = Signature::test_signature();
+    let sender = test_sender(sig);
+
+    let inner_db = make_celo_test_db(sender, U256::from(1_000_000_000_000_000_000u128));
+    let mut state = State::builder().with_database(inner_db).with_bundle_update().build();
+
+    let chain_spec = test_chain_spec();
+    let ctx: OpPayloadBuilderCtx<_, OpChainSpec, _> = OpPayloadBuilderCtx {
+        evm_config: CeloEvmConfig::celo(chain_spec.clone()),
+        builder_config: OpBuilderConfig::default(),
+        chain_spec,
+        config: test_payload_config(),
+        cancel: Default::default(),
+        best_payload: None,
+    };
+
+    let mut builder = ctx.block_builder(&mut state).expect("block_builder");
+    builder.apply_pre_execution_changes().expect("pre-execution");
+
+    // The builder's own attributes, so the filter reads exactly the base fee the builder
+    // compares against a few lines into `execute_best_transactions`.
+    let attr = ctx.best_transaction_attributes(builder.evm_mut().block());
+
+    let underpriced = underpriced_native_pool_tx(sig);
+    assert!(
+        underpriced.max_fee_per_gas() < u128::from(attr.basefee),
+        "the tx must be underpriced at this block's base fee. Otherwise the builder drops it \
+         down its own LackOfFundForMaxFee path — the sender is deliberately unfunded — and the \
+         test would pass with the guard removed"
+    );
+
+    let invalid = Arc::new(Mutex::new(Vec::new()));
+    let best_txs =
+        CeloPayloadTransactions::new(FeeCurrencyLimits::default(), FeeCurrencyBlocklist::default())
+            .filter_pool_transactions(
+                QueuedTxs {
+                    txs: vec![underpriced, test_cip64_pool_tx(sender, sig)],
+                    invalid: invalid.clone(),
+                },
+                30_000_000,
+                attr,
+            );
+
+    let mut info = ExecutionInfo::new();
+    let mut committed = Vec::new();
+    ctx.execute_best_transactions(&mut info, &mut builder, best_txs, None, Some(&mut committed))
+        .expect("execute_best_transactions");
+
+    assert_eq!(
+        *invalid.lock().unwrap(),
+        vec![(UNDERPRICED_SENDER, 0)],
+        "the underpriced sender must be marked invalid, and nobody else"
+    );
+    assert_eq!(committed.len(), 1, "only the well-priced CIP-64 tx may be executed");
+
+    // Same tip as `cip64_payload_builder_handles_low_fc_max_fee`: the dropped tx contributes
+    // nothing, so the block's fees are still exactly the CIP-64 tx's native-equivalent tip.
+    const EXPECTED_TIP_PER_GAS: u128 = 10_000_000_000; // 10 Gwei (native)
+    assert!(info.cumulative_gas_used > 0, "the CIP-64 tx must have executed");
+    assert_eq!(
+        info.total_fees,
+        U256::from(EXPECTED_TIP_PER_GAS) * U256::from(info.cumulative_gas_used),
     );
 }
 
