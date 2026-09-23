@@ -203,6 +203,36 @@ fn celo_cli_command() -> clap::Command {
         })
 }
 
+/// Build the upstream op-reth clap [`Command`] with Celo-specific argument defaults applied.
+///
+/// `--rpc.txfeecap` defaults to 1000 CELO (matching op-geth's Celo fork) instead of upstream's
+/// 1: at Celo gas prices a full-block tx costs several CELO, so the upstream default would
+/// reject legitimate locally signed txs. The flag stays fully overridable, including `0` to
+/// disable the cap. The order-preserving `mut_subcommands`/`mut_args` keep `node --help` in
+/// upstream order.
+fn upstream_cli_command() -> clap::Command {
+    Cli::<CeloChainSpecParser, CeloArgs>::command_with_denied_args_hidden().mut_subcommands(|sub| {
+        if sub.get_name() != "node" {
+            return sub;
+        }
+        sub.mut_args(|a| if a.get_id() == "rpc_tx_fee_cap" { a.default_value("1000") } else { a })
+    })
+}
+
+/// Parse `argv` into the upstream op-reth [`Cli`] with the Celo defaults from
+/// [`upstream_cli_command`], rejecting op-reth's denied arguments (e.g. `--minimal`).
+///
+/// op-reth's `try_parse_with_denied_args_from` builds its own command, so it cannot carry our
+/// defaults; it runs only for its denied-argument check and its result is discarded. Our
+/// command parses first so `--help` shows the Celo defaults.
+fn parse_upstream_cli(
+    argv: &[OsString],
+) -> Result<Cli<CeloChainSpecParser, CeloArgs>, clap::error::Error> {
+    let mut matches = upstream_cli_command().try_get_matches_from(argv)?;
+    Cli::<CeloChainSpecParser, CeloArgs>::try_parse_with_denied_args_from(argv)?;
+    Cli::<CeloChainSpecParser, CeloArgs>::from_arg_matches_mut(&mut matches)
+}
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -351,7 +381,7 @@ fn main() {
         Err(_) => { /* fall through to upstream `Cli` */ }
     }
 
-    if let Err(err) = Cli::<CeloChainSpecParser, CeloArgs>::parse_with_denied_args().run(
+    if let Err(err) = parse_upstream_cli(&argv).unwrap_or_else(|err| err.exit()).run(
         async move |builder, celo_args| {
             let tree_config = builder.config().tree_config();
             validate_shared_sparse_trie(
@@ -829,25 +859,65 @@ mod tests {
     }
 
     /// `--minimal` prunes block bodies to a fixed 10,064-block window, which derivation cannot
-    /// tolerate. Only `parse_with_denied_args` rejects it; `clap::Parser::parse` builds the
+    /// tolerate. Only op-reth's denied-args parser rejects it; `clap::Parser::parse` builds the
     /// upstream command directly and accepts it silently.
     #[test]
     fn minimal_is_rejected() {
-        let err = Cli::<CeloChainSpecParser, CeloArgs>::try_parse_with_denied_args_from([
-            "celo-reth",
-            "node",
-            "--minimal",
-        ])
-        .expect_err("--minimal must be rejected");
+        let err = parse_upstream_cli(&argv(&["celo-reth", "node", "--minimal"]))
+            .expect_err("--minimal must be rejected");
         assert!(err.to_string().contains("--minimal is not supported"), "unexpected error: {err}");
     }
 
     #[test]
     fn node_without_denied_args_still_parses() {
-        Cli::<CeloChainSpecParser, CeloArgs>::try_parse_with_denied_args_from([
-            "celo-reth",
-            "node",
-        ])
-        .expect("a plain `node` invocation must still parse");
+        parse_upstream_cli(&argv(&["celo-reth", "node"]))
+            .expect("a plain `node` invocation must still parse");
+    }
+
+    fn argv(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    fn parsed_tx_fee_cap(args: &[&str]) -> u128 {
+        use reth_optimism_cli::commands::Commands;
+        match parse_upstream_cli(&argv(args)).expect("node invocation must parse").command {
+            Commands::Node(node) => node.rpc.rpc_tx_fee_cap,
+            other => panic!("expected the node command, got {other:?}"),
+        }
+    }
+
+    /// `node`'s `--rpc.txfeecap` must default to 1000 CELO (op-geth Celo fork parity) instead
+    /// of upstream's 1.
+    #[test]
+    fn test_txfeecap_defaults_to_1000_celo() {
+        assert_eq!(parsed_tx_fee_cap(&["celo-reth", "node"]), 1000 * 10u128.pow(18));
+    }
+
+    /// An explicit `--rpc.txfeecap` must still override the raised default, including `0`
+    /// (cap disabled).
+    #[test]
+    fn test_txfeecap_flag_overrides_default() {
+        for (value, expected) in [("1", 10u128.pow(18)), ("0", 0), ("2.5", 25 * 10u128.pow(17))] {
+            assert_eq!(
+                parsed_tx_fee_cap(&["celo-reth", "node", "--rpc.txfeecap", value]),
+                expected,
+                "--rpc.txfeecap {value} must override the default"
+            );
+        }
+    }
+
+    /// The Celo default must show up in `node --help`, which is rendered from our command.
+    #[test]
+    fn test_txfeecap_help_shows_celo_default() {
+        let err = parse_upstream_cli(&argv(&["celo-reth", "node", "--help"]))
+            .expect_err("--help exits through clap's error path");
+        let help = err.to_string();
+        let line = help
+            .lines()
+            .skip_while(|l| !l.contains("--rpc.txfeecap"))
+            .take_while(|l| !l.trim_start().starts_with("--rpc.max-simulate-blocks"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(line.contains("[default: 1000]"), "unexpected help for --rpc.txfeecap:\n{line}");
     }
 }
