@@ -86,8 +86,8 @@ impl FeeCurrencyBlocklist {
     /// Eviction is driven by [`Self::evict`], which the sequencing path calls with *wall-clock*
     /// seconds, so an entry past its [`evicts_at`](BlockedCurrency::evicts_at) can still be
     /// listed here until the next payload build, and can conversely be evicted early while
-    /// block timestamps lag wall clock. Callers that need "would this currency be skipped right
-    /// now" should use [`Self::is_blocked`].
+    /// block timestamps lag wall clock. [`Self::is_blocked`] reads the same map, so both see the
+    /// state as of the last eviction.
     pub fn blocked_currencies(&self) -> Vec<BlockedCurrency> {
         self.inner
             .lock()

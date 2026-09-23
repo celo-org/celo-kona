@@ -1952,8 +1952,8 @@ mod tests {
         );
     }
 
-    /// The read side of the blocklist: `admin_getBlocklistFeeCurrencies` reports exactly
-    /// what the sequencing filter would skip, and reflects blocks, unblocks and eviction.
+    /// The read side of the blocklist: `admin_getBlocklistFeeCurrencies` reflects blocks,
+    /// unblocks and eviction.
     #[tokio::test]
     async fn admin_get_blocklist_fee_currencies_reflects_blocklist_state() {
         let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
