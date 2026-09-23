@@ -1523,8 +1523,8 @@ pub fn celo_admin_module(
         .expect("admin_unblockFeeCurrency registration");
 
     // Named after op-geth's `admin_getBlocklistFeeCurrencies` (its `eth/api_admin.go`), as the
-    // three mutators above already are, so operator tooling ports across unchanged. Three
-    // deliberate differences from op-geth, none of which should be "tidied up" without cause:
+    // three mutators above already are. Only the name ports across; three deliberate
+    // differences from op-geth, none of which should be "tidied up" without cause:
     //
     // * No `includeDisabled` param. op-geth needs one because its `DisableBlocking` leaves an
     //   already-blocked entry in the map and merely filters it out of reads; our
@@ -1532,8 +1532,10 @@ pub fn celo_admin_module(
     //   has nothing to select. Params are ignored rather than rejected so that an operator with
     //   op-geth muscle memory typing `(false)` or `(true)` gets the right answer either way — do
     //   not tighten this to `params.one()?`.
-    // * Richer response. op-geth returns `{address: expiry}`; we return objects that also carry
-    //   `blockedAt`, which its map cannot express. `evictsAt` is op-geth's expiry value exactly.
+    // * Richer response. op-geth returns `{address: expiry}`; we return an array of objects that
+    //   also carry `blockedAt`, which its map cannot express, so scripts reading op-geth's map
+    //   break. `evictsAt` has the same value as op-geth's expiry, but op-geth still blocks at that
+    //   second while `evict` drops the entry there.
     // * Timestamps are plain JSON numbers, matching op-geth's `uint64` (it does not use
     //   `hexutil.Uint64` here), not the hex quantities the `eth` namespace uses.
     module
