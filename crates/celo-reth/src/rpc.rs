@@ -2030,6 +2030,32 @@ mod tests {
         assert!(blocked.is_empty(), "disabled currency must not be listed: {blocked:?}");
     }
 
+    /// op-geth's `includeDisabled` argument is ignored, not rejected: `(true)` and `(false)`
+    /// both return the same listing as no argument.
+    #[tokio::test]
+    async fn admin_get_blocklist_fee_currencies_ignores_include_disabled() {
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let module = celo_admin_module(blocklist.clone());
+        blocklist.block_currency(Address::with_last_byte(0xA5), 1000);
+
+        let no_arg = module
+            .call::<_, Vec<BlockedFeeCurrency>>("admin_getBlocklistFeeCurrencies", [(); 0])
+            .await
+            .expect("admin_getBlocklistFeeCurrencies call");
+        assert_eq!(no_arg.len(), 1);
+
+        for include_disabled in [true, false] {
+            let listed = module
+                .call::<_, Vec<BlockedFeeCurrency>>(
+                    "admin_getBlocklistFeeCurrencies",
+                    [include_disabled],
+                )
+                .await
+                .expect("admin_getBlocklistFeeCurrencies call with includeDisabled");
+            assert_eq!(listed, no_arg, "includeDisabled = {include_disabled}");
+        }
+    }
+
     /// The response uses the camelCase field names the RPC contract promises.
     #[test]
     fn blocked_fee_currency_serializes_camel_case() {
