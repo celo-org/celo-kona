@@ -1882,7 +1882,7 @@ mod tests {
         let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
         let module = celo_admin_module(blocklist);
 
-        // Verify all three admin methods are registered
+        // Verify all admin methods are registered
         let method_names: Vec<_> = module.method_names().collect();
         assert!(
             method_names.contains(&"admin_disableBlocklistFeeCurrencies"),
