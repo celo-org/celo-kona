@@ -1488,9 +1488,9 @@ pub struct BlockedFeeCurrency {
 ///
 /// # Authentication
 ///
-/// These methods assume the `admin` namespace is behind reth's standard authenticated
-/// transport (engine API / admin IPC). No access control is enforced at the RPC method
-/// level.
+/// No access control is enforced at the RPC method level. `celo_reth` never installs this
+/// module on the authenticated engine API; it exposes it on http/ws only when `admin` is
+/// selected, and on IPC by default, where the socket's permissions are the only guard.
 pub fn celo_admin_module(
     blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
 ) -> jsonrpsee::RpcModule<alloy_celo_evm::blocklist::FeeCurrencyBlocklist> {
