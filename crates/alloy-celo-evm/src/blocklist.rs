@@ -162,6 +162,7 @@ impl FeeCurrencyBlocklist {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn addr(b: u8) -> Address {
         Address::with_last_byte(b)
