@@ -729,10 +729,11 @@ where
             // `admin` namespace via reth's own `merge_if_module_configured`: it installs
             // the methods on http/ws/ipc only when that transport's configured selection
             // contains `admin` (it checks `contains_http`/`contains_ws`/`contains_ipc`).
-            // The default selection is eth/net/web3, which excludes admin, so these
-            // blocklist mutators are not exposed unless the operator opts in — on every
-            // transport, IPC included. (`merge_configured` would instead install them on
-            // all transports unconditionally, which is the exposure we are avoiding.)
+            // The default http/ws selection is eth/net/web3, which excludes admin, so these
+            // blocklist methods are not exposed there unless the operator opts in. IPC
+            // selects all modules and is on unless `--ipcdisable`, so they are on the IPC
+            // socket by default; as in geth, the local socket's permissions guard it.
+            // (`merge_configured` would also install them on http/ws without `admin`.)
             let admin_module = celo_admin_module(blocklist);
             ctx.modules.merge_if_module_configured(RethRpcModule::Admin, admin_module)?;
             Ok(())
