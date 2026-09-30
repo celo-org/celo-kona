@@ -15,16 +15,14 @@ pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 /// Marker distinguishing a [`FEE_DEBIT_ERROR_PREFIX`] error raised by the CIP-64 max-fee
 /// check's `balanceOf` read from one raised by the `debitGasFees` call itself.
 ///
-/// Both deliberately carry the debit prefix so the sequencing blocklist classifies them
-/// alike, which makes this the only thing telling the two apart. It is a diagnostic, never a
-/// classifier input, and it is `pub` only because the debit-fault tests that assert its
-/// *absence* — pinning that they still fault in the debit, not in the pre-check that now runs
-/// ahead of it — live in `alloy-celo-evm`.
+/// Both deliberately carry the debit prefix. Sequencing failure-policy handling uses this marker
+/// to select the matching canonical recheck: `balanceOf` for this phase and `debitGasFees` for the
+/// later debit phase. Tests in `alloy-celo-evm` also use it to assert which operation failed.
 ///
 /// The value is deliberately not the bare word `balanceOf`: the flattened error embeds a
 /// fee currency's revert text, and `"ERC20: balanceOf query for the zero address"` is a real
-/// message a token can revert with. A marker a contract can reproduce would make those
-/// absence assertions — and any operator reading the log — unable to tell the two apart.
+/// message a token can revert with. A marker a contract can reproduce would make classification,
+/// tests, and operator logs unable to tell the two phases apart.
 pub const FEE_BALANCE_READ_MARKER: &str = "max-fee balanceOf read";
 
 /// Error message prefix used when a CIP-64 transaction's fee currency is not

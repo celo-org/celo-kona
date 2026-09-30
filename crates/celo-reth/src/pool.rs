@@ -6,6 +6,12 @@
 //! that pay fees in non-native currencies.
 
 use crate::primitives::CeloTransactionSigned;
+#[cfg(test)]
+use alloy_celo_evm::revert_evictions::PayloadBlock;
+use alloy_celo_evm::{
+    CeloFailurePolicies,
+    revert_evictions::{PayloadGeneration, RevertEviction, RevertEvictions, RevertReason},
+};
 use alloy_consensus::{BlockHeader, Header, Transaction};
 use alloy_eips::{
     Typed2718, eip2930::AccessList, eip4844::BlobTransactionValidationError,
@@ -20,7 +26,7 @@ use reth_optimism_txpool::{
     estimated_da_size::DataAvailabilitySized, interop::MaybeInteropTransaction,
 };
 use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
-use reth_storage_api::{AccountReader, BlockReaderIdExt, StateProviderFactory};
+use reth_storage_api::{AccountReader, BlockHashReader, BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     AllPoolTransactions, AllTransactionsEvents, BestTransactions, BestTransactionsAttributes,
@@ -34,7 +40,7 @@ use reth_transaction_pool::{
 use revm::{interpreter::gas::calculate_initial_tx_gas, primitives::hardfork::SpecId};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
@@ -58,8 +64,9 @@ impl CeloPoolMetrics {
     fn exchange_rate_lookup() {
         metrics::counter!("celo_pool_exchange_rate_lookups_total").increment(1);
     }
-    fn pool_eviction(count: u64) {
-        metrics::counter!("celo_pool_maintainer_evictions_total").increment(count);
+    fn pool_eviction(reason: &'static str, count: u64) {
+        metrics::counter!("celo_pool_maintainer_evictions_total", "reason" => reason)
+            .increment(count);
     }
     fn maintainer_failure(reason: &'static str, count: u64) {
         metrics::counter!("celo_pool_maintainer_failures_total", "reason" => reason)
@@ -72,6 +79,28 @@ impl CeloPoolMetrics {
     fn stale_revalidation_result(action: &'static str) {
         metrics::counter!("celo_pool_maintainer_stale_results_total", "action" => action)
             .increment(1);
+    }
+    fn revert_eviction_records(action: &'static str, phase: &'static str, count: u64) {
+        metrics::counter!(
+            "celo_pool_revert_eviction_records_total",
+            "action" => action,
+            "phase" => phase
+        )
+        .increment(count);
+    }
+    fn revert_eviction_overflow(count: u64) {
+        metrics::counter!("celo_pool_revert_eviction_overflow_total").increment(count);
+    }
+    fn revert_eviction_queue_depth(depth: usize) {
+        metrics::gauge!("celo_pool_revert_eviction_queue_depth").set(depth as f64);
+    }
+    fn revert_eviction_recheck_duration(duration: Duration) {
+        metrics::histogram!("celo_pool_revert_eviction_recheck_duration_seconds")
+            .record(duration.as_secs_f64());
+    }
+    fn revert_eviction_recheck_attempts(count: usize) {
+        metrics::counter!("celo_pool_revert_eviction_recheck_attempts_total")
+            .increment(count as u64);
     }
 }
 
@@ -1082,6 +1111,7 @@ where
     inner: Arc<P>,
     sender_locks: Arc<SenderAdmissionLocks>,
     canonical_updates: watch::Sender<u64>,
+    failure_policies: CeloFailurePolicies,
 }
 
 impl<P> CeloTransactionPool<P>
@@ -1090,8 +1120,18 @@ where
 {
     /// Wrap a raw reth pool.
     pub fn new(inner: Arc<P>) -> Self {
+        Self::new_with_failure_policies(inner, CeloFailurePolicies::default())
+    }
+
+    /// Wraps a raw reth pool and updates the supplied policy bundle on canonical changes.
+    pub fn new_with_failure_policies(inner: Arc<P>, failure_policies: CeloFailurePolicies) -> Self {
         let (canonical_updates, _) = watch::channel(0);
-        Self { inner, sender_locks: Arc::new(SenderAdmissionLocks::default()), canonical_updates }
+        Self {
+            inner,
+            sender_locks: Arc::new(SenderAdmissionLocks::default()),
+            canonical_updates,
+            failure_policies,
+        }
     }
 
     /// Subscribe to canonical pool updates after the wrapped reth pool has applied them.
@@ -1316,6 +1356,8 @@ where
         &self,
         update: reth_transaction_pool::CanonicalStateUpdate<'_, Self::Block>,
     ) {
+        self.failure_policies
+            .set_canonical_head(PayloadGeneration::new(update.number(), update.hash()));
         self.inner.on_canonical_state_change(update);
         self.canonical_updates.send_modify(|version| *version = version.wrapping_add(1));
     }
@@ -2030,24 +2072,277 @@ fn revalidation_head_action(
     }
 }
 
+const MAX_REVERT_EVICTIONS_PER_PASS: usize = 16;
+const REVERT_EVICTION_RECHECK_TIME_BUDGET: Duration = Duration::from_millis(50);
+
+fn revert_recheck_budget_exhausted(started: &mut Option<Instant>, attempts: usize) -> bool {
+    let started = started.get_or_insert_with(Instant::now);
+    attempts >= MAX_REVERT_EVICTIONS_PER_PASS ||
+        (attempts > 0 && started.elapsed() >= REVERT_EVICTION_RECHECK_TIME_BUDGET)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevertRecheck {
+    Success,
+    Revert,
+    Halt,
+    InvalidEvidence,
+    Uncertain,
+    BudgetExhausted,
+}
+
+#[derive(Debug, Default)]
+struct RevertEvictionPlan {
+    debit: HashSet<TxHash>,
+    balance_read: HashSet<TxHash>,
+    credit: HashSet<TxHash>,
+    halt_currencies: HashSet<Address>,
+    requeue: Vec<RevertEviction>,
+    drained_debit: usize,
+    drained_balance_read: usize,
+    drained_credit: usize,
+    last_rechecked: Option<(TxHash, RevertReason)>,
+}
+
+const fn mark_revert_record_drained(plan: &mut RevertEvictionPlan, reason: RevertReason) {
+    match reason {
+        RevertReason::Debit => plan.drained_debit += 1,
+        RevertReason::BalanceRead => plan.drained_balance_read += 1,
+        RevertReason::Credit => plan.drained_credit += 1,
+    }
+}
+
+fn observe_revert_eviction_records(action: &'static str, records: &[RevertEviction]) {
+    let debit = records.iter().filter(|record| record.reason == RevertReason::Debit).count();
+    let balance_read =
+        records.iter().filter(|record| record.reason == RevertReason::BalanceRead).count();
+    let credit = records.iter().filter(|record| record.reason == RevertReason::Credit).count();
+    CeloPoolMetrics::revert_eviction_records(action, "debit", debit as u64);
+    CeloPoolMetrics::revert_eviction_records(action, "balance_read", balance_read as u64);
+    CeloPoolMetrics::revert_eviction_records(action, "credit", credit as u64);
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ClassifiedRevertRecords {
+    canonical: Vec<RevertEviction>,
+    deferred: Vec<RevertEviction>,
+}
+
+/// Classifies exact payload evidence against the current canonical chain.
+///
+/// Evidence at an older height requires one cached canonical-hash lookup per distinct height.
+/// Missing or unreadable hashes defer the decision; losing siblings are discarded without an EVM
+/// recheck.
+fn classify_revert_records_for_head<P>(
+    provider: &P,
+    records: &[RevertEviction],
+    canonical_number: u64,
+    canonical_hash: B256,
+) -> ClassifiedRevertRecords
+where
+    P: BlockHashReader,
+{
+    let mut classified = ClassifiedRevertRecords::default();
+    let mut canonical_hashes = HashMap::<u64, Option<B256>>::new();
+    let mut canonical_records = BTreeMap::<(B256, RevertReason), RevertEviction>::new();
+
+    let mut mark_canonical = |record: RevertEviction| {
+        canonical_records
+            .entry((record.tx_hash, record.reason))
+            .and_modify(|existing| {
+                if record.payload() < existing.payload() {
+                    *existing = record;
+                }
+            })
+            .or_insert(record);
+    };
+
+    for record in records.iter().copied() {
+        let payload = record.payload();
+        match payload.number.cmp(&canonical_number) {
+            core::cmp::Ordering::Greater => classified.deferred.push(record),
+            core::cmp::Ordering::Equal => {
+                if payload.hash == canonical_hash {
+                    mark_canonical(record);
+                }
+            }
+            core::cmp::Ordering::Less => {
+                let canonical_hash_at_height = *canonical_hashes
+                    .entry(payload.number)
+                    .or_insert_with(|| match provider.block_hash(payload.number) {
+                        Ok(Some(hash)) => Some(hash),
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "celo::pool",
+                                block_number = payload.number,
+                                "Deferring payload revert evidence without a canonical block hash"
+                            );
+                            None
+                        }
+                        Err(error) => {
+                            CeloPoolMetrics::maintainer_failure("canonical_header", 1);
+                            tracing::warn!(
+                                target: "celo::pool",
+                                %error,
+                                block_number = payload.number,
+                                "Failed to resolve canonical payload revert evidence"
+                            );
+                            None
+                        }
+                    });
+                match canonical_hash_at_height {
+                    Some(hash) if hash == payload.hash => mark_canonical(record),
+                    Some(_) => {}
+                    None => classified.deferred.push(record),
+                }
+            }
+        }
+    }
+
+    classified.canonical = canonical_records.into_values().collect();
+    classified
+}
+
+/// Starts canonical rechecks after the last record that consumed budget on the previous pass.
+///
+/// `records` comes from the `(tx_hash, reason)`-ordered canonical map above. Rotating this slice
+/// prevents persistently uncertain low-hash records from consuming every pass.
+fn rotate_revert_records_after(
+    records: &mut [RevertEviction],
+    cursor: Option<(TxHash, RevertReason)>,
+) {
+    let Some(cursor) = cursor else {
+        return;
+    };
+    debug_assert!(
+        records
+            .windows(2)
+            .all(|pair| { (pair[0].tx_hash, pair[0].reason) <= (pair[1].tx_hash, pair[1].reason) })
+    );
+    let split = records.partition_point(|record| (record.tx_hash, record.reason) <= cursor);
+    records.rotate_left(split);
+}
+
+fn plan_revert_evictions<Pool>(
+    pool: &Pool,
+    records: &[RevertEviction],
+    already_evicting: &HashSet<TxHash>,
+    mut recheck: impl FnMut(RevertReason, &CeloPoolTx) -> RevertRecheck,
+) -> RevertEvictionPlan
+where
+    Pool: TransactionPool<Transaction = CeloPoolTx>,
+{
+    let mut plan = RevertEvictionPlan::default();
+    if records.is_empty() {
+        return plan;
+    }
+
+    // `get_all` clones the matching pool entries while its internal read guard is held. The guard
+    // is gone before any EVM call below.
+    let transactions = pool.get_all(records.iter().map(|record| record.tx_hash).collect());
+    let transactions: HashMap<_, _> = transactions.into_iter().map(|tx| (*tx.hash(), tx)).collect();
+
+    for record in records.iter().copied() {
+        if already_evicting.contains(&record.tx_hash) {
+            continue;
+        }
+        let Some(tx) = transactions.get(&record.tx_hash) else {
+            continue;
+        };
+        match record.reason {
+            RevertReason::Credit => {
+                plan.credit.insert(record.tx_hash);
+                plan.drained_credit += 1;
+            }
+            reason @ (RevertReason::Debit | RevertReason::BalanceRead) => {
+                let outcome = recheck(reason, &tx.transaction);
+                if outcome != RevertRecheck::BudgetExhausted {
+                    plan.last_rechecked = Some((record.tx_hash, reason));
+                }
+                match outcome {
+                    RevertRecheck::Success | RevertRecheck::InvalidEvidence => {
+                        mark_revert_record_drained(&mut plan, reason);
+                    }
+                    RevertRecheck::Revert => {
+                        match reason {
+                            RevertReason::Debit => &mut plan.debit,
+                            RevertReason::BalanceRead => &mut plan.balance_read,
+                            RevertReason::Credit => unreachable!(),
+                        }
+                        .insert(record.tx_hash);
+                        mark_revert_record_drained(&mut plan, reason);
+                    }
+                    RevertRecheck::Halt => {
+                        if let Some(fee_currency) = tx.transaction.fee_currency() {
+                            plan.halt_currencies.insert(fee_currency);
+                        }
+                        mark_revert_record_drained(&mut plan, reason);
+                    }
+                    RevertRecheck::Uncertain | RevertRecheck::BudgetExhausted => {
+                        plan.requeue.push(record);
+                    }
+                }
+            }
+        }
+    }
+    plan
+}
+
+fn settle_revert_eviction_batch(
+    revert_evictions: &RevertEvictions,
+    taken_records: Vec<RevertEviction>,
+    mut marker_plan: Option<RevertEvictionPlan>,
+    head_action: RevalidationHeadAction,
+) -> Option<RevertEvictionPlan> {
+    if head_action == RevalidationHeadAction::Recheck {
+        if !taken_records.is_empty() {
+            observe_revert_eviction_records("requeued", &taken_records);
+            revert_evictions.requeue(taken_records);
+            CeloPoolMetrics::revert_eviction_queue_depth(revert_evictions.len());
+        }
+        return None;
+    }
+
+    if let Some(plan) = marker_plan.as_mut() {
+        let requeue = core::mem::take(&mut plan.requeue);
+        observe_revert_eviction_records("requeued", &requeue);
+        revert_evictions.requeue(requeue);
+        CeloPoolMetrics::revert_eviction_queue_depth(revert_evictions.len());
+    }
+    marker_plan
+}
+
 struct FeeCurrencyRevalidation {
     scanned_hash: B256,
     usable_currencies: HashSet<Address>,
     to_evict: HashSet<TxHash>,
     unavailable_currency_count: usize,
     insufficient_balance_count: usize,
+    unavailable_currency: HashSet<TxHash>,
+    insufficient_balance: HashSet<TxHash>,
     lookup_failures: Vec<(Address, Address)>,
+    revert_debit: HashSet<TxHash>,
+    revert_balance_read: HashSet<TxHash>,
+    revert_credit: HashSet<TxHash>,
 }
 
-/// Monitors canonical state changes and evicts pooled CIP-64 transactions
-/// whose fee currency is no longer usable or whose sender can no longer afford their maximum
-/// fee-currency gas cost.
+struct UsableFeeCurrencies {
+    addresses: HashSet<Address>,
+    rates: HashMap<Address, ExchangeRate>,
+}
+
+/// Monitors canonical state changes and evicts pooled CIP-64 transactions whose fee currency is
+/// unusable, whose sender can no longer afford the fee, or whose completed-payload debit or credit
+/// evidence remains invalid under canonical policy checks.
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
     provider: P,
     fee_currency_directory: Address,
     spec_fn: SpecFn,
     next_block_base_fee_fn: NextBlockBaseFeeFn,
+    failure_policies: CeloFailurePolicies,
+    /// Last transaction-operation pair that consumed canonical revert-recheck budget.
+    revert_recheck_cursor: Option<(TxHash, RevertReason)>,
     /// Cached set of currencies with a usable exchange rate. Currency availability checks only
     /// need a full pool scan when this changes; canonical balance checks still run after every
     /// successful directory query.
@@ -2057,6 +2352,8 @@ pub struct CeloPoolMaintainer<Pool, P> {
     /// would silently miss currencies removed during a startup outage,
     /// leaving stale CIP-64 txs in the pool — see [`Self::on_new_block`].
     usable_currencies: Option<std::collections::HashSet<Address>>,
+    #[cfg(test)]
+    header_observed: Option<Arc<std::sync::Barrier>>,
 }
 
 impl<Pool: Debug, P: Debug> Debug for CeloPoolMaintainer<Pool, P> {
@@ -2078,6 +2375,7 @@ impl<Pool, P> CeloPoolMaintainer<Pool, P> {
         fee_currency_directory: Address,
         spec_fn: SpecFn,
         next_block_base_fee_fn: NextBlockBaseFeeFn,
+        failure_policies: CeloFailurePolicies,
     ) -> Self {
         Self {
             pool,
@@ -2085,7 +2383,11 @@ impl<Pool, P> CeloPoolMaintainer<Pool, P> {
             fee_currency_directory,
             spec_fn,
             next_block_base_fee_fn,
+            failure_policies,
+            revert_recheck_cursor: None,
             usable_currencies: None,
+            #[cfg(test)]
+            header_observed: None,
         }
     }
 }
@@ -2099,7 +2401,7 @@ where
     fn query_usable_fee_currencies<DB>(
         &self,
         evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
-    ) -> Option<HashSet<Address>>
+    ) -> Option<UsableFeeCurrencies>
     where
         DB: revm::Database,
     {
@@ -2126,7 +2428,8 @@ where
         .0;
 
         let currencies: Vec<Address> = getCurrenciesCall::abi_decode_returns(&output).ok()?;
-        usable_fee_currencies(currencies, |fee_currency| {
+        let mut rates = HashMap::new();
+        let addresses = usable_fee_currencies(currencies, |fee_currency| {
             let calldata = getExchangeRateCall { token: fee_currency }.abi_encode();
             let output = match call_read_only(
                 evm,
@@ -2164,9 +2467,13 @@ where
                     "Excluding fee currency without a usable exchange rate"
                 );
             }
+            if let Some(rate) = rate {
+                rates.insert(fee_currency, rate);
+            }
             Ok(rate)
         })
-        .ok()
+        .ok()?;
+        Some(UsableFeeCurrencies { addresses, rates })
     }
 
     /// Query a sender's current ERC20 balance for one registered fee currency.
@@ -2208,7 +2515,150 @@ where
             })
             .ok()
     }
+}
 
+/// Re-run only the CIP-64 debit hook against the canonical snapshot shared by this pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DebitRecheckCall {
+    value: U256,
+    gas_limit: u64,
+}
+
+fn debit_recheck_call(
+    tx: &CeloPoolTx,
+    rate: ExchangeRate,
+    next_base_fee: u64,
+    intrinsic_gas: u64,
+) -> Option<DebitRecheckCall> {
+    if rate.denominator == 0 {
+        return None;
+    }
+    let base_fee_in_fc = U256::from(next_base_fee).saturating_mul(U256::from(rate.numerator)) /
+        U256::from(rate.denominator);
+    let base_fee_in_fc = u128::try_from(base_fee_in_fc).ok()?;
+    let max_fee = tx.inner.max_fee_per_gas();
+    let priority_fee = tx.inner.max_priority_fee_per_gas().unwrap_or_default();
+    let effective_gas_price = max_fee.min(base_fee_in_fc.saturating_add(priority_fee));
+    let value = (tx.gas_limit() as u128).checked_mul(effective_gas_price)?;
+    Some(DebitRecheckCall { value: U256::from(value), gas_limit: intrinsic_gas.saturating_mul(3) })
+}
+
+fn recheck_fee_currency_debit<DB>(
+    evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+    fee_currency_directory: Address,
+    rate: ExchangeRate,
+    next_base_fee: u64,
+    tx: &CeloPoolTx,
+) -> RevertRecheck
+where
+    DB: revm::Database,
+{
+    use alloy_sol_types::SolCall;
+    use celo_revm::contracts::{
+        core_contracts::{CoreContractError, call_read_only, getCurrencyConfigCall},
+        erc20::IFeeCurrencyERC20,
+    };
+
+    let Some(fee_currency) = tx.fee_currency() else {
+        tracing::warn!(
+            target: "celo::pool",
+            tx_hash = ?tx.hash(),
+            "Dropping payload debit-revert evidence for transaction without fee currency"
+        );
+        return RevertRecheck::InvalidEvidence;
+    };
+    let config = match call_read_only(
+        evm,
+        fee_currency_directory,
+        getCurrencyConfigCall { token: fee_currency }.abi_encode().into(),
+        None,
+    )
+    .and_then(|(output, _, _, _)| {
+        getCurrencyConfigCall::abi_decode_returns(&output).map_err(CoreContractError::from)
+    }) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                target: "celo::pool",
+                %error,
+                tx_hash = ?tx.hash(),
+                ?fee_currency,
+                "Unable to load fee-currency config for canonical debit-revert evidence"
+            );
+            return RevertRecheck::Uncertain;
+        }
+    };
+    let intrinsic_gas = u64::try_from(config.intrinsicGas).unwrap_or(u64::MAX);
+    let Some(call) = debit_recheck_call(tx, rate, next_base_fee, intrinsic_gas) else {
+        return RevertRecheck::InvalidEvidence;
+    };
+    let calldata =
+        IFeeCurrencyERC20::debitGasFeesCall { from: tx.sender(), value: call.value }.abi_encode();
+    match call_read_only(evm, fee_currency, calldata.into(), Some(call.gas_limit)) {
+        Ok(_) => RevertRecheck::Success,
+        Err(CoreContractError::ExecutionFailed(message)) if message.starts_with("revert:") => {
+            RevertRecheck::Revert
+        }
+        Err(CoreContractError::ExecutionFailed(message)) if message.starts_with("halt:") => {
+            RevertRecheck::Halt
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "celo::pool",
+                %error,
+                tx_hash = ?tx.hash(),
+                ?fee_currency,
+                "Unable to confirm payload debit-revert evidence on canonical state"
+            );
+            RevertRecheck::Uncertain
+        }
+    }
+}
+
+/// Re-run the max-fee `balanceOf` read against the canonical snapshot shared by this pass.
+fn recheck_fee_currency_balance<DB>(
+    evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
+    tx: &CeloPoolTx,
+) -> RevertRecheck
+where
+    DB: revm::Database,
+{
+    use celo_revm::contracts::{core_contracts::CoreContractError, get_balance};
+
+    let Some(fee_currency) = tx.fee_currency() else {
+        tracing::warn!(
+            target: "celo::pool",
+            tx_hash = ?tx.hash(),
+            "Dropping payload balance-read-revert evidence for transaction without fee currency"
+        );
+        return RevertRecheck::InvalidEvidence;
+    };
+    match get_balance(evm, fee_currency, tx.sender(), None) {
+        Ok(_) => RevertRecheck::Success,
+        Err(CoreContractError::ExecutionFailed(message)) if message.starts_with("revert:") => {
+            RevertRecheck::Revert
+        }
+        Err(CoreContractError::ExecutionFailed(message)) if message.starts_with("halt:") => {
+            RevertRecheck::Halt
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "celo::pool",
+                %error,
+                tx_hash = ?tx.hash(),
+                ?fee_currency,
+                "Unable to confirm payload balance-read-revert evidence on canonical state"
+            );
+            RevertRecheck::Uncertain
+        }
+    }
+}
+
+impl<Pool, P> CeloPoolMaintainer<Pool, P>
+where
+    Pool: reth_transaction_pool::TransactionPool<Transaction = CeloPoolTx>,
+    P: StateProviderFactory + BlockReaderIdExt<Header = Header>,
+{
     /// Recheck stale eviction candidates against the latest canonical snapshot.
     ///
     /// Currency availability is cheap to recompute for the full pool and lets the cache advance
@@ -2254,10 +2704,11 @@ where
         let spec = spec_for_next_block(&self.spec_fn, header.timestamp());
         let db = StateProviderDatabase::new(state.as_ref());
         let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
-        let Some(usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
+        let Some(usable) = self.query_usable_fee_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure("currency_directory", 1);
             return None;
         };
+        let usable_currencies = usable.addresses;
 
         // Recompute availability for the full pool so advancing the cache cannot hide a currency
         // that became unavailable on the newer head.
@@ -2273,6 +2724,8 @@ where
         );
         let unavailable_currency_count = unavailable_currency.len();
         let insufficient_balance_count = insufficient_balance.len();
+        let unavailable_currency_hashes = unavailable_currency.clone();
+        let insufficient_balance_hashes = insufficient_balance.iter().copied().collect();
         let mut to_evict = unavailable_currency;
         to_evict.extend(insufficient_balance);
 
@@ -2282,7 +2735,12 @@ where
             to_evict,
             unavailable_currency_count,
             insufficient_balance_count,
+            unavailable_currency: unavailable_currency_hashes,
+            insufficient_balance: insufficient_balance_hashes,
             lookup_failures,
+            revert_debit: HashSet::new(),
+            revert_balance_read: HashSet::new(),
+            revert_credit: HashSet::new(),
         })
     }
 
@@ -2300,15 +2758,41 @@ where
         }
 
         if !result.to_evict.is_empty() {
-            CeloPoolMetrics::pool_eviction(result.to_evict.len() as u64);
             tracing::info!(
                 target: "celo::pool",
                 count = result.to_evict.len(),
                 unavailable_currency = result.unavailable_currency_count,
                 insufficient_balance = result.insufficient_balance_count,
+                revert_debit = result.revert_debit.len(),
+                revert_balance_read = result.revert_balance_read.len(),
+                revert_credit = result.revert_credit.len(),
                 "Evicting invalid CIP-64 txs after canonical state update"
             );
-            self.pool.remove_transactions(result.to_evict.into_iter().collect());
+            let removed = self.pool.remove_transactions(result.to_evict.into_iter().collect());
+            let mut unavailable_currency = 0;
+            let mut insufficient_balance = 0;
+            let mut revert_debit = 0;
+            let mut revert_balance_read = 0;
+            let mut revert_credit = 0;
+            for tx in removed {
+                let hash = *tx.hash();
+                if result.revert_credit.contains(&hash) {
+                    revert_credit += 1;
+                } else if result.revert_balance_read.contains(&hash) {
+                    revert_balance_read += 1;
+                } else if result.revert_debit.contains(&hash) {
+                    revert_debit += 1;
+                } else if result.unavailable_currency.contains(&hash) {
+                    unavailable_currency += 1;
+                } else if result.insufficient_balance.contains(&hash) {
+                    insufficient_balance += 1;
+                }
+            }
+            CeloPoolMetrics::pool_eviction("unavailable_currency", unavailable_currency);
+            CeloPoolMetrics::pool_eviction("insufficient_balance", insufficient_balance);
+            CeloPoolMetrics::pool_eviction("debit_revert", revert_debit);
+            CeloPoolMetrics::pool_eviction("balance_read_revert", revert_balance_read);
+            CeloPoolMetrics::pool_eviction("credit_revert", revert_credit);
         }
 
         self.usable_currencies = Some(result.usable_currencies);
@@ -2384,6 +2868,33 @@ where
             .expect("Celo pool fee-currency maintenance task panicked")
     }
 
+    fn settle_unprocessed_revert_records(
+        &self,
+        scanned_hash: B256,
+        taken_records: Vec<RevertEviction>,
+        retained_records: Vec<RevertEviction>,
+    ) {
+        let head_unchanged = match self.provider.latest_header() {
+            Ok(Some(latest)) => latest.hash() == scanned_hash,
+            Ok(None) => false,
+            Err(error) => {
+                CeloPoolMetrics::maintainer_failure("head_confirmation", 1);
+                tracing::warn!(
+                    target: "celo::pool",
+                    %error,
+                    ?scanned_hash,
+                    "Failed to confirm canonical head while preserving revert evidence"
+                );
+                false
+            }
+        };
+        let records = if head_unchanged { retained_records } else { taken_records };
+        observe_revert_eviction_records("requeued", &records);
+        let revert_evictions = self.failure_policies.revert_evictions();
+        revert_evictions.requeue(records);
+        CeloPoolMetrics::revert_eviction_queue_depth(revert_evictions.len());
+    }
+
     /// Handle a new canonical block: evict CIP-64 txs that are no longer valid against canonical
     /// fee-currency registration and balance state.
     fn on_new_block(&mut self) {
@@ -2409,6 +2920,27 @@ where
                 return;
             }
         };
+        #[cfg(test)]
+        if let Some(barrier) = &self.header_observed {
+            barrier.wait();
+        }
+        // Take ownership of every queued record before any fallible provider or EVM work. The
+        // queue lock is already released here. Losing siblings can then be discarded before
+        // canonical state or EVM work, while exact canonical ancestors remain usable if head
+        // notifications were coalesced. A final head confirmation guards against a concurrent
+        // reorg.
+        let revert_evictions = self.failure_policies.revert_evictions().clone();
+        let taken_records = revert_evictions.take_all();
+        observe_revert_eviction_records("drained", &taken_records);
+        let mut classified = classify_revert_records_for_head(
+            &self.provider,
+            &taken_records,
+            header.number(),
+            header.hash(),
+        );
+        rotate_revert_records_after(&mut classified.canonical, self.revert_recheck_cursor);
+        let mut retained_records = classified.canonical.clone();
+        retained_records.extend(classified.deferred.iter().copied());
         let state = match self.provider.state_by_block_hash(header.hash()) {
             Ok(state) => state,
             Err(e) => {
@@ -2419,6 +2951,11 @@ where
                     block_hash = ?header.hash(),
                     "Failed to get canonical state for fee-currency revalidation"
                 );
+                self.settle_unprocessed_revert_records(
+                    header.hash(),
+                    taken_records,
+                    retained_records,
+                );
                 return;
             }
         };
@@ -2428,10 +2965,13 @@ where
         // every query in this pass observes consistent state and opcode semantics.
         let mut evm = build_pool_evm(db, spec, header.header(), &self.next_block_base_fee_fn);
 
-        let Some(new_usable_currencies) = self.query_usable_fee_currencies(&mut evm) else {
+        let Some(usable) = self.query_usable_fee_currencies(&mut evm) else {
             CeloPoolMetrics::maintainer_failure("currency_directory", 1);
+            self.settle_unprocessed_revert_records(header.hash(), taken_records, retained_records);
             return;
         };
+        let new_usable_currencies = usable.addresses;
+        let usable_currency_rates = usable.rates;
 
         let unavailable_currency: Vec<TxHash> = match self.usable_currencies.as_ref() {
             // Cache is up to date — nothing to evict.
@@ -2461,15 +3001,74 @@ where
 
         let insufficient_balance_count = insufficient_balance.len();
         let unavailable_currency_count = unavailable_currency.len();
+        let unavailable_currency_hashes = unavailable_currency.iter().copied().collect();
+        let insufficient_balance_hashes = insufficient_balance.iter().copied().collect();
         let mut to_evict: HashSet<TxHash> = unavailable_currency.into_iter().collect();
         to_evict.extend(insufficient_balance);
-        let result = FeeCurrencyRevalidation {
+        let mut result = FeeCurrencyRevalidation {
             scanned_hash: header.hash(),
             usable_currencies: new_usable_currencies,
             to_evict,
             unavailable_currency_count,
             insufficient_balance_count,
+            unavailable_currency: unavailable_currency_hashes,
+            insufficient_balance: insufficient_balance_hashes,
             lookup_failures,
+            revert_debit: HashSet::new(),
+            revert_balance_read: HashSet::new(),
+            revert_credit: HashSet::new(),
+        };
+        let next_base_fee =
+            (self.next_block_base_fee_fn)(header.header(), header.timestamp().saturating_add(1));
+
+        let marker_plan = if classified.canonical.is_empty() && classified.deferred.is_empty() {
+            None
+        } else {
+            let mut recheck_started = None;
+            let mut recheck_attempts = 0usize;
+            let mut deferred_rechecks = 0usize;
+            let mut plan = plan_revert_evictions(
+                &self.pool,
+                &classified.canonical,
+                &result.to_evict,
+                |reason, tx| {
+                    if revert_recheck_budget_exhausted(&mut recheck_started, recheck_attempts) {
+                        deferred_rechecks += 1;
+                        return RevertRecheck::BudgetExhausted;
+                    }
+                    recheck_attempts += 1;
+                    match reason {
+                        RevertReason::Debit => {
+                            let Some(fee_currency) = tx.fee_currency() else {
+                                return RevertRecheck::InvalidEvidence;
+                            };
+                            let Some(rate) = usable_currency_rates.get(&fee_currency).copied()
+                            else {
+                                return RevertRecheck::Uncertain;
+                            };
+                            recheck_fee_currency_debit(
+                                &mut evm,
+                                self.fee_currency_directory,
+                                rate,
+                                next_base_fee,
+                                tx,
+                            )
+                        }
+                        RevertReason::BalanceRead => recheck_fee_currency_balance(&mut evm, tx),
+                        RevertReason::Credit => unreachable!("credit evidence is not rechecked"),
+                    }
+                },
+            );
+            plan.requeue.extend(classified.deferred);
+            if let Some(cursor) = plan.last_rechecked {
+                self.revert_recheck_cursor = Some(cursor);
+            }
+            CeloPoolMetrics::revert_eviction_overflow(deferred_rechecks as u64);
+            CeloPoolMetrics::revert_eviction_recheck_attempts(recheck_attempts);
+            CeloPoolMetrics::revert_eviction_recheck_duration(
+                recheck_started.map_or(Duration::ZERO, |started| started.elapsed()),
+            );
+            Some(plan)
         };
 
         let latest_hash = match self.provider.latest_header() {
@@ -2482,9 +3081,57 @@ where
                     scanned_hash = ?header.hash(),
                     "Failed to confirm canonical head after fee-currency revalidation"
                 );
+                settle_revert_eviction_batch(
+                    &revert_evictions,
+                    taken_records,
+                    marker_plan,
+                    RevalidationHeadAction::Recheck,
+                );
                 return;
             }
         };
+        let head_action = revalidation_head_action(result.scanned_hash, latest_hash);
+        if head_action == RevalidationHeadAction::Apply {
+            if let Some(marker_plan) = settle_revert_eviction_batch(
+                &revert_evictions,
+                taken_records,
+                marker_plan,
+                head_action,
+            ) {
+                CeloPoolMetrics::revert_eviction_records(
+                    "resolved",
+                    "debit",
+                    marker_plan.drained_debit as u64,
+                );
+                CeloPoolMetrics::revert_eviction_records(
+                    "resolved",
+                    "balance_read",
+                    marker_plan.drained_balance_read as u64,
+                );
+                CeloPoolMetrics::revert_eviction_records(
+                    "resolved",
+                    "credit",
+                    marker_plan.drained_credit as u64,
+                );
+                for fee_currency in marker_plan.halt_currencies {
+                    self.failure_policies
+                        .blocklist()
+                        .block_currency(fee_currency, header.timestamp());
+                }
+                result.to_evict.extend(marker_plan.debit.iter().copied());
+                result.to_evict.extend(marker_plan.balance_read.iter().copied());
+                result.to_evict.extend(marker_plan.credit.iter().copied());
+                result.revert_debit = marker_plan.debit;
+                result.revert_balance_read = marker_plan.balance_read;
+                result.revert_credit = marker_plan.credit;
+            }
+            self.apply_revalidation(result);
+            return;
+        }
+
+        // The EVM work above used an old snapshot. Put every record back, including records that
+        // looked stale or resolved, so the next canonical pass can decide from the fresh head.
+        settle_revert_eviction_batch(&revert_evictions, taken_records, marker_plan, head_action);
         self.apply_head_checked_revalidation(result, latest_hash, |this, candidates| {
             let rechecked = this.recheck_eviction_candidates(candidates)?;
             // The head update that made the full scan stale remains pending in the watch channel,
@@ -2581,6 +3228,65 @@ mod tests {
             matches!(at_isthmus, Ok(ExecutionResult::Success { .. })),
             "PUSH0 must execute at the active spec, got {at_isthmus:?}",
         );
+    }
+
+    #[test]
+    fn balance_read_evidence_rechecks_balance_not_debit() {
+        use revm::{
+            database::InMemoryDB,
+            state::{AccountInfo, Bytecode},
+        };
+
+        let fee_currency = Address::with_last_byte(0xAA);
+        let fee_currency_directory = Address::with_last_byte(0xDD);
+        let sender = Address::with_last_byte(1);
+        let tx = make_test_tx(Some(fee_currency), 100, 100, 10, sender);
+        let mut db = InMemoryDB::default();
+        // Revert only for 36-byte `balanceOf(address)` calldata. The 68-byte
+        // `debitGasFees(address,uint256)` call returns successfully.
+        db.insert_account_info(
+            fee_currency,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x36, 0x60, 0x24, 0x14, 0x60, 0x0c, 0x57, 0x60, 0x00, 0x60, 0x00, 0xf3, 0x5b, 0x60,
+                0x00, 0x60, 0x00, 0xfd,
+            ]))),
+        );
+        // Return CurrencyConfig { oracle: 0, intrinsicGas: 1_000_000 }.
+        db.insert_account_info(
+            fee_currency_directory,
+            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                0x62, 0x0f, 0x42, 0x40, 0x60, 0x20, 0x52, 0x60, 0x40, 0x5f, 0xf3,
+            ]))),
+        );
+        let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+        let mut evm =
+            build_pool_evm(db, OpSpecId::ISTHMUS, &Header::default(), &next_block_base_fee_fn);
+
+        assert_eq!(recheck_fee_currency_balance(&mut evm, &tx), RevertRecheck::Revert,);
+        assert_eq!(
+            recheck_fee_currency_debit(
+                &mut evm,
+                fee_currency_directory,
+                ExchangeRate { numerator: 1, denominator: 1 },
+                0,
+                &tx,
+            ),
+            RevertRecheck::Success,
+        );
+    }
+
+    #[test]
+    fn debit_recheck_call_matches_execution_amount_and_gas_limit() {
+        let fee_currency = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let tx = make_test_tx(Some(fee_currency), 100, 100, 10, sender);
+
+        let call =
+            debit_recheck_call(&tx, ExchangeRate { numerator: 2, denominator: 1 }, 5, 80_000)
+                .expect("execution-compatible debit call");
+
+        assert_eq!(call.value, U256::from(2_000u64));
+        assert_eq!(call.gas_limit, 240_000);
     }
 
     #[test]
@@ -4023,6 +4729,188 @@ mod tests {
         assert_eq!(counts, HashMap::from([(fc_a, 2), (fc_b, 1)]));
     }
 
+    #[test]
+    fn exact_payload_evidence_is_classified_against_canonical_ancestry() {
+        let provider =
+            reth_provider::test_utils::MockEthProvider::<crate::primitives::CeloPrimitives>::new();
+        let ancestor = reth_primitives_traits::SealedHeader::seal_slow(Header {
+            number: 10,
+            timestamp: 1,
+            ..Default::default()
+        });
+        provider.add_block(
+            ancestor.hash(),
+            crate::primitives::CeloBlock::new(ancestor.header().clone(), Default::default()),
+        );
+        let head = reth_primitives_traits::SealedHeader::seal_slow(Header {
+            number: 11,
+            parent_hash: ancestor.hash(),
+            timestamp: 2,
+            ..Default::default()
+        });
+        provider.add_block(
+            head.hash(),
+            crate::primitives::CeloBlock::new(head.header().clone(), Default::default()),
+        );
+
+        let canonical_ancestor = RevertEviction::new(
+            B256::with_last_byte(10),
+            RevertReason::Debit,
+            PayloadBlock::new(ancestor.number(), ancestor.hash()),
+        );
+        let canonical_head = RevertEviction::new(
+            B256::with_last_byte(11),
+            RevertReason::Credit,
+            PayloadBlock::new(head.number(), head.hash()),
+        );
+        let duplicate_later = RevertEviction::new(
+            canonical_ancestor.tx_hash,
+            canonical_ancestor.reason,
+            PayloadBlock::new(head.number(), head.hash()),
+        );
+        let sibling = RevertEviction::new(
+            B256::with_last_byte(12),
+            RevertReason::Credit,
+            PayloadBlock::new(head.number(), B256::with_last_byte(3)),
+        );
+        let reorged_ancestor = RevertEviction::new(
+            B256::with_last_byte(13),
+            RevertReason::Debit,
+            PayloadBlock::new(ancestor.number(), B256::with_last_byte(4)),
+        );
+        let future = RevertEviction::new(
+            B256::with_last_byte(14),
+            RevertReason::Debit,
+            PayloadBlock::new(head.number() + 1, B256::with_last_byte(5)),
+        );
+        let missing_ancestor = RevertEviction::new(
+            B256::with_last_byte(15),
+            RevertReason::Debit,
+            PayloadBlock::new(9, B256::with_last_byte(6)),
+        );
+
+        assert_eq!(
+            classify_revert_records_for_head(
+                &provider,
+                &[
+                    duplicate_later,
+                    canonical_ancestor,
+                    canonical_head,
+                    sibling,
+                    reorged_ancestor,
+                    future,
+                    missing_ancestor,
+                ],
+                head.number(),
+                head.hash(),
+            ),
+            ClassifiedRevertRecords {
+                canonical: vec![canonical_ancestor, canonical_head],
+                deferred: vec![future, missing_ancestor],
+            },
+        );
+    }
+
+    #[test]
+    fn payload_evidence_caches_one_canonical_lookup_per_height() {
+        struct CountingHashProvider {
+            calls: std::sync::atomic::AtomicUsize,
+            canonical_hash: B256,
+        }
+
+        impl BlockHashReader for CountingHashProvider {
+            fn block_hash(
+                &self,
+                _number: u64,
+            ) -> reth_storage_errors::provider::ProviderResult<Option<B256>> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Some(self.canonical_hash))
+            }
+
+            fn canonical_hashes_range(
+                &self,
+                _start: u64,
+                _end: u64,
+            ) -> reth_storage_errors::provider::ProviderResult<Vec<B256>> {
+                unreachable!("the classifier performs point lookups")
+            }
+        }
+
+        let canonical_hash = B256::with_last_byte(1);
+        let provider =
+            CountingHashProvider { calls: std::sync::atomic::AtomicUsize::new(0), canonical_hash };
+        let records = [
+            RevertEviction::new(
+                B256::with_last_byte(2),
+                RevertReason::Debit,
+                PayloadBlock::new(10, canonical_hash),
+            ),
+            RevertEviction::new(
+                B256::with_last_byte(3),
+                RevertReason::BalanceRead,
+                PayloadBlock::new(10, canonical_hash),
+            ),
+        ];
+
+        let classified =
+            classify_revert_records_for_head(&provider, &records, 11, B256::with_last_byte(4));
+
+        assert_eq!(classified.canonical, records);
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn revert_recheck_cursor_rotates_past_the_previous_budget() {
+        let payload = PayloadBlock::new(10, B256::with_last_byte(1));
+        let mut records: Vec<_> = (1..=17)
+            .map(|byte| {
+                RevertEviction::new(B256::with_last_byte(byte), RevertReason::Debit, payload)
+            })
+            .collect();
+
+        rotate_revert_records_after(
+            &mut records,
+            Some((B256::with_last_byte(16), RevertReason::Debit)),
+        );
+
+        assert_eq!(records[0].tx_hash, B256::with_last_byte(17));
+        assert_eq!(records[1].tx_hash, B256::with_last_byte(1));
+    }
+
+    #[test]
+    fn shuffled_evidence_remains_fair_across_classification_and_cursor_rotation() {
+        let payload = PayloadBlock::new(10, B256::with_last_byte(0xAA));
+        let records = [9, 1, 17, 4, 12, 2, 15, 7, 11, 3, 16, 6, 14, 5, 13, 8, 10].map(|byte| {
+            RevertEviction::new(B256::with_last_byte(byte), RevertReason::Debit, payload)
+        });
+        let provider =
+            reth_provider::test_utils::MockEthProvider::<crate::primitives::CeloPrimitives>::new();
+
+        let mut canonical =
+            classify_revert_records_for_head(&provider, &records, payload.number, payload.hash)
+                .canonical;
+        let first_pass_cursor = canonical[MAX_REVERT_EVICTIONS_PER_PASS - 1];
+
+        assert_eq!(first_pass_cursor.tx_hash, B256::with_last_byte(16));
+        rotate_revert_records_after(
+            &mut canonical,
+            Some((first_pass_cursor.tx_hash, first_pass_cursor.reason)),
+        );
+        assert_eq!(canonical[0].tx_hash, B256::with_last_byte(17));
+        assert_eq!(canonical[1].tx_hash, B256::with_last_byte(1));
+    }
+
+    #[test]
+    fn revert_recheck_budget_always_allows_the_first_attempt() {
+        let old_start = Instant::now()
+            .checked_sub(REVERT_EVICTION_RECHECK_TIME_BUDGET)
+            .expect("test instant supports subtracting the budget");
+        let mut started = Some(old_start);
+
+        assert!(!revert_recheck_budget_exhausted(&mut started, 0));
+        assert!(revert_recheck_budget_exhausted(&mut started, 1));
+    }
+
     /// Test that the eviction filter logic in `on_new_block` correctly
     /// identifies CIP-64 txs whose fee currency was deregistered while
     /// leaving native txs and txs with still-registered currencies alone.
@@ -4142,6 +5030,7 @@ mod tests {
     mod integration_tests {
         use super::*;
         use futures_util::FutureExt;
+        use reth_primitives_traits::SealedHeader;
         use reth_transaction_pool::{
             CoinbaseTipOrdering, Pool, PoolConfig, TransactionOrigin, blobstore::NoopBlobStore,
             validate::ValidTransaction,
@@ -4294,6 +5183,12 @@ mod tests {
             let pool = test_pool(25_000);
             let mut updates = pool.subscribe_to_canonical_updates();
             let tip = SealedBlock::seal_slow(crate::primitives::CeloBlock::default());
+            let evidence = RevertEviction::new(
+                B256::with_last_byte(3),
+                RevertReason::Credit,
+                PayloadBlock::new(tip.number(), tip.hash()),
+            );
+            pool.failure_policies.revert_evictions().record(evidence);
 
             for _ in 0..2 {
                 pool.on_canonical_state_change(CanonicalStateUpdate {
@@ -4306,11 +5201,286 @@ mod tests {
                 });
             }
 
+            assert!(pool.failure_policies.block_currency_if_current(
+                PayloadGeneration::new(tip.number(), tip.hash()),
+                Address::with_last_byte(1),
+                1,
+            ));
+            assert!(!pool.failure_policies.block_currency_if_current(
+                PayloadGeneration::new(tip.number().saturating_sub(1), B256::ZERO),
+                Address::with_last_byte(2),
+                1,
+            ));
+            assert_eq!(pool.failure_policies.revert_evictions().take_all(), vec![evidence],);
+
             updates.changed().await.expect("canonical update sender must remain open");
             assert_eq!(*updates.borrow_and_update(), 2, "both updates must reach the latest value");
             assert!(
                 !updates.has_changed().expect("canonical update sender must remain open"),
                 "the two updates must coalesce into one wake-up"
+            );
+        }
+
+        #[tokio::test]
+        async fn maintainer_does_not_overwrite_newer_policy_head() {
+            let fee_currency_directory = Address::with_last_byte(0xF0);
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            provider.add_account(
+                fee_currency_directory,
+                reth_provider::test_utils::ExtendedAccount::new(0, U256::ZERO).with_bytecode(
+                    Bytes::from_static(&[
+                        0x60, 0x20, 0x60, 0x00, 0x52, // mstore(0, 32)
+                        0x60, 0x40, 0x60, 0x00, 0xf3, // return(0, 64)
+                    ]),
+                ),
+            );
+            let observed =
+                SealedHeader::seal_slow(Header { number: 11, timestamp: 1, ..Default::default() });
+            provider.add_block(
+                observed.hash(),
+                crate::primitives::CeloBlock::new(observed.header().clone(), Default::default()),
+            );
+
+            let failure_policies = CeloFailurePolicies::default();
+            let newer = PayloadGeneration::new(12, B256::with_last_byte(0x12));
+            failure_policies.set_canonical_head(newer);
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                test_pool(25_000),
+                provider,
+                fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
+                failure_policies.clone(),
+            );
+            maintainer.usable_currencies = Some(HashSet::new());
+
+            maintainer.on_new_block();
+
+            assert!(failure_policies.block_currency_if_current(
+                newer,
+                Address::with_last_byte(0xAA),
+                1_000,
+            ));
+        }
+
+        #[tokio::test]
+        async fn directory_failure_still_prunes_stale_revert_evidence() {
+            let fee_currency_directory = Address::with_last_byte(0xF0);
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            let observed =
+                SealedHeader::seal_slow(Header { number: 11, timestamp: 1, ..Default::default() });
+            provider.add_block(
+                observed.hash(),
+                crate::primitives::CeloBlock::new(observed.header().clone(), Default::default()),
+            );
+
+            let failure_policies = CeloFailurePolicies::default();
+            let current = RevertEviction::new(
+                B256::with_last_byte(1),
+                RevertReason::Debit,
+                PayloadBlock::new(observed.number(), observed.hash()),
+            );
+            let stale = RevertEviction::new(
+                B256::with_last_byte(2),
+                RevertReason::Credit,
+                PayloadBlock::new(observed.number(), B256::with_last_byte(0xFF)),
+            );
+            failure_policies.revert_evictions().record(current);
+            failure_policies.revert_evictions().record(stale);
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                test_pool(25_000),
+                provider,
+                fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
+                failure_policies.clone(),
+            );
+
+            // No directory contract is installed, so maintenance exits before pool balance work.
+            maintainer.on_new_block();
+
+            assert_eq!(failure_policies.revert_evictions().take_all(), vec![current],);
+        }
+
+        #[derive(Clone, Copy)]
+        enum HeadConfirmationOutcome {
+            Changed,
+            ProviderError,
+        }
+
+        async fn assert_on_new_block_requeues_taken_batch(outcome: HeadConfirmationOutcome) {
+            let fee_currency_directory = Address::with_last_byte(0xF0);
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            provider.add_account(
+                fee_currency_directory,
+                reth_provider::test_utils::ExtendedAccount::new(0, U256::ZERO).with_bytecode(
+                    Bytes::from_static(&[
+                        0x60, 0x20, 0x60, 0x00, 0x52, // mstore(0, 32)
+                        0x60, 0x40, 0x60, 0x00, 0xf3, // return(0, 64)
+                    ]),
+                ),
+            );
+            let parent_hash = B256::with_last_byte(1);
+            let inserted = SealedHeader::seal_slow(Header {
+                number: 11,
+                parent_hash,
+                timestamp: 1,
+                ..Default::default()
+            });
+            provider.add_block(
+                inserted.hash(),
+                crate::primitives::CeloBlock::new(inserted.header().clone(), Default::default()),
+            );
+            let current = provider
+                .latest_header()
+                .expect("latest header lookup must succeed")
+                .expect("inserted header must be latest");
+
+            let pool = test_pool(25_000);
+            let target = make_test_tx_with_nonce(None, 0, 100, 100, 10, Address::with_last_byte(1));
+            let target_hash = *target.hash();
+            pool.add_transaction(TransactionOrigin::External, target)
+                .await
+                .expect("transaction must be admitted");
+            let completed = RevertEviction::new(
+                target_hash,
+                RevertReason::Credit,
+                PayloadBlock::new(current.number(), current.hash()),
+            );
+            let failure_policies = CeloFailurePolicies::default();
+            failure_policies.revert_evictions().record(completed);
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider.clone(),
+                fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
+                failure_policies.clone(),
+            );
+            maintainer.usable_currencies = Some(HashSet::new());
+            let header_observed = Arc::new(std::sync::Barrier::new(2));
+            maintainer.header_observed = Some(header_observed.clone());
+
+            // Hold the account store so maintenance pauses in the directory query after it has
+            // captured `current`, but before it drains the marker batch.
+            let accounts_guard = provider.accounts.lock();
+            let building_next = RevertEviction::new(
+                B256::with_last_byte(2),
+                RevertReason::Debit,
+                PayloadBlock::new(current.number() + 1, B256::with_last_byte(3)),
+            );
+            failure_policies.revert_evictions().record(building_next);
+            let worker = std::thread::spawn(move || maintainer.on_new_block());
+            header_observed.wait();
+
+            match outcome {
+                HeadConfirmationOutcome::Changed => {
+                    let next = SealedHeader::seal_slow(Header {
+                        number: current.number() + 1,
+                        parent_hash: current.hash(),
+                        timestamp: current.timestamp() + 1,
+                        ..Default::default()
+                    });
+                    provider.add_block(
+                        next.hash(),
+                        crate::primitives::CeloBlock::new(
+                            next.header().clone(),
+                            Default::default(),
+                        ),
+                    );
+                }
+                HeadConfirmationOutcome::ProviderError => provider.headers.lock().clear(),
+            }
+            drop(accounts_guard);
+            worker.join().expect("maintainer must not panic");
+
+            assert!(pool.get(&target_hash).is_some(), "unconfirmed evidence must not evict");
+            let requeued = failure_policies.revert_evictions().take_all();
+            assert_eq!(requeued.len(), 2);
+            assert!(requeued.contains(&completed));
+            assert!(requeued.contains(&building_next));
+        }
+
+        #[tokio::test]
+        async fn changed_head_requeues_the_entire_batch_in_on_new_block() {
+            assert_on_new_block_requeues_taken_batch(HeadConfirmationOutcome::Changed).await;
+        }
+
+        #[tokio::test]
+        async fn head_confirmation_error_requeues_the_entire_batch_in_on_new_block() {
+            assert_on_new_block_requeues_taken_batch(HeadConfirmationOutcome::ProviderError).await;
+        }
+
+        #[tokio::test]
+        async fn invalid_debit_evidence_for_native_tx_is_drained() {
+            let fee_currency_directory = Address::with_last_byte(0xF0);
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            provider.add_account(
+                fee_currency_directory,
+                reth_provider::test_utils::ExtendedAccount::new(0, U256::ZERO).with_bytecode(
+                    Bytes::from_static(&[
+                        0x60, 0x20, 0x60, 0x00, 0x52, // mstore(0, 32)
+                        0x60, 0x40, 0x60, 0x00, 0xf3, // return(0, 64)
+                    ]),
+                ),
+            );
+            let parent_hash = B256::with_last_byte(1);
+            let inserted = SealedHeader::seal_slow(Header {
+                number: 11,
+                parent_hash,
+                timestamp: 1,
+                ..Default::default()
+            });
+            provider.add_block(
+                inserted.hash(),
+                crate::primitives::CeloBlock::new(inserted.header().clone(), Default::default()),
+            );
+
+            let pool = test_pool(25_000);
+            let target = make_test_tx_with_nonce(None, 0, 100, 100, 10, Address::with_last_byte(1));
+            let target_hash = *target.hash();
+            pool.add_transaction(TransactionOrigin::External, target)
+                .await
+                .expect("transaction must be admitted");
+
+            let failure_policies = CeloFailurePolicies::default();
+            failure_policies.revert_evictions().record(RevertEviction::new(
+                target_hash,
+                RevertReason::Debit,
+                PayloadBlock::new(inserted.number(), inserted.hash()),
+            ));
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider,
+                fee_currency_directory,
+                spec_fn,
+                next_block_base_fee_fn,
+                failure_policies.clone(),
+            );
+            maintainer.usable_currencies = Some(HashSet::new());
+
+            maintainer.on_new_block();
+
+            assert!(pool.get(&target_hash).is_some(), "invalid evidence must not evict the tx");
+            assert!(
+                failure_policies.revert_evictions().is_empty(),
+                "invalid evidence must not be requeued"
             );
         }
 
@@ -4360,7 +5530,12 @@ mod tests {
                 to_evict: HashSet::from([tx_hash]),
                 unavailable_currency_count: 0,
                 insufficient_balance_count: 1,
+                unavailable_currency: HashSet::new(),
+                insufficient_balance: HashSet::from([tx_hash]),
                 lookup_failures: Vec::new(),
+                revert_debit: HashSet::new(),
+                revert_balance_read: HashSet::new(),
+                revert_credit: HashSet::new(),
             };
             let provider = reth_provider::test_utils::MockEthProvider::default();
             let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
@@ -4371,6 +5546,7 @@ mod tests {
                 Address::ZERO,
                 spec_fn,
                 next_block_base_fee_fn,
+                CeloFailurePolicies::default(),
             );
             let recheck_called = std::cell::Cell::new(false);
 
@@ -4387,7 +5563,12 @@ mod tests {
                             to_evict: HashSet::new(),
                             unavailable_currency_count: 0,
                             insufficient_balance_count: 0,
+                            unavailable_currency: HashSet::new(),
+                            insufficient_balance: HashSet::new(),
                             lookup_failures: Vec::new(),
+                            revert_debit: HashSet::new(),
+                            revert_balance_read: HashSet::new(),
+                            revert_credit: HashSet::new(),
                         },
                         Some(fresh_hash),
                     ))
@@ -4396,6 +5577,277 @@ mod tests {
 
             assert!(recheck_called.get(), "a stale full scan must invoke the bounded recheck");
             assert!(pool.get(&tx_hash).is_some(), "the stale eviction candidate must be retained");
+        }
+
+        #[tokio::test]
+        async fn credit_eviction_removes_only_the_exact_hash() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let replacement_sender = Address::with_last_byte(2);
+            let pool = test_pool(25_000);
+            let target = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let descendant = make_test_tx_with_nonce(None, 1, 100, 100, 10, sender);
+            let replaced = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, replacement_sender);
+            let replacement =
+                make_test_tx_with_nonce(Some(fc), 0, 100, 120, 12, replacement_sender);
+            let target_hash = *target.hash();
+            let descendant_hash = *descendant.hash();
+            let replacement_hash = *replacement.hash();
+            let replaced_hash = *replaced.hash();
+            for tx in [target, descendant, replacement] {
+                pool.add_transaction(TransactionOrigin::External, tx)
+                    .await
+                    .expect("transaction must be admitted");
+            }
+
+            let provider = reth_provider::test_utils::MockEthProvider::default();
+            let spec_fn: SpecFn = Arc::new(|_| OpSpecId::ISTHMUS);
+            let next_block_base_fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+            let mut maintainer = CeloPoolMaintainer::new(
+                pool.clone(),
+                provider,
+                Address::ZERO,
+                spec_fn,
+                next_block_base_fee_fn,
+                CeloFailurePolicies::default(),
+            );
+            maintainer.apply_revalidation(FeeCurrencyRevalidation {
+                scanned_hash: B256::ZERO,
+                usable_currencies: HashSet::from([fc]),
+                to_evict: HashSet::from([target_hash, replaced_hash]),
+                unavailable_currency_count: 0,
+                insufficient_balance_count: 0,
+                unavailable_currency: HashSet::new(),
+                insufficient_balance: HashSet::new(),
+                lookup_failures: Vec::new(),
+                revert_debit: HashSet::new(),
+                revert_balance_read: HashSet::new(),
+                revert_credit: HashSet::from([target_hash, replaced_hash]),
+            });
+
+            assert!(pool.get(&target_hash).is_none());
+            assert!(pool.get(&descendant_hash).is_some(), "descendant must be parked, not deleted");
+            assert!(pool.get(&replacement_hash).is_some(), "same-nonce replacement must survive");
+        }
+
+        #[tokio::test]
+        async fn credit_evidence_is_evicted_without_a_state_recheck() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+            let canonical_hash = B256::with_last_byte(2);
+            let completed = RevertEviction::new(
+                tx_hash,
+                RevertReason::Credit,
+                PayloadBlock::new(11, canonical_hash),
+            );
+            let plan = plan_revert_evictions(&pool, &[completed], &HashSet::new(), |_, _| {
+                panic!("credit evidence must not run a state recheck")
+            });
+
+            assert_eq!(plan.credit, HashSet::from([tx_hash]));
+            assert!(plan.debit.is_empty());
+            assert!(plan.requeue.is_empty());
+        }
+
+        #[tokio::test]
+        async fn stale_evidence_is_pruned_before_the_recheck_budget() {
+            let fc = Address::with_last_byte(0xAA);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, Address::with_last_byte(1));
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+
+            let evictions = alloy_celo_evm::revert_evictions::RevertEvictions::default();
+            let provider = reth_provider::test_utils::MockEthProvider::<
+                crate::primitives::CeloPrimitives,
+            >::new();
+            let old_canonical =
+                SealedHeader::seal_slow(Header { number: 9, timestamp: 1, ..Default::default() });
+            provider.add_block(
+                old_canonical.hash(),
+                crate::primitives::CeloBlock::new(
+                    old_canonical.header().clone(),
+                    Default::default(),
+                ),
+            );
+            for byte in 1..=17 {
+                evictions.record(RevertEviction::new(
+                    B256::with_last_byte(byte),
+                    RevertReason::Debit,
+                    PayloadBlock::new(9, B256::with_last_byte(9)),
+                ));
+            }
+            let canonical_hash = B256::with_last_byte(11);
+            evictions.record(RevertEviction::new(
+                tx_hash,
+                RevertReason::Credit,
+                PayloadBlock::new(11, canonical_hash),
+            ));
+
+            let records = evictions.take_all();
+            let classified =
+                classify_revert_records_for_head(&provider, &records, 11, canonical_hash);
+            assert_eq!(classified.canonical.len(), 1);
+            assert!(classified.deferred.is_empty());
+            let plan =
+                plan_revert_evictions(&pool, &classified.canonical, &HashSet::new(), |_, _| {
+                    panic!("stale debit evidence must be pruned without a recheck")
+                });
+
+            assert_eq!(plan.credit, HashSet::from([tx_hash]));
+        }
+
+        #[tokio::test]
+        async fn debit_evidence_uses_fresh_recheck_outcomes() {
+            let fc = Address::with_last_byte(0xAA);
+            let pool = test_pool(25_000);
+            let txs: Vec<_> = (1..=4)
+                .map(|sender| {
+                    make_test_tx_with_nonce(
+                        Some(fc),
+                        0,
+                        100 + u64::from(sender),
+                        100,
+                        10,
+                        Address::with_last_byte(sender),
+                    )
+                })
+                .collect();
+            let hashes: Vec<_> = txs.iter().map(|tx| *tx.hash()).collect();
+            for tx in txs {
+                pool.add_transaction(TransactionOrigin::External, tx)
+                    .await
+                    .expect("transaction must be admitted");
+            }
+            let canonical_hash = B256::with_last_byte(2);
+            let records: Vec<_> = hashes
+                .iter()
+                .map(|hash| {
+                    RevertEviction::new(
+                        *hash,
+                        RevertReason::Debit,
+                        PayloadBlock::new(11, canonical_hash),
+                    )
+                })
+                .collect();
+
+            let plan = plan_revert_evictions(&pool, &records, &HashSet::new(), |reason, tx| {
+                assert_eq!(reason, RevertReason::Debit);
+                match tx.sender()[19] {
+                    1 => RevertRecheck::Success,
+                    2 => RevertRecheck::Revert,
+                    3 => RevertRecheck::Uncertain,
+                    4 => RevertRecheck::Halt,
+                    _ => unreachable!(),
+                }
+            });
+
+            assert_eq!(plan.debit, HashSet::from([hashes[1]]));
+            assert_eq!(plan.requeue, vec![records[2]]);
+            assert_eq!(plan.halt_currencies, HashSet::from([fc]));
+            assert_eq!(plan.drained_debit, 3);
+            assert_eq!(plan.last_rechecked, Some((hashes[3], RevertReason::Debit)));
+        }
+
+        #[tokio::test]
+        async fn balance_read_evidence_uses_its_own_canonical_recheck() {
+            let fc = Address::with_last_byte(0xAA);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, Address::with_last_byte(1));
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+            let canonical_hash = B256::with_last_byte(2);
+            let record = RevertEviction::new(
+                tx_hash,
+                RevertReason::BalanceRead,
+                PayloadBlock::new(11, canonical_hash),
+            );
+
+            let plan = plan_revert_evictions(&pool, &[record], &HashSet::new(), |reason, _| {
+                assert_eq!(reason, RevertReason::BalanceRead);
+                RevertRecheck::Revert
+            });
+
+            assert_eq!(plan.balance_read, HashSet::from([tx_hash]));
+            assert!(plan.debit.is_empty());
+            assert_eq!(plan.drained_balance_read, 1);
+        }
+
+        #[test]
+        fn unconfirmed_head_requeues_the_entire_taken_marker_batch() {
+            let evictions = alloy_celo_evm::revert_evictions::RevertEvictions::default();
+            let payload = PayloadBlock::new(10, B256::with_last_byte(1));
+            let credit =
+                RevertEviction::new(B256::with_last_byte(2), RevertReason::Credit, payload);
+            let debit = RevertEviction::new(B256::with_last_byte(3), RevertReason::Debit, payload);
+            evictions.record(credit);
+            evictions.record(debit);
+            let records = evictions.take_all();
+            let plan = RevertEvictionPlan {
+                credit: HashSet::from([credit.tx_hash]),
+                requeue: vec![debit],
+                ..Default::default()
+            };
+
+            let settled = settle_revert_eviction_batch(
+                &evictions,
+                records,
+                Some(plan),
+                RevalidationHeadAction::Recheck,
+            );
+
+            assert!(settled.is_none());
+            let requeued = evictions.take_all();
+            assert_eq!(requeued.len(), 2);
+            assert!(requeued.contains(&credit));
+            assert!(requeued.contains(&debit));
+        }
+
+        #[tokio::test]
+        async fn budget_exhausted_debit_is_requeued_after_head_confirmation() {
+            let fc = Address::with_last_byte(0xAA);
+            let sender = Address::with_last_byte(1);
+            let pool = test_pool(25_000);
+            let tx = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+            let tx_hash = *tx.hash();
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction must be admitted");
+            let canonical_hash = B256::with_last_byte(3);
+            let record = RevertEviction::new(
+                tx_hash,
+                RevertReason::Debit,
+                PayloadBlock::new(11, canonical_hash),
+            );
+            let evictions = alloy_celo_evm::revert_evictions::RevertEvictions::default();
+            evictions.record(record);
+            let records = evictions.take_all();
+            let plan = plan_revert_evictions(&pool, &records, &HashSet::new(), |_, _| {
+                RevertRecheck::BudgetExhausted
+            });
+            assert!(plan.last_rechecked.is_none());
+
+            let settled = settle_revert_eviction_batch(
+                &evictions,
+                records,
+                Some(plan),
+                RevalidationHeadAction::Apply,
+            )
+            .expect("confirmed head must retain the marker plan");
+
+            assert!(settled.debit.is_empty());
+            assert!(settled.requeue.is_empty());
+            assert_eq!(evictions.take_all(), vec![record]);
         }
 
         /// A sender's transactions must observe earlier transactions from the
