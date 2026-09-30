@@ -263,6 +263,26 @@ mod tests {
         );
     }
 
+    /// op-reth installs the historical-RPC middleware only when the chain spec's Bedrock
+    /// block is above 0, and forwards requests for blocks below it. On mainnet that block
+    /// must be the Cel2 migration block, because a celo-reth datadir holds only
+    /// placeholder headers below it. Celo Sepolia is L2 from genesis and has no historical
+    /// range.
+    #[test]
+    fn bedrock_block_marks_the_historical_rpc_range() {
+        use crate::state_import::CEL2_MIGRATION_BLOCK_NUMBER;
+        use reth_optimism_forks::{OpHardfork, OpHardforks};
+
+        let mainnet = CeloChainSpecParser::parse("celo").unwrap();
+        assert_eq!(
+            mainnet.op_fork_activation(OpHardfork::Bedrock).block_number(),
+            Some(CEL2_MIGRATION_BLOCK_NUMBER),
+        );
+
+        let sepolia = CeloChainSpecParser::parse("celo-sepolia").unwrap();
+        assert_eq!(sepolia.op_fork_activation(OpHardfork::Bedrock).block_number(), Some(0));
+    }
+
     #[test]
     fn unknown_chain_falls_back_to_genesis_parser() {
         let err =
