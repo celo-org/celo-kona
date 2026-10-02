@@ -2,12 +2,13 @@
 #
 # E2E regression test for the `admin` RPC namespace gate.
 #
-# celo_reth.rs installs the Celo fee-currency blocklist mutators
+# celo_reth.rs installs the Celo fee-currency blocklist methods
 # (admin_disableBlocklistFeeCurrencies / admin_enableBlocklistFeeCurrencies /
-# admin_unblockFeeCurrency) with reth's
-# merge_if_module_configured(RethRpcModule::Admin, ..), so they are exposed ONLY when
-# the operator puts `admin` in --http.api. If that ever regressed to the ungated
-# merge_configured, these mutators would be reachable by any unauthenticated RPC
+# admin_unblockFeeCurrency / admin_getBlocklistFeeCurrencies /
+# admin_getDisabledBlocklistFeeCurrencies) with reth's
+# merge_if_module_configured(RethRpcModule::Admin, ..), so they are exposed on http ONLY
+# when the operator puts `admin` in --http.api. If that ever regressed to the ungated
+# merge_configured, these methods would be reachable by any unauthenticated RPC
 # client. This test asserts both arms of the gate against a live node:
 #   * admin in --http.api     -> the method is present (dispatched, not -32601)
 #   * admin NOT in --http.api  -> the method returns JSON-RPC -32601 (method not found)
