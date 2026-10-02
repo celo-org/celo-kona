@@ -341,8 +341,8 @@
       },
       "0x0"
     ],
-    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
-    "note": "The simulated block carries a wall-clock timestamp and derived hashes; compare the execution outcome and the synthesized block env instead."
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs: [.logs[] | del(.blockHash, .blockTimestamp)]}]}]",
+    "note": "The simulated block's timestamp is the parent's plus reth's per-chain block-time default, and its hashes follow from it. Neither is Celo behaviour, so compare the execution outcome and the synthesized block env instead. Logs drop the block hash and timestamp for the same reason, as RECEIPT_FILTER does for mined logs."
   },
   {
     "name": "simulateV1_cip64",
@@ -364,7 +364,7 @@
       },
       "0x0"
     ],
-    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs: [.logs[] | del(.blockHash, .blockTimestamp)]}]}]",
     "note": "Regression guard for the base-fee-check store gate: a CIP-64 call under the default validation=false must simulate rather than panic or be rejected."
   },
   {
@@ -391,7 +391,7 @@
       },
       "0x0"
     ],
-    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs: [.logs[] | del(.blockHash, .blockTimestamp)]}]}]",
     "note": "validation=true keeps the base fee and the balance checks live; the visible effect is the non-zero baseFeePerGas in the synthesized block. The fee debit runs outside the call frame, so it contributes no entry to this response's `logs` \u2014 its Transfer events are pinned by the mined receipt goldens instead."
   },
   {
@@ -423,7 +423,7 @@
       },
       "0x0"
     ],
-    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs}]}]",
+    "filter": "[.[] | {number, gasUsed, baseFeePerGas, calls: [.calls[] | {status, gasUsed, returnData, error, logs: [.logs[] | del(.blockHash, .blockTimestamp)]}]}]",
     "note": "Two simulated blocks in one request: the second must start from the first's post-state while still resolving its own fee-currency context."
   },
   {

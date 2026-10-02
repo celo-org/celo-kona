@@ -8,9 +8,7 @@
         "logs": [
           {
             "address": "0x471ece3750da237f93b8e339c536989b8978a438",
-            "blockHash": "0x48123ef66c0d038b500045eb0d390b42ec6ff9f9f8cdbd089fd0fd4b37799dfc",
             "blockNumber": "0x1",
-            "blockTimestamp": "0x6490fdde",
             "data": "0x0000000000000000000000000000000000000000000000000000000000000064",
             "logIndex": "0x0",
             "removed": false,
