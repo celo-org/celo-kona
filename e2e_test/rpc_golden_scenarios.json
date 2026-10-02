@@ -126,7 +126,7 @@
       }
     ],
     "filter": "with_entries(.value |= del(.code))",
-    "note": "Full prestate is deterministic at the genesis block (the dev fee recipient, which prestateTracer would otherwise include as a random top-level key, is the zero address there). Contract bytecode is dropped so the golden stays reviewable; codeHash coverage lives in the celo-alloy serde tests."
+    "note": "Full prestate is deterministic at the genesis block. The fee recipient is absent: debug_traceCall disables fee charging, so revm skips the beneficiary reward. Contract bytecode is dropped so the golden stays reviewable; codeHash coverage lives in the celo-alloy serde tests."
   },
   {
     "name": "traceCall_cip64_callTracer",
