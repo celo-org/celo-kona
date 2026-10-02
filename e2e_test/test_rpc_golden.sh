@@ -442,6 +442,7 @@ TX_CIP64_REVERT=$(sign_tx --nonce 3 --to "$TOKEN_ADDR" --data "$ERC20_OVERDRAFT_
 LABELS=(cip64 erc20 plain cip64_reverted)
 TXS=("$TX_CIP64" "$TX_ERC20" "$TX_PLAIN" "$TX_CIP64_REVERT")
 CIP64_BLOCK=
+CIP64_MINER_ARGS=()
 
 for i in "${!LABELS[@]}"; do
     label=${LABELS[$i]}
@@ -509,6 +510,7 @@ for i in "${!LABELS[@]}"; do
     fi
     if [[ "$label" == cip64 ]]; then
         CIP64_BLOCK=$block
+        CIP64_MINER_ARGS=("${miner_args[@]}")
         # Structural invariants that the goldens deliberately normalize away.
         credit_recipient=$(jq -r '[.logs[] | select(.address == ($fc | ascii_downcase))]
             | last | .topics[2]' --arg fc "$FEE_CURRENCY" <<<"$receipt")
@@ -536,9 +538,11 @@ done
 if [[ -n "$CIP64_BLOCK" ]]; then
     rpc_golden feeHistory_over_cip64_block eth_feeHistory \
         "[\"0x1\", \"$CIP64_BLOCK\", [25, 50, 75]]" "$FEE_HISTORY_FILTER"
+    # Only the credit recipient varies; the debit's recipient topic is pinned.
+    RPC_JQ_ARGS=("${CIP64_MINER_ARGS[@]}")
     rpc_golden logs_of_cip64_block eth_getLogs \
         "[{\"fromBlock\": \"$CIP64_BLOCK\", \"toBlock\": \"$CIP64_BLOCK\", \"address\": \"$FEE_CURRENCY\"}]" \
-        'map(del(.blockHash, .blockTimestamp, .topics[2]))'
+        "{logs: map(del(.blockHash, .blockTimestamp))} | $CREDIT_TOPIC_FILTER | .logs"
 fi
 
 # ---------------------------------------------------------------------------
