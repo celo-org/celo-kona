@@ -767,9 +767,14 @@ if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
     # the same fee-currency tip is worth twice as much native before the change
     # as after it. Head-rate normalization would make these equal.
     rewards=$(rpc_call eth_feeHistory "[\"0x3\", \"$after_block\", [50]]" | jq -r '.result.reward')
+    tip_before=$(( $(jq -r '.[0][0]' <<<"$rewards" | xargs cast to-dec) ))
     rpc_expect_eq feeHistory_tip_halves_across_rate_change \
-        "$(( $(jq -r '.[0][0]' <<<"$rewards" | xargs cast to-dec) ))" \
+        "$tip_before" \
         "$(( $(jq -r '.[2][0]' <<<"$rewards" | xargs cast to-dec) * 2 ))"
+    # A failed rate lookup reports every tip as zero, which satisfies the
+    # halving check above.
+    rpc_expect_eq feeHistory_tip_nonzero_before_rate_change \
+        "$(( tip_before > 0 ))" 1
 else
     _rpc_fail rate_change_sequence "the rate-change sequence did not mine into distinct blocks"
 fi
