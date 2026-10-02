@@ -1,0 +1,29 @@
+{
+  "baseFeePerBlobGas": [
+    "0x1",
+    "0x1",
+    "0x1",
+    "0x1"
+  ],
+  "blobGasUsedRatio": [
+    0,
+    0,
+    0
+  ],
+  "gasUsedRatio": [
+    3186,
+    2697,
+    3186
+  ],
+  "reward": [
+    [
+      "0x3b9aca00"
+    ],
+    [
+      "0x64"
+    ],
+    [
+      "0x1dcd6500"
+    ]
+  ]
+}

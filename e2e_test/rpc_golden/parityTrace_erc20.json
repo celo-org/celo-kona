@@ -1,0 +1,22 @@
+[
+  {
+    "action": {
+      "callType": "call",
+      "from": "0x42cf1bbc38baaa3c4898ce8790e21ed2738c6a4a",
+      "gas": "0x13334",
+      "input": "0xa9059cbb000000000000000000000000000000000000000000000000000000000000dead0000000000000000000000000000000000000000000000000000000000000064",
+      "to": "0x471ece3750da237f93b8e339c536989b8978a438",
+      "value": "0x0"
+    },
+    "blockNumber": 2,
+    "result": {
+      "gasUsed": "0x305d",
+      "output": "0x0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "subtraces": 0,
+    "traceAddress": [],
+    "transactionHash": "0xfa36f67c952af485364e751281af346783aa3bf29680d4ed5e462888688f9185",
+    "transactionPosition": 1,
+    "type": "call"
+  }
+]
