@@ -188,7 +188,7 @@
       }
     ],
     "filter": "{pre: (.pre | with_entries(.value |= del(.code))), post: (.post | with_entries(.value |= del(.code)))}",
-    "note": "State diff of a CIP-64 call. What it pins is that the traceCall path charges no fee at all: the diff is the 1 wei of value plus the nonce, and no fee-currency account is touched, because the call env runs with the base fee disabled. The exchange rate is therefore NOT observable here \u2014 it is pinned by gas_price_at_genesis, fillTransaction_cip64_defaults, the mined receipt goldens and feeHistory_across_rate_change."
+    "note": "State diff of a CIP-64 call. What it pins is that the traceCall path charges no fee at all: the diff is the 1 wei of value plus the nonce, and no fee-currency account is touched, because the call env runs with the base fee disabled. The exchange rate is therefore NOT observable here \u2014 it is pinned by gas_price_at_genesis, fillTransaction_cip64_defaults, the mined receipt goldens and feeHistory_across_rate_change. Skipping the debit also skips the only fee-currency balance check, so a sender holding none of the currency still succeeds here, while a native call with the same fee fields fails with insufficient funds. op-geth charges the fee on this path (buyGas, canPayFee, DebitFees). A diff that adds the fee-currency account is therefore a parity fix, not a regression."
   },
   {
     "name": "traceCall_cip64_second_currency_callTracer",
@@ -293,7 +293,7 @@
       },
       "0x0"
     ],
-    "note": "Binary-search estimate over the fee currency's intrinsic gas. Deterministic for a given estimator, so a golden \u2014 a moved value means the estimator or the intrinsic-gas surcharge changed, both of which are worth a review."
+    "note": "Binary-search estimate over the fee currency's intrinsic gas. Deterministic for a given estimator, so a golden \u2014 a moved value means the estimator or the intrinsic-gas surcharge changed, both of which are worth a review. 0x118b9 (71865) is binary-search slack: reth's plain-transfer shortcut tries only 21000, which the 50000 surcharge fails. op-geth's shortcut tries 21000 + surcharge and returns exactly 71000, so a drop to 0x11558 is a parity fix, not a regression."
   },
   {
     "name": "createAccessList_cip64",
