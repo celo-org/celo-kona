@@ -18,7 +18,6 @@
 #
 #     rpc_golden <name> <method> <params-json> [jq-filter] [note]
 #     rpc_golden_json <name> <json-value>
-#     rpc_expect_ok <name> <method> <params-json>
 #     rpc_expect_error <name> <method> <params-json> [message-regex]
 #     rpc_expect_eq <name> <actual> <expected>
 #     rpc_expect_same <name> <method-a> <params-a> <method-b> <params-b> [filter]
@@ -191,29 +190,6 @@ rpc_golden_json() {
         return 0
     fi
     _rpc_compare_golden "$name" "$normalized"
-}
-
-# rpc_expect_ok <name> <method> <params-json>
-# Asserts the call returns a result. For surfaces whose response shape is not
-# stable enough to pin, but where "the endpoint is registered and does not
-# error" is still worth guarding.
-rpc_expect_ok() {
-    local name=$1 method=$2 params=$3
-    local response
-    if ! response=$(rpc_call "$method" "$params"); then
-        _rpc_fail "$name" "transport error talking to $RPC_URL"
-        return 0
-    fi
-    if ! _rpc_is_json "$response"; then
-        _rpc_fail "$name" "response is not JSON: $(head -c 200 <<<"$response")"
-        return 0
-    fi
-    if _rpc_has_error "$response"; then
-        _rpc_fail "$name" "unexpected JSON-RPC error: $(_rpc_error_msg "$response")"
-        return 0
-    fi
-    _rpc_pass "$name"
-    return 0
 }
 
 # rpc_expect_error <name> <method> <params-json> [message-regex]
