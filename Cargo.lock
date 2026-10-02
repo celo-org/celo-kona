@@ -2165,6 +2165,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar-asserts",
+ "tracing",
 ]
 
 [[package]]
