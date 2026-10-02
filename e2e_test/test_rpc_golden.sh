@@ -373,17 +373,26 @@ rpc_expect_same estimateGas_cip64_lowercase_key_matches_canonical \
 # where the exchange rate itself is observable. The trace and call goldens all
 # render a CIP-64 call as an ordinary call frame with no fee-currency data in
 # it, so a wrong rate does not move any of them.
-rpc_golden_json gas_price_at_genesis "$(jq -n \
-    --arg native "$(rpc_call eth_gasPrice '[]' | jq -r '.result')" \
-    --arg fc "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY\"]" | jq -r '.result')" \
-    --arg fc2 "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY2\"]" | jq -r '.result')" \
-    --arg tip "$(rpc_call eth_maxPriorityFeePerGas '[]' | jq -r '.result')" \
-    --arg fc_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY\"]" | jq -r '.result')" \
-    --arg fc2_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY2\"]" | jq -r '.result')" \
+# Whole responses, not `.result`: an error response reads as "null" there,
+# which a bless run would write into the golden as a normal value.
+gas_prices=$(jq -n \
+    --argjson native "$(rpc_call eth_gasPrice '[]')" \
+    --argjson fc "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY\"]")" \
+    --argjson fc2 "$(rpc_call eth_gasPrice "[\"$FEE_CURRENCY2\"]")" \
+    --argjson tip "$(rpc_call eth_maxPriorityFeePerGas '[]')" \
+    --argjson fc_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY\"]")" \
+    --argjson fc2_tip "$(rpc_call eth_maxPriorityFeePerGas "[\"$FEE_CURRENCY2\"]")" \
     '{gasPrice: $native, gasPriceInFeeCurrency: $fc,
       gasPriceInFeeCurrency2: $fc2,
       maxPriorityFeePerGas: $tip, maxPriorityFeePerGasInFeeCurrency: $fc_tip,
-      maxPriorityFeePerGasInFeeCurrency2: $fc2_tip}')"
+      maxPriorityFeePerGasInFeeCurrency2: $fc2_tip}')
+gas_price_errors=$(jq -r 'to_entries[] | select(.value.result == null)
+    | "\(.key): \(.value.error.message // "no result")"' <<<"$gas_prices")
+if [[ -z "$gas_prices" || -n "$gas_price_errors" ]]; then
+    _rpc_fail gas_price_at_genesis "${gas_price_errors:-a response was not JSON}"
+else
+    rpc_golden_json gas_price_at_genesis "$(jq 'map_values(.result)' <<<"$gas_prices")"
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 2 — refusals. An error is the contract for each of these, and the exact
