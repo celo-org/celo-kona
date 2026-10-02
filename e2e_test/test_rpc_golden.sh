@@ -36,13 +36,11 @@
 #    each surplus notification it polls while the pool still counts the batch
 #    as pending. That is a race: `LocalMiner::advance` ends in `new_payload`
 #    without an FCU, and the pool only drops mined transactions on a separate
-#    maintenance task after the next one. In practice it yields exactly one
-#    empty block, and every base fee Phase 6 pins is computed across it, so
-#    Phase 6 waits for the chain to settle and asserts the resulting height
-#    before pinning anything derived from it. A height other than 6 there is
-#    more likely this race than a dependency change. Without the barrier the
-#    empty block can instead be built *after* Phase 6's first transaction and
-#    shift the whole sequence.
+#    maintenance task after the next one. Usually that is one empty block,
+#    but nothing below may depend on the count: Phase 6 pins no height and no
+#    base fee. It does wait for the pool to drain and the chain to settle
+#    first, since an empty block built between its transactions would split
+#    the window its fee history covers.
 #  * Transactions are signed offline with every field pinned, so their hashes
 #    are stable and can be committed in the goldens.
 #  * The block traces additionally pin the index-0 L1-attributes deposit, whose
@@ -150,13 +148,13 @@ fi
 
 # `trace` and `ots` are enabled because their replay paths share the machinery
 # the CIP-64 scenarios below exercise; the shared runner node does not enable
-# them.
+# them. `txpool` is only for Phase 6's barrier.
 "$CELO_RETH" node --dev \
     --chain "$GENESIS_JSON" \
     --datadir "$DATADIR" \
     --http \
     --http.port 0 \
-    --http.api eth,web3,net,debug,trace,ots \
+    --http.api eth,web3,net,debug,trace,ots,txpool \
     --authrpc.port 0 \
     --port 0 \
     --disable-discovery \
@@ -704,24 +702,25 @@ rpc_expect_error send_cip64_unregistered_currency eth_sendRawTransaction \
 echo ""
 echo "Phase 6: eth_feeHistory across an exchange-rate change"
 
-# Let the trailing build from Phase 4 land before the first transaction below,
-# then pin the height it produced. The four base fees this phase pins are a
-# function of every block before them, so a chain one block shorter or longer
-# reports itself here by name instead of as four unexplained hex diffs. The
-# empty block behind 6 comes from a race in the dev miner (see the header), so
-# a one-off mismatch here is a flake, not a regression.
-settle_chain() { # returns once two readings a beat apart agree
+# Let Phase 4's trailing empty blocks land before the first transaction below.
+# The miner only builds one for a surplus notification while the batch is still
+# pending, so once the pool has dropped it no new one can start; the settle
+# then covers a build already in flight. How many there were is a race (see the
+# header) and nothing below depends on it.
+settle_chain() { # returns once the pool is drained and two readings agree
     local height last=
-    for _ in {1..20}; do
-        height=$(rpc_call eth_blockNumber '[]' | jq -r '.result')
-        [[ "$height" == "$last" ]] && return 0
-        last=$height
+    for _ in {1..40}; do
+        if [[ "$(rpc_call txpool_status '[]' | jq -r '.result.pending')" == "0x0" ]]; then
+            height=$(rpc_call eth_blockNumber '[]' | jq -r '.result')
+            [[ "$height" == "$last" ]] && return 0
+            last=$height
+        fi
         sleep 0.5
     done
+    return 1
 }
-settle_chain
-rpc_expect_eq chain_height_before_rate_change \
-    "$(( $(rpc_call eth_blockNumber '[]' | jq -r '.result') ))" 6
+settle_chain || _rpc_fail chain_settled_before_rate_change \
+    "the pool did not drain or the chain kept growing"
 
 # `0x…ce16`'s oracle in the dev genesis alloc. Its `setExchangeRate` is ungated,
 # so no deploy and no ownership dance is needed — the rate change is one
@@ -757,7 +756,9 @@ for tx in "$cip64_before" "$rate_change" "$cip64_after"; do
     after_block=$(jq -r '.blockNumber' <<<"$receipt")
 done
 
-if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
+# The fee history below spans exactly these three blocks.
+if [[ -n "$before_block" && -n "$after_block" &&
+      $(( after_block - before_block )) -eq 2 ]]; then
     # Checked directly so a silently failed rate change reports itself here
     # rather than as a confusing arithmetic mismatch below.
     rpc_expect_eq rate_change_applied \
@@ -766,8 +767,12 @@ if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
             --rpc-url "$RPC_URL" | head -1 | cut -d' ' -f1)" \
         "4000000000000000000"
 
+    # Base fees and oldestBlock depend on how many empty blocks Phase 4 left
+    # behind, so only the rewards and gas ratios are pinned.
+    # feeHistory_over_cip64_block pins base fees over a deterministic history.
     rpc_golden feeHistory_across_rate_change eth_feeHistory \
-        "[\"0x3\", \"$after_block\", [50]]" "$FEE_HISTORY_FILTER"
+        "[\"0x3\", \"$after_block\", [50]]" \
+        "$FEE_HISTORY_FILTER | del(.oldestBlock, .baseFeePerGas)"
 
     # The discriminating property, stated rather than left implicit in the hex:
     # the same fee-currency tip is worth twice as much native before the change
@@ -782,7 +787,8 @@ if [[ -n "$before_block" && "$before_block" != "$after_block" ]]; then
     rpc_expect_eq feeHistory_tip_nonzero_before_rate_change \
         "$(( tip_before > 0 ))" 1
 else
-    _rpc_fail rate_change_sequence "the rate-change sequence did not mine into distinct blocks"
+    _rpc_fail rate_change_sequence \
+        "the rate-change sequence did not mine into three consecutive blocks (${before_block:-?}..${after_block:-?})"
 fi
 
 # ---------------------------------------------------------------------------
