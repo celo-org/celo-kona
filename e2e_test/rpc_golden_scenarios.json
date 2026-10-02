@@ -462,7 +462,7 @@
         "tracer": "callTracer"
       }
     ],
-    "note": "Per-bundle fee-currency context capture: two bundles touching different currencies in one request."
+    "note": "Two bundles in one request, a native token-duality transfer and then a CIP-64 call. This pins that the CIP-64 bundle executes after the first. The first touches no oracle, so it cannot show whether the fee-currency context is captured per bundle or re-read after each call."
   },
   {
     "name": "trace_call_erc20",
@@ -514,7 +514,7 @@
       ],
       "0x0"
     ],
-    "note": "trace_callMany builds a fresh EVM per call; every call in the sequence must still use the context captured before the first one ran."
+    "note": "trace_callMany builds a fresh EVM per call; this pins that a CIP-64 call still executes after a native one. The first call touches no oracle, so it cannot show whether the fee-currency context was captured before it ran."
   },
   {
     "name": "callMany_cip64",
