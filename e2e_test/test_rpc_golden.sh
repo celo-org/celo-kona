@@ -4,13 +4,15 @@
 #
 # Why this exists
 # ---------------
-# Every bug we have shipped in the RPC replay paths — the `Cip64Storage`
-# double-store, the base-fee-check store gate, the mid-block fee-context
-# regression — produced a *successful* response with wrong numbers in it. The
-# rest of the suite asserts liveness ("no error field, and `from` matches"),
-# which cannot see any of them. Here the committed JSON *is* the assertion:
-# every gas value, every fee-currency amount and every call frame is compared
-# byte-for-byte.
+# The rest of the suite asserts liveness ("no error field, and `from` matches").
+# That catches an RPC path that panics, as the `Cip64Storage` double-store and
+# the base-fee-check store gate did, but not one that answers with wrong
+# numbers. Here the committed JSON *is* the assertion: every gas value, every
+# fee-currency amount and every call frame is compared byte-for-byte.
+#
+# The mid-block fee-context regression is not covered here: no exchange rate
+# changes inside a block this test traces, and no golden carries fee data from
+# a replayed transaction. test_debug_trace_cip64_rate_update.sh covers it.
 #
 # Determinism
 # -----------
@@ -532,8 +534,9 @@ fi
 # queued transaction) until the gap-filling transaction promotes all of them at
 # once. Tracing the last one replays a prefix containing the block's deposit
 # transaction and three CIP-64 transactions — the path where replaying CIP-64
-# receipt data twice used to panic, and where a fee context re-read mid-block
-# would price the later transactions at the wrong rate.
+# receipt data twice used to panic. The rate does not change inside this block,
+# so a fee context re-read mid-block would still price every transaction
+# correctly here.
 # ---------------------------------------------------------------------------
 
 echo ""
