@@ -31,13 +31,18 @@
 #  * Where several transactions must share a block, they are submitted behind a
 #    nonce gap so they stay *queued* (which triggers no block build) until the
 #    gap-filling transaction promotes all of them at once. Promoting four at
-#    once queues four notifications for the one block that drains them, and the
-#    miner spends a surplus notification on a further block containing nothing
-#    but the L1-attributes deposit. That empty block is real — every base fee
-#    Phase 6 pins is computed across it — so Phase 6 waits for the chain to
-#    settle and asserts the resulting height before pinning anything derived
-#    from it. Without the barrier the same block can instead be built *after*
-#    Phase 6's first transaction and shift the whole sequence.
+#    once queues four notifications for the one block that drains them. The
+#    miner builds a further block, holding only the L1-attributes deposit, for
+#    each surplus notification it polls while the pool still counts the batch
+#    as pending. That is a race: `LocalMiner::advance` ends in `new_payload`
+#    without an FCU, and the pool only drops mined transactions on a separate
+#    maintenance task after the next one. In practice it yields exactly one
+#    empty block, and every base fee Phase 6 pins is computed across it, so
+#    Phase 6 waits for the chain to settle and asserts the resulting height
+#    before pinning anything derived from it. A height other than 6 there is
+#    more likely this race than a dependency change. Without the barrier the
+#    empty block can instead be built *after* Phase 6's first transaction and
+#    shift the whole sequence.
 #  * Transactions are signed offline with every field pinned, so their hashes
 #    are stable and can be committed in the goldens.
 #  * The block traces additionally pin the index-0 L1-attributes deposit, whose
@@ -687,7 +692,9 @@ echo "Phase 6: eth_feeHistory across an exchange-rate change"
 # Let the trailing build from Phase 4 land before the first transaction below,
 # then pin the height it produced. The four base fees this phase pins are a
 # function of every block before them, so a chain one block shorter or longer
-# reports itself here by name instead of as four unexplained hex diffs.
+# reports itself here by name instead of as four unexplained hex diffs. The
+# empty block behind 6 comes from a race in the dev miner (see the header), so
+# a one-off mismatch here is a flake, not a regression.
 settle_chain() { # returns once two readings a beat apart agree
     local height last=
     for _ in {1..20}; do
