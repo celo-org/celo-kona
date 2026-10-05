@@ -3415,13 +3415,11 @@ mod tests {
         let result = handler.run(&mut evm).expect("the tx must be accepted");
         assert!(result.is_success(), "{result:?}");
 
-        let info = evm
-            .ctx()
-            .tx()
-            .cip64_tx_info
-            .as_ref()
-            .expect("the debit ran")
-            .clone();
+        let (debit_gas_spent, credit_gas_spent) = {
+            let ctx = evm.ctx();
+            let info = ctx.tx().cip64_tx_info.as_ref().expect("the debit ran");
+            (info.debit_gas_spent, info.credit_gas_spent)
+        };
 
         // The credit re-created the slot the debit zeroed.
         let balance_slot = fee_currency_balance_slot(sender);
@@ -3439,7 +3437,7 @@ mod tests {
 
         // A negative refund read as `u64` is ~1.8e19. Bounded per field: a sum wraps silently
         // under `overflow-checks = false`.
-        assert!(info.debit_gas_spent > 0 && info.credit_gas_spent > 0);
-        assert!(info.debit_gas_spent <= 150_000 && info.credit_gas_spent <= 150_000);
+        assert!(debit_gas_spent > 0 && credit_gas_spent > 0);
+        assert!(debit_gas_spent <= 150_000 && credit_gas_spent <= 150_000);
     }
 }
