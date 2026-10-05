@@ -3437,11 +3437,9 @@ mod tests {
             "the credit refunds unused gas"
         );
 
-        // `tx_gas_used` read zero here.
+        // `tx_gas_used` read zero here, and the wrapped refund ~1.8e19. Bounded per field: a
+        // sum wraps silently under `overflow-checks = false`.
         assert!(info.debit_gas_spent > 0 && info.credit_gas_spent > 0);
-        assert!(
-            info.debit_gas_spent + info.credit_gas_spent <= 150_000,
-            "the debit+credit budget summary must not wrap"
-        );
+        assert!(info.debit_gas_spent <= 150_000 && info.credit_gas_spent <= 150_000);
     }
 }
