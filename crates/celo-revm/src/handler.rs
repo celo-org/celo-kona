@@ -3385,8 +3385,8 @@ mod tests {
 
     /// A debit that takes the payer's fee-currency balance to exactly zero clears the slot,
     /// banking the EIP-3529 refund in the debit's `Gas`; the credit writes the slot back and
-    /// takes the claw-back in its own, finishing below zero. revm narrows that counter to
-    /// `u64`, so `tx_gas_used` saturated to zero and the debit+credit budget summary wrapped.
+    /// takes the claw-back in its own, finishing below zero. Each call's recorded gas must be
+    /// the raw gas it spent, unaffected by that negative refund.
     ///
     /// basefee 1 and the fixture's 20/10 rate put the base fee at 2 in the fee currency, so a
     /// cap of 12 with a 10 tip prices the tx at 12 and a 100_000 gas limit debits exactly
@@ -3437,8 +3437,8 @@ mod tests {
             "the credit refunds unused gas"
         );
 
-        // `tx_gas_used` read zero here, and the wrapped refund ~1.8e19. Bounded per field: a
-        // sum wraps silently under `overflow-checks = false`.
+        // A negative refund read as `u64` is ~1.8e19. Bounded per field: a sum wraps silently
+        // under `overflow-checks = false`.
         assert!(info.debit_gas_spent > 0 && info.credit_gas_spent > 0);
         assert!(info.debit_gas_spent <= 150_000 && info.credit_gas_spent <= 150_000);
     }
