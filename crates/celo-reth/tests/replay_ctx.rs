@@ -138,6 +138,7 @@ fn cip64_probe_call() -> CeloTransaction<TxEnv> {
 fn observed_gas_price<DB: Database>(evm: &mut EvmFor<CeloEvmConfig, DB>) -> U256 {
     evm.ctx_mut().cfg.disable_base_fee = true;
     let outcome = evm.transact_raw(cip64_probe_call()).expect("CIP-64 probe call must not error");
+    assert!(outcome.result.is_success(), "probe call failed: {:?}", outcome.result);
     let output = outcome.result.output().expect("probe returns GASPRICE");
     U256::from_be_slice(output)
 }
