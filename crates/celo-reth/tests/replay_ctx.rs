@@ -68,13 +68,14 @@ const BASE_FEE_AT_MID_BLOCK_RATE: u64 = BASE_FEE * MID_BLOCK_RATE.0 / MID_BLOCK_
 const CAPTURED_BLOCK: u64 = 7;
 
 /// Header of the block a call is simulated against. Cancun fields are populated
-/// so the EVM env is well-formed for the Granite spec.
+/// so the EVM env is well-formed for the Granite spec. The timestamp differs from
+/// the number so a guard reading the wrong field fails the tests.
 fn header(number: u64) -> Header {
     Header {
         number,
         base_fee_per_gas: Some(BASE_FEE),
         gas_limit: 30_000_000,
-        timestamp: number,
+        timestamp: 1_000 + number,
         excess_blob_gas: Some(0),
         blob_gas_used: Some(0),
         parent_beacon_block_root: Some(B256::ZERO),
