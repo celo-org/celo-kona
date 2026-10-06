@@ -48,7 +48,7 @@ const SENDER: Address = Address::with_last_byte(0x01);
 /// Callee returning `GASPRICE` as a single ABI word:
 /// `GASPRICE; PUSH0; MSTORE; PUSH1 0x20; PUSH0; RETURN`.
 ///
-/// Deliberately not a low address — those are shadowed by precompiles.
+/// No precompile lives at 0xC0.
 const GAS_PRICE_PROBE: Address = Address::with_last_byte(0xC0);
 
 /// Native base fee of every block below: Celo's 25 Gwei floor.
