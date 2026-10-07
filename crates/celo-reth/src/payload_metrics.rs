@@ -192,7 +192,9 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
         let cancel = args.cancel.clone();
         let result = with_attempt_context(has_best_payload, cancel, || self.inner.try_build(args));
         let duration = started.elapsed();
-        if let Ok(BuildOutcome::Better { payload, .. } | BuildOutcome::Freeze(payload)) = &result {
+        // Only "better" payloads: a frozen one comes from a `no_tx_pool` build, which op-node
+        // also issues on follower nodes, where the next job's parent is not a delivery.
+        if let Ok(BuildOutcome::Better { payload, .. }) = &result {
             self.delivered.record_built(payload.block().hash(), has_best_payload);
         }
         let outcome = match &result {
@@ -610,7 +612,7 @@ mod tests {
     use reth_storage_api::{HashedPostStateProvider, StateRootProvider, noop::NoopProvider};
     use reth_trie_common::HashedPostState;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -630,11 +632,17 @@ mod tests {
     struct FakePayloadBuilder {
         outcome: FakeOutcome,
         missing_called: Arc<AtomicBool>,
+        /// What each `try_build` call saw in `args.cancel.is_cancelled()`, in call order.
+        saw_cancelled: Arc<Mutex<Vec<bool>>>,
     }
 
     impl FakePayloadBuilder {
         fn new(outcome: FakeOutcome) -> Self {
-            Self { outcome, missing_called: Arc::new(AtomicBool::new(false)) }
+            Self {
+                outcome,
+                missing_called: Arc::new(AtomicBool::new(false)),
+                saw_cancelled: Arc::default(),
+            }
         }
     }
 
@@ -646,6 +654,7 @@ mod tests {
             &self,
             args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
         ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+            self.saw_cancelled.lock().unwrap().push(args.cancel.is_cancelled());
             let payload = test_payload(args.config.payload_id());
             match self.outcome {
                 FakeOutcome::Better => {
@@ -850,6 +859,50 @@ mod tests {
             metric_value(&snapshot, "celo_payload_delivered_total", &[("attempt", "first")]),
             &DebugValue::Counter(1),
         );
+    }
+
+    /// The wrapper must hand the inner builder the job's own cancel marker and must not set it.
+    /// A clone the wrapper drops before or during the inner call would make op-reth cancel every
+    /// build; the second run proves the inner builder reads the job's flag, not a copy.
+    #[test]
+    fn wrapper_passes_the_jobs_cancel_flag_through_untouched() {
+        let inner = FakePayloadBuilder::new(FakeOutcome::Better);
+        let saw_cancelled = inner.saw_cancelled.clone();
+        let builder = PayloadMetricsBuilder::new(inner);
+
+        let job_side = CancelOnDrop::default();
+        let mut args = test_args(false);
+        args.cancel = job_side.clone();
+        let _ = builder.try_build(args);
+
+        let mut args = test_args(false);
+        args.cancel = job_side.clone();
+        // The job resolves before the attempt starts.
+        drop(job_side);
+        let _ = builder.try_build(args);
+
+        assert_eq!(*saw_cancelled.lock().unwrap(), vec![false, true]);
+    }
+
+    /// Only the sequencer's "better" payloads are candidates for delivery. A frozen payload comes
+    /// from a `no_tx_pool` build, which op-node also issues on follower nodes, where the next
+    /// job's parent says nothing about what a sequencer delivered.
+    #[test]
+    fn frozen_payloads_are_not_attributed() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let builder = PayloadMetricsBuilder::new(FakePayloadBuilder::new(FakeOutcome::Freeze));
+
+        metrics::with_local_recorder(&recorder, || {
+            let _ = builder.try_build(test_args(false));
+            let _ = builder.try_build(test_args(false));
+        });
+
+        let delivered: Vec<_> = snapshot(&snapshotter)
+            .into_iter()
+            .filter(|(key, _, _, _)| key.key().name() == "celo_payload_delivered_total")
+            .collect();
+        assert!(delivered.is_empty(), "frozen payload attributed: {delivered:?}");
     }
 
     #[test]
