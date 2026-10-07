@@ -15,6 +15,7 @@ use reth_node_builder::{
 };
 use reth_optimism_payload_builder::OpPayloadAttrs;
 use reth_primitives_traits::{Account, Bytecode};
+use reth_revm::cancelled::CancelOnDrop;
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
     StateProvider, StateRootProvider, StorageRootProvider,
@@ -26,46 +27,60 @@ use reth_trie_common::{
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::{
-    cell::Cell,
+    cell::RefCell,
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy)]
+/// The payload attempt running on this thread.
+///
+/// Deliberately not `Clone`: it owns a clone of the attempt's [`CancelOnDrop`], and dropping any
+/// clone of that marker cancels the payload job. Only [`with_attempt_context`] may own and drop
+/// it, after the attempt has returned; everything else reads it through the accessors below.
 struct AttemptContext {
     has_best_payload: bool,
     failure_policies_enabled: bool,
+    cancel: CancelOnDrop,
 }
 
 thread_local! {
-    static ATTEMPT_CONTEXT: Cell<Option<AttemptContext>> = const { Cell::new(None) };
+    static ATTEMPT_CONTEXT: RefCell<Option<AttemptContext>> = const { RefCell::new(None) };
 }
 
-fn current_attempt_context() -> Option<bool> {
-    ATTEMPT_CONTEXT.get().map(|context| context.has_best_payload)
+/// Incumbent-payload flag of the attempt running on this thread, if any.
+fn current_has_best_payload() -> Option<bool> {
+    ATTEMPT_CONTEXT.with_borrow(|context| context.as_ref().map(|c| c.has_best_payload))
 }
 
-/// Whether the current payload-service attempt may apply local fee-currency policies.
-/// A debug/witness or pending RPC never opens this scope. Engine builds with `noTxPool=true`
-/// rebuild forced transactions only and also leave the policies disabled.
+/// Whether the job of the attempt running on this thread has already been resolved or dropped.
+fn current_attempt_cancelled() -> Option<bool> {
+    ATTEMPT_CONTEXT.with_borrow(|context| context.as_ref().map(|c| c.cancel.is_cancelled()))
+}
+
+/// Whether this payload-service attempt may apply local fee-currency policies.
+/// Witness/debug, pending RPC and forced-only Engine builds leave these policies disabled.
 pub(crate) fn failure_policies_enabled() -> bool {
-    ATTEMPT_CONTEXT.get().is_some_and(|context| context.failure_policies_enabled)
+    ATTEMPT_CONTEXT.with_borrow(|context| {
+        context.as_ref().is_some_and(|context| context.failure_policies_enabled)
+    })
 }
 
 fn with_attempt_context<T>(
     has_best_payload: bool,
     failure_policies_enabled: bool,
+    cancel: CancelOnDrop,
     f: impl FnOnce() -> T,
 ) -> T {
     struct RestoreAttemptContext(Option<AttemptContext>);
 
     impl Drop for RestoreAttemptContext {
         fn drop(&mut self) {
-            ATTEMPT_CONTEXT.set(self.0);
+            // Dropping the replaced context drops this attempt's cancel clone. That is harmless
+            // here: the attempt has returned, and reth's job only reads the result channel.
+            ATTEMPT_CONTEXT.set(self.0.take());
         }
     }
 
-    let previous = ATTEMPT_CONTEXT
-        .replace(Some(AttemptContext { has_best_payload, failure_policies_enabled }));
+    let previous = ATTEMPT_CONTEXT.replace(Some(AttemptContext { has_best_payload, failure_policies_enabled, cancel }));
     let _restore = RestoreAttemptContext(previous);
     f()
 }
@@ -157,9 +172,8 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
         let _active = ActiveGauge(active);
         let started = Instant::now();
 
-        let result = with_attempt_context(has_best_payload, failure_policies_enabled, || {
-            self.inner.try_build(args)
-        });
+        let cancel = args.cancel.clone();
+        let result = with_attempt_context(has_best_payload, failure_policies_enabled, cancel, || self.inner.try_build(args));
         let duration = started.elapsed();
         let outcome = match &result {
             Ok(BuildOutcome::Better { .. }) => "better",
@@ -254,7 +268,7 @@ impl<B> PayloadMetricsBlockBuilder<B> {
     pub fn new(inner: B) -> Self {
         Self {
             inner: Some(inner),
-            has_best_payload: current_attempt_context(),
+            has_best_payload: current_has_best_payload(),
             execution_duration: Duration::ZERO,
             execution_calls: 0,
         }
@@ -287,6 +301,16 @@ impl<B> PayloadMetricsBlockBuilder<B> {
             "result" => result_label(succeeded),
         )
         .record(elapsed.as_secs_f64());
+        // The job was resolved while this attempt was still building: nobody will read the
+        // payload, so this finalization (and any blocking root in it) was pure waste.
+        if current_attempt_cancelled() == Some(true) {
+            metrics::histogram!(
+                "celo_payload_orphaned_finalization_duration_seconds",
+                "has_best_payload" => bool_label(has_best_payload),
+                "root_source" => root_source,
+            )
+            .record(elapsed.as_secs_f64());
+        }
     }
 }
 
@@ -561,6 +585,7 @@ mod tests {
     };
     use reth_optimism_payload_builder::OpBuiltPayload;
     use reth_primitives_traits::{SealedBlock, SealedHeader};
+    use reth_revm::cancelled::CancelOnDrop;
     use reth_storage_api::{HashedPostStateProvider, StateRootProvider, noop::NoopProvider};
     use reth_trie_common::HashedPostState;
     use std::sync::{
@@ -674,7 +699,7 @@ mod tests {
     /// Builds a state provider bound to the attempt active on this thread, the way
     /// `PayloadMetricsBlockBuilder::finish` does.
     fn observed_provider<P>(inner: P) -> PayloadMetricsStateProvider<P> {
-        PayloadMetricsStateProvider::with_context(inner, current_attempt_context())
+        PayloadMetricsStateProvider::with_context(inner, current_has_best_payload())
     }
 
     fn metric_value<'a>(
@@ -707,20 +732,20 @@ mod tests {
 
     #[test]
     fn attempt_context_is_scoped() {
-        assert_eq!(current_attempt_context(), None);
-        with_attempt_context(true, true, || {
-            assert_eq!(current_attempt_context(), Some(true));
+        assert_eq!(current_has_best_payload(), None);
+        with_attempt_context(true, true, CancelOnDrop::default(), || {
+            assert_eq!(current_has_best_payload(), Some(true));
             assert!(failure_policies_enabled());
-            with_attempt_context(false, false, || {
+            with_attempt_context(false, false, CancelOnDrop::default(), || {
                 assert!(!failure_policies_enabled());
             });
             assert!(failure_policies_enabled());
             std::thread::spawn(|| assert!(!failure_policies_enabled())).join().unwrap();
         });
-        assert_eq!(current_attempt_context(), None);
+        assert_eq!(current_has_best_payload(), None);
         assert!(!failure_policies_enabled());
         let panic = std::panic::catch_unwind(|| {
-            with_attempt_context(true, true, || {
+            with_attempt_context(true, true, CancelOnDrop::default(), || {
                 panic!("failed payload attempt");
             })
         });
@@ -806,10 +831,82 @@ mod tests {
         );
     }
 
+    /// Every `CancelOnDrop` clone cancels the job when it is dropped. If the instrumentation ever
+    /// cloned the attempt's marker and dropped the clone mid-attempt, op-reth would abort every
+    /// build. The job-side marker must still read "not cancelled" after the decorator was created,
+    /// used and dropped inside the attempt.
+    #[test]
+    fn instrumentation_never_cancels_the_attempt() {
+        let job_side = CancelOnDrop::default();
+        let attempt_side = job_side.clone();
+        with_attempt_context(true, attempt_side, || {
+            let mut builder = PayloadMetricsBlockBuilder::new(());
+            builder.record_execution(Duration::from_millis(1));
+            builder.record_finalization("blocking", true, Duration::from_millis(1));
+            drop(builder);
+            assert_eq!(current_attempt_cancelled(), Some(false));
+        });
+        // `with_attempt_context` drops its own clone on exit, after the attempt returned. That is
+        // the one place a drop is allowed, so the flag is set now and only now.
+        assert!(job_side.is_cancelled());
+    }
+
+    #[test]
+    fn finalization_after_the_job_resolved_is_counted_as_orphaned() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let job_side = CancelOnDrop::default();
+        let attempt_side = job_side.clone();
+
+        metrics::with_local_recorder(&recorder, || {
+            with_attempt_context(true, attempt_side, move || {
+                let builder = PayloadMetricsBlockBuilder::new(());
+                // getPayload resolved the job while this rebuild was executing.
+                drop(job_side);
+                builder.record_finalization("blocking", true, Duration::from_millis(7));
+            });
+        });
+
+        assert_eq!(
+            histogram_samples(
+                &snapshot(&snapshotter),
+                "celo_payload_orphaned_finalization_duration_seconds",
+                &[("has_best_payload", "true"), ("root_source", "blocking")],
+            ),
+            vec![0.007],
+        );
+    }
+
+    #[test]
+    fn finalization_of_a_live_job_is_not_orphaned() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let job_side = CancelOnDrop::default();
+
+        metrics::with_local_recorder(&recorder, || {
+            with_attempt_context(false, job_side.clone(), || {
+                PayloadMetricsBlockBuilder::new(()).record_finalization(
+                    "precomputed",
+                    true,
+                    Duration::from_millis(3),
+                );
+            });
+        });
+
+        let orphaned: Vec<_> = snapshot(&snapshotter)
+            .into_iter()
+            .filter(|(key, _, _, _)| {
+                key.key().name() == "celo_payload_orphaned_finalization_duration_seconds"
+            })
+            .collect();
+        assert!(orphaned.is_empty(), "live job reported as orphaned: {orphaned:?}");
+        drop(job_side);
+    }
+
     #[test]
     fn block_builder_binds_to_the_enclosing_attempt() {
         assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, None);
-        with_attempt_context(true, true, || {
+        with_attempt_context(true, true, CancelOnDrop::default(), || {
             assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, Some(true));
         });
     }
@@ -820,7 +917,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(true, true, || {
+            with_attempt_context(true, true, CancelOnDrop::default(), || {
                 let mut builder = PayloadMetricsBlockBuilder::new(());
                 builder.record_execution(Duration::from_millis(10));
                 builder.record_execution(Duration::from_millis(30));
@@ -856,7 +953,7 @@ mod tests {
             let snapshotter = recorder.snapshotter();
 
             metrics::with_local_recorder(&recorder, || {
-                with_attempt_context(false, true, || {
+                with_attempt_context(false, true, CancelOnDrop::default(), || {
                     let builder = PayloadMetricsBlockBuilder::new(());
                     let source = if precomputed { "precomputed" } else { "blocking" };
                     builder.record_finalization(source, succeeded, Duration::from_millis(5));
@@ -910,7 +1007,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(false, true, || {
+            with_attempt_context(false, true, CancelOnDrop::default(), || {
                 let provider = observed_provider(NoopProvider::default());
                 let hashed = provider.hashed_post_state(&Default::default());
                 assert_eq!(hashed, HashedPostState::default());
