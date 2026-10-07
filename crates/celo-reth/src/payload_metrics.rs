@@ -9,7 +9,7 @@ use reth_basic_payload_builder::{
 use reth_evm::execute::{
     BlockBuilder, BlockBuilderOutcome, BlockExecutionError, BlockExecutor, ExecutorTx, GasOutput,
 };
-use reth_node_api::{PayloadAttributes, PayloadBuilderError};
+use reth_node_api::{BuiltPayload, PayloadAttributes, PayloadBuilderError};
 use reth_node_builder::{BuilderContext, FullNodeTypes, components::PayloadBuilderBuilder};
 use reth_primitives_traits::{Account, Bytecode};
 use reth_revm::cancelled::CancelOnDrop;
@@ -25,6 +25,8 @@ use reth_trie_common::{
 };
 use std::{
     cell::RefCell,
+    collections::VecDeque,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -72,6 +74,37 @@ fn with_attempt_context<T>(
     f()
 }
 
+/// How many recent payloads to remember. A job produces at most a handful of better payloads and
+/// the next job starts about a block later, so this only has to outlive one block.
+const RECENT_PAYLOADS: usize = 64;
+
+/// Remembers which kind of attempt built each recent payload, so the next block's job can report
+/// what the sequencer delivered: on the sequencer, a job's parent is the payload it delivered.
+#[derive(Debug, Clone, Default)]
+struct DeliveredPayloads(Arc<Mutex<VecDeque<(B256, &'static str)>>>);
+
+impl DeliveredPayloads {
+    fn record_built(&self, block_hash: B256, has_best_payload: bool) {
+        let mut recent = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if recent.len() == RECENT_PAYLOADS {
+            recent.pop_front();
+        }
+        recent.push_back((block_hash, attempt_kind(has_best_payload)));
+    }
+
+    /// Counts the payload a job builds on, once: the entry is removed when counted.
+    fn record_parent(&self, parent_hash: B256) {
+        let mut recent = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(index) = recent.iter().position(|(hash, _)| *hash == parent_hash) else { return };
+        let (_, attempt) = recent.remove(index).expect("index comes from position");
+        metrics::counter!("celo_payload_delivered_total", "attempt" => attempt).increment(1);
+    }
+}
+
+const fn attempt_kind(has_best_payload: bool) -> &'static str {
+    if has_best_payload { "rebuild" } else { "first" }
+}
+
 /// Adds Celo payload metrics around the node's payload-builder factory.
 ///
 /// This is the only place production code enters the instrumented path: it hands
@@ -117,12 +150,13 @@ where
 #[derive(Debug, Clone)]
 pub struct PayloadMetricsBuilder<B> {
     inner: B,
+    delivered: DeliveredPayloads,
 }
 
 impl<B> PayloadMetricsBuilder<B> {
     /// Wraps an existing payload builder.
-    pub const fn new(inner: B) -> Self {
-        Self { inner }
+    pub fn new(inner: B) -> Self {
+        Self { inner, delivered: DeliveredPayloads::default() }
     }
 }
 
@@ -142,6 +176,7 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
             }
         }
 
+        self.delivered.record_parent(args.config.parent_header.hash());
         let has_best_payload = args.best_payload.is_some();
         let has_best_label = bool_label(has_best_payload);
         let payload_id = args.config.payload_id();
@@ -157,6 +192,9 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
         let cancel = args.cancel.clone();
         let result = with_attempt_context(has_best_payload, cancel, || self.inner.try_build(args));
         let duration = started.elapsed();
+        if let Ok(BuildOutcome::Better { payload, .. } | BuildOutcome::Freeze(payload)) = &result {
+            self.delivered.record_built(payload.block().hash(), has_best_payload);
+        }
         let outcome = match &result {
             Ok(BuildOutcome::Better { .. }) => "better",
             Ok(BuildOutcome::Aborted { .. }) => "aborted",
@@ -779,6 +817,38 @@ mod tests {
         assert_eq!(
             metric_value(&snapshot, "celo_payload_builds_active", &[("has_best_payload", "false")],),
             &DebugValue::Gauge(0.0.into()),
+        );
+    }
+
+    /// `test_payload` and `test_args` both use default headers, so a built payload's hash equals
+    /// the parent hash of the next `test_args` job. That stands in for "the next block builds on
+    /// the delivered one".
+    #[test]
+    fn delivered_payload_is_attributed_to_the_attempt_that_built_it() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let builder = PayloadMetricsBuilder::new(FakePayloadBuilder::new(FakeOutcome::Better));
+        // The job generator clones the builder per job; the history must be shared.
+        let next_job = builder.clone();
+
+        metrics::with_local_recorder(&recorder, || {
+            // Block N: a rebuild produced the best payload.
+            let _ = builder.try_build(test_args(true));
+            // Block N+1: its first attempt builds on block N, so block N's payload was delivered.
+            let _ = next_job.try_build(test_args(false));
+            // Same parent again (a second attempt of the same job): must not count twice.
+            let _ = next_job.try_build(test_args(true));
+        });
+
+        let snapshot = snapshot(&snapshotter);
+        assert_eq!(
+            metric_value(&snapshot, "celo_payload_delivered_total", &[("attempt", "rebuild")]),
+            &DebugValue::Counter(1),
+        );
+        // The second call recorded its own payload as "first"; the third call consumed it.
+        assert_eq!(
+            metric_value(&snapshot, "celo_payload_delivered_total", &[("attempt", "first")]),
+            &DebugValue::Counter(1),
         );
     }
 
