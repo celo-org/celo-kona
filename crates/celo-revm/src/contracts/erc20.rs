@@ -1,6 +1,6 @@
 //! ERC20 token interface for fee currency handling
 
-use super::core_contracts::{self, CoreContractError};
+use super::core_contracts::{self, CoreContractError, SystemCallGas};
 use crate::{CeloContext, evm::CeloEvm};
 use alloy_sol_types::{SolCall, sol};
 use revm::{
@@ -73,14 +73,14 @@ where
 /// `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`). Its state changes remain in
 /// the EVM's journal for the main transaction to see, exactly as the committing path left
 /// them.
-/// Returns (logs, gas_spent) where gas_spent is raw, before refunds.
+/// Returns (logs, gas).
 pub fn debit_gas_fees<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_address: Address,
     from: Address,
     value: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64), CoreContractError>
+) -> Result<(Vec<Log>, SystemCallGas), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -91,9 +91,9 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_spent) =
+    let (_, logs, gas) =
         core_contracts::call_no_commit(evm, fee_currency_address, calldata, Some(gas_limit))?;
-    Ok((logs, gas_spent))
+    Ok((logs, gas))
 }
 
 /// Call creditGasFees to distribute gas fees.
@@ -130,10 +130,10 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_spent) =
+    let (_, logs, gas) =
         core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
 
-    Ok((logs, gas_spent))
+    Ok((logs, gas.spent))
 }
 
 #[cfg(test)]

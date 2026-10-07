@@ -139,13 +139,13 @@ pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
 /// returns. See the module docs for why the committing [`call`] path cannot provide this
 /// guarantee.
 ///
-/// Returns (output, logs, gas_spent) where gas_spent is raw, before refunds.
+/// Returns (output, logs, gas).
 pub fn call_read_only<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, SystemCallGas), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -187,13 +187,13 @@ where
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
-/// Returns (output, logs, gas_spent) where gas_spent is raw, before refunds.
+/// Returns (output, logs, gas).
 pub fn call<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, SystemCallGas), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -216,7 +216,7 @@ fn call_inner<DB, INSP, P>(
     calldata: Bytes,
     gas_limit: Option<u64>,
     commit: bool,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, SystemCallGas), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -275,7 +275,7 @@ pub(crate) fn call_no_commit<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, SystemCallGas), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -284,14 +284,24 @@ where
     call_inner(evm, address, calldata, gas_limit, false)
 }
 
-/// Decode a finished system-call result into (output, logs, gas_spent),
+/// Gas accounting of one system call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SystemCallGas {
+    /// Raw gas spent, before refunds. Not `tx_gas_used`: that subtracts the refund, which can
+    /// be negative.
+    pub spent: u64,
+    /// The call's own refund counter, uncapped. Signed: a system call meters in a `Gas` of its
+    /// own over the enclosing transaction's journal, so it can re-create a slot whose clear was
+    /// banked in another counter and finish negative.
+    pub refunded: i64,
+}
+
+/// Decode a finished system-call result into (output, logs, gas),
 /// mapping halts/reverts/errors to [`CoreContractError`]. Shared by [`call`] and
 /// [`call_read_only`].
-///
-/// Not `tx_gas_used`: a system call's refund can be negative, which revm's `u64` wraps.
 fn process_call_result<E: core::fmt::Display>(
     call_result: Result<ExecutionResult<OpHaltReason>, E>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError> {
+) -> Result<(Bytes, Vec<Log>, SystemCallGas), CoreContractError> {
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o,
@@ -304,7 +314,15 @@ fn process_call_result<E: core::fmt::Display>(
             gas,
             logs,
             ..
-        } => Ok((bytes, logs, gas.total_gas_spent())),
+        } => Ok((
+            bytes,
+            logs,
+            SystemCallGas {
+                spent: gas.total_gas_spent(),
+                // revm narrows its `i64` counter with `as u64`; this undoes that losslessly.
+                refunded: gas.inner_refunded() as i64,
+            },
+        )),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),
