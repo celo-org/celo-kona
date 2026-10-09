@@ -179,9 +179,8 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). It is flipped to `true` only by the sequencing-side
-    /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
-    /// its dormant post-exec sibling — which import/derivation deliberately bypass.
+    /// import/derivation executor and RPC). The normal sequencing payload builder flips it to
+    /// `true` via `CeloEvmConfig::post_exec_builder_for_next_block`.
     blocklist_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
@@ -193,12 +192,11 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
     /// flipped to `true` only for receipt-building executors:
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
-    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
-    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
-    /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
-    /// `replay_transactions_until` — that run a whole block through one EVM without building
-    /// receipts, and leave it off.
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), used by
+    /// import, derivation, sequencing and kona proofs, plus celo-reth's normal payload builder
+    /// and dormant post-exec replay executor. The latter two build receipts outside
+    /// `create_executor`. RPC paths such as parity `trace_*`, otterscan `ots_*`, and
+    /// `replay_transactions_until` use loose EVMs without receipt building and leave it off.
     cip64_store_enabled: bool,
 }
 
@@ -271,9 +269,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         }
     }
 
-    /// Enables fee currency blocklist reads/writes for this EVM. Called only on the sequencing
-    /// path (`CeloEvmConfig::builder_for_next_block`); import, derivation and RPC leave it off so
-    /// they never touch the shared blocklist.
+    /// Enables fee currency blocklist writes for this EVM. Called by the sequencing payload
+    /// builder (`CeloEvmConfig::post_exec_builder_for_next_block`); import, derivation and RPC
+    /// leave it off so they never touch the shared blocklist.
     #[must_use]
     pub const fn with_blocklist_enabled(mut self) -> Self {
         self.blocklist_enabled = true;
@@ -347,9 +345,9 @@ where
 
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
         // the sequencing path: `blocklist_enabled` is set on EVMs built via
-        // `CeloEvmConfig::builder_for_next_block` (the payload builder) and left off for import /
-        // derivation re-execution and RPC. Import and derivation therefore neither read nor write
-        // it. (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
+        // `CeloEvmConfig::post_exec_builder_for_next_block` and left off for import, derivation
+        // re-execution, and RPC. Import and derivation therefore neither read nor write it.
+        // (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
         // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
         //
         // NOTE: blocklist *rejection* is intentionally NOT performed here even on the sequencing
@@ -727,7 +725,7 @@ impl CeloEvmFactory {
             blocklist: self.blocklist.clone(),
             // Off by default: the import/derivation executor and RPC create EVMs through the
             // factory and must not touch the blocklist. Sequencing flips it on via
-            // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
+            // `with_blocklist_enabled` in `CeloEvmConfig::post_exec_builder_for_next_block`.
             blocklist_enabled: false,
             // Off by default; `create_executor` flips it on for receipt-building executors.
             cip64_store_enabled: false,
