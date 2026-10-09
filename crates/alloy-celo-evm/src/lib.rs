@@ -932,6 +932,50 @@ mod tests {
     }
 
     #[test]
+    fn real_fee_hook_reverts_emit_their_phase_metric() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        for (answered_calldata_size, phase) in [
+            (0, "balance_of"),
+            (BALANCE_OF_CALLDATA_SIZE, "debit"),
+            (DEBIT_CALLDATA_SIZE, "credit"),
+        ] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let fc = Address::with_last_byte(0xF2);
+            let error = metrics::with_local_recorder(&recorder, || {
+                transact_cip64_with_token_code(
+                    FeeCurrencyBlocklist::default(),
+                    fc,
+                    fee_currency_stub(answered_calldata_size, &[0x60, 0x00, 0x60, 0x00, 0xfd]),
+                )
+            });
+            assert!(error.contains(FEE_CURRENCY_REVERT_MARKER), "expected revert: {error}");
+            let count: u64 = snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter(|(key, _, _, _)| {
+                    key.key().name() == "celo_payload_fee_currency_failures_total"
+                        && key
+                            .key()
+                            .labels()
+                            .any(|label| label.key() == "phase" && label.value() == phase)
+                        && key
+                            .key()
+                            .labels()
+                            .any(|label| label.key() == "kind" && label.value() == "revert")
+                })
+                .map(|(_, _, _, value)| match value {
+                    DebugValue::Counter(count) => count,
+                    other => panic!("expected a counter, got {other:?}"),
+                })
+                .sum();
+            assert_eq!(count, 1, "missing {phase} revert counter for {error}");
+        }
+    }
+
+    #[test]
     fn cip64_insufficient_balance_has_a_failure_phase_metric() {
         use metrics_util::debugging::{DebugValue, DebuggingRecorder};
         use revm::state::{AccountInfo, Bytecode};
