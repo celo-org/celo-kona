@@ -16,10 +16,10 @@ pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 /// check's `balanceOf` read from one raised by the `debitGasFees` call itself.
 ///
 /// Both deliberately carry the debit prefix so the sequencing blocklist classifies them
-/// alike, which makes this the only thing telling the two apart. It is a diagnostic, never a
-/// classifier input, and it is `pub` only because the debit-fault tests that assert its
-/// *absence* — pinning that they still fault in the debit, not in the pre-check that now runs
-/// ahead of it — live in `alloy-celo-evm`.
+/// alike, which makes this the only thing telling the two apart. It does not affect the
+/// blocklist decision. Payload metrics use it to identify the `balance_of` phase, and
+/// debit-fault tests assert its absence to pin that they fault in the debit rather than
+/// in the pre-check.
 ///
 /// The value is deliberately not the bare word `balanceOf`: the flattened error embeds a
 /// fee currency's revert text, and `"ERC20: balanceOf query for the zero address"` is a real
