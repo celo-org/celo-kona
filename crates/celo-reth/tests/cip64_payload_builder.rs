@@ -18,7 +18,7 @@ use alloy_consensus::{Header, Signed};
 use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
-    CeloEvmConfig,
+    CeloEvmConfig, ConfigurePostExecEvm, OpNextBlockEnvAttributes, PostExecMode,
     payload_metrics::PayloadMetricsBuilder,
     pool::{CeloPoolTx, ExchangeRate},
     primitives::CeloPrimitives,
@@ -33,7 +33,7 @@ use reth_basic_payload_builder::{
     PayloadConfig,
 };
 use reth_chainspec::Chain;
-use reth_evm::execute::BlockBuilder;
+use reth_evm::{ConfigureEvm, execute::BlockBuilder};
 use reth_node_api::PayloadBuilderError;
 use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
 use reth_optimism_payload_builder::{
@@ -242,6 +242,68 @@ fn test_cip64_pool_tx(sender: Address, sig: Signature) -> CeloPoolTx {
     // 1 FC = 10 native (numerator=1, denominator=10): native_max_fee = 10 Gwei * 10 = 100 Gwei.
     pool_tx.apply_exchange_rate(ExchangeRate { numerator: 1, denominator: 10 });
     pool_tx
+}
+
+/// `balanceOf` returns a high balance, while `debitGasFees` loops until its gas runs out.
+fn halt_on_debit_code() -> Bytecode {
+    Bytecode::new_raw(hex!("6024361160125760001960005260206000f35b601256").to_vec().into())
+}
+
+fn next_block_env() -> OpNextBlockEnvAttributes {
+    OpNextBlockEnvAttributes {
+        timestamp: 1,
+        suggested_fee_recipient: Address::from([0xfe; 20]),
+        prev_randao: B256::ZERO,
+        gas_limit: 30_000_000,
+        parent_beacon_block_root: Some(B256::ZERO),
+        extra_data: Default::default(),
+    }
+}
+
+#[test]
+fn pending_builder_does_not_blocklist_but_payload_builder_does() {
+    let sig = Signature::test_signature();
+    let sender = test_sender(sig);
+    let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+    let config = CeloEvmConfig::celo_with_blocklist(test_chain_spec(), blocklist.clone());
+    let parent = test_payload_config().parent_header;
+
+    let mut pending_db = make_celo_test_db(sender, U256::MAX);
+    pending_db.insert_account_info(TEST_FC, AccountInfo::from_bytecode(halt_on_debit_code()));
+    let mut pending_state = State::builder().with_database(pending_db).with_bundle_update().build();
+    let mut pending = config
+        .builder_for_next_block(&mut pending_state, &parent, next_block_env())
+        .expect("pending builder");
+    pending.apply_pre_execution_changes().expect("pending pre-execution");
+    let pending_error = pending
+        .execute_transaction(test_cip64_pool_tx(sender, sig).into_consensus())
+        .expect_err("debit must halt");
+    assert!(
+        format!("{pending_error}").contains(celo_revm::constants::FEE_CURRENCY_HALT_MARKER),
+        "pending failure must come from the debit halt: {pending_error}"
+    );
+    assert!(!blocklist.is_blocked(TEST_FC), "pending block must not mutate shared blocklist");
+
+    let mut payload_db = make_celo_test_db(sender, U256::MAX);
+    payload_db.insert_account_info(TEST_FC, AccountInfo::from_bytecode(halt_on_debit_code()));
+    let mut payload_state = State::builder().with_database(payload_db).with_bundle_update().build();
+    let mut payload = config
+        .post_exec_builder_for_next_block(
+            &mut payload_state,
+            &parent,
+            next_block_env(),
+            PostExecMode::default(),
+        )
+        .expect("payload builder");
+    payload.apply_pre_execution_changes().expect("payload pre-execution");
+    let payload_error = payload
+        .execute_transaction(test_cip64_pool_tx(sender, sig).into_consensus())
+        .expect_err("debit must halt");
+    assert!(
+        format!("{payload_error}").contains(celo_revm::constants::FEE_CURRENCY_HALT_MARKER),
+        "payload failure must come from the debit halt: {payload_error}"
+    );
+    assert!(blocklist.is_blocked(TEST_FC), "sequencing payload must blocklist the currency");
 }
 
 #[test]
