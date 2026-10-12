@@ -8,7 +8,10 @@ set -x
 # Send token and check balance
 tx_json=$(cast send --json --private-key $ACC_PRIVKEY $TOKEN_ADDR 'transfer(address to, uint256 value) returns (bool)' 0x000000000000000000000000000000000000dEaD 100)
 block_number=$(echo $tx_json | jq -r '.blockNumber' | cast to-dec)
-block=$(cast block --json --full $block_number)
+# `cast block --json` wraps the block in a {schema_version, success, data} envelope.
+# On failure the envelope carries the errors on stdout, so print it before exiting.
+block_json=$(cast block --json --full $block_number) || { echo "$block_json" >&2; exit 1; }
+block=$(echo "$block_json" | jq '.data')
 gas_used=$(echo $block | jq -r '.gasUsed' | cast to-dec)
 base_fee=$(echo $block | jq -r '.baseFeePerGas' | cast to-dec)
 # Every block contains a system tx (the first tx) that pays nothing for gas so we must subtract this from the total gas per block
