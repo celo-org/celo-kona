@@ -46,6 +46,12 @@ pub mod block;
 pub mod blocklist;
 pub mod cip64_storage;
 
+#[cfg(feature = "std")]
+use {
+    celo_revm::constants::FEE_BALANCE_READ_MARKER, op_revm::OpTransactionError,
+    revm::context_interface::result::InvalidTransaction,
+};
+
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
 
@@ -59,6 +65,41 @@ fn default_l1_block_info(spec_id: OpSpecId) -> L1BlockInfo {
         info.operator_fee_constant = Some(U256::ZERO);
     }
     info
+}
+
+/// Classify the system call that failed and its failure kind from the handler's outer prefix.
+/// A revert message can contain another phase prefix, so only the first prefix is authoritative.
+#[cfg(feature = "std")]
+fn classify_fee_hook_failure(message: &str) -> Option<(&'static str, &'static str)> {
+    let debit = message.find(FEE_DEBIT_ERROR_PREFIX);
+    let credit = message.find(FEE_CREDIT_ERROR_PREFIX);
+    let (phase, suffix) = match (debit, credit) {
+        (Some(d), Some(c)) if d < c => ("debit", &message[d + FEE_DEBIT_ERROR_PREFIX.len()..]),
+        (Some(_), Some(c)) | (None, Some(c)) => {
+            ("credit", &message[c + FEE_CREDIT_ERROR_PREFIX.len()..])
+        }
+        (Some(d), None) => ("debit", &message[d + FEE_DEBIT_ERROR_PREFIX.len()..]),
+        (None, None) => return None,
+    };
+    let phase = if phase == "debit"
+        && suffix.strip_prefix(": ").is_some_and(|rest| rest.starts_with(FEE_BALANCE_READ_MARKER))
+    {
+        "balance_of"
+    } else {
+        phase
+    };
+    // Keep revert before halt, as in the blocklist decision below: decoded revert text can
+    // contain the halt marker and must not turn a revert into a currency-level fault.
+    let kind = if suffix.contains(FEE_CURRENCY_REVERT_MARKER) {
+        "revert"
+    } else if suffix.contains(FEE_CURRENCY_HALT_MARKER) {
+        "halt"
+    } else if suffix.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
+        "malformed_return"
+    } else {
+        "evm_error"
+    };
+    Some((phase, kind))
 }
 
 /// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
@@ -166,21 +207,18 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inspect: bool,
     cip64_storage: Cip64Storage,
     blocklist: FeeCurrencyBlocklist,
-    /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
+    /// Whether this EVM updates the fee currency [`blocklist`](Self::blocklist).
     ///
-    /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls *halted* while the node was building a block from its own mempool, so the sequencer
-    /// can skip them for a while. Halts are the only failures that blocklist: contract *reverts*
-    /// are ambiguous (canonically an underfunded sender), and EVM-level call errors are the
-    /// node's own infrastructure faults — neither is evidence against the currency. It must
-    /// therefore only be touched on the sequencing path.
-    /// Block import and derivation re-execute already-canonical blocks and must produce identical
-    /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
+    /// The blocklist is a *local sequencing heuristic*: it records currencies whose fee calls
+    /// halted or returned malformed balance data so the sequencer can skip them for a while.
+    /// Contract *reverts* are ambiguous (commonly an underfunded sender), and EVM-level call
+    /// errors are the node's own infrastructure faults; neither is evidence against the currency.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). It is flipped to `true` only by the sequencing-side
-    /// builders — `CeloEvmConfig::builder_for_next_block` (the payload-builder entry point) and
-    /// its dormant post-exec sibling — which import/derivation deliberately bypass.
+    /// import/derivation executor and loose RPC EVMs). Both celo-reth next-block builders enable
+    /// it. The normal payload service and witness/debug execution share the post-exec builder,
+    /// even with post-exec disabled, so both can update the blocklist on this release branch.
+    /// Block import and derivation re-execution bypass those builders and leave it untouched.
     blocklist_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
@@ -192,12 +230,12 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
     /// flipped to `true` only for receipt-building executors:
-    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory) — which
-    /// import, derivation, sequencing and kona proofs all go through — plus celo-reth's two
-    /// dormant post-exec block builders, which build receipts outside `create_executor`. The
-    /// RPC layer builds loose per-tx EVMs — parity `trace_*`, otterscan `ots_*`, and
-    /// `replay_transactions_until` — that run a whole block through one EVM without building
-    /// receipts, and leave it off.
+    /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), used by
+    /// import, derivation, sequencing and kona proofs, plus celo-reth's next-block builders
+    /// and post-exec replay executor, which build receipts outside `create_executor`. The
+    /// post-exec builder also serves witness/debug execution. RPC paths such as parity
+    /// `trace_*`, otterscan `ots_*`, and `replay_transactions_until` use loose EVMs without
+    /// receipt building and leave it off.
     cip64_store_enabled: bool,
 }
 
@@ -275,9 +313,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         }
     }
 
-    /// Enables fee currency blocklist reads/writes for this EVM. Called only on the sequencing
-    /// path (`CeloEvmConfig::builder_for_next_block`); import, derivation and RPC leave it off so
-    /// they never touch the shared blocklist.
+    /// Enables fee currency blocklist updates for this EVM. Both celo-reth next-block builders
+    /// opt in, including the post-exec builder shared with witness/debug execution. The factory
+    /// defaults to disabled for import, derivation and loose RPC EVMs.
     #[must_use]
     pub const fn with_blocklist_enabled(mut self) -> Self {
         self.blocklist_enabled = true;
@@ -349,12 +387,10 @@ where
         // simulation (`eth_call`, `eth_estimateGas`, `debug_traceCall`).
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
-        // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
-        // the sequencing path: `blocklist_enabled` is set on EVMs built via
-        // `CeloEvmConfig::builder_for_next_block` (the payload builder) and left off for import /
-        // derivation re-execution and RPC. Import and derivation therefore neither read nor write
-        // it. (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
-        // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
+        // Only explicitly enabled EVMs update the local fee currency blocklist. On this release
+        // branch both next-block builders opt in, including witness/debug callers of the
+        // post-exec builder. Import, derivation and loose RPC EVMs keep the factory default off.
+        // The base-fee check is an additional guard against call-style RPC simulation.
         //
         // NOTE: blocklist *rejection* is intentionally NOT performed here even on the sequencing
         // path; it is enforced upstream in `CeloFeeCurrencyFilter` (see `celo-reth`'s
@@ -403,6 +439,39 @@ where
                 // signal that survives the boundary is the Display string.
                 let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
+                // Count failed execution attempts, not unique transactions. A retried tx counts
+                // again on every build attempt. For balance_of/debit/credit this breaks down the
+                // same events as the four debit/credit reasons in celo_payload_skipped_total;
+                // do not sum the two metric families. Only affordability adds a new event.
+                #[cfg(feature = "std")]
+                if matches!(
+                    e,
+                    EVMError::Transaction(OpTxError(OpTransactionError::Base(
+                        InvalidTransaction::LackOfFundForMaxFee { .. }
+                    )))
+                ) {
+                    // CIP-64 can fail its ERC20 max-fee check or its native value check with
+                    // this same typed error. Keep the phase broad rather than mislabeling it.
+                    tracing::debug!(
+                        target: "celo",
+                        fee_currency = ?fc,
+                        error = %e,
+                        "CIP-64 transaction failed its affordability check"
+                    );
+                    metrics::counter!(
+                        "celo_payload_fee_currency_failures_total",
+                        "phase" => "affordability",
+                        "kind" => "insufficient_balance"
+                    )
+                    .increment(1);
+                } else if let Some((phase, kind)) = classify_fee_hook_failure(&err_msg) {
+                    metrics::counter!(
+                        "celo_payload_fee_currency_failures_total",
+                        "phase" => phase,
+                        "kind" => kind
+                    )
+                    .increment(1);
+                }
                 if err_msg.contains(FEE_DEBIT_ERROR_PREFIX)
                     || err_msg.contains(FEE_CREDIT_ERROR_PREFIX)
                 {
@@ -438,17 +507,14 @@ where
                         )
                         .increment(1);
                     } else if err_msg.contains(FEE_CURRENCY_HALT_MARKER) {
-                        // Halt (e.g. the debit exhausted its gas budget, or the
-                        // contract executed invalid bytecode) — the one failure
-                        // that is unambiguously the currency's fault: blocklist
-                        // so the payload builder stops retrying every tx of this
-                        // currency.
+                        // A halt (e.g. exhausted gas or invalid bytecode) is a
+                        // currency-level failure: blocklist so the payload builder
+                        // stops retrying every tx of this currency.
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
                         );
-                        // The one arm that blocklists: meter it so a blocklist
-                        // addition is alertable on its own, not only via the
+                        // Meter halt-driven blocklisting on its own, not only via the
                         // downstream `reason="blocklisted"` skips that fire
                         // only while further txs of this currency arrive.
                         #[cfg(feature = "std")]
@@ -604,8 +670,9 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
     /// Shared fee currency blocklist. EVMs created by this factory *populate* this blocklist
-    /// when a CIP-64 fee-currency debit/credit fails during execution, but only on the sequencing
-    /// path (`CeloEvm::with_blocklist_enabled`); import/derivation EVMs leave it untouched. The
+    /// when a CIP-64 fee call halts or returns malformed balance data and the caller opted in
+    /// via `CeloEvm::with_blocklist_enabled`. Both next-block builders opt in on this release,
+    /// including witness/debug execution; import/derivation EVMs leave it untouched. The
     /// sequencing-time payload filter (`CeloFeeCurrencyFilter` in `celo-reth`) reads it to skip
     /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
     /// empty.
@@ -729,11 +796,10 @@ impl CeloEvmFactory {
             inspect,
             cip64_storage: Cip64Storage::default(),
             blocklist: self.blocklist.clone(),
-            // Off by default: the import/derivation executor and RPC create EVMs through the
-            // factory and must not touch the blocklist. Sequencing flips it on via
-            // `with_blocklist_enabled` in `CeloEvmConfig::builder_for_next_block`.
+            // Off by default; both celo-reth next-block builders explicitly opt in, including
+            // the post-exec builder shared by payload and witness/debug execution.
             blocklist_enabled: false,
-            // Off by default; `create_executor` flips it on for receipt-building executors.
+            // Off by default; receipt-building executors and post-exec builders enable it.
             cip64_store_enabled: false,
         }
     }
@@ -841,6 +907,172 @@ mod tests {
         let mut tx = make_cip64_tx(Address::with_last_byte(0xFC));
         tx.fee_currency = None;
         tx
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fee_hook_classifier_uses_the_outer_phase_not_revert_text() {
+        let debit_revert = alloc::format!(
+            "{FEE_DEBIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER} \
+             {FEE_CREDIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}"
+        );
+        assert_eq!(classify_fee_hook_failure(&debit_revert), Some(("debit", "revert")));
+
+        let spoofed_halt = alloc::format!(
+            "{FEE_DEBIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER} {FEE_CURRENCY_HALT_MARKER}"
+        );
+        assert_eq!(classify_fee_hook_failure(&spoofed_halt), Some(("debit", "revert")));
+
+        let credit_revert = alloc::format!(
+            "{FEE_CREDIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER} \
+             {FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}"
+        );
+        assert_eq!(classify_fee_hook_failure(&credit_revert), Some(("credit", "revert")));
+
+        let balance_revert = alloc::format!(
+            "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: \
+             {FEE_CURRENCY_REVERT_MARKER} {FEE_CREDIT_ERROR_PREFIX}"
+        );
+        assert_eq!(classify_fee_hook_failure(&balance_revert), Some(("balance_of", "revert")));
+
+        let credit_halt =
+            alloc::format!("{FEE_CREDIT_ERROR_PREFIX}: {FEE_CURRENCY_HALT_MARKER} OutOfGas");
+        assert_eq!(classify_fee_hook_failure(&credit_halt), Some(("credit", "halt")));
+
+        let malformed = alloc::format!(
+            "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: \
+             {FEE_CURRENCY_MALFORMED_RETURN_MARKER} bad bytes"
+        );
+        assert_eq!(classify_fee_hook_failure(&malformed), Some(("balance_of", "malformed_return")));
+        assert_eq!(classify_fee_hook_failure("invalid nonce"), None);
+    }
+
+    #[cfg(feature = "std")]
+    type MetricSnapshot = [(
+        metrics_util::CompositeKey,
+        Option<metrics::Unit>,
+        Option<metrics::SharedString>,
+        metrics_util::debugging::DebugValue,
+    )];
+
+    #[cfg(feature = "std")]
+    fn assert_fee_failure_counters(
+        snapshot: &MetricSnapshot,
+        expected: &[(&'static str, &'static str, u64)],
+    ) {
+        use metrics_util::debugging::DebugValue;
+
+        let actual: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == "celo_payload_fee_currency_failures_total")
+            .map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => (key.key().clone(), *count),
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(phase, kind, count)| {
+                (
+                    metrics::Key::from_parts(
+                        "celo_payload_fee_currency_failures_total",
+                        &[("phase", *phase), ("kind", *kind)],
+                    ),
+                    *count,
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected, "all failure counter series must match");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn real_fee_hook_reverts_emit_their_phase_metric() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        for (answered_calldata_size, phase) in [
+            (0, "balance_of"),
+            (BALANCE_OF_CALLDATA_SIZE, "debit"),
+            (DEBIT_CALLDATA_SIZE, "credit"),
+        ] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let fc = Address::with_last_byte(0xF2);
+            let error = metrics::with_local_recorder(&recorder, || {
+                transact_cip64_with_token_code(
+                    FeeCurrencyBlocklist::default(),
+                    fc,
+                    fee_currency_stub(answered_calldata_size, &[0x60, 0x00, 0x60, 0x00, 0xfd]),
+                )
+            });
+            assert!(error.contains(FEE_CURRENCY_REVERT_MARKER), "expected revert: {error}");
+            assert_fee_failure_counters(
+                &snapshotter.snapshot().into_vec(),
+                &[(phase, "revert", 1)],
+            );
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn cip64_insufficient_balance_has_a_failure_phase_metric() {
+        use metrics_util::debugging::DebuggingRecorder;
+        use revm::state::{AccountInfo, Bytecode};
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let fc = Address::with_last_byte(0xF1);
+        let err = metrics::with_local_recorder(&recorder, || {
+            let mut evm = make_test_evm(FeeCurrencyBlocklist::default());
+            // Return a valid zero balance so the typed max-fee affordability check fails.
+            evm.db_mut().insert_account_info(
+                fc,
+                AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[
+                    0x60, 0x20, 0x60, 0x00, 0xf3,
+                ]))),
+            );
+            run_cip64_debit(&mut evm, fc)
+        });
+        assert!(err.contains("LackOfFundForMaxFee"), "expected typed affordability failure: {err}");
+        assert_fee_failure_counters(
+            &snapshotter.snapshot().into_vec(),
+            &[("affordability", "insufficient_balance", 1)],
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn disabled_blocklist_emits_no_failure_counters() {
+        use metrics_util::debugging::DebuggingRecorder;
+        use revm::state::{AccountInfo, Bytecode};
+
+        for (code, marker) in [
+            (fee_currency_stub(0, &[0x60, 0x00, 0x60, 0x00, 0xfd]), FEE_CURRENCY_REVERT_MARKER),
+            (fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0xfe]), FEE_CURRENCY_HALT_MARKER),
+            (Bytes::from_static(&[0x00]), FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            (Bytes::from_static(&[0x60, 0x20, 0x60, 0x00, 0xf3]), "LackOfFundForMaxFee"),
+        ] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let fc = Address::with_last_byte(0xF3);
+            let blocklist = FeeCurrencyBlocklist::default();
+            let error = metrics::with_local_recorder(&recorder, || {
+                let mut evm = make_test_evm(blocklist.clone());
+                evm.blocklist_enabled = false;
+                evm.db_mut()
+                    .insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+                run_cip64_debit(&mut evm, fc)
+            });
+            assert!(error.contains(marker), "expected {marker}: {error}");
+            assert!(!blocklist.is_blocked(fc));
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_fee_failure_counters(&snapshot, &[]);
+            assert!(
+                snapshot
+                    .iter()
+                    .all(|(key, _, _, _)| key.key().name() != "celo_payload_skipped_total")
+            );
+        }
     }
 
     /// `transact_raw` must NOT reject a blocklisted currency: `base_fee_check_enabled`
@@ -1398,9 +1630,9 @@ mod tests {
              currency; got error: {err}"
         );
 
-        let skipped: u64 = snapshotter
-            .snapshot()
-            .into_vec()
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_fee_failure_counters(&snapshot, &[("debit", "evm_error", 1)]);
+        let skipped: u64 = snapshot
             .into_iter()
             .filter(|(ck, _, _, _)| {
                 ck.key().name() == "celo_payload_skipped_total"
