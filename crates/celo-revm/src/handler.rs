@@ -1004,7 +1004,9 @@ where
 
     fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
         self.validate_env(evm)?;
-        self.validate_celo_initial_tx_gas(evm)
+        let mut init_and_floor_gas = self.validate_celo_initial_tx_gas(evm)?;
+        self.validate_against_state_and_deduct_caller(evm, &mut init_and_floor_gas)?;
+        Ok(init_and_floor_gas)
     }
 
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
@@ -3406,5 +3408,123 @@ mod tests {
         assert_eq!(cip64.initial_state_gas, native.initial_state_gas);
     }
 
+    /// Caller validation moved into `Handler::validate` in revm 42. Both execution
+    /// entry points must still deduct fees and increment the sender nonce once.
+    #[rstest]
+    #[case::native_transact(false, false)]
+    #[case::native_inspect(false, true)]
+    #[case::cip64_transact(true, false)]
+    #[case::cip64_inspect(true, true)]
+    fn upstream_validation_deducts_fees_once(#[case] cip64: bool, #[case] inspect: bool) {
+        use revm::inspector::InspectEvm;
+
+        let sender = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xbb);
+        let initial_fc_balance = U256::from(1_000_000_000_000u64);
+        let initial_native_balance = U256::from(1_000_000_000_000_000_000u64);
+        let mut evm = build_cip64_ctx(
+            make_celo_test_db_with_fee_currency(sender, initial_fc_balance),
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(Address::ZERO),
+            200_000,
+            100,
+            10,
+            1,
+        )
+        .modify_tx_chained(|tx| {
+            if !cip64 {
+                tx.op_tx.base.tx_type = CeloTxType::Eip1559 as u8;
+                tx.fee_currency = None;
+            }
+        })
+        .build_celo();
+        let tx = evm.ctx().tx().clone();
+        let result = if inspect {
+            evm.inspect_one_tx(tx)
+        } else {
+            evm.transact_one(tx)
+        }
+        .expect("funded transaction must execute");
+        assert!(result.is_success(), "transaction failed: {result:?}");
+        let state = evm.finalize();
+        assert_eq!(
+            state[&sender].info.nonce, 1,
+            "caller nonce must increment once"
+        );
+        if cip64 {
+            let mut input = [0u8; 64];
+            input[12..32].copy_from_slice(sender.as_slice());
+            let slot = U256::from_be_bytes(alloy_primitives::keccak256(input).0);
+            assert_eq!(
+                state[&TEST_FEE_CURRENCY].storage[&slot].present_value,
+                initial_fc_balance - U256::from(result.tx_gas_used()) * U256::from(12),
+                "fee-currency debit and refund must charge the execution once",
+            );
+            assert_eq!(state[&sender].info.balance, initial_native_balance);
+        } else {
+            assert_eq!(
+                state[&sender].info.balance,
+                initial_native_balance - U256::from(result.tx_gas_used()) * U256::from(11),
+                "native fee deduction and refund must charge the execution once",
+            );
+        }
+    }
+
+    #[rstest]
+    #[case::native_transact(false, false)]
+    #[case::native_inspect(false, true)]
+    #[case::cip64_transact(true, false)]
+    #[case::cip64_inspect(true, true)]
+    fn upstream_validation_rejects_stale_nonce(#[case] cip64: bool, #[case] inspect: bool) {
+        use revm::inspector::InspectEvm;
+
+        let sender = Address::with_last_byte(0xaa);
+        let mut db = make_celo_test_db_with_fee_currency(sender, U256::from(1_000_000_000_000u64));
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                nonce: 1,
+                balance: U256::from(1_000_000_000_000_000_000u64),
+                ..Default::default()
+            },
+        );
+        let mut evm = build_cip64_ctx(
+            db,
+            sender,
+            Address::with_last_byte(0xbb),
+            0,
+            TxKind::Call(Address::ZERO),
+            200_000,
+            100,
+            10,
+            1,
+        )
+        .modify_tx_chained(|tx| {
+            if !cip64 {
+                tx.op_tx.base.tx_type = CeloTxType::Eip1559 as u8;
+                tx.fee_currency = None;
+            }
+        })
+        .build_celo();
+        let tx = evm.ctx().tx().clone();
+        let error = if inspect {
+            evm.inspect_one_tx(tx)
+        } else {
+            evm.transact_one(tx)
+        }
+        .expect_err("stale nonce must fail before execution");
+        assert!(
+            matches!(
+                error,
+                EVMError::Transaction(OpTransactionError::Base(
+                    InvalidTransaction::NonceTooLow { .. }
+                ))
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(evm.finalize()[&sender].info.nonce, 1);
+    }
 
 }
