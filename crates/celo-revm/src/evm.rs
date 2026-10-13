@@ -289,7 +289,7 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::FJORD;
 
         let initial_gas =
-            calculate_initial_tx_gas(SPEC_ID.into(), &[], false, 0, 0, 0).initial_total_gas();
+            calculate_initial_tx_gas(SPEC_ID.into(), &[], false, 0, 0, 0, None).initial_total_gas();
 
         Context::celo()
             .modify_tx_chained(|tx| {
@@ -338,8 +338,8 @@ mod tests {
         op_revm::L1BlockInfo,
     > {
         let input = Bytes::from([1; GRANITE_MAX_INPUT_SIZE + 2]);
-        let initial_gas =
-            calculate_initial_tx_gas(spec.into(), &input[..], false, 0, 0, 0).initial_total_gas();
+        let initial_gas = calculate_initial_tx_gas(spec.into(), &input[..], false, 0, 0, 0, None)
+            .initial_total_gas();
 
         Context::celo()
             .modify_tx_chained(|tx| {
@@ -448,8 +448,9 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
         let input = Bytes::from([1; bls12_381_const::G1_MSM_INPUT_LENGTH]);
-        let initial_gas = calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0)
-            .initial_total_gas();
+        let initial_gas =
+            calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0, None)
+                .initial_total_gas();
         let gs1_msm_gas = bls12_381_utils::msm_required_gas(
             1,
             &bls12_381_const::DISCOUNT_TABLE_G1_MSM,
@@ -586,8 +587,9 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
         let input = Bytes::from([1; bls12_381_const::G2_MSM_INPUT_LENGTH]);
-        let initial_gas = calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0)
-            .initial_total_gas();
+        let initial_gas =
+            calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0, None)
+                .initial_total_gas();
         let gs2_msm_gas = bls12_381_utils::msm_required_gas(
             1,
             &bls12_381_const::DISCOUNT_TABLE_G2_MSM,
@@ -670,8 +672,9 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
         let input = Bytes::from([1; bls12_381_const::PAIRING_INPUT_LENGTH]);
-        let initial_gas = calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0)
-            .initial_total_gas();
+        let initial_gas =
+            calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0, None)
+                .initial_total_gas();
 
         let pairing_gas: u64 =
             bls12_381_const::PAIRING_MULTIPLIER_BASE + bls12_381_const::PAIRING_OFFSET_BASE;
@@ -752,8 +755,9 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
         let input = Bytes::from([1; bls12_381_const::PADDED_FP_LENGTH]);
-        let initial_gas = calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0)
-            .initial_total_gas();
+        let initial_gas =
+            calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0, None)
+                .initial_total_gas();
 
         Context::celo()
             .modify_tx_chained(|tx| {
@@ -814,8 +818,9 @@ mod tests {
         const SPEC_ID: OpSpecId = OpSpecId::ISTHMUS;
 
         let input = Bytes::from([1; bls12_381_const::PADDED_FP2_LENGTH]);
-        let initial_gas = calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0)
-            .initial_total_gas();
+        let initial_gas =
+            calculate_initial_tx_gas(SPEC_ID.into(), &input[..], false, 0, 0, 0, None)
+                .initial_total_gas();
 
         Context::celo()
             .modify_tx_chained(|tx| {

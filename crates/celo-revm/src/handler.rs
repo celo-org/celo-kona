@@ -25,7 +25,7 @@ use revm::{
     context::{LocalContextTr, journal::JournalInner, result::InvalidTransaction},
     context_interface::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        cfg::GasId,
+        cfg::{GasId, gas_params::Eip2780TxInfo},
         journaled_state::account::JournaledAccountTr,
         result::{ExecutionResult, FromStringError},
     },
@@ -37,7 +37,7 @@ use revm::{
         validation::{validate_initial_tx_gas_with_gas_params, validate_priority_fee_tx},
     },
     inspector::InspectorHandler,
-    interpreter::{InitialAndFloorGas, InterpreterResult, interpreter::EthInterpreter},
+    interpreter::{GasTracker, InitialAndFloorGas, InterpreterResult, interpreter::EthInterpreter},
     primitives::U256,
 };
 use std::{boxed::Box, format, string::ToString, vec::Vec};
@@ -843,13 +843,19 @@ where
         let ctx = evm.ctx_ref();
         let cfg = ctx.cfg();
         let spec = *cfg.spec();
+        let eip2780 = cfg.is_amsterdam_eip2780_enabled().then(|| Eip2780TxInfo {
+            value: ctx.tx().value(),
+            is_self_transfer: ctx.tx().kind().to() == Some(&ctx.tx().caller()),
+        });
 
         let surcharged;
         let gas_params = if surcharge == 0 {
             cfg.gas_params()
         } else {
             let mut params = cfg.gas_params().clone();
-            let base = params.initial_tx_gas_for_tx(ctx.tx()).initial_regular_gas();
+            let base = params
+                .initial_tx_gas_for_tx(ctx.tx(), eip2780)
+                .initial_regular_gas();
             let clamped = surcharge.min(u64::MAX - base);
             params.override_gas([(
                 GasId::tx_base_stipend(),
@@ -866,6 +872,7 @@ where
             cfg.is_eip7623_disabled(),
             cfg.is_amsterdam_eip8037_enabled(),
             cfg.tx_gas_limit_cap(),
+            eip2780,
         )
         .map_err(Into::into)
     }
@@ -1197,11 +1204,10 @@ where
     fn last_frame_result(
         &mut self,
         evm: &mut Self::Evm,
-        original_reservoir: u64,
         frame_result: &mut FrameResult,
+        parent_gas: &mut GasTracker,
     ) -> Result<(), Self::Error> {
-        self.op
-            .last_frame_result(evm, original_reservoir, frame_result)
+        self.op.last_frame_result(evm, frame_result, parent_gas)
     }
 
     fn reimburse_caller(
@@ -1233,7 +1239,12 @@ where
         Ok(())
     }
 
-    fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
+    fn refund(
+        &self,
+        evm: &mut Self::Evm,
+        exec_result: &mut FrameResult,
+        eip7702_refund: i64,
+    ) -> Result<(), Self::Error> {
         self.op.refund(evm, exec_result, eip7702_refund)
     }
 
@@ -1413,10 +1424,11 @@ mod tests {
         let mut handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
 
+        let mut tx_gas = handler.tx_gas(&mut evm, &InitialAndFloorGas::new(0, 0));
         handler
-            .last_frame_result(&mut evm, 0, &mut exec_result)
+            .last_frame_result(&mut evm, &mut exec_result, &mut tx_gas)
             .unwrap();
-        handler.refund(&mut evm, &mut exec_result, 0);
+        handler.refund(&mut evm, &mut exec_result, 0).unwrap();
         *exec_result.gas()
     }
 
@@ -3168,7 +3180,7 @@ mod tests {
         let gas_limit = ctx.tx().gas_limit();
         let spec = *ctx.cfg().spec();
 
-        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec());
+        let mut gas = calculate_initial_tx_gas_for_tx(ctx.tx(), spec.into_eth_spec(), None);
 
         if fee_currency.is_some() {
             let intrinsic_gas_for_erc20 = evm
@@ -3393,4 +3405,6 @@ mod tests {
         );
         assert_eq!(cip64.initial_state_gas, native.initial_state_gas);
     }
+
+
 }
