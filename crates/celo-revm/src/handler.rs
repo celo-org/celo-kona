@@ -1009,6 +1009,10 @@ where
         Ok(init_and_floor_gas)
     }
 
+    fn tx_gas(&self, evm: &mut Self::Evm, init_and_floor_gas: &InitialAndFloorGas) -> GasTracker {
+        self.op.tx_gas(evm, init_and_floor_gas)
+    }
+
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         self.load_fee_currency_context(evm)?;
         // Do not perform any extra validation for deposit transactions, they are pre-verified on
@@ -3527,4 +3531,145 @@ mod tests {
         assert_eq!(evm.finalize()[&sender].info.nonce, 1);
     }
 
+    fn cold_sload_burner_runtime() -> Bytes {
+        let mut code = Vec::new();
+        for slot in 0u8..16 {
+            code.extend_from_slice(&[0x60, slot, 0x54, 0x50]);
+        }
+        code.push(0x00);
+        Bytes::from(code)
+    }
+
+    #[rstest]
+    #[case::transact(false)]
+    #[case::inspect(true)]
+    fn upstream_deposit_is_exempt_from_tx_gas_cap(#[case] inspect: bool) {
+        use revm::{bytecode::Bytecode, inspector::InspectEvm};
+
+        const CAP: u64 = 30_000;
+        let target = Address::with_last_byte(0x44);
+        let runtime = cold_sload_burner_runtime();
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            target,
+            AccountInfo {
+                code_hash: alloy_primitives::keccak256(&runtime),
+                code: Some(Bytecode::new_raw(runtime)),
+                ..Default::default()
+            },
+        );
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::KARST;
+                cfg.tx_gas_limit_cap = Some(CAP);
+            })
+            .modify_block_chained(|block| block.gas_limit = 60_000_000)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.gas_limit = 200_000;
+                tx.op_tx.base.kind = TxKind::Call(target);
+                tx.op_tx.deposit.source_hash = B256::from([0x11; 32]);
+            })
+            .build_celo();
+        let tx = evm.ctx().tx().clone();
+        let result = if inspect {
+            evm.inspect_tx(tx)
+        } else {
+            evm.transact(tx)
+        }
+        .expect("deposit must not be rejected")
+        .result;
+        assert!(
+            result.is_success(),
+            "deposit must receive its full gas limit: {result:?}"
+        );
+        assert!(
+            result.tx_gas_used() > CAP,
+            "burner must actually exceed the cap"
+        );
+    }
+
+    #[rstest]
+    #[case::explicit(Some(30_000), 200_000)]
+    #[case::spec_derived(None, 2 * revm::primitives::eip7825::TX_GAS_LIMIT_CAP)]
+    fn upstream_tx_gas_lifts_cap_for_deposits_only(
+        #[case] resting_cap: Option<u64>,
+        #[case] gas_limit: u64,
+    ) {
+        let cap = resting_cap.unwrap_or(revm::primitives::eip7825::TX_GAS_LIMIT_CAP);
+        let intrinsic = InitialAndFloorGas::new(21_000, 0);
+        let mut evm = Context::celo()
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = OpSpecId::KARST;
+                cfg.tx_gas_limit_cap = resting_cap;
+            })
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.tx_type = DEPOSIT_TRANSACTION_TYPE;
+                tx.op_tx.base.gas_limit = gas_limit;
+                tx.op_tx.deposit.source_hash = B256::from([0x11; 32]);
+            })
+            .build_celo();
+        let handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let gas = handler.tx_gas(&mut evm, &intrinsic);
+        assert_eq!((gas.remaining(), gas.reservoir()), (gas_limit - 21_000, 0));
+        evm.ctx().tx.op_tx.deposit.source_hash = B256::ZERO;
+        evm.ctx().tx.op_tx.base.tx_type = CeloTxType::Eip1559 as u8;
+        let gas = handler.tx_gas(&mut evm, &intrinsic);
+        assert_eq!(
+            (gas.remaining(), gas.reservoir()),
+            (cap - 21_000, gas_limit - cap)
+        );
+        assert_eq!(evm.ctx().cfg().tx_gas_limit_cap, resting_cap);
+    }
+
+    #[rstest]
+    #[case::native_transact(false, false)]
+    #[case::native_inspect(false, true)]
+    #[case::cip64_transact(true, false)]
+    #[case::cip64_inspect(true, true)]
+    fn upstream_non_deposit_above_cap_is_rejected(#[case] cip64: bool, #[case] inspect: bool) {
+        use revm::inspector::InspectEvm;
+
+        let sender = Address::with_last_byte(0xaa);
+        let mut evm = build_cip64_ctx(
+            make_celo_test_db_with_fee_currency(sender, U256::from(1_000_000_000_000u64)),
+            sender,
+            Address::with_last_byte(0xbb),
+            0,
+            TxKind::Call(Address::ZERO),
+            200_000,
+            100,
+            10,
+            1,
+        )
+        .modify_tx_chained(|tx| {
+            if !cip64 {
+                tx.op_tx.base.tx_type = CeloTxType::Eip1559 as u8;
+                tx.fee_currency = None;
+            }
+        })
+        .modify_cfg_chained(|cfg| {
+            cfg.spec = OpSpecId::KARST;
+            cfg.tx_gas_limit_cap = Some(30_000);
+        })
+        .build_celo();
+        let tx = evm.ctx().tx().clone();
+        let error = if inspect {
+            evm.inspect_one_tx(tx)
+        } else {
+            evm.transact_one(tx)
+        }
+        .expect_err("non-deposit must obey the gas cap");
+        assert!(
+            matches!(
+                error,
+                EVMError::Transaction(OpTransactionError::Base(
+                    InvalidTransaction::TxGasLimitGreaterThanCap { .. }
+                ))
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
 }
