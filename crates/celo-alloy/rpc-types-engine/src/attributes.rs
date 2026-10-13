@@ -156,18 +156,27 @@ mod test {
         assert!(attributes.celo_decoded_transactions().next().unwrap().is_err());
     }
 
-    /// A bare CIP-64 body (type byte stripped) decodes to a transaction but re-encodes
-    /// differently, so it must be rejected rather than silently canonicalised. See
-    /// ethereum-optimism/optimism#22778.
+    /// A legacy transaction with a `0x00` type tag decodes but does not re-encode to the same
+    /// bytes. It must be rejected, not silently canonicalised.
     #[test]
     fn test_celo_decoded_transactions_reject_non_canonical_encoding() {
-        let encoded = cip64_envelope().encoded_2718();
-        assert_eq!(encoded[0], 0x7b);
-        let bare: alloy_primitives::Bytes = alloy_primitives::Bytes::copy_from_slice(&encoded[1..]);
+        let legacy = alloy_consensus::TxLegacy {
+            chain_id: Some(42220),
+            nonce: 1,
+            gas_limit: 21_000,
+            gas_price: 2,
+            to: Address::ZERO.into(),
+            value: Default::default(),
+            input: Default::default(),
+        }
+        .into_signed(Signature::test_signature())
+        .encoded_2718();
+        let mut tagged = vec![0x00];
+        tagged.extend_from_slice(&legacy);
 
         let attributes =
-            OpPayloadAttributes { transactions: Some(vec![bare]), ..Default::default() };
+            OpPayloadAttributes { transactions: Some(vec![tagged.into()]), ..Default::default() };
 
-        assert!(attributes.celo_decoded_transactions().next().unwrap().is_err());
+        attributes.celo_decoded_transactions().next().unwrap().unwrap_err();
     }
 }
