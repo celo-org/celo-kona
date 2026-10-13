@@ -32,6 +32,12 @@ pub trait CeloExecutorTr {
         attributes: OpPayloadAttributes,
     ) -> Result<CeloBlockBuildingOutcome, Self::Error>;
 
+    /// Whether an execution error proves the derived payload invalid.
+    ///
+    /// Only such errors permit the driver to replace the payload with a deposit-only block.
+    /// Missing state, provider failures, and internal errors must not invalidate a channel.
+    fn is_invalid_payload_error(error: &Self::Error) -> bool;
+
     /// Computes the output root.
     /// Expected to be called after the payload has been executed.
     fn compute_output_root(&mut self) -> Result<B256, Self::Error>;
