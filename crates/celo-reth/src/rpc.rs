@@ -37,7 +37,7 @@ use reth_node_api::{FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_rpc::{OpEthApi, SequencerClient, eth::receipt::OpReceiptFieldsBuilder};
-use reth_primitives_traits::{SealedBlock, SignedTransaction};
+use reth_primitives_traits::{SealedBlock, SealedHeaderFor, SignedTransaction};
 use reth_rpc_eth_api::{
     FullEthApiServer, RpcConvert, RpcConverter, RpcTypes, SignTxRequestError, SignableTxRequest,
     TryIntoSimTx,
@@ -86,6 +86,7 @@ pub struct CeloRpcTypes;
 impl RpcTypes for CeloRpcTypes {
     type Header = alloy_rpc_types_eth::Header;
     type Receipt = CeloTransactionReceipt;
+    type Log = Log;
     type TransactionRequest = CeloTransactionRequest;
     type TransactionResponse = CeloRpcTransaction;
 }
@@ -405,7 +406,17 @@ where
         + 'static,
 {
     type RpcReceipt = CeloTransactionReceipt;
+    type RpcLog = Log;
     type Error = reth_optimism_rpc::OpEthApiError;
+
+    fn convert_log(
+        &self,
+        log: Log,
+        _receipt: &CeloReceipt,
+        _header: &SealedHeaderFor<CeloPrimitives>,
+    ) -> Result<Self::RpcLog, Self::Error> {
+        Ok(log)
+    }
 
     fn convert_receipts(
         &self,
