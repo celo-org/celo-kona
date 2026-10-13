@@ -37,3 +37,9 @@ op-alloy-rpc-types-engine.workspace = true
 async-trait.workspace = true
 spin.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+alloy-evm.workspace = true
+kona-executor.workspace = true
+kona-genesis.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
