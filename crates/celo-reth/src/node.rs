@@ -648,7 +648,7 @@ impl<ChainSpec> CeloConsensus<ChainSpec> {
 
 impl<N, ChainSpec> FullConsensus<N> for CeloConsensus<ChainSpec>
 where
-    N: NodePrimitives<Receipt: DepositReceipt>,
+    N: NodePrimitives<Receipt: DepositReceipt, SignedTx: op_alloy_consensus::OpTransaction>,
     ChainSpec: EthChainSpec<Header = N::BlockHeader> + OpHardforks + core::fmt::Debug + Send + Sync,
 {
     fn validate_block_post_execution(
@@ -776,7 +776,10 @@ where
     Node: FullNodeTypes<
         Types: NodeTypes<
             ChainSpec: OpHardforks + EthereumHardforks,
-            Primitives: NodePrimitives<Receipt: DepositReceipt>,
+            Primitives: NodePrimitives<
+                Receipt: DepositReceipt,
+                SignedTx: op_alloy_consensus::OpTransaction,
+            >,
         >,
     >,
 {
