@@ -1756,6 +1756,7 @@ fn apply_exchange_rates_to_pool_tx(
                 access_list_accounts,
                 access_list_storage_keys,
                 authorization_list_num,
+                None,
             )
             .initial_total_gas();
             let required = standard_intrinsic.saturating_add(fc_intrinsic);
