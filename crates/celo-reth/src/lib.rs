@@ -393,7 +393,8 @@ where
 
     /// Builds the generic next-block executor. Local fee-currency policies require the enclosing
     /// pool-enabled payload-service attempt; entering this method alone does not opt in.
-    /// The current OpEthApi overrides the generic pending-block build path.
+    /// `OpEthApi::local_pending_block` and `OpEthApi::local_pending_state` override the generic
+    /// pending-block build path.
     fn builder_for_next_block<'a, DB: Database + 'a>(
         &'a self,
         db: &'a mut revm::database::State<DB>,
