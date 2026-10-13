@@ -3531,6 +3531,57 @@ mod tests {
         assert_eq!(evm.finalize()[&sender].info.nonce, 1);
     }
 
+    #[rstest]
+    #[case::replay(false)]
+    #[case::inspect(true)]
+    fn upstream_failed_replay_clears_journal(#[case] inspect: bool) {
+        use revm::inspector::InspectEvm;
+
+        let sender = Address::with_last_byte(0xaa);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                nonce: 1,
+                balance: U256::from(1_000_000_000_000_000_000u64),
+                ..Default::default()
+            },
+        );
+        let mut evm = Context::celo()
+            .with_db(db)
+            .modify_tx_chained(|tx| {
+                tx.op_tx.base.caller = sender;
+                tx.op_tx.base.gas_limit = 100_000;
+                tx.op_tx.base.chain_id = Some(0);
+                tx.op_tx.base.nonce = 0;
+                tx.op_tx.enveloped_tx = Some(bytes!("FACADE"));
+            })
+            .modify_cfg_chained(|cfg| {
+                cfg.chain_id = 0;
+                cfg.spec = OpSpecId::REGOLITH;
+            })
+            .build_celo();
+        let tx = evm.ctx().tx().clone();
+        let result = if inspect {
+            evm.inspect_tx(tx)
+        } else {
+            evm.replay()
+        };
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(OpTransactionError::Base(
+                    InvalidTransaction::NonceTooLow { .. }
+                )))
+            ),
+            "stale nonce must exercise the error path: {result:?}"
+        );
+        assert!(
+            evm.finalize().is_empty(),
+            "failed replay must clear all journal accounts"
+        );
+    }
+
     fn cold_sload_burner_runtime() -> Bytes {
         let mut code = Vec::new();
         for slot in 0u8..16 {
