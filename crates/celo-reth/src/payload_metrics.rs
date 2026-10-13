@@ -528,7 +528,10 @@ impl<P: StateProofProvider> StateProofProvider for PayloadMetricsStateProvider<P
 }
 
 impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsStateProvider<P> {
-    fn hashed_post_state(&self, bundle_state: &revm::database::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &revm::database::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         let started = Instant::now();
         let hashed_state = self.inner.hashed_post_state(bundle_state);
         if let Some(has_best_payload) = self.has_best_payload {
@@ -538,13 +541,14 @@ impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsState
                 "has_best_payload" => has_best_label,
             )
             .record(started.elapsed().as_secs_f64());
-            metrics::histogram!(
-                "celo_payload_hashed_post_state_size",
-                "has_best_payload" => has_best_label,
-            )
-            // `chunking_length` is reth's own measure of the work the trie walk has to do:
-            // changed accounts plus changed slots, counting a wiped storage as one entry.
-            .record(hashed_state.chunking_length() as f64);
+            if let Ok(state) = &hashed_state {
+                metrics::histogram!(
+                    "celo_payload_hashed_post_state_size",
+                    "has_best_payload" => has_best_label,
+                )
+                // Count changed accounts and slots, with wiped storage as one entry.
+                .record(state.chunking_length() as f64);
+            }
         }
         hashed_state
     }
@@ -1112,7 +1116,7 @@ mod tests {
             drop(builder);
 
             let provider = observed_provider(NoopProvider::default());
-            let hashed = provider.hashed_post_state(&Default::default());
+            let hashed = provider.hashed_post_state(&Default::default()).unwrap();
             let _ = provider.state_root_with_updates(hashed);
         });
 
@@ -1132,7 +1136,7 @@ mod tests {
         metrics::with_local_recorder(&recorder, || {
             with_attempt_context(false, true, CancelOnDrop::default(), || {
                 let provider = observed_provider(NoopProvider::default());
-                let hashed = provider.hashed_post_state(&Default::default());
+                let hashed = provider.hashed_post_state(&Default::default()).unwrap();
                 assert_eq!(hashed, HashedPostState::default());
                 assert_eq!(
                     provider.state_root_with_updates(hashed).unwrap(),
