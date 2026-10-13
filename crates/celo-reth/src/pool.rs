@@ -58,8 +58,11 @@ impl CeloPoolMetrics {
     fn exchange_rate_lookup() {
         metrics::counter!("celo_pool_exchange_rate_lookups_total").increment(1);
     }
-    fn pool_eviction(count: u64) {
-        metrics::counter!("celo_pool_maintainer_evictions_total").increment(count);
+    fn pool_eviction(reason: &'static str, count: u64) {
+        if count != 0 {
+            metrics::counter!("celo_pool_maintainer_evictions_total", "reason" => reason)
+                .increment(count);
+        }
     }
     fn maintainer_failure(reason: &'static str, count: u64) {
         metrics::counter!("celo_pool_maintainer_failures_total", "reason" => reason)
@@ -2025,22 +2028,55 @@ where
 // CeloPoolMaintainer — revalidate pooled CIP-64 txs on canonical updates
 // ---------------------------------------------------------------------------
 
-/// Find pooled CIP-64 transactions that the sender can no longer afford after a canonical state
-/// update. Balances are cached per sender and fee currency so multiple nonces share one lookup.
+/// Result of one canonical `balanceOf` read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CanonicalBalanceRead {
+    Balance(U256),
+    Reverted,
+    MalformedReturn,
+    Uncertain,
+}
+
+struct BalanceRevalidation {
+    insufficient_balance: Vec<TxHash>,
+    reverted_balance: Vec<TxHash>,
+    malformed_balance: Vec<TxHash>,
+    lookup_failures: Vec<(Address, Address)>,
+}
+
+/// The contract call error is produced locally by `process_call_result`; only its leading
+/// `revert:` marker identifies an actual contract revert. Halts and EVM errors stay uncertain.
+fn is_explicit_balance_revert(
+    error: &celo_revm::contracts::core_contracts::CoreContractError,
+) -> bool {
+    matches!(
+        error,
+        celo_revm::contracts::core_contracts::CoreContractError::ExecutionFailed(reason)
+            if reason.starts_with("revert:")
+    )
+}
+
+/// Find pooled CIP-64 transactions that the sender can no longer afford or whose `balanceOf`
+/// explicitly reverted or returned malformed data after a canonical state update. Balances are
+/// cached per sender and fee currency so multiple nonces share one lookup.
 /// Each transaction is checked independently, matching op-geth's fee-currency balance filter.
 /// Reth parks cumulative native-balance overdrafts rather than deleting them, and does not expose
 /// that demotion operation through [`TransactionPool`].
 ///
-/// A failed lookup is returned to the caller and deliberately retains every transaction for the
-/// affected pair. The maintainer is a cleanup path, so uncertain state must not become an eviction.
-fn txs_with_insufficient_fee_currency_balance<'a>(
+/// Provider errors and halts retain every transaction for the affected pair.
+/// The maintainer is a cleanup path, so uncertain state must not become an eviction.
+fn revalidate_fee_currency_balances<'a>(
     transactions: impl IntoIterator<Item = &'a CeloPoolTx>,
     usable_currencies: &HashSet<Address>,
-    mut balance_of: impl FnMut(Address, Address) -> Option<U256>,
-) -> (Vec<TxHash>, Vec<(Address, Address)>) {
-    let mut balances = HashMap::<(Address, Address), Option<U256>>::new();
-    let mut lookup_failures = Vec::new();
-    let mut to_evict = Vec::new();
+    mut balance_of: impl FnMut(Address, Address) -> CanonicalBalanceRead,
+) -> BalanceRevalidation {
+    let mut balances = HashMap::<(Address, Address), CanonicalBalanceRead>::new();
+    let mut result = BalanceRevalidation {
+        insufficient_balance: Vec::new(),
+        reverted_balance: Vec::new(),
+        malformed_balance: Vec::new(),
+        lookup_failures: Vec::new(),
+    };
     let mut evicted = HashSet::new();
 
     for tx in transactions {
@@ -2051,18 +2087,29 @@ fn txs_with_insufficient_fee_currency_balance<'a>(
         let key = (tx.sender(), fee_currency);
         let balance = balances.get(&key).copied().unwrap_or_else(|| {
             let balance = balance_of(key.0, key.1);
-            if balance.is_none() {
-                lookup_failures.push(key);
+            if balance == CanonicalBalanceRead::Uncertain {
+                result.lookup_failures.push(key);
             }
             balances.insert(key, balance);
             balance
         });
-        if balance.is_some_and(|balance| balance < tx.fc_gas_cost()) && evicted.insert(*tx.hash()) {
-            to_evict.push(*tx.hash());
+        match balance {
+            CanonicalBalanceRead::Balance(balance)
+                if balance < tx.fc_gas_cost() && evicted.insert(*tx.hash()) =>
+            {
+                result.insufficient_balance.push(*tx.hash());
+            }
+            CanonicalBalanceRead::Reverted if evicted.insert(*tx.hash()) => {
+                result.reverted_balance.push(*tx.hash());
+            }
+            CanonicalBalanceRead::MalformedReturn if evicted.insert(*tx.hash()) => {
+                result.malformed_balance.push(*tx.hash());
+            }
+            _ => {}
         }
     }
 
-    (to_evict, lookup_failures)
+    result
 }
 
 fn balance_lookup_failure_counts(
@@ -2084,6 +2131,18 @@ where
     Pool: TransactionPool<Transaction = CeloPoolTx>,
 {
     pool.pending_transactions()
+}
+
+/// A stale head can change pool readiness. Recheck balance-based evictions only for transactions
+/// that are still pending; unavailable-currency eviction still covers the whole pool separately.
+fn pending_balance_recheck_candidates<Pool>(
+    pool: &Pool,
+    candidates: &HashSet<TxHash>,
+) -> Vec<Arc<ValidPoolTransaction<CeloPoolTx>>>
+where
+    Pool: TransactionPool<Transaction = CeloPoolTx>,
+{
+    pool.get_pending_transactions_with_predicate(|tx| candidates.contains(tx.hash()))
 }
 
 /// Action to take after comparing a fee-currency scan with the latest canonical head.
@@ -2112,12 +2171,14 @@ struct FeeCurrencyRevalidation {
     to_evict: HashSet<TxHash>,
     unavailable_currency_count: usize,
     insufficient_balance_count: usize,
+    reverted_balance_count: usize,
+    malformed_balance_count: usize,
     lookup_failures: Vec<(Address, Address)>,
 }
 
 /// Monitors canonical state changes and evicts pooled CIP-64 transactions
-/// whose fee currency is no longer usable or whose sender can no longer afford their maximum
-/// fee-currency gas cost.
+/// whose fee currency is no longer usable, whose sender can no longer afford their maximum
+/// fee-currency gas cost, or whose canonical `balanceOf` reverts or returns malformed data.
 pub struct CeloPoolMaintainer<Pool, P> {
     pool: Pool,
     provider: P,
@@ -2250,7 +2311,7 @@ where
         evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
         sender: Address,
         fee_currency: Address,
-    ) -> Option<U256>
+    ) -> CanonicalBalanceRead
     where
         DB: revm::Database,
     {
@@ -2258,22 +2319,38 @@ where
         use celo_revm::contracts::{core_contracts::call_read_only, erc20::IFeeCurrencyERC20};
 
         let calldata = IFeeCurrencyERC20::balanceOfCall { account: sender }.abi_encode();
-        let output =
-            call_read_only(evm, fee_currency, calldata.into(), Some(POOL_SYSTEM_CALL_GAS_LIMIT))
-                .inspect_err(|e| {
-                    tracing::debug!(
-                        target: "celo::pool",
-                        %e,
-                        ?sender,
-                        ?fee_currency,
-                        "Read-only EVM call failed during canonical balance revalidation"
-                    );
-                })
-                .ok()?
-                .0;
+        let output = match call_read_only(
+            evm,
+            fee_currency,
+            calldata.into(),
+            Some(POOL_SYSTEM_CALL_GAS_LIMIT),
+        ) {
+            Ok((output, _, _, _)) => output,
+            Err(error) if is_explicit_balance_revert(&error) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    %error,
+                    ?sender,
+                    ?fee_currency,
+                    "Canonical balanceOf reverted"
+                );
+                return CanonicalBalanceRead::Reverted;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "celo::pool",
+                    %e,
+                    ?sender,
+                    ?fee_currency,
+                    "Read-only EVM call failed during canonical balance revalidation"
+                );
+                return CanonicalBalanceRead::Uncertain;
+            }
+        };
 
-        IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output)
-            .inspect_err(|e| {
+        match IFeeCurrencyERC20::balanceOfCall::abi_decode_returns(&output) {
+            Ok(balance) => CanonicalBalanceRead::Balance(balance),
+            Err(e) => {
                 tracing::debug!(
                     target: "celo::pool",
                     %e,
@@ -2281,8 +2358,11 @@ where
                     ?fee_currency,
                     "Failed to decode canonical fee-currency balance"
                 );
-            })
-            .ok()
+                // The EVM call succeeded, so malformed ABI output is a deterministic contract
+                // failure at this canonical snapshot, matching the admission rejection.
+                CanonicalBalanceRead::MalformedReturn
+            }
+        }
     }
 
     /// Recheck stale eviction candidates against the latest canonical snapshot.
@@ -2341,16 +2421,20 @@ where
             .pool_txs_with_currency(|currency| !usable_currencies.contains(currency))
             .into_iter()
             .collect();
-        let candidate_transactions = self.pool.get_all(candidates.into_iter().collect());
-        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+        let candidate_transactions = pending_balance_recheck_candidates(&self.pool, &candidates);
+        let balance = revalidate_fee_currency_balances(
             candidate_transactions.iter().map(|vtx| &vtx.transaction),
             &usable_currencies,
             |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
         );
         let unavailable_currency_count = unavailable_currency.len();
-        let insufficient_balance_count = insufficient_balance.len();
+        let insufficient_balance_count = balance.insufficient_balance.len();
+        let reverted_balance_count = balance.reverted_balance.len();
+        let malformed_balance_count = balance.malformed_balance.len();
         let mut to_evict = unavailable_currency;
-        to_evict.extend(insufficient_balance);
+        to_evict.extend(balance.insufficient_balance);
+        to_evict.extend(balance.reverted_balance);
+        to_evict.extend(balance.malformed_balance);
 
         Some(FeeCurrencyRevalidation {
             scanned_hash: header.hash(),
@@ -2358,7 +2442,9 @@ where
             to_evict,
             unavailable_currency_count,
             insufficient_balance_count,
-            lookup_failures,
+            reverted_balance_count,
+            malformed_balance_count,
+            lookup_failures: balance.lookup_failures,
         })
     }
 
@@ -2376,12 +2462,21 @@ where
         }
 
         if !result.to_evict.is_empty() {
-            CeloPoolMetrics::pool_eviction(result.to_evict.len() as u64);
+            for (reason, count) in [
+                ("unavailable_currency", result.unavailable_currency_count),
+                ("insufficient_balance", result.insufficient_balance_count),
+                ("balance_of_reverted", result.reverted_balance_count),
+                ("balance_of_malformed_return", result.malformed_balance_count),
+            ] {
+                CeloPoolMetrics::pool_eviction(reason, count as u64);
+            }
             tracing::info!(
                 target: "celo::pool",
                 count = result.to_evict.len(),
                 unavailable_currency = result.unavailable_currency_count,
                 insufficient_balance = result.insufficient_balance_count,
+                balance_of_reverted = result.reverted_balance_count,
+                balance_of_malformed_return = result.malformed_balance_count,
                 "Evicting invalid CIP-64 txs after canonical state update"
             );
             self.pool.remove_transactions(result.to_evict.into_iter().collect());
@@ -2529,23 +2624,29 @@ where
         };
 
         let balance_candidates = balance_revalidation_candidates(&self.pool);
-        let (insufficient_balance, lookup_failures) = txs_with_insufficient_fee_currency_balance(
+        let balance = revalidate_fee_currency_balances(
             balance_candidates.iter().map(|vtx| &vtx.transaction),
             &new_usable_currencies,
             |sender, fee_currency| Self::query_fee_currency_balance(&mut evm, sender, fee_currency),
         );
 
-        let insufficient_balance_count = insufficient_balance.len();
+        let insufficient_balance_count = balance.insufficient_balance.len();
+        let reverted_balance_count = balance.reverted_balance.len();
+        let malformed_balance_count = balance.malformed_balance.len();
         let unavailable_currency_count = unavailable_currency.len();
         let mut to_evict: HashSet<TxHash> = unavailable_currency.into_iter().collect();
-        to_evict.extend(insufficient_balance);
+        to_evict.extend(balance.insufficient_balance);
+        to_evict.extend(balance.reverted_balance);
+        to_evict.extend(balance.malformed_balance);
         let result = FeeCurrencyRevalidation {
             scanned_hash: header.hash(),
             usable_currencies: new_usable_currencies,
             to_evict,
             unavailable_currency_count,
             insufficient_balance_count,
-            lookup_failures,
+            reverted_balance_count,
+            malformed_balance_count,
+            lookup_failures: balance.lookup_failures,
         };
 
         let latest_hash = match self.provider.latest_header() {
@@ -4354,6 +4455,183 @@ mod tests {
             test_pool_with_controls(balance, Arc::new(AtomicU64::new(0)), None)
         }
 
+        fn canonical_balance_provider(
+            fee_currency: Address,
+            token_code: &[u8],
+        ) -> (reth_provider::test_utils::MockEthProvider, Address, B256) {
+            use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+
+            let provider = MockEthProvider::default();
+            let header = Header {
+                number: 1,
+                timestamp: 1,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(0),
+                ..Default::default()
+            };
+            let hash = header.hash_slow();
+            provider.add_block(hash, alloy_consensus::Block { header, body: Default::default() });
+            let directory = Address::with_last_byte(0xDD);
+            // getCurrencies() has four calldata bytes and returns [fee_currency]. Calls with
+            // an argument return the two-word 1:1 exchange rate. No production lookup is mocked.
+            let mut directory_code = alloy_primitives::hex!(
+                "600436146016576001600052600160205260406000f35b6020600052600160205273"
+            )
+            .to_vec();
+            directory_code.extend_from_slice(fee_currency.as_slice());
+            directory_code.extend_from_slice(&alloy_primitives::hex!("60405260606000f3"));
+            provider.add_account(
+                directory,
+                ExtendedAccount::new(0, U256::ZERO).with_bytecode(directory_code.into()),
+            );
+            provider.add_account(
+                fee_currency,
+                ExtendedAccount::new(0, U256::ZERO).with_bytecode(token_code.to_vec().into()),
+            );
+            (provider, directory, hash)
+        }
+
+        async fn assert_balance_failure_evictions(stale: bool) {
+            use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+            // Both fresh scans and stale-candidate rechecks must carry deterministic failures
+            // all the way through the maintainer into real pool removal.
+            for (code, reason) in [
+                (&[0x00][..], Some("balance_of_malformed_return")),
+                (&[0x60, 0x00, 0x60, 0x00, 0xfd][..], Some("balance_of_reverted")),
+                (&[0xfe][..], None),
+                (&[0x60, 0x00, 0x19, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3][..], None),
+            ] {
+                let fc = Address::with_last_byte(0xAA);
+                let sender = Address::with_last_byte(1);
+                let pool = test_pool(100_000);
+                let mut pending_hashes = Vec::new();
+                for nonce in [0, 1] {
+                    let tx = make_test_tx_with_nonce(Some(fc), nonce, 100, 100, 10, sender);
+                    pending_hashes.push(*tx.hash());
+                    pool.add_transaction(TransactionOrigin::External, tx).await.unwrap();
+                }
+                let queued = make_test_tx_with_nonce(Some(fc), 3, 100, 100, 10, sender);
+                let queued_hash = *queued.hash();
+                pool.add_transaction(TransactionOrigin::External, queued).await.unwrap();
+                let native =
+                    make_test_tx_with_nonce(None, 0, 100, 100, 10, Address::with_last_byte(2));
+                let native_hash = *native.hash();
+                pool.add_transaction(TransactionOrigin::External, native).await.unwrap();
+                let (provider, directory, head) = canonical_balance_provider(fc, code);
+                let mut maintainer = CeloPoolMaintainer::new(
+                    pool.clone(),
+                    provider,
+                    directory,
+                    Arc::new(|_| OpSpecId::FJORD),
+                    Arc::new(|_, _| 0),
+                );
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                metrics::with_local_recorder(&recorder, || {
+                    if stale {
+                        let initial = FeeCurrencyRevalidation {
+                            scanned_hash: B256::with_last_byte(0xFF),
+                            usable_currencies: HashSet::from([fc]),
+                            to_evict: pending_hashes.iter().copied().chain([queued_hash]).collect(),
+                            unavailable_currency_count: 0,
+                            insufficient_balance_count: 3,
+                            reverted_balance_count: 0,
+                            malformed_balance_count: 0,
+                            lookup_failures: Vec::new(),
+                        };
+                        maintainer.apply_head_checked_revalidation(
+                            initial,
+                            Some(head),
+                            |this, candidates| {
+                                this.recheck_eviction_candidates(candidates)
+                                    .map(|result| (result, Some(head)))
+                            },
+                        );
+                    } else {
+                        maintainer.on_new_block();
+                    }
+                });
+                assert_eq!(
+                    maintainer.usable_currencies,
+                    Some(HashSet::from([fc])),
+                    "the real directory query must succeed"
+                );
+                for hash in pending_hashes {
+                    assert_eq!(
+                        pool.get(&hash).is_none(),
+                        reason.is_some(),
+                        "wrong removal for reason={reason:?}, stale={stale}"
+                    );
+                }
+                assert!(pool.get(&queued_hash).is_some(), "queued transactions must be retained");
+                assert!(pool.get(&native_hash).is_some(), "native transactions must be retained");
+                let actual: Vec<_> = snapshotter
+                    .snapshot()
+                    .into_vec()
+                    .into_iter()
+                    .filter(|(key, _, _, _)| {
+                        key.key().name() == "celo_pool_maintainer_evictions_total"
+                    })
+                    .map(|(key, _, _, value)| (key.key().clone(), value))
+                    .collect();
+                let expected: Vec<_> = reason
+                    .into_iter()
+                    .map(|reason| {
+                        (
+                            metrics::Key::from_parts(
+                                "celo_pool_maintainer_evictions_total",
+                                &[("reason", reason)],
+                            ),
+                            DebugValue::Counter(2),
+                        )
+                    })
+                    .collect();
+                assert_eq!(actual, expected);
+            }
+        }
+
+        #[tokio::test]
+        async fn canonical_balance_failures_remove_only_pending_transactions() {
+            assert_balance_failure_evictions(false).await;
+        }
+
+        #[tokio::test]
+        async fn stale_balance_recheck_removes_only_pending_transactions() {
+            assert_balance_failure_evictions(true).await;
+        }
+
+        #[test]
+        fn canonical_balance_read_distinguishes_revert_from_halt_and_decode_error() {
+            use revm::{
+                database::InMemoryDB,
+                state::{AccountInfo, Bytecode},
+            };
+
+            let sender = Address::with_last_byte(1);
+            let fc = Address::with_last_byte(0xAA);
+            let read = |code: &[u8]| {
+                let mut db = InMemoryDB::default();
+                db.insert_account_info(
+                    fc,
+                    AccountInfo::from_bytecode(Bytecode::new_raw(code.to_vec().into())),
+                );
+                let fee_fn: NextBlockBaseFeeFn = Arc::new(|_, _| 0);
+                let mut evm = build_pool_evm(db, OpSpecId::FJORD, &Header::default(), &fee_fn);
+                CeloPoolMaintainer::<TestPool, reth_provider::test_utils::MockEthProvider>::query_fee_currency_balance(
+                    &mut evm, sender, fc,
+                )
+            };
+
+            assert_eq!(read(&[0x60, 0x00, 0x60, 0x00, 0xfd]), CanonicalBalanceRead::Reverted);
+            assert_eq!(read(&[0xfe]), CanonicalBalanceRead::Uncertain);
+            assert_eq!(read(&[0x00]), CanonicalBalanceRead::MalformedReturn);
+            assert_eq!(
+                read(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]),
+                CanonicalBalanceRead::Balance(U256::from(42)),
+            );
+        }
+
         fn test_pool_with_state_nonce(balance: u64) -> (TestPool, Arc<AtomicU64>) {
             let state_nonce = Arc::new(AtomicU64::new(0));
             let pool = test_pool_with_controls(balance, state_nonce.clone(), None);
@@ -4415,6 +4693,11 @@ mod tests {
             assert_eq!(candidates.len(), 1);
             assert_eq!(*candidates[0].hash(), pending_hash);
             assert!(candidates.iter().all(|tx| *tx.hash() != queued_hash));
+
+            let stale_hashes = HashSet::from([pending_hash, queued_hash]);
+            let rechecked = pending_balance_recheck_candidates(&pool, &stale_hashes);
+            assert_eq!(rechecked.len(), 1);
+            assert_eq!(*rechecked[0].hash(), pending_hash);
         }
 
         #[tokio::test]
@@ -4436,6 +4719,8 @@ mod tests {
                 to_evict: HashSet::from([tx_hash]),
                 unavailable_currency_count: 0,
                 insufficient_balance_count: 1,
+                reverted_balance_count: 0,
+                malformed_balance_count: 0,
                 lookup_failures: Vec::new(),
             };
             let provider = reth_provider::test_utils::MockEthProvider::default();
@@ -4463,6 +4748,8 @@ mod tests {
                             to_evict: HashSet::new(),
                             unavailable_currency_count: 0,
                             insufficient_balance_count: 0,
+                            reverted_balance_count: 0,
+                            malformed_balance_count: 0,
                             lookup_failures: Vec::new(),
                         },
                         Some(fresh_hash),
@@ -4985,16 +5272,52 @@ mod tests {
 
         // Each tx costs 10_000 and is individually affordable, but the nonce-contiguous
         // prefix costs 20_000 against a balance of 15_000. Input order must not matter.
-        let (to_evict, lookup_failures) =
-            txs_with_insufficient_fee_currency_balance([&second, &first], &registered, |_, _| {
-                Some(U256::from(15_000u64))
-            });
+        let result = revalidate_fee_currency_balances([&second, &first], &registered, |_, _| {
+            CanonicalBalanceRead::Balance(U256::from(15_000u64))
+        });
 
         assert!(
-            to_evict.is_empty(),
+            result.insufficient_balance.is_empty() && result.reverted_balance.is_empty(),
             "canonical maintenance must not delete transactions that reth would park"
         );
-        assert!(lookup_failures.is_empty());
+        assert!(result.lookup_failures.is_empty());
+    }
+
+    #[test]
+    fn canonical_balance_revert_evicts_each_pending_tx_for_the_pair_once() {
+        use std::cell::Cell;
+
+        let fc = Address::with_last_byte(0xAA);
+        let sender = Address::with_last_byte(1);
+        let first = make_test_tx_with_nonce(Some(fc), 0, 100, 100, 10, sender);
+        let second = make_test_tx_with_nonce(Some(fc), 1, 100, 100, 10, sender);
+        let calls = Cell::new(0);
+        let result =
+            revalidate_fee_currency_balances([&first, &second], &HashSet::from([fc]), |_, _| {
+                calls.set(calls.get() + 1);
+                CanonicalBalanceRead::Reverted
+            });
+
+        assert_eq!(calls.get(), 1, "one balanceOf call per sender/currency pair");
+        assert_eq!(
+            HashSet::<TxHash>::from_iter(result.reverted_balance),
+            HashSet::from([*first.hash(), *second.hash()])
+        );
+        assert!(result.insufficient_balance.is_empty());
+        assert!(result.lookup_failures.is_empty());
+    }
+
+    #[test]
+    fn only_explicit_contract_revert_is_an_eviction_signal() {
+        use celo_revm::contracts::core_contracts::CoreContractError;
+
+        assert!(is_explicit_balance_revert(&CoreContractError::ExecutionFailed(
+            "revert: denied".into()
+        )));
+        assert!(!is_explicit_balance_revert(&CoreContractError::ExecutionFailed(
+            "halt: OutOfGas".into()
+        )));
+        assert!(!is_explicit_balance_revert(&CoreContractError::Evm("database failure".into())));
     }
 
     #[test]
@@ -5027,22 +5350,26 @@ mod tests {
         let registered = HashSet::from([fc_a, fc_b]);
         let calls = RefCell::new(HashMap::new());
 
-        let (to_evict, lookup_failures) =
-            txs_with_insufficient_fee_currency_balance(txs, &registered, |sender, fee_currency| {
-                *calls.borrow_mut().entry((sender, fee_currency)).or_insert(0usize) += 1;
-                match (sender, fee_currency) {
-                    (sender, fc) if sender == sender_a && fc == fc_a => Some(U256::from(10_000u64)),
-                    (sender, fc) if sender == sender_b && fc == fc_a => Some(U256::from(9_999u64)),
-                    (sender, fc) if sender == sender_a && fc == fc_b => None,
-                    pair => panic!("unexpected balance lookup for {pair:?}"),
+        let result = revalidate_fee_currency_balances(txs, &registered, |sender, fee_currency| {
+            *calls.borrow_mut().entry((sender, fee_currency)).or_insert(0usize) += 1;
+            match (sender, fee_currency) {
+                (sender, fc) if sender == sender_a && fc == fc_a => {
+                    CanonicalBalanceRead::Balance(U256::from(10_000u64))
                 }
-            });
+                (sender, fc) if sender == sender_b && fc == fc_a => {
+                    CanonicalBalanceRead::Balance(U256::from(9_999u64))
+                }
+                (sender, fc) if sender == sender_a && fc == fc_b => CanonicalBalanceRead::Uncertain,
+                pair => panic!("unexpected balance lookup for {pair:?}"),
+            }
+        });
 
         assert_eq!(
-            HashSet::<TxHash>::from_iter(to_evict),
+            HashSet::<TxHash>::from_iter(result.insufficient_balance),
             HashSet::from([*same_pair_unaffordable.hash(), *different_sender_unaffordable.hash(),])
         );
-        assert_eq!(lookup_failures, vec![(sender_a, fc_b)]);
+        assert!(result.reverted_balance.is_empty());
+        assert_eq!(result.lookup_failures, vec![(sender_a, fc_b)]);
         assert_eq!(
             calls.into_inner(),
             HashMap::from([((sender_a, fc_a), 1), ((sender_b, fc_a), 1), ((sender_a, fc_b), 1),]),

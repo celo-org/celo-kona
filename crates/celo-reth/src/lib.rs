@@ -391,13 +391,10 @@ where
         ))
     }
 
-    /// Builds a block builder for the next block, i.e. the **sequencing** path: reth routes the
-    /// payload builder through this method, while block import and derivation re-execution build
-    /// their EVMs directly via `evm_with_env` + `create_executor` and never reach it. Together
-    /// with the dormant `post_exec_builder_for_next_block`, this is where the fee currency
-    /// blocklist is enabled (`CeloEvm::with_blocklist_enabled`), so blocklist reads/writes are
-    /// confined to sequencing — import and derivation leave the shared blocklist untouched.
-    /// Otherwise identical to the default `ConfigureEvm` implementation.
+    /// Builds the generic next-block executor. Local fee-currency policies require the enclosing
+    /// pool-enabled payload-service attempt; entering this method alone does not opt in.
+    /// `OpEthApi::local_pending_block` and `OpEthApi::local_pending_state` override the generic
+    /// pending-block build path.
     fn builder_for_next_block<'a, DB: Database + 'a>(
         &'a self,
         db: &'a mut revm::database::State<DB>,
@@ -408,12 +405,17 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        let evm = self.evm_with_env(db, evm_env).with_blocklist_enabled();
+        let evm = self.evm_with_env(db, evm_env);
+        #[cfg(feature = "std")]
+        let evm = if crate::payload_metrics::failure_policies_enabled() {
+            evm.with_blocklist_enabled()
+        } else {
+            evm
+        };
         let ctx = self.context_for_next_block(parent, attributes)?;
         let builder = self.create_block_builder(evm, parent, ctx);
-        // Sequencing-only observability: the decorator is transparent, and it emits nothing
-        // unless a `PayloadMetricsBuilder` attempt is active on this thread. no-std proof
-        // builds return the bare builder.
+        // The decorator emits nothing unless a `PayloadMetricsBuilder` attempt is active on
+        // this thread. no-std proof builds return the bare builder.
         #[cfg(feature = "std")]
         let builder = crate::payload_metrics::PayloadMetricsBlockBuilder::new(builder);
         Ok(builder)
@@ -492,11 +494,16 @@ where
         Self::Error,
     > {
         let evm_env = self.next_evm_env(parent, &attributes)?;
-        // Next-block (sequencing-side) builder, so enable the blocklist like
-        // `builder_for_next_block`, and CIP-64 receipt storage like `create_executor`. Dormant on
-        // Celo: SDM/post-exec is unscheduled, so this path is never actually driven.
-        let evm =
-            self.evm_with_env(db, evm_env).with_blocklist_enabled().with_cip64_store_enabled();
+        // Both the payload service and debug_executePayload's witness builder use this method,
+        // even with PostExecMode::Disabled. Only a pool-enabled service attempt opts in to the
+        // shared fee-currency blocklist. Receipt storage is required for every caller here.
+        let evm = self.evm_with_env(db, evm_env).with_cip64_store_enabled();
+        #[cfg(feature = "std")]
+        let evm = if crate::payload_metrics::failure_policies_enabled() {
+            evm.with_blocklist_enabled()
+        } else {
+            evm
+        };
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
         let builder = R::from(evm.cip64_storage().clone());
@@ -510,8 +517,7 @@ where
             parent,
             assembler: self.block_assembler(),
         };
-        // Same sequencing-side instrumentation as `builder_for_next_block`; see there for the
-        // std-only rationale.
+        // Record payload phase metrics only while a `PayloadMetricsBuilder` attempt is active.
         #[cfg(feature = "std")]
         let builder = crate::payload_metrics::PayloadMetricsBlockBuilder::new(builder);
         Ok(builder)
