@@ -23,7 +23,7 @@ use alloy_consensus::{Header, Signed, Transaction, TxEip1559};
 use alloy_primitives::{Address, B256, Signature, TxKind, U256, address, hex, keccak256};
 use celo_alloy_consensus::{CeloPooledTransaction, CeloTxEnvelope, TxCip64};
 use celo_reth::{
-    CeloEvmConfig, ConfigurePostExecEvm, OpNextBlockEnvAttributes, PostExecMode,
+    CeloEvmConfig, OpNextBlockEnvAttributes,
     payload::{CeloPayloadTransactions, FeeCurrencyLimits},
     payload_metrics::PayloadMetricsBuilder,
     pool::{CeloPoolTx, ExchangeRate},
@@ -43,7 +43,7 @@ use reth_evm::{ConfigureEvm, Evm, execute::BlockBuilder};
 use reth_node_api::PayloadBuilderError;
 use reth_optimism_chainspec::{OpChainSpec, OpChainSpecBuilder};
 use reth_optimism_payload_builder::{
-    OpBuiltPayload, OpPayloadBuilderAttributes,
+    OpBuiltPayload, OpPayloadAttrs, OpPayloadBuilderAttributes,
     builder::{ExecutionInfo, OpPayloadBuilderCtx, RethPayloadTransactions},
     config::OpBuilderConfig,
 };
@@ -243,6 +243,29 @@ fn test_payload_config() -> PayloadConfig<OpPayloadBuilderAttributes<CeloTxEnvel
     }
 }
 
+fn test_attempt_config(no_tx_pool: Option<bool>) -> PayloadConfig<OpPayloadAttrs, Header> {
+    let config = test_payload_config();
+    let attrs = config.attributes;
+    PayloadConfig {
+        parent_header: config.parent_header,
+        parent_block_info: None,
+        payload_id: config.payload_id,
+        attributes: OpPayloadAttrs(op_alloy_rpc_types_engine::OpPayloadAttributes {
+            payload_attributes: alloy_rpc_types_engine::PayloadAttributes {
+                timestamp: attrs.timestamp,
+                suggested_fee_recipient: attrs.suggested_fee_recipient,
+                prev_randao: attrs.prev_randao,
+                withdrawals: Some(Vec::new()),
+                parent_beacon_block_root: attrs.parent_beacon_block_root,
+                ..Default::default()
+            },
+            no_tx_pool,
+            gas_limit: attrs.gas_limit,
+            ..Default::default()
+        }),
+    }
+}
+
 /// CIP-64 tx with FC `max_fee` = 10 Gwei: well below the native 25 Gwei base fee, but above the
 /// FC base fee of 25 Gwei * 1/10 = 2.5 Gwei, so fee-currency validation passes.
 fn test_cip64_pool_tx(sender: Address, sig: Signature) -> CeloPoolTx {
@@ -286,7 +309,7 @@ fn next_block_env() -> OpNextBlockEnvAttributes {
 }
 
 #[test]
-fn pending_builder_does_not_blocklist_but_payload_builder_does() {
+fn pending_builder_does_not_blocklist() {
     let sig = Signature::test_signature();
     let sender = test_sender(sig);
     let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
@@ -308,27 +331,147 @@ fn pending_builder_does_not_blocklist_but_payload_builder_does() {
         "pending failure must come from the debit halt: {pending_error}"
     );
     assert!(!blocklist.is_blocked(TEST_FC), "pending block must not mutate shared blocklist");
+}
 
-    let mut payload_db = make_celo_test_db(sender, U256::MAX);
-    payload_db.insert_account_info(TEST_FC, AccountInfo::from_bytecode(halt_on_debit_code()));
-    let mut payload_state = State::builder().with_database(payload_db).with_bundle_update().build();
-    let mut payload = config
-        .post_exec_builder_for_next_block(
-            &mut payload_state,
-            &parent,
-            next_block_env(),
-            PostExecMode::default(),
-        )
-        .expect("payload builder");
-    payload.apply_pre_execution_changes().expect("payload pre-execution");
-    let payload_error = payload
-        .execute_transaction(test_cip64_pool_tx(sender, sig).into_consensus())
-        .expect_err("debit must halt");
-    assert!(
-        format!("{payload_error}").contains(celo_revm::constants::FEE_CURRENCY_HALT_MARKER),
-        "payload failure must come from the debit halt: {payload_error}"
-    );
-    assert!(blocklist.is_blocked(TEST_FC), "sequencing payload must blocklist the currency");
+#[test]
+fn payload_failure_policy_requires_a_pool_enabled_attempt() {
+    for no_tx_pool in [Some(false), None, Some(true)] {
+        let enabled = !no_tx_pool.unwrap_or_default();
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let shared_blocklist = blocklist.clone();
+        let work = move || {
+            let sig = Signature::test_signature();
+            let sender = test_sender(sig);
+            let mut db = make_celo_test_db(sender, U256::MAX);
+            db.insert_account_info(TEST_FC, AccountInfo::from_bytecode(halt_on_debit_code()));
+            let mut state = State::builder().with_database(db).with_bundle_update().build();
+            let chain_spec = test_chain_spec();
+            let mut config = test_payload_config();
+            config.attributes.no_tx_pool = no_tx_pool.unwrap_or_default();
+            let ctx = OpPayloadBuilderCtx {
+                evm_config: CeloEvmConfig::celo_with_blocklist(
+                    chain_spec.clone(),
+                    shared_blocklist,
+                ),
+                builder_config: OpBuilderConfig::default(),
+                chain_spec,
+                config,
+                cancel: Default::default(),
+                best_payload: None,
+            };
+            let mut builder = ctx.block_builder(&mut state).expect("post-exec builder");
+            builder.apply_pre_execution_changes().expect("pre-execution");
+            let error = builder
+                .execute_transaction(test_cip64_pool_tx(sender, sig).into_consensus())
+                .expect_err("debit must halt in both sequencing and derivation");
+            assert!(format!("{error}").contains(celo_revm::constants::FEE_CURRENCY_HALT_MARKER));
+        };
+        metrics::with_local_recorder(&recorder, || {
+            let builder = PayloadMetricsBuilder::new(SequencingProbe::new(work));
+            let args = BuildArguments::new(
+                Default::default(),
+                None,
+                None,
+                test_attempt_config(no_tx_pool),
+                Default::default(),
+                None,
+            );
+            assert!(matches!(builder.try_build(args), Ok(BuildOutcome::Cancelled)));
+        });
+        assert_eq!(blocklist.is_blocked(TEST_FC), enabled);
+        let snapshot = snapshotter.snapshot().into_vec();
+        let failures: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == "celo_payload_fee_currency_failures_total")
+            .collect();
+        assert_eq!(failures.len(), usize::from(enabled));
+        if enabled {
+            let (key, _, _, value) = failures[0];
+            assert_eq!(
+                key.key(),
+                &metrics::Key::from_parts(
+                    "celo_payload_fee_currency_failures_total",
+                    &[("phase", "debit"), ("kind", "halt")],
+                )
+            );
+            assert_eq!(*value, DebugValue::Counter(1));
+        }
+    }
+}
+
+#[test]
+fn witness_execution_does_not_update_failure_policy() {
+    use alloy_eips::eip2718::Encodable2718;
+    use reth_optimism_payload_builder::builder::OpBuilder;
+    use reth_primitives_traits::WithEncoded;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+
+    // Exercise the same upstream witness method used by debug_executePayload. The RPC can
+    // supply either noTxPool value, so neither may opt in to sequencing policy.
+    for no_tx_pool in [false, true] {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let blocklist = alloy_celo_evm::blocklist::FeeCurrencyBlocklist::default();
+        let sig = Signature::test_signature();
+        let sender = test_sender(sig);
+        let mut db = make_celo_test_db(sender, U256::MAX);
+        let token_code = halt_on_debit_code();
+        db.insert_account_info(TEST_FC, AccountInfo::from_bytecode(token_code.clone()));
+        let provider = MockEthProvider::default();
+        for (address, account) in &db.cache.accounts {
+            let code = db
+                .cache
+                .contracts
+                .get(&account.info.code_hash)
+                .map(|code| code.original_bytes())
+                .unwrap_or_default();
+            provider.add_account(
+                *address,
+                ExtendedAccount::new(account.info.nonce, account.info.balance)
+                    .with_bytecode(code)
+                    .extend_storage(
+                        account
+                            .storage
+                            .iter()
+                            .map(|(key, value)| (B256::from(key.to_be_bytes::<32>()), *value)),
+                    ),
+            );
+        }
+        let mut config = test_payload_config();
+        config.attributes.no_tx_pool = no_tx_pool;
+        let tx = test_cip64_pool_tx(sender, sig).into_consensus().into_inner();
+        config.attributes.transactions = vec![WithEncoded::new(tx.encoded_2718().into(), tx)];
+        let chain_spec = test_chain_spec();
+        let ctx = OpPayloadBuilderCtx {
+            evm_config: CeloEvmConfig::celo_with_blocklist(chain_spec.clone(), blocklist.clone()),
+            builder_config: OpBuilderConfig::default(),
+            chain_spec,
+            config,
+            cancel: Default::default(),
+            best_payload: None,
+        };
+        let witness = metrics::with_local_recorder(&recorder, || {
+            OpBuilder::new(|_| reth_payload_util::NoopPayloadTransactions::<CeloPoolTx>::default())
+                .witness(provider, &ctx)
+                .expect("witness execution")
+        });
+        assert!(
+            witness.codes.contains(&token_code.original_bytes()),
+            "the token must execute during witness generation"
+        );
+        assert!(
+            !blocklist.is_blocked(TEST_FC),
+            "witness execution must not mutate sequencing policy"
+        );
+        assert!(snapshotter.snapshot().into_vec().iter().all(|(key, _, _, _)| {
+            !matches!(
+                key.key().name(),
+                "celo_payload_fee_currency_failures_total" | "celo_payload_skipped_total"
+            )
+        }));
+    }
 }
 
 #[test]
@@ -512,7 +655,7 @@ impl SequencingProbe {
 }
 
 impl PayloadBuilder for SequencingProbe {
-    type Attributes = OpPayloadBuilderAttributes<CeloTxEnvelope>;
+    type Attributes = OpPayloadAttrs;
     type BuiltPayload = OpBuiltPayload<CeloPrimitives>;
 
     fn try_build(
@@ -617,7 +760,7 @@ fn payload_metrics_cover_the_whole_sequencing_path() {
             Default::default(),
             None,
             None,
-            test_payload_config(),
+            test_attempt_config(None),
             Default::default(),
             None,
         );

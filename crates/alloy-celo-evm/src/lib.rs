@@ -208,20 +208,21 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     inspect: bool,
     cip64_storage: Cip64Storage,
     blocklist: FeeCurrencyBlocklist,
-    /// Whether this EVM reads from and writes to the fee currency [`blocklist`](Self::blocklist).
+    /// Whether this EVM updates the fee currency [`blocklist`](Self::blocklist).
     ///
-    /// The blocklist is a *local sequencing heuristic*: it records currencies whose debit/credit
-    /// calls *halted* while the node was building a block from its own mempool, so the sequencer
-    /// can skip them for a while. Halts are the only failures that blocklist: contract *reverts*
-    /// are ambiguous (canonically an underfunded sender), and EVM-level call errors are the
-    /// node's own infrastructure faults — neither is evidence against the currency. It must
-    /// therefore only be touched on the sequencing path.
+    /// The blocklist is a *local sequencing heuristic*: it records currencies whose fee calls
+    /// halted or returned malformed balance data while the node was building a block from its
+    /// own mempool, so the sequencer can skip them for a while. Contract *reverts* are ambiguous
+    /// (commonly an underfunded sender), and EVM-level call errors are the node's own
+    /// infrastructure faults; neither is evidence against the currency. The blocklist must
+    /// therefore only be updated on the sequencing path.
     /// Block import and derivation re-execute already-canonical blocks and must produce identical
     /// results regardless of this node's accumulated heuristic, so they leave it alone entirely.
     ///
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`], used by the
-    /// import/derivation executor and RPC). The normal sequencing payload builder flips it to
-    /// `true` via `CeloEvmConfig::post_exec_builder_for_next_block`.
+    /// import/derivation executor and RPC). celo-reth opts in only inside a pool-enabled
+    /// payload-service attempt. Its block-builder methods also serve witness/debug callers,
+    /// so entering a builder method alone never enables this policy.
     blocklist_enabled: bool,
     /// Whether this EVM stores CIP-64 receipt data into its [`Cip64Storage`] after each
     /// transaction.
@@ -234,9 +235,10 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// EVMs are created with this `false` by default ([`CeloEvmFactory::create_evm`]); it is
     /// flipped to `true` only for receipt-building executors:
     /// [`CeloBlockExecutorFactory::create_executor`](block::CeloBlockExecutorFactory), used by
-    /// import, derivation, sequencing and kona proofs, plus celo-reth's normal payload builder
-    /// and dormant post-exec replay executor. The latter two build receipts outside
-    /// `create_executor`. RPC paths such as parity `trace_*`, otterscan `ots_*`, and
+    /// import, derivation, sequencing and kona proofs, plus celo-reth's next-block builders
+    /// and post-exec replay executor, which build receipts outside `create_executor`. The
+    /// post-exec builder also serves witness/debug execution. RPC paths such as parity
+    /// `trace_*`, otterscan `ots_*`, and
     /// `replay_transactions_until` use loose EVMs without receipt building and leave it off.
     cip64_store_enabled: bool,
 }
@@ -310,9 +312,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         }
     }
 
-    /// Enables fee currency blocklist writes for this EVM. Called by the sequencing payload
-    /// builder (`CeloEvmConfig::post_exec_builder_for_next_block`); import, derivation and RPC
-    /// leave it off so they never touch the shared blocklist.
+    /// Enables fee currency blocklist writes for this EVM. celo-reth calls this only inside a
+    /// pool-enabled payload-service attempt; import, forced-only builds and witness/RPC execution
+    /// leave it off. Builder method names alone do not identify the caller's purpose.
     #[must_use]
     pub const fn with_blocklist_enabled(mut self) -> Self {
         self.blocklist_enabled = true;
@@ -385,9 +387,9 @@ where
         let base_fee_check_enabled = !self.ctx().cfg.is_base_fee_check_disabled();
 
         // The fee currency blocklist is a local sequencing heuristic and is only ever touched on
-        // the sequencing path: `blocklist_enabled` is set on EVMs built via
-        // `CeloEvmConfig::post_exec_builder_for_next_block` and left off for import, derivation
-        // re-execution, and RPC. Import and derivation therefore neither read nor write it.
+        // a pool-enabled payload-service attempt: celo-reth's builder reads the scoped caller
+        // context before setting `blocklist_enabled`. Witness/debug and forced-only builds can
+        // use the same builder methods, but never opt in. Import and RPC also leave it off.
         // (The `base_fee_check_enabled` conjunct is redundant given `blocklist_enabled` but
         // kept as an explicit guard against ever enabling the blocklist on an RPC-simulation EVM.)
         //
@@ -506,17 +508,14 @@ where
                         )
                         .increment(1);
                     } else if err_msg.contains(FEE_CURRENCY_HALT_MARKER) {
-                        // Halt (e.g. the debit exhausted its gas budget, or the
-                        // contract executed invalid bytecode) — the one failure
-                        // that is unambiguously the currency's fault: blocklist
-                        // so the payload builder stops retrying every tx of this
-                        // currency.
+                        // A halt (e.g. exhausted gas or invalid bytecode) is a
+                        // currency-level failure: blocklist so the payload builder
+                        // stops retrying every tx of this currency.
                         tracing::warn!(
                             target: "celo",
                             "fee-currency debit/credit halted for {fc}: {e} — blocklisting"
                         );
-                        // The one arm that blocklists: meter it so a blocklist
-                        // addition is alertable on its own, not only via the
+                        // Meter halt-driven blocklisting on its own, not only via the
                         // downstream `reason="blocklisted"` skips that fire
                         // only while further txs of this currency arrive.
                         #[cfg(feature = "std")]
@@ -672,7 +671,7 @@ where
 #[derive(Debug, Default, Clone)]
 pub struct CeloEvmFactory {
     /// Shared fee currency blocklist. EVMs created by this factory *populate* this blocklist
-    /// when a CIP-64 fee-currency debit/credit fails during execution, but only on the sequencing
+    /// when a CIP-64 fee call halts or returns malformed balance data, but only on the sequencing
     /// path (`CeloEvm::with_blocklist_enabled`); import/derivation EVMs leave it untouched. The
     /// sequencing-time payload filter (`CeloFeeCurrencyFilter` in `celo-reth`) reads it to skip
     /// such currencies. `transact_raw` itself never rejects blocklisted currencies. Defaults to
@@ -799,9 +798,9 @@ impl CeloEvmFactory {
             blocklist: self.blocklist.clone(),
             // Off by default: the import/derivation executor and RPC create EVMs through the
             // factory and must not touch the blocklist. Sequencing flips it on via
-            // `with_blocklist_enabled` in `CeloEvmConfig::post_exec_builder_for_next_block`.
+            // `with_blocklist_enabled` only inside a pool-enabled payload-service attempt.
             blocklist_enabled: false,
-            // Off by default; `create_executor` flips it on for receipt-building executors.
+            // Off by default; receipt-building executors and post-exec builders enable it.
             cip64_store_enabled: false,
         }
     }

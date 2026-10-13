@@ -9,8 +9,11 @@ use reth_basic_payload_builder::{
 use reth_evm::execute::{
     BlockBuilder, BlockBuilderOutcome, BlockExecutionError, BlockExecutor, ExecutorTx, GasOutput,
 };
-use reth_node_api::{PayloadAttributes, PayloadBuilderError};
-use reth_node_builder::{BuilderContext, FullNodeTypes, components::PayloadBuilderBuilder};
+use reth_node_api::{PayloadAttributes, PayloadBuilderError, payload::PayloadTypes};
+use reth_node_builder::{
+    BuilderContext, FullNodeTypes, components::PayloadBuilderBuilder, node::NodeTypes,
+};
+use reth_optimism_payload_builder::OpPayloadAttrs;
 use reth_primitives_traits::{Account, Bytecode};
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
@@ -27,16 +30,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy)]
+struct AttemptContext {
+    has_best_payload: bool,
+    failure_policies_enabled: bool,
+}
+
 thread_local! {
-    static ATTEMPT_CONTEXT: Cell<Option<bool>> = const { Cell::new(None) };
+    static ATTEMPT_CONTEXT: Cell<Option<AttemptContext>> = const { Cell::new(None) };
 }
 
 fn current_attempt_context() -> Option<bool> {
-    ATTEMPT_CONTEXT.get()
+    ATTEMPT_CONTEXT.get().map(|context| context.has_best_payload)
 }
 
-fn with_attempt_context<T>(has_best_payload: bool, f: impl FnOnce() -> T) -> T {
-    struct RestoreAttemptContext(Option<bool>);
+/// Whether the current payload-service attempt may apply local fee-currency policies.
+/// A debug/witness or pending RPC never opens this scope. Engine builds with `noTxPool=true`
+/// rebuild forced transactions only and also leave the policies disabled.
+pub(crate) fn failure_policies_enabled() -> bool {
+    ATTEMPT_CONTEXT.get().is_some_and(|context| context.failure_policies_enabled)
+}
+
+fn with_attempt_context<T>(
+    has_best_payload: bool,
+    failure_policies_enabled: bool,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct RestoreAttemptContext(Option<AttemptContext>);
 
     impl Drop for RestoreAttemptContext {
         fn drop(&mut self) {
@@ -44,7 +64,8 @@ fn with_attempt_context<T>(has_best_payload: bool, f: impl FnOnce() -> T) -> T {
         }
     }
 
-    let previous = ATTEMPT_CONTEXT.replace(Some(has_best_payload));
+    let previous = ATTEMPT_CONTEXT
+        .replace(Some(AttemptContext { has_best_payload, failure_policies_enabled }));
     let _restore = RestoreAttemptContext(previous);
     f()
 }
@@ -69,12 +90,14 @@ impl<PB> PayloadMetricsBuilderBuilder<PB> {
 impl<Node, Pool, EvmConfig, PB> PayloadBuilderBuilder<Node, Pool, EvmConfig>
     for PayloadMetricsBuilderBuilder<PB>
 where
-    Node: FullNodeTypes,
+    Node:
+        FullNodeTypes<Types: NodeTypes<Payload: PayloadTypes<PayloadAttributes = OpPayloadAttrs>>>,
     Pool: TransactionPool,
     // `BasicPayloadServiceBuilder` already requires this; repeating it here keeps the wrapper's
     // `async fn` future `Send`, as the trait demands.
     EvmConfig: Send,
     PB: PayloadBuilderBuilder<Node, Pool, EvmConfig>,
+    PB::PayloadBuilder: PayloadBuilder<Attributes = OpPayloadAttrs>,
 {
     type PayloadBuilder = PayloadMetricsBuilder<PB::PayloadBuilder>;
 
@@ -103,7 +126,7 @@ impl<B> PayloadMetricsBuilder<B> {
     }
 }
 
-impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
+impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadMetricsBuilder<B> {
     type Attributes = B::Attributes;
     type BuiltPayload = B::BuiltPayload;
 
@@ -120,6 +143,9 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
         }
 
         let has_best_payload = args.best_payload.is_some();
+        // This is a local pool-enabled Engine build, including --dev mining. The flag identifies
+        // the requested build mode, not the caller's identity. None has OP's false default.
+        let failure_policies_enabled = !args.config.attributes.no_tx_pool.unwrap_or_default();
         let has_best_label = bool_label(has_best_payload);
         let payload_id = args.config.payload_id();
         let timestamp = args.config.attributes.timestamp();
@@ -131,7 +157,9 @@ impl<B: PayloadBuilder> PayloadBuilder for PayloadMetricsBuilder<B> {
         let _active = ActiveGauge(active);
         let started = Instant::now();
 
-        let result = with_attempt_context(has_best_payload, || self.inner.try_build(args));
+        let result = with_attempt_context(has_best_payload, failure_policies_enabled, || {
+            self.inner.try_build(args)
+        });
         let duration = started.elapsed();
         let outcome = match &result {
             Ok(BuildOutcome::Better { .. }) => "better",
@@ -523,16 +551,15 @@ fn trie_updates_size(updates: &TrieUpdates) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CeloBlock, CeloTransactionSigned, primitives::CeloPrimitives};
-    use alloy_eips::eip4895::Withdrawals;
-    use alloy_primitives::{Address, B256, U256};
+    use crate::{CeloBlock, primitives::CeloPrimitives};
+    use alloy_primitives::{B256, U256};
     use alloy_rpc_types_engine::PayloadId;
     use metrics::{SharedString, Unit};
     use metrics_util::{
         CompositeKey,
         debugging::{DebugValue, DebuggingRecorder, Snapshotter},
     };
-    use reth_optimism_payload_builder::{OpBuiltPayload, OpPayloadBuilderAttributes};
+    use reth_optimism_payload_builder::OpBuiltPayload;
     use reth_primitives_traits::{SealedBlock, SealedHeader};
     use reth_storage_api::{HashedPostStateProvider, StateRootProvider, noop::NoopProvider};
     use reth_trie_common::HashedPostState;
@@ -542,7 +569,7 @@ mod tests {
     };
 
     type TestPayload = OpBuiltPayload<CeloPrimitives>;
-    type TestAttributes = OpPayloadBuilderAttributes<CeloTransactionSigned>;
+    type TestAttributes = OpPayloadAttrs;
 
     #[derive(Clone, Copy)]
     enum FakeOutcome {
@@ -614,20 +641,14 @@ mod tests {
 
     fn test_args(has_best_payload: bool) -> BuildArguments<TestAttributes, TestPayload> {
         let payload_id = PayloadId::default();
-        let attributes = OpPayloadBuilderAttributes {
-            id: payload_id,
-            parent: B256::ZERO,
-            timestamp: 123,
-            suggested_fee_recipient: Address::ZERO,
-            prev_randao: B256::ZERO,
-            withdrawals: Withdrawals::default(),
-            parent_beacon_block_root: None,
-            no_tx_pool: false,
-            transactions: Vec::new(),
-            gas_limit: None,
-            eip_1559_params: None,
-            min_base_fee: None,
-        };
+        let attributes = OpPayloadAttrs(op_alloy_rpc_types_engine::OpPayloadAttributes {
+            payload_attributes: alloy_rpc_types_engine::PayloadAttributes {
+                timestamp: 123,
+                ..Default::default()
+            },
+            no_tx_pool: Some(false),
+            ..Default::default()
+        });
         BuildArguments::new(
             Default::default(),
             None,
@@ -687,10 +708,24 @@ mod tests {
     #[test]
     fn attempt_context_is_scoped() {
         assert_eq!(current_attempt_context(), None);
-        with_attempt_context(true, || {
+        with_attempt_context(true, true, || {
             assert_eq!(current_attempt_context(), Some(true));
+            assert!(failure_policies_enabled());
+            with_attempt_context(false, false, || {
+                assert!(!failure_policies_enabled());
+            });
+            assert!(failure_policies_enabled());
+            std::thread::spawn(|| assert!(!failure_policies_enabled())).join().unwrap();
         });
         assert_eq!(current_attempt_context(), None);
+        assert!(!failure_policies_enabled());
+        let panic = std::panic::catch_unwind(|| {
+            with_attempt_context(true, true, || {
+                panic!("failed payload attempt");
+            })
+        });
+        assert!(panic.is_err());
+        assert!(!failure_policies_enabled());
     }
 
     #[test]
@@ -774,7 +809,7 @@ mod tests {
     #[test]
     fn block_builder_binds_to_the_enclosing_attempt() {
         assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, None);
-        with_attempt_context(true, || {
+        with_attempt_context(true, true, || {
             assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, Some(true));
         });
     }
@@ -785,7 +820,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(true, || {
+            with_attempt_context(true, true, || {
                 let mut builder = PayloadMetricsBlockBuilder::new(());
                 builder.record_execution(Duration::from_millis(10));
                 builder.record_execution(Duration::from_millis(30));
@@ -821,7 +856,7 @@ mod tests {
             let snapshotter = recorder.snapshotter();
 
             metrics::with_local_recorder(&recorder, || {
-                with_attempt_context(false, || {
+                with_attempt_context(false, true, || {
                     let builder = PayloadMetricsBlockBuilder::new(());
                     let source = if precomputed { "precomputed" } else { "blocking" };
                     builder.record_finalization(source, succeeded, Duration::from_millis(5));
@@ -875,7 +910,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(false, || {
+            with_attempt_context(false, true, || {
                 let provider = observed_provider(NoopProvider::default());
                 let hashed = provider.hashed_post_state(&Default::default());
                 assert_eq!(hashed, HashedPostState::default());
