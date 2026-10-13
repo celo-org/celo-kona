@@ -89,6 +89,8 @@ fn classify_fee_hook_failure(message: &str) -> Option<(&'static str, &'static st
     } else {
         phase
     };
+    // Keep revert before halt, as in the blocklist decision below: decoded revert text can
+    // contain the halt marker and must not turn a revert into a currency-level fault.
     let kind = if suffix.contains(FEE_CURRENCY_REVERT_MARKER) {
         "revert"
     } else if suffix.contains(FEE_CURRENCY_HALT_MARKER) {
@@ -436,6 +438,10 @@ where
                 // signal that survives the boundary is the Display string.
                 let fc = fee_currency.unwrap();
                 let err_msg = alloc::format!("{e}");
+                // Count failed execution attempts, not unique transactions. A retried tx counts
+                // again on every build attempt. For balance_of/debit/credit this breaks down the
+                // same events as the four debit/credit reasons in celo_payload_skipped_total;
+                // do not sum the two metric families. Only affordability adds a new event.
                 #[cfg(feature = "std")]
                 if matches!(
                     e,
@@ -445,6 +451,12 @@ where
                 ) {
                     // CIP-64 can fail its ERC20 max-fee check or its native value check with
                     // this same typed error. Keep the phase broad rather than mislabeling it.
+                    tracing::debug!(
+                        target: "celo",
+                        fee_currency = ?fc,
+                        error = %e,
+                        "CIP-64 transaction failed its affordability check"
+                    );
                     metrics::counter!(
                         "celo_payload_fee_currency_failures_total",
                         "phase" => "affordability",
@@ -904,6 +916,7 @@ mod tests {
         tx
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn fee_hook_classifier_uses_the_outer_phase_not_revert_text() {
         let debit_revert = alloc::format!(
@@ -911,6 +924,17 @@ mod tests {
              {FEE_CREDIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}"
         );
         assert_eq!(classify_fee_hook_failure(&debit_revert), Some(("debit", "revert")));
+
+        let spoofed_halt = alloc::format!(
+            "{FEE_DEBIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER} {FEE_CURRENCY_HALT_MARKER}"
+        );
+        assert_eq!(classify_fee_hook_failure(&spoofed_halt), Some(("debit", "revert")));
+
+        let credit_revert = alloc::format!(
+            "{FEE_CREDIT_ERROR_PREFIX}: {FEE_CURRENCY_REVERT_MARKER} \
+             {FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}"
+        );
+        assert_eq!(classify_fee_hook_failure(&credit_revert), Some(("credit", "revert")));
 
         let balance_revert = alloc::format!(
             "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: \
@@ -930,9 +954,48 @@ mod tests {
         assert_eq!(classify_fee_hook_failure("invalid nonce"), None);
     }
 
+    #[cfg(feature = "std")]
+    type MetricSnapshot = [(
+        metrics_util::CompositeKey,
+        Option<metrics::Unit>,
+        Option<metrics::SharedString>,
+        metrics_util::debugging::DebugValue,
+    )];
+
+    #[cfg(feature = "std")]
+    fn assert_fee_failure_counters(
+        snapshot: &MetricSnapshot,
+        expected: &[(&'static str, &'static str, u64)],
+    ) {
+        use metrics_util::debugging::DebugValue;
+
+        let actual: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == "celo_payload_fee_currency_failures_total")
+            .map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => (key.key().clone(), *count),
+                other => panic!("expected a counter, got {other:?}"),
+            })
+            .collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|(phase, kind, count)| {
+                (
+                    metrics::Key::from_parts(
+                        "celo_payload_fee_currency_failures_total",
+                        &[("phase", *phase), ("kind", *kind)],
+                    ),
+                    *count,
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected, "all failure counter series must match");
+    }
+
+    #[cfg(feature = "std")]
     #[test]
     fn real_fee_hook_reverts_emit_their_phase_metric() {
-        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        use metrics_util::debugging::DebuggingRecorder;
 
         for (answered_calldata_size, phase) in [
             (0, "balance_of"),
@@ -950,33 +1013,17 @@ mod tests {
                 )
             });
             assert!(error.contains(FEE_CURRENCY_REVERT_MARKER), "expected revert: {error}");
-            let count: u64 = snapshotter
-                .snapshot()
-                .into_vec()
-                .into_iter()
-                .filter(|(key, _, _, _)| {
-                    key.key().name() == "celo_payload_fee_currency_failures_total"
-                        && key
-                            .key()
-                            .labels()
-                            .any(|label| label.key() == "phase" && label.value() == phase)
-                        && key
-                            .key()
-                            .labels()
-                            .any(|label| label.key() == "kind" && label.value() == "revert")
-                })
-                .map(|(_, _, _, value)| match value {
-                    DebugValue::Counter(count) => count,
-                    other => panic!("expected a counter, got {other:?}"),
-                })
-                .sum();
-            assert_eq!(count, 1, "missing {phase} revert counter for {error}");
+            assert_fee_failure_counters(
+                &snapshotter.snapshot().into_vec(),
+                &[(phase, "revert", 1)],
+            );
         }
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn cip64_insufficient_balance_has_a_failure_phase_metric() {
-        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        use metrics_util::debugging::DebuggingRecorder;
         use revm::state::{AccountInfo, Bytecode};
 
         let recorder = DebuggingRecorder::new();
@@ -994,26 +1041,45 @@ mod tests {
             run_cip64_debit(&mut evm, fc)
         });
         assert!(err.contains("LackOfFundForMaxFee"), "expected typed affordability failure: {err}");
-        let count: u64 = snapshotter
-            .snapshot()
-            .into_vec()
-            .into_iter()
-            .filter(|(key, _, _, _)| {
-                key.key().name() == "celo_payload_fee_currency_failures_total"
-                    && key
-                        .key()
-                        .labels()
-                        .any(|label| label.key() == "phase" && label.value() == "affordability")
-                    && key.key().labels().any(|label| {
-                        label.key() == "kind" && label.value() == "insufficient_balance"
-                    })
-            })
-            .map(|(_, _, _, value)| match value {
-                DebugValue::Counter(count) => count,
-                other => panic!("expected a counter, got {other:?}"),
-            })
-            .sum();
-        assert_eq!(count, 1);
+        assert_fee_failure_counters(
+            &snapshotter.snapshot().into_vec(),
+            &[("affordability", "insufficient_balance", 1)],
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn disabled_blocklist_emits_no_failure_counters() {
+        use metrics_util::debugging::DebuggingRecorder;
+        use revm::state::{AccountInfo, Bytecode};
+
+        for (code, marker) in [
+            (fee_currency_stub(0, &[0x60, 0x00, 0x60, 0x00, 0xfd]), FEE_CURRENCY_REVERT_MARKER),
+            (fee_currency_stub(BALANCE_OF_CALLDATA_SIZE, &[0xfe]), FEE_CURRENCY_HALT_MARKER),
+            (Bytes::from_static(&[0x00]), FEE_CURRENCY_MALFORMED_RETURN_MARKER),
+            (Bytes::from_static(&[0x60, 0x20, 0x60, 0x00, 0xf3]), "LackOfFundForMaxFee"),
+        ] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let fc = Address::with_last_byte(0xF3);
+            let blocklist = FeeCurrencyBlocklist::default();
+            let error = metrics::with_local_recorder(&recorder, || {
+                let mut evm = make_test_evm(blocklist.clone());
+                evm.blocklist_enabled = false;
+                evm.db_mut()
+                    .insert_account_info(fc, AccountInfo::from_bytecode(Bytecode::new_raw(code)));
+                run_cip64_debit(&mut evm, fc)
+            });
+            assert!(error.contains(marker), "expected {marker}: {error}");
+            assert!(!blocklist.is_blocked(fc));
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_fee_failure_counters(&snapshot, &[]);
+            assert!(
+                snapshot
+                    .iter()
+                    .all(|(key, _, _, _)| key.key().name() != "celo_payload_skipped_total")
+            );
+        }
     }
 
     /// `transact_raw` must NOT reject a blocklisted currency: `base_fee_check_enabled`
@@ -1571,9 +1637,9 @@ mod tests {
              currency; got error: {err}"
         );
 
-        let skipped: u64 = snapshotter
-            .snapshot()
-            .into_vec()
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_fee_failure_counters(&snapshot, &[("debit", "evm_error", 1)]);
+        let skipped: u64 = snapshot
             .into_iter()
             .filter(|(ck, _, _, _)| {
                 ck.key().name() == "celo_payload_skipped_total"
