@@ -82,7 +82,11 @@ fn with_attempt_context<T>(
         }
     }
 
-    let previous = ATTEMPT_CONTEXT.replace(Some(AttemptContext { has_best_payload, failure_policies_enabled, cancel }));
+    let previous = ATTEMPT_CONTEXT.replace(Some(AttemptContext {
+        has_best_payload,
+        failure_policies_enabled,
+        cancel,
+    }));
     let _restore = RestoreAttemptContext(previous);
     f()
 }
@@ -208,7 +212,10 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
         let started = Instant::now();
 
         let cancel = args.cancel.clone();
-        let result = with_attempt_context(has_best_payload, failure_policies_enabled, cancel, || self.inner.try_build(args));
+        let result =
+            with_attempt_context(has_best_payload, failure_policies_enabled, cancel, || {
+                self.inner.try_build(args)
+            });
         let duration = started.elapsed();
         // Only "better" payloads: a frozen one comes from a `no_tx_pool` build, which op-node
         // also issues on follower nodes, where the next job's parent is not a delivery.
