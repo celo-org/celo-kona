@@ -119,7 +119,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
