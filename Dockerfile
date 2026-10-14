@@ -1,19 +1,18 @@
-FROM rust:1.89.0-trixie AS builder
+# Keep in sync with `rust-toolchain.toml`.
+FROM rust:1.95.0-trixie AS builder
 
 RUN apt-get update && apt-get install -y \
 	build-essential \
-	ccache \
 	libclang-dev \
 	libssl-dev \
 	&& rm -rf /var/lib/apt/lists/*
-
-RUN cargo install just
 
 WORKDIR /usr/src/celo-kona
 
 COPY . .
 
-RUN just build-native --release
+# Only the binaries this image ships; celo-reth has its own image.
+RUN cargo build --release --locked -p celo-host -p celo-client -p execution-verifier
 
 FROM rust:1.89.0-trixie
 
