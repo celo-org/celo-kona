@@ -1,5 +1,9 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
+# Without the toolchain file `cargo chef cook` runs the image's default
+# toolchain, then `COPY . .` switches the final build to the pinned one, and
+# every cooked dependency is recompiled.
+COPY rust-toolchain.toml .
 RUN apt-get update && apt-get install -y libclang-dev pkg-config && rm -rf /var/lib/apt/lists/*
 
 FROM chef AS planner
