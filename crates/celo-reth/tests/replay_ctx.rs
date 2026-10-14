@@ -22,9 +22,10 @@
 //!
 //! The four properties pinned here are the ones the hook's correctness rests on:
 //! capture reads *live* block-start state, seeding overrides the lazy per-block
-//! load, a foreign context is rejected without disturbing the one already seeded,
-//! and a seeded context stops applying the moment the EVM's block environment no
-//! longer matches the block it was captured for.
+//! load (rates and directory membership), a foreign context is rejected without
+//! disturbing the one already seeded, and a seeded context stops applying the
+//! moment the EVM's block environment no longer matches the block it was
+//! captured for.
 
 mod common;
 
@@ -44,7 +45,7 @@ use revm::{
 };
 use std::any::Any;
 
-use common::{TEST_FC, make_celo_test_db, set_oracle_rate, test_chain_spec};
+use common::{TEST_FC, make_celo_test_db, remove_test_fc, set_oracle_rate, test_chain_spec};
 
 /// Sender of every simulated call; funded with native CELO and FC by the fixture.
 const SENDER: Address = Address::with_last_byte(0x01);
@@ -320,5 +321,40 @@ fn seeded_context_expires_when_the_block_environment_moves_on() {
         observed_gas_price(&mut evm),
         U256::from(BASE_FEE_AT_MID_BLOCK_RATE),
         "a context captured for an earlier block must be reloaded, not applied"
+    );
+}
+
+/// A currency removed from the directory mid-block was registered at block start,
+/// so a seeded call must still price in it. `debug_trace_rate_update.mjs` relies
+/// on this end to end.
+#[test]
+fn seeded_context_keeps_a_currency_removed_mid_block() {
+    let mut db = test_db();
+    let evm_config = CeloEvmConfig::celo(test_chain_spec());
+    let evm_env = evm_config.evm_env(&header(CAPTURED_BLOCK)).expect("evm env");
+
+    let captured = evm_config
+        .capture_block_replay_ctx(&mut db, &evm_env)
+        .expect("Celo must capture a replay context");
+
+    // A transaction in the replayed prefix removes the currency.
+    remove_test_fc(&mut db);
+
+    let unseeded = {
+        let mut evm = evm_config.evm_with_env(&mut db, evm_env.clone());
+        evm.ctx_mut().cfg.disable_base_fee = true;
+        evm.transact_raw(cip64_probe_call()).expect_err("the currency is gone from mid-block state")
+    };
+    assert!(
+        unseeded.to_string().contains("fee currency not registered"),
+        "without a seed the EVM reads the mid-block directory: {unseeded}"
+    );
+
+    let mut evm = evm_config.evm_with_env(&mut db, evm_env);
+    evm_config.seed_block_replay_ctx(&mut evm, &*captured);
+    assert_eq!(
+        observed_gas_price(&mut evm),
+        U256::from(BASE_FEE_AT_BLOCK_START_RATE),
+        "a seeded call must see the block-start directory"
     );
 }

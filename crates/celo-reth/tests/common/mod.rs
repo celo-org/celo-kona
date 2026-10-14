@@ -30,6 +30,22 @@ pub(crate) const ORACLE_NUMERATOR_SLOT: U256 = U256::from_limbs([0, 0, 0, 0]);
 /// Oracle storage slot holding the exchange-rate denominator.
 pub(crate) const ORACLE_DENOMINATOR_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
 
+/// Directory storage slot holding the `currencies` array length.
+const FCD_CURRENCIES_SLOT: U256 = U256::from_limbs([2, 0, 0, 0]);
+
+/// Directory storage slot of `currencies[0]`.
+fn fcd_currencies_start() -> U256 {
+    U256::from_be_bytes(keccak256(FCD_CURRENCIES_SLOT.to_be_bytes::<32>()).0)
+}
+
+/// Directory storage slot of `currencyConfig[currency].oracle`; `intrinsicGas` is the next slot.
+fn fcd_config_slot(currency: Address) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(currency.as_slice());
+    buf[63] = 1;
+    U256::from_be_bytes(keccak256(buf).0)
+}
+
 /// Granite-active chain spec (pre-Holocene, so no `extra_data` ceremony).
 pub(crate) fn test_chain_spec() -> Arc<OpChainSpec> {
     Arc::new(
@@ -86,14 +102,11 @@ pub(crate) fn make_celo_test_db(sender: Address, fc_balance: U256) -> InMemoryDB
         },
     );
     // currencies array: length=1 at slot 2, [0] = TEST_FC at keccak(2).
-    db.insert_account_storage(TEST_FCD, U256::from(2), U256::from(1)).unwrap();
-    let arr_start = U256::from_be_bytes(keccak256(U256::from(2).to_be_bytes::<32>()).0);
-    db.insert_account_storage(TEST_FCD, arr_start, TEST_FC.into_word().into()).unwrap();
+    db.insert_account_storage(TEST_FCD, FCD_CURRENCIES_SLOT, U256::from(1)).unwrap();
+    db.insert_account_storage(TEST_FCD, fcd_currencies_start(), TEST_FC.into_word().into())
+        .unwrap();
     // currencyConfig[TEST_FC] at keccak(TEST_FC . 1): {oracle: TEST_ORACLE, intrinsicGas: 50_000}
-    let mut buf = [0u8; 64];
-    buf[12..32].copy_from_slice(TEST_FC.as_slice());
-    buf[63] = 1;
-    let cfg_slot = U256::from_be_bytes(keccak256(buf).0);
+    let cfg_slot = fcd_config_slot(TEST_FC);
     db.insert_account_storage(TEST_FCD, cfg_slot, TEST_ORACLE.into_word().into()).unwrap();
     db.insert_account_storage(TEST_FCD, cfg_slot + U256::from(1), U256::from(50_000)).unwrap();
 
@@ -138,4 +151,14 @@ pub(crate) fn set_oracle_rate(db: &mut InMemoryDB, numerator: u64, denominator: 
     db.insert_account_storage(TEST_ORACLE, ORACLE_NUMERATOR_SLOT, U256::from(numerator)).unwrap();
     db.insert_account_storage(TEST_ORACLE, ORACLE_DENOMINATOR_SLOT, U256::from(denominator))
         .unwrap();
+}
+
+/// Remove [`TEST_FC`] from the directory, leaving the storage `removeCurrencies`
+/// leaves: an empty `currencies` array and a deleted `currencyConfig` entry.
+pub(crate) fn remove_test_fc(db: &mut InMemoryDB) {
+    db.insert_account_storage(TEST_FCD, FCD_CURRENCIES_SLOT, U256::ZERO).unwrap();
+    db.insert_account_storage(TEST_FCD, fcd_currencies_start(), U256::ZERO).unwrap();
+    let cfg_slot = fcd_config_slot(TEST_FC);
+    db.insert_account_storage(TEST_FCD, cfg_slot, U256::ZERO).unwrap();
+    db.insert_account_storage(TEST_FCD, cfg_slot + U256::from(1), U256::ZERO).unwrap();
 }
