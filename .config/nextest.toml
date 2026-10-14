@@ -1,0 +1,10 @@
+[profile.default]
+# Kill a hung test after 2 minutes instead of letting it run into the CI job
+# timeout. The whole suite normally finishes in a few seconds.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# Each trybuild fixture compiles celo-revm's dependency tree in a sub-target;
+# from a cold cache that takes about a minute.
+[[profile.default.overrides]]
+filter = "binary(units_compile_fail)"
+slow-timeout = { period = "60s", terminate-after = 5 }
