@@ -120,7 +120,10 @@ jobs:
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+          fallback: none
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: reth-fork -> target

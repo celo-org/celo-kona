@@ -29,7 +29,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+          fallback: none
       - name: cargo test
         run: just test
 
@@ -53,7 +56,10 @@ jobs:
           # A hit saves ~3 min on a job off the critical path; not worth ~2 GB
           # of the repo's 10 GB cache quota.
           save-cache: false
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+          fallback: none
       - name: cargo test (trybuild)
         run: just test-trybuild
 
@@ -119,8 +125,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-05-17
-      - uses: taiki-e/install-action@nextest
-      - uses: taiki-e/install-action@cargo-udeps
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+          fallback: none
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-udeps@0.1.61
+          fallback: none
       - name: cargo udeps
         run: just check-udeps
         env:
@@ -134,7 +146,10 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Install clang
         run: sudo apt install clang libclang-dev
-      - uses: taiki-e/install-action@cargo-hack
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack@0.6.45
+          fallback: none
       - name: cargo hack
         run: just hack
 
@@ -184,7 +199,10 @@ jobs:
         with:
           toolchain: "1.95"
           target: riscv32imac-unknown-none-elf
-      - uses: taiki-e/install-action@cargo-hack
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack@0.6.45
+          fallback: none
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true

@@ -26,7 +26,10 @@ runs:
   using: "composite"
   steps:
     - name: Install Just
-      uses: taiki-e/install-action@just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just@1.58.0
+        fallback: none
 
     - name: Installs stable rust toolchain
       if: ${{ inputs.channel == 'stable' && inputs.components == '' }}
