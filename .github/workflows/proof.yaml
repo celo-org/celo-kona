@@ -33,6 +33,7 @@ jobs:
         with:
           components: llvm-tools-preview
           prefix-key: ${{ matrix.target }}-${{ matrix.name }}
+          save-cache: false
       - uses: taiki-e/install-action@cargo-llvm-cov
       # Below variables can be retrieved by running `just run-client-native`, and witness tar file can be created by compressing the generated data directory after running the command.
       - name: Set run environment

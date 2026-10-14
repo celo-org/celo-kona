@@ -50,6 +50,9 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           components: rustfmt
+          # A hit saves ~3 min on a job off the critical path; not worth ~2 GB
+          # of the repo's 10 GB cache quota.
+          save-cache: false
       - uses: taiki-e/install-action@nextest
       - name: cargo test (trybuild)
         run: just test-trybuild
@@ -112,6 +115,10 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v7
       - uses: ./.github/actions/setup
+        with:
+          # This job takes 11-13 min with or without a cache hit, so its entry
+          # is not worth a slot in the repo's 10 GB cache quota.
+          save-cache: false
       # Pin the nightly that cargo-udeps runs under. The floating `nightly`
       # channel rolled to a 2026-05-18 build that segfaults cargo-udeps during
       # dependency resolution. Bump this date once a newer nightly is verified.
@@ -189,7 +196,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # A miss costs ~6 min off the critical path; keep the quota for the
+          # slow jobs.
+          save-if: false
       - name: check
         run: ./.github/scripts/check_no_std.sh
 
