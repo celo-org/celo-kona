@@ -35,10 +35,11 @@ use celo_alloy_consensus::CeloTxType;
 use celo_reth::CeloEvmConfig;
 use celo_revm::{CeloTransaction, FeeCurrencyContext};
 use op_revm::OpTransaction;
-use reth_evm::{ConfigureEvm, Database, EvmFor};
+use reth_evm::{ConfigureEvm, Database, EvmFor, InspectorFor};
 use revm::{
     context::TxEnv,
     database::InMemoryDB,
+    inspector::NoOpInspector,
     state::{AccountInfo, Bytecode},
 };
 use std::any::Any;
@@ -139,7 +140,11 @@ fn cip64_probe_call() -> CeloTransaction<TxEnv> {
 /// `debug_traceCall` shape rather than the block-execution one: the ERC20 debit
 /// is skipped, and the handler denominates `effective_gas_price` from the
 /// fee-currency context alone.
-fn observed_gas_price<DB: Database>(evm: &mut EvmFor<CeloEvmConfig, DB>) -> U256 {
+fn observed_gas_price<DB, I>(evm: &mut EvmFor<CeloEvmConfig, DB, I>) -> U256
+where
+    DB: Database,
+    I: InspectorFor<CeloEvmConfig, DB>,
+{
     evm.ctx_mut().cfg.disable_base_fee = true;
     let outcome = evm.transact_raw(cip64_probe_call()).expect("CIP-64 probe call must not error");
     assert!(outcome.result.is_success(), "probe call failed: {:?}", outcome.result);
@@ -230,7 +235,7 @@ fn seeded_context_prices_a_cip64_call_at_the_captured_rate() {
     );
 
     let seeded = {
-        let mut evm = evm_config.evm_with_env(&mut db, evm_env);
+        let mut evm = evm_config.evm_with_env(&mut db, evm_env.clone());
         evm_config.seed_block_replay_ctx(&mut evm, &*captured);
         observed_gas_price(&mut evm)
     };
@@ -239,6 +244,18 @@ fn seeded_context_prices_a_cip64_call_at_the_captured_rate() {
         U256::from(BASE_FEE_AT_BLOCK_START_RATE),
         "a seeded call must price at the captured block-start rate, not at the rate the \
          replayed prefix left in state"
+    );
+
+    // Most RPC call paths build the EVM with an inspector, which runs the inspecting handler.
+    let seeded_inspecting = {
+        let mut evm = evm_config.evm_with_env_and_inspector(&mut db, evm_env, NoOpInspector);
+        evm_config.seed_block_replay_ctx(&mut evm, &*captured);
+        observed_gas_price(&mut evm)
+    };
+    assert_eq!(
+        seeded_inspecting,
+        U256::from(BASE_FEE_AT_BLOCK_START_RATE),
+        "seeding must reach an inspecting EVM too"
     );
 }
 
