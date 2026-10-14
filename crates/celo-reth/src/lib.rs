@@ -307,7 +307,13 @@ where
         evm_env: &EvmEnvFor<Self>,
     ) -> Option<Box<dyn Any + Send>> {
         let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
-        Some(Box::new(evm.create_fee_currency_context()))
+        // Capture and replay EVMs may use different DB types. Preserve the error object
+        // across this type-erased hook so seeding fails closed instead of reloading
+        // fee-currency state at a mid-block position.
+        Some(Box::new(
+            evm.create_fee_currency_context()
+                .map_err(revm::context_interface::result::AnyError::new),
+        ))
     }
 
     /// Seeds a mid-block call simulation EVM with the captured block-start fee currency context.
@@ -320,8 +326,13 @@ where
         DB: Database,
         I: InspectorFor<Self, DB>,
     {
-        if let Some(fee_currency_context) = ctx.downcast_ref::<celo_revm::FeeCurrencyContext>() {
-            evm.set_fee_currency_context(fee_currency_context.clone());
+        if let Some(context) =
+            ctx.downcast_ref::<Result<celo_revm::FeeCurrencyContext, revm::context_interface::result::AnyError>>()
+        {
+            match context {
+                Ok(context) => evm.set_fee_currency_context(context.clone()),
+                Err(error) => evm.set_block_replay_error(error.clone()),
+            }
         }
     }
 
@@ -354,10 +365,13 @@ where
             Some(fee_currency) => {
                 let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
                 evm.erc20_balance(fee_currency, caller, FEE_BALANCE_READ_GAS_LIMIT).map_err(
-                    |err| {
-                        CallerGasAllowanceError::FeeBalance(format!(
+                    |err| match err {
+                        celo_revm::contracts::CoreContractError::Database(error) => {
+                            CallerGasAllowanceError::Database(error)
+                        }
+                        err => CallerGasAllowanceError::FeeBalance(format!(
                             "balanceOf({caller}) on fee currency {fee_currency} failed: {err}"
-                        ))
+                        )),
                     },
                 )?
             }
@@ -681,6 +695,78 @@ mod tests {
                 &EvmEnv::default(),
                 tx,
             )
+        }
+
+        #[derive(Debug)]
+        struct ReadError;
+        impl core::fmt::Display for ReadError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("injected database failure")
+            }
+        }
+        impl core::error::Error for ReadError {}
+        impl revm::database_interface::DBErrorMarker for ReadError {}
+
+        #[derive(Debug)]
+        struct FailingDb {
+            inner: InMemoryDB,
+            fail_basic: bool,
+        }
+
+        impl revm::Database for FailingDb {
+            type Error = ReadError;
+            fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+                if self.fail_basic {
+                    return Err(ReadError);
+                }
+                Ok(self.inner.basic(address).unwrap())
+            }
+            fn code_by_hash(
+                &mut self,
+                hash: alloy_primitives::B256,
+            ) -> Result<Bytecode, Self::Error> {
+                Ok(self.inner.code_by_hash(hash).unwrap())
+            }
+            fn storage(&mut self, _: Address, _: U256) -> Result<U256, Self::Error> {
+                Err(ReadError)
+            }
+            fn block_hash(&mut self, number: u64) -> Result<alloy_primitives::B256, Self::Error> {
+                Ok(self.inner.block_hash(number).unwrap())
+            }
+        }
+
+        #[test]
+        fn fee_balance_allowance_preserves_database_errors() {
+            let config = CeloEvmConfig::celo(pre_jovian_chain_spec());
+            let mut db =
+                FailingDb { inner: db(U256::ZERO, Some(U256::from(5_000))), fail_basic: false };
+            let result = config.caller_gas_allowance(
+                &mut db,
+                &EvmEnv::default(),
+                &tx_env(Some(TOKEN), U256::ZERO),
+            );
+            assert!(matches!(result, Err(CallerGasAllowanceError::Database(ReadError))));
+        }
+
+        #[test]
+        fn failed_block_start_capture_never_reloads_from_mid_block_state() {
+            use alloy_evm::Evm;
+            let config = CeloEvmConfig::celo(pre_jovian_chain_spec());
+            let env = EvmEnv::default();
+            let mut unavailable = FailingDb { inner: InMemoryDB::default(), fail_basic: true };
+            let captured = config.capture_block_replay_ctx(&mut unavailable, &env).unwrap();
+            let mut evm = config.evm_with_env(db(U256::MAX, Some(U256::MAX)), env);
+            config.seed_block_replay_ctx(&mut evm, &*captured);
+            // Both native and CIP-64 simulations must fail on the captured error,
+            // even when the mid-block database can serve their state.
+            for currency in [None, Some(TOKEN)] {
+                let error = evm.transact_raw(tx_env(currency, U256::ZERO)).unwrap_err();
+                assert!(
+                    matches!(error, revm::context_interface::result::EVMError::CustomAny(ref cause)
+                    if cause.to_string().contains("injected database failure")),
+                    "{error:?}"
+                );
+            }
         }
 
         #[test]

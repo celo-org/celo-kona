@@ -6,7 +6,7 @@ use crate::{
         CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX,
         FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
-    contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
+    contracts::{CoreContractError, core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
@@ -185,7 +185,8 @@ where
         if evm.fee_currency_context.updated_at_block != Some(current_block) {
             // Update the chain with the new fee currency context.
             // If core contracts are missing, we'll get an empty context (for non-celo test environments).
-            let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
+            let fee_currency_context =
+                FeeCurrencyContext::new_from_evm(evm).map_err(ERROR::from)?;
             evm.fee_currency_context = fee_currency_context;
 
             // Context loading is internal: it reads on-chain fee-currency config and is not
@@ -360,7 +361,12 @@ where
             base_tx_charge.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
+        .map_err(|e| match e {
+            CoreContractError::Database(error) => ERROR::from(error),
+            e => ERROR::from(InvalidTransaction::from(format!(
+                "{FEE_CREDIT_ERROR_PREFIX}: {e}"
+            ))),
+        })?;
 
         // Collect logs from the system call to be included in the final receipt
         let info = evm.ctx().tx.cip64_tx_info.as_mut().unwrap();
@@ -487,10 +493,11 @@ where
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
-            |e| {
-                InvalidTransaction::from(format!(
+            |e| match e {
+                CoreContractError::Database(error) => ERROR::from(error),
+                e => ERROR::from(InvalidTransaction::from(format!(
                     "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
-                ))
+                ))),
             },
         )?);
 
@@ -567,7 +574,12 @@ where
             gas_cost.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("{FEE_DEBIT_ERROR_PREFIX}: {e}")))?;
+        .map_err(|e| match e {
+            CoreContractError::Database(error) => ERROR::from(error),
+            e => ERROR::from(InvalidTransaction::from(format!(
+                "{FEE_DEBIT_ERROR_PREFIX}: {e}"
+            ))),
+        })?;
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
         // types; we narrow back to `u128` at this boundary rather than widening them.
@@ -1359,7 +1371,7 @@ where
     /// `transaction_id` and clears coinbase/access-list warmth — so letting it run here would
     /// discard everything the *enclosing* transaction recorded before the bracket and reset its
     /// warm/cold accounting mid-execution. The read-only callers (`get_currencies` /
-    /// `get_exchange_rate` / `get_intrinsic_gas`) swallow the error and continue, so that damage
+    /// `get_exchange_rate` / `get_intrinsic_gas`) can swallow contract errors and continue, so that damage
     /// would be silent rather than fatal.
     ///
     /// Skip only the journal work: the rest of op-revm's teardown (L1-cost cache, local context,

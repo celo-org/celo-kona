@@ -2066,8 +2066,8 @@ struct BalanceRevalidation {
 
 /// The contract call error is produced locally by `process_call_result`; only its leading
 /// `revert:` marker identifies an actual contract revert. Halts and EVM errors stay uncertain.
-fn is_explicit_balance_revert(
-    error: &celo_revm::contracts::core_contracts::CoreContractError,
+fn is_explicit_balance_revert<DBError>(
+    error: &celo_revm::contracts::core_contracts::CoreContractError<DBError>,
 ) -> bool {
     matches!(
         error,
@@ -5516,13 +5516,20 @@ mod tests {
     fn only_explicit_contract_revert_is_an_eviction_signal() {
         use celo_revm::contracts::core_contracts::CoreContractError;
 
-        assert!(is_explicit_balance_revert(&CoreContractError::ExecutionFailed(
-            "revert: denied".into()
+        assert!(is_explicit_balance_revert(
+            &CoreContractError::<core::convert::Infallible>::ExecutionFailed(
+                "revert: denied".into()
+            )
+        ));
+        assert!(!is_explicit_balance_revert(
+            &CoreContractError::<core::convert::Infallible>::ExecutionFailed(
+                "halt: OutOfGas".into()
+            )
+        ));
+        assert!(!is_explicit_balance_revert(&CoreContractError::<core::convert::Infallible>::Evm(
+            "database failure".into()
         )));
-        assert!(!is_explicit_balance_revert(&CoreContractError::ExecutionFailed(
-            "halt: OutOfGas".into()
-        )));
-        assert!(!is_explicit_balance_revert(&CoreContractError::Evm("database failure".into())));
+        assert!(!is_explicit_balance_revert(&CoreContractError::Database("provider failure")));
     }
 
     #[test]
