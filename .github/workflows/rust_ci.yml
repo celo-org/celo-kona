@@ -14,6 +14,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI builds don't need debuginfo; dropping it shrinks link output and the
+  # rust-cache entries that compete for the repo's 10 GB cache quota.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   cargo-tests:
