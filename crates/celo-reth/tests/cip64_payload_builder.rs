@@ -351,7 +351,7 @@ fn witness_execution_does_not_update_failure_policy() {
         };
         let witness = metrics::with_local_recorder(&recorder, || {
             OpBuilder::new(|_| reth_payload_util::NoopPayloadTransactions::<CeloPoolTx>::default())
-                .witness(provider, &ctx)
+                .witness(&provider, &provider, &ctx)
                 .expect("witness execution")
         });
         assert!(

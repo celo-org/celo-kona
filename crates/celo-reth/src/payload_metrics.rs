@@ -9,12 +9,13 @@ use reth_basic_payload_builder::{
 use reth_evm::execute::{
     BlockBuilder, BlockBuilderOutcome, BlockExecutionError, BlockExecutor, ExecutorTx, GasOutput,
 };
-use reth_node_api::{PayloadAttributes, PayloadBuilderError, payload::PayloadTypes};
+use reth_node_api::{BuiltPayload, PayloadAttributes, PayloadBuilderError, payload::PayloadTypes};
 use reth_node_builder::{
     BuilderContext, FullNodeTypes, components::PayloadBuilderBuilder, node::NodeTypes,
 };
 use reth_optimism_payload_builder::OpPayloadAttrs;
 use reth_primitives_traits::{Account, Bytecode};
+use reth_revm::cancelled::CancelOnDrop;
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
     StateProvider, StateRootProvider, StorageRootProvider,
@@ -26,48 +27,99 @@ use reth_trie_common::{
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::{
-    cell::Cell,
+    cell::RefCell,
+    collections::VecDeque,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy)]
+/// The payload attempt running on this thread.
+///
+/// Deliberately not `Clone`: it owns a clone of the attempt's [`CancelOnDrop`], and dropping any
+/// clone of that marker cancels the payload job. Only [`with_attempt_context`] may own and drop
+/// it, after the attempt has returned; everything else reads it through the accessors below.
 struct AttemptContext {
     has_best_payload: bool,
     failure_policies_enabled: bool,
+    cancel: CancelOnDrop,
 }
 
 thread_local! {
-    static ATTEMPT_CONTEXT: Cell<Option<AttemptContext>> = const { Cell::new(None) };
+    static ATTEMPT_CONTEXT: RefCell<Option<AttemptContext>> = const { RefCell::new(None) };
 }
 
-fn current_attempt_context() -> Option<bool> {
-    ATTEMPT_CONTEXT.get().map(|context| context.has_best_payload)
+/// Incumbent-payload flag of the attempt running on this thread, if any.
+fn current_has_best_payload() -> Option<bool> {
+    ATTEMPT_CONTEXT.with_borrow(|context| context.as_ref().map(|c| c.has_best_payload))
 }
 
-/// Whether the current payload-service attempt may apply local fee-currency policies.
-/// A debug/witness or pending RPC never opens this scope. Engine builds with `noTxPool=true`
-/// rebuild forced transactions only and also leave the policies disabled.
+/// Whether the job of the attempt running on this thread has already been resolved or dropped.
+fn current_attempt_cancelled() -> Option<bool> {
+    ATTEMPT_CONTEXT.with_borrow(|context| context.as_ref().map(|c| c.cancel.is_cancelled()))
+}
+
+/// Whether this payload-service attempt may apply local fee-currency policies.
+/// Witness/debug, pending RPC and forced-only Engine builds leave these policies disabled.
 pub(crate) fn failure_policies_enabled() -> bool {
-    ATTEMPT_CONTEXT.get().is_some_and(|context| context.failure_policies_enabled)
+    ATTEMPT_CONTEXT.with_borrow(|context| {
+        context.as_ref().is_some_and(|context| context.failure_policies_enabled)
+    })
 }
 
 fn with_attempt_context<T>(
     has_best_payload: bool,
     failure_policies_enabled: bool,
+    cancel: CancelOnDrop,
     f: impl FnOnce() -> T,
 ) -> T {
     struct RestoreAttemptContext(Option<AttemptContext>);
 
     impl Drop for RestoreAttemptContext {
         fn drop(&mut self) {
-            ATTEMPT_CONTEXT.set(self.0);
+            // Dropping the replaced context drops this attempt's cancel clone. That is harmless
+            // here: the attempt has returned, and reth's job only reads the result channel.
+            ATTEMPT_CONTEXT.set(self.0.take());
         }
     }
 
-    let previous = ATTEMPT_CONTEXT
-        .replace(Some(AttemptContext { has_best_payload, failure_policies_enabled }));
+    let previous = ATTEMPT_CONTEXT.replace(Some(AttemptContext {
+        has_best_payload,
+        failure_policies_enabled,
+        cancel,
+    }));
     let _restore = RestoreAttemptContext(previous);
     f()
+}
+
+/// How many recent payloads to remember. A job produces at most a handful of better payloads and
+/// the next job starts about a block later, so this only has to outlive one block.
+const RECENT_PAYLOADS: usize = 64;
+
+/// Remembers which kind of attempt built each recent payload, so the next block's job can report
+/// what the sequencer delivered: on the sequencer, a job's parent is the payload it delivered.
+#[derive(Debug, Clone, Default)]
+struct DeliveredPayloads(Arc<Mutex<VecDeque<(B256, &'static str)>>>);
+
+impl DeliveredPayloads {
+    fn record_built(&self, block_hash: B256, has_best_payload: bool) {
+        let mut recent = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if recent.len() == RECENT_PAYLOADS {
+            recent.pop_front();
+        }
+        recent.push_back((block_hash, attempt_kind(has_best_payload)));
+    }
+
+    /// Counts the payload a job builds on, once: the entry is removed when counted.
+    fn record_parent(&self, parent_hash: B256) {
+        let mut recent = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(index) = recent.iter().position(|(hash, _)| *hash == parent_hash) else { return };
+        let (_, attempt) = recent.remove(index).expect("index comes from position");
+        metrics::counter!("celo_payload_delivered_total", "attempt" => attempt).increment(1);
+    }
+}
+
+const fn attempt_kind(has_best_payload: bool) -> &'static str {
+    if has_best_payload { "rebuild" } else { "first" }
 }
 
 /// Adds Celo payload metrics around the node's payload-builder factory.
@@ -117,12 +169,13 @@ where
 #[derive(Debug, Clone)]
 pub struct PayloadMetricsBuilder<B> {
     inner: B,
+    delivered: DeliveredPayloads,
 }
 
 impl<B> PayloadMetricsBuilder<B> {
     /// Wraps an existing payload builder.
-    pub const fn new(inner: B) -> Self {
-        Self { inner }
+    pub fn new(inner: B) -> Self {
+        Self { inner, delivered: DeliveredPayloads::default() }
     }
 }
 
@@ -142,6 +195,7 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
             }
         }
 
+        self.delivered.record_parent(args.config.parent_header.hash());
         let has_best_payload = args.best_payload.is_some();
         // This is a local pool-enabled Engine build, including --dev mining. The flag identifies
         // the requested build mode, not the caller's identity. None has OP's false default.
@@ -157,10 +211,17 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
         let _active = ActiveGauge(active);
         let started = Instant::now();
 
-        let result = with_attempt_context(has_best_payload, failure_policies_enabled, || {
-            self.inner.try_build(args)
-        });
+        let cancel = args.cancel.clone();
+        let result =
+            with_attempt_context(has_best_payload, failure_policies_enabled, cancel, || {
+                self.inner.try_build(args)
+            });
         let duration = started.elapsed();
+        // Only "better" payloads: a frozen one comes from a `no_tx_pool` build, which op-node
+        // also issues on follower nodes, where the next job's parent is not a delivery.
+        if let Ok(BuildOutcome::Better { payload, .. }) = &result {
+            self.delivered.record_built(payload.block().hash(), has_best_payload);
+        }
         let outcome = match &result {
             Ok(BuildOutcome::Better { .. }) => "better",
             Ok(BuildOutcome::Aborted { .. }) => "aborted",
@@ -254,7 +315,7 @@ impl<B> PayloadMetricsBlockBuilder<B> {
     pub fn new(inner: B) -> Self {
         Self {
             inner: Some(inner),
-            has_best_payload: current_attempt_context(),
+            has_best_payload: current_has_best_payload(),
             execution_duration: Duration::ZERO,
             execution_calls: 0,
         }
@@ -287,6 +348,16 @@ impl<B> PayloadMetricsBlockBuilder<B> {
             "result" => result_label(succeeded),
         )
         .record(elapsed.as_secs_f64());
+        // The job was resolved while this attempt was still building: nobody will read the
+        // payload, so this finalization (and any blocking root in it) was pure waste.
+        if current_attempt_cancelled() == Some(true) {
+            metrics::histogram!(
+                "celo_payload_orphaned_finalization_duration_seconds",
+                "has_best_payload" => bool_label(has_best_payload),
+                "root_source" => root_source,
+            )
+            .record(elapsed.as_secs_f64());
+        }
     }
 }
 
@@ -464,7 +535,10 @@ impl<P: StateProofProvider> StateProofProvider for PayloadMetricsStateProvider<P
 }
 
 impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsStateProvider<P> {
-    fn hashed_post_state(&self, bundle_state: &revm::database::BundleState) -> HashedPostState {
+    fn hashed_post_state(
+        &self,
+        bundle_state: &revm::database::BundleState,
+    ) -> ProviderResult<HashedPostState> {
         let started = Instant::now();
         let hashed_state = self.inner.hashed_post_state(bundle_state);
         if let Some(has_best_payload) = self.has_best_payload {
@@ -474,13 +548,14 @@ impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsState
                 "has_best_payload" => has_best_label,
             )
             .record(started.elapsed().as_secs_f64());
-            metrics::histogram!(
-                "celo_payload_hashed_post_state_size",
-                "has_best_payload" => has_best_label,
-            )
-            // `chunking_length` is reth's own measure of the work the trie walk has to do:
-            // changed accounts plus changed slots, counting a wiped storage as one entry.
-            .record(hashed_state.chunking_length() as f64);
+            if let Ok(state) = &hashed_state {
+                metrics::histogram!(
+                    "celo_payload_hashed_post_state_size",
+                    "has_best_payload" => has_best_label,
+                )
+                // Count changed accounts and slots, with wiped storage as one entry.
+                .record(state.chunking_length() as f64);
+            }
         }
         hashed_state
     }
@@ -561,10 +636,11 @@ mod tests {
     };
     use reth_optimism_payload_builder::OpBuiltPayload;
     use reth_primitives_traits::{SealedBlock, SealedHeader};
+    use reth_revm::cancelled::CancelOnDrop;
     use reth_storage_api::{HashedPostStateProvider, StateRootProvider, noop::NoopProvider};
     use reth_trie_common::HashedPostState;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -584,11 +660,17 @@ mod tests {
     struct FakePayloadBuilder {
         outcome: FakeOutcome,
         missing_called: Arc<AtomicBool>,
+        /// What each `try_build` call saw in `args.cancel.is_cancelled()`, in call order.
+        saw_cancelled: Arc<Mutex<Vec<bool>>>,
     }
 
     impl FakePayloadBuilder {
         fn new(outcome: FakeOutcome) -> Self {
-            Self { outcome, missing_called: Arc::new(AtomicBool::new(false)) }
+            Self {
+                outcome,
+                missing_called: Arc::new(AtomicBool::new(false)),
+                saw_cancelled: Arc::default(),
+            }
         }
     }
 
@@ -600,6 +682,7 @@ mod tests {
             &self,
             args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
         ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+            self.saw_cancelled.lock().unwrap().push(args.cancel.is_cancelled());
             let payload = test_payload(args.config.payload_id());
             match self.outcome {
                 FakeOutcome::Better => {
@@ -674,7 +757,7 @@ mod tests {
     /// Builds a state provider bound to the attempt active on this thread, the way
     /// `PayloadMetricsBlockBuilder::finish` does.
     fn observed_provider<P>(inner: P) -> PayloadMetricsStateProvider<P> {
-        PayloadMetricsStateProvider::with_context(inner, current_attempt_context())
+        PayloadMetricsStateProvider::with_context(inner, current_has_best_payload())
     }
 
     fn metric_value<'a>(
@@ -707,20 +790,20 @@ mod tests {
 
     #[test]
     fn attempt_context_is_scoped() {
-        assert_eq!(current_attempt_context(), None);
-        with_attempt_context(true, true, || {
-            assert_eq!(current_attempt_context(), Some(true));
+        assert_eq!(current_has_best_payload(), None);
+        with_attempt_context(true, true, CancelOnDrop::default(), || {
+            assert_eq!(current_has_best_payload(), Some(true));
             assert!(failure_policies_enabled());
-            with_attempt_context(false, false, || {
+            with_attempt_context(false, false, CancelOnDrop::default(), || {
                 assert!(!failure_policies_enabled());
             });
             assert!(failure_policies_enabled());
             std::thread::spawn(|| assert!(!failure_policies_enabled())).join().unwrap();
         });
-        assert_eq!(current_attempt_context(), None);
+        assert_eq!(current_has_best_payload(), None);
         assert!(!failure_policies_enabled());
         let panic = std::panic::catch_unwind(|| {
-            with_attempt_context(true, true, || {
+            with_attempt_context(true, true, CancelOnDrop::default(), || {
                 panic!("failed payload attempt");
             })
         });
@@ -782,6 +865,82 @@ mod tests {
         );
     }
 
+    /// `test_payload` and `test_args` both use default headers, so a built payload's hash equals
+    /// the parent hash of the next `test_args` job. That stands in for "the next block builds on
+    /// the delivered one".
+    #[test]
+    fn delivered_payload_is_attributed_to_the_attempt_that_built_it() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let builder = PayloadMetricsBuilder::new(FakePayloadBuilder::new(FakeOutcome::Better));
+        // The job generator clones the builder per job; the history must be shared.
+        let next_job = builder.clone();
+
+        metrics::with_local_recorder(&recorder, || {
+            // Block N: a rebuild produced the best payload.
+            let _ = builder.try_build(test_args(true));
+            // Block N+1: its first attempt builds on block N, so block N's payload was delivered.
+            let _ = next_job.try_build(test_args(false));
+            // Same parent again (a second attempt of the same job): must not count twice.
+            let _ = next_job.try_build(test_args(true));
+        });
+
+        let snapshot = snapshot(&snapshotter);
+        assert_eq!(
+            metric_value(&snapshot, "celo_payload_delivered_total", &[("attempt", "rebuild")]),
+            &DebugValue::Counter(1),
+        );
+        // The second call recorded its own payload as "first"; the third call consumed it.
+        assert_eq!(
+            metric_value(&snapshot, "celo_payload_delivered_total", &[("attempt", "first")]),
+            &DebugValue::Counter(1),
+        );
+    }
+
+    /// The wrapper must hand the inner builder the job's own cancel marker and must not set it.
+    /// A clone the wrapper drops before or during the inner call would make op-reth cancel every
+    /// build; the second run proves the inner builder reads the job's flag, not a copy.
+    #[test]
+    fn wrapper_passes_the_jobs_cancel_flag_through_untouched() {
+        let inner = FakePayloadBuilder::new(FakeOutcome::Better);
+        let saw_cancelled = inner.saw_cancelled.clone();
+        let builder = PayloadMetricsBuilder::new(inner);
+
+        let job_side = CancelOnDrop::default();
+        let mut args = test_args(false);
+        args.cancel = job_side.clone();
+        let _ = builder.try_build(args);
+
+        let mut args = test_args(false);
+        args.cancel = job_side.clone();
+        // The job resolves before the attempt starts.
+        drop(job_side);
+        let _ = builder.try_build(args);
+
+        assert_eq!(*saw_cancelled.lock().unwrap(), vec![false, true]);
+    }
+
+    /// Only the sequencer's "better" payloads are candidates for delivery. A frozen payload comes
+    /// from a `no_tx_pool` build, which op-node also issues on follower nodes, where the next
+    /// job's parent says nothing about what a sequencer delivered.
+    #[test]
+    fn frozen_payloads_are_not_attributed() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let builder = PayloadMetricsBuilder::new(FakePayloadBuilder::new(FakeOutcome::Freeze));
+
+        metrics::with_local_recorder(&recorder, || {
+            let _ = builder.try_build(test_args(false));
+            let _ = builder.try_build(test_args(false));
+        });
+
+        let delivered: Vec<_> = snapshot(&snapshotter)
+            .into_iter()
+            .filter(|(key, _, _, _)| key.key().name() == "celo_payload_delivered_total")
+            .collect();
+        assert!(delivered.is_empty(), "frozen payload attributed: {delivered:?}");
+    }
+
     #[test]
     fn missing_payload_is_metered_and_delegated() {
         let recorder = DebuggingRecorder::new();
@@ -806,10 +965,82 @@ mod tests {
         );
     }
 
+    /// Every `CancelOnDrop` clone cancels the job when it is dropped. If the instrumentation ever
+    /// cloned the attempt's marker and dropped the clone mid-attempt, op-reth would abort every
+    /// build. The job-side marker must still read "not cancelled" after the decorator was created,
+    /// used and dropped inside the attempt.
+    #[test]
+    fn instrumentation_never_cancels_the_attempt() {
+        let job_side = CancelOnDrop::default();
+        let attempt_side = job_side.clone();
+        with_attempt_context(true, true, attempt_side, || {
+            let mut builder = PayloadMetricsBlockBuilder::new(());
+            builder.record_execution(Duration::from_millis(1));
+            builder.record_finalization("blocking", true, Duration::from_millis(1));
+            drop(builder);
+            assert_eq!(current_attempt_cancelled(), Some(false));
+        });
+        // `with_attempt_context` drops its own clone on exit, after the attempt returned. That is
+        // the one place a drop is allowed, so the flag is set now and only now.
+        assert!(job_side.is_cancelled());
+    }
+
+    #[test]
+    fn finalization_after_the_job_resolved_is_counted_as_orphaned() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let job_side = CancelOnDrop::default();
+        let attempt_side = job_side.clone();
+
+        metrics::with_local_recorder(&recorder, || {
+            with_attempt_context(true, true, attempt_side, move || {
+                let builder = PayloadMetricsBlockBuilder::new(());
+                // getPayload resolved the job while this rebuild was executing.
+                drop(job_side);
+                builder.record_finalization("blocking", true, Duration::from_millis(7));
+            });
+        });
+
+        assert_eq!(
+            histogram_samples(
+                &snapshot(&snapshotter),
+                "celo_payload_orphaned_finalization_duration_seconds",
+                &[("has_best_payload", "true"), ("root_source", "blocking")],
+            ),
+            vec![0.007],
+        );
+    }
+
+    #[test]
+    fn finalization_of_a_live_job_is_not_orphaned() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let job_side = CancelOnDrop::default();
+
+        metrics::with_local_recorder(&recorder, || {
+            with_attempt_context(false, true, job_side.clone(), || {
+                PayloadMetricsBlockBuilder::new(()).record_finalization(
+                    "precomputed",
+                    true,
+                    Duration::from_millis(3),
+                );
+            });
+        });
+
+        let orphaned: Vec<_> = snapshot(&snapshotter)
+            .into_iter()
+            .filter(|(key, _, _, _)| {
+                key.key().name() == "celo_payload_orphaned_finalization_duration_seconds"
+            })
+            .collect();
+        assert!(orphaned.is_empty(), "live job reported as orphaned: {orphaned:?}");
+        drop(job_side);
+    }
+
     #[test]
     fn block_builder_binds_to_the_enclosing_attempt() {
         assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, None);
-        with_attempt_context(true, true, || {
+        with_attempt_context(true, true, CancelOnDrop::default(), || {
             assert_eq!(PayloadMetricsBlockBuilder::new(()).has_best_payload, Some(true));
         });
     }
@@ -820,7 +1051,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(true, true, || {
+            with_attempt_context(true, true, CancelOnDrop::default(), || {
                 let mut builder = PayloadMetricsBlockBuilder::new(());
                 builder.record_execution(Duration::from_millis(10));
                 builder.record_execution(Duration::from_millis(30));
@@ -856,7 +1087,7 @@ mod tests {
             let snapshotter = recorder.snapshotter();
 
             metrics::with_local_recorder(&recorder, || {
-                with_attempt_context(false, true, || {
+                with_attempt_context(false, true, CancelOnDrop::default(), || {
                     let builder = PayloadMetricsBlockBuilder::new(());
                     let source = if precomputed { "precomputed" } else { "blocking" };
                     builder.record_finalization(source, succeeded, Duration::from_millis(5));
@@ -892,7 +1123,7 @@ mod tests {
             drop(builder);
 
             let provider = observed_provider(NoopProvider::default());
-            let hashed = provider.hashed_post_state(&Default::default());
+            let hashed = provider.hashed_post_state(&Default::default()).unwrap();
             let _ = provider.state_root_with_updates(hashed);
         });
 
@@ -910,9 +1141,9 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            with_attempt_context(false, true, || {
+            with_attempt_context(false, true, CancelOnDrop::default(), || {
                 let provider = observed_provider(NoopProvider::default());
-                let hashed = provider.hashed_post_state(&Default::default());
+                let hashed = provider.hashed_post_state(&Default::default()).unwrap();
                 assert_eq!(hashed, HashedPostState::default());
                 assert_eq!(
                     provider.state_root_with_updates(hashed).unwrap(),

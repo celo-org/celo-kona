@@ -548,48 +548,12 @@ where
         FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
-    // Verbatim copy of `OpEvmConfig::evm_env_for_payload` (op-reth v2.3.1) with zero Celo
-    // divergence — upstream keeps it inline in the trait impl, so there is no free function
-    // to delegate to. Re-diff against upstream when bumping op-reth.
     fn evm_env_for_payload(&self, payload: &OpExecData) -> Result<EvmEnvFor<Self>, Self::Error> {
-        use alloy_primitives::U256;
-        use revm::{
-            context::{BlockEnv, CfgEnv},
-            context_interface::block::BlobExcessGasAndPrice,
-            primitives::hardfork::SpecId,
-        };
-
-        let timestamp = payload.payload.timestamp();
-        let spec =
-            reth_optimism_evm::revm_spec_by_timestamp_after_bedrock(self.chain_spec(), timestamp);
-
-        let cfg_env = CfgEnv::new()
-            .with_chain_id(self.chain_spec().chain().id())
-            .with_spec_and_mainnet_gas_params(spec);
-
-        let blob_excess_gas_and_price = spec
-            .into_eth_spec()
-            .is_enabled_in(SpecId::CANCUN)
-            .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 });
-
-        let block_env = BlockEnv {
-            number: U256::from(payload.payload.block_number()),
-            beneficiary: payload.payload.as_v1().fee_recipient,
-            timestamp: U256::from(timestamp),
-            difficulty: if spec.into_eth_spec() >= SpecId::MERGE {
-                U256::ZERO
-            } else {
-                payload.payload.as_v1().prev_randao.into()
-            },
-            prevrandao: (spec.into_eth_spec() >= SpecId::MERGE)
-                .then(|| payload.payload.as_v1().prev_randao),
-            gas_limit: payload.payload.as_v1().gas_limit,
-            basefee: payload.payload.as_v1().base_fee_per_gas.to(),
-            blob_excess_gas_and_price,
-            slot_num: 0,
-        };
-
-        Ok(alloy_evm::EvmEnv { cfg_env, block_env })
+        Ok(alloy_op_evm::evm_env_for_op_payload(
+            &payload.payload,
+            self.chain_spec(),
+            self.chain_spec().chain().id(),
+        ))
     }
 
     fn context_for_payload<'a>(

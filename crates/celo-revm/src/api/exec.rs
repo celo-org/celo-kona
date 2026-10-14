@@ -51,10 +51,14 @@ where
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
         let mut h =
             CeloHandler::<Self, CeloError<CeloContext<DB>>, EthFrame<EthInterpreter>>::new();
-        h.run(self).map(|result| {
-            let state = self.finalize();
-            ExecResultAndState::new(result, state)
-        })
+        h.run(self)
+            .inspect_err(|_| {
+                let _ = self.finalize();
+            })
+            .map(|result| {
+                let state = self.finalize();
+                ExecResultAndState::new(result, state)
+            })
     }
 }
 

@@ -13,11 +13,10 @@ use alloy_eips::{
 
 /// Decodes an EIP-2718 transaction and requires `bytes` to be its canonical encoding.
 ///
-/// Plain `decode_2718_exact` accepts inputs that re-encode differently, such as a typed
-/// transaction body without its type byte or a legacy transaction carrying a `0x00` tag. Where the
-/// bytes are consensus input they must be rejected rather than normalised, so anything that does
-/// not round-trip is an error. The re-encode is one linear pass per transaction, far cheaper than
-/// the signer recovery that follows it.
+/// Plain `decode_2718_exact` accepts inputs that re-encode differently, such as a legacy
+/// transaction carrying a `0x00` tag. Where the bytes are consensus input they must be rejected
+/// rather than normalised, so anything that does not round-trip is an error. The re-encode is one
+/// linear pass per transaction, far cheaper than the signer recovery that follows it.
 pub fn decode_2718_canonical<T: Decodable2718 + Encodable2718>(bytes: &[u8]) -> Eip2718Result<T> {
     let tx = T::decode_2718_exact(bytes)?;
     // Length first: it is free and skips the re-encode allocation on a mismatch.
@@ -37,7 +36,7 @@ mod tests {
         SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     };
     use alloy_eips::Encodable2718;
-    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
     use op_alloy_consensus::TxDeposit;
     use std::{vec, vec::Vec};
 
@@ -140,6 +139,78 @@ mod tests {
                 .encoded_2718(),
             ),
         ]
+    }
+
+    #[test]
+    fn untagged_fallback_decode_only_accepts_legacy() {
+        // Per EIP-2718, a byte string with no type-byte prefix (first byte >= 0xc0, i.e. it
+        // is an RLP list) can only ever represent a legacy transaction; if it fails the legacy
+        // schema, decoding must fail outright -- it must never be reinterpreted as some other
+        // (typed) transaction kind.
+        //
+        // This 107-byte RLP list is invalid as a legacy tx: list-index 3 (the would-be `to`)
+        // is a 3-byte string, not a 20-byte address or an empty string, and list-index 8 (the
+        // would-be `s`) is RLP-typed as an empty list, not an integer. But the very same bytes
+        // happen to be a byte-for-byte-valid 12-field `TxEip1559` list (chain_id, nonce,
+        // max_priority_fee_per_gas, max_fee_per_gas, gas_limit, to, value, input, access_list,
+        // y_parity, r, s). Before the fix, `EthereumTxEnvelope`'s generated `fallback_decode`
+        // tried every declared variant in enum-declaration order and accepted this input as
+        // `Eip1559`, since that's the first (and only) variant whose raw-field RLP schema
+        // happens to fully consume the buffer.
+        let untagged_invalid_as_legacy_valid_as_eip1559 = hex!(
+            "f8690180830f4240830f424083ffff0c94e1000000000000000000000000000000c0de0000"
+            "8020c080a079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            "a05168112c1d71e40b6b60530adbd2c4aaf9e4f94b6cca0f5717fac601350af7d3"
+        );
+        assert!(
+            CeloTxEnvelope::decode_2718_exact(&untagged_invalid_as_legacy_valid_as_eip1559)
+                .is_err(),
+            "untagged input that is not a valid legacy tx must be rejected, not reinterpreted \
+             as another transaction type"
+        );
+
+        // Guard against over-correction (1): a genuine untagged legacy tx must still decode as
+        // `Legacy`.
+        let legacy = TxLegacy {
+            chain_id: None,
+            nonce: 2,
+            gas_limit: 1_000_000,
+            gas_price: 10_000_000_000,
+            to: Address::left_padding_from(&[6]).into(),
+            value: U256::from(7_u64),
+            ..Default::default()
+        }
+        .into_signed(Signature::test_signature().with_parity(true));
+        let legacy_envelope: CeloTxEnvelope = legacy.into();
+        let legacy_encoded = legacy_envelope.encoded_2718();
+        assert_eq!(
+            CeloTxEnvelope::decode_2718_exact(&legacy_encoded).unwrap(),
+            legacy_envelope,
+            "a genuine legacy transaction must still decode correctly"
+        );
+
+        // Guard against over-correction (2): a genuine, correctly type-tagged (0x02-prefixed)
+        // EIP-1559 tx must still decode as `Eip1559` via `typed_decode` (not `fallback_decode`).
+        let eip1559 = TxEip1559 {
+            chain_id: 1,
+            nonce: 2,
+            max_fee_per_gas: 3,
+            max_priority_fee_per_gas: 4,
+            gas_limit: 5,
+            to: Address::left_padding_from(&[6]).into(),
+            value: U256::from(7_u64),
+            input: vec![8].into(),
+            access_list: Default::default(),
+        }
+        .into_signed(Signature::test_signature());
+        let eip1559_envelope: CeloTxEnvelope = eip1559.into();
+        let eip1559_encoded = eip1559_envelope.encoded_2718();
+        assert_eq!(eip1559_encoded[0], 0x02, "sanity: must be type-tagged, not untagged");
+        assert_eq!(
+            CeloTxEnvelope::decode_2718_exact(&eip1559_encoded).unwrap(),
+            eip1559_envelope,
+            "a genuine type-tagged EIP-1559 transaction must still decode correctly"
+        );
     }
 
     #[test]

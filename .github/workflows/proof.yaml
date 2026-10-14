@@ -13,6 +13,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI builds don't need debuginfo; dropping it shrinks link output and the
+  # rust-cache entries that compete for the repo's 10 GB cache quota.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   host-client-offline-runs:
@@ -28,9 +31,8 @@ jobs:
         uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
-          components: llvm-tools-preview
           prefix-key: ${{ matrix.target }}-${{ matrix.name }}
-      - uses: taiki-e/install-action@cargo-llvm-cov
+          save-cache: false
       # Below variables can be retrieved by running `just run-client-native`, and witness tar file can be created by compressing the generated data directory after running the command.
       - name: Set run environment
         run: |

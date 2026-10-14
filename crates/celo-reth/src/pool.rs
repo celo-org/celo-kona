@@ -524,6 +524,17 @@ impl OpPooledTx for CeloPoolTx {
     fn encoded_2718(&self) -> Cow<'_, Bytes> {
         Cow::Borrowed(self.inner.encoded_2718())
     }
+
+    fn set_op_fee_reservation(&mut self, fee: U256) {
+        // Celo's CIP-64 debit omits OP fees: its L1 and operator scalars are
+        // structurally zero. A native-denominated reservation must not enter
+        // the sender's native balance requirement for an FC-paid transaction.
+        if self.fee_currency.is_some() {
+            return;
+        }
+        self.inner.set_op_fee_reservation(fee);
+        self.native_cost = NativeU256::new(*self.inner.cost());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,6 +1767,7 @@ fn apply_exchange_rates_to_pool_tx(
                 access_list_accounts,
                 access_list_storage_keys,
                 authorization_list_num,
+                None,
             )
             .initial_total_gas();
             let required = standard_intrinsic.saturating_add(fc_intrinsic);
@@ -2838,6 +2850,113 @@ mod tests {
         assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
         // native_priority = 100 * 2 / 1 = 200
         assert_eq!(tx.max_priority_fee_per_gas(), Some(200));
+    }
+
+    #[test]
+    fn op_fee_reservation_replaces_native_cost() {
+        let mut tx = make_test_tx(None, 100, 1_000, 10, Address::with_last_byte(1));
+        tx.set_op_fee_reservation(U256::from(40));
+        assert_eq!(*tx.cost(), U256::from(100_040));
+        tx.set_op_fee_reservation(U256::from(10));
+        assert_eq!(*tx.cost(), U256::from(100_010), "revalidation must replace the reservation");
+        tx.set_op_fee_reservation(U256::ZERO);
+        assert_eq!(*tx.cost(), U256::from(100_000));
+    }
+
+    #[test]
+    fn op_fee_reservation_keeps_fee_currency_gas_separate() {
+        let mut tx = make_test_tx(
+            Some(Address::with_last_byte(0xcc)),
+            100,
+            1_000,
+            10,
+            Address::with_last_byte(1),
+        );
+        tx.apply_exchange_rate(ExchangeRate { numerator: 2, denominator: 1 });
+        tx.set_op_fee_reservation(U256::from(40));
+        assert_eq!(*tx.cost(), U256::ZERO);
+        assert_eq!(tx.fc_gas_cost(), U256::from(100_000));
+        tx.set_op_fee_reservation(U256::from(10));
+        assert_eq!(*tx.cost(), U256::ZERO);
+        assert_eq!(tx.fc_gas_cost(), U256::from(100_000));
+    }
+
+    /// The pool must account for OP fees of the entire nonce prefix, even when
+    /// each transaction passes its individual affordability check.
+    #[tokio::test]
+    async fn pool_parks_descendant_unaffordable_with_l1_fee() {
+        use crate::{CeloEvmConfig, CeloPrimitives};
+        use alloy_consensus::{SignableTransaction, TxEip1559};
+        use alloy_eips::Encodable2718;
+        use alloy_primitives::Signature;
+        use op_revm::L1BlockInfo;
+        use reth_optimism_chainspec::OP_MAINNET;
+        use reth_optimism_evm::RethL1BlockInfo;
+        use reth_optimism_txpool::OpTransactionValidator;
+        use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+        use reth_transaction_pool::{
+            CoinbaseTipOrdering, Pool, PoolConfig, blobstore::InMemoryBlobStore,
+            validate::EthTransactionValidatorBuilder,
+        };
+
+        let signer = Address::with_last_byte(1);
+        let make_tx = |nonce: u64| {
+            let tx = CeloTransactionSigned::Eip1559(
+                TxEip1559 {
+                    chain_id: 10,
+                    nonce,
+                    gas_limit: 21_000,
+                    max_fee_per_gas: 1_000_000_000,
+                    to: TxKind::Call(Address::with_last_byte(0x42)),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            );
+            let recovered = Recovered::new_unchecked(tx, signer);
+            let len = recovered.encode_2718_len();
+            CeloPoolTx::new(InnerPoolTx::new(recovered, len))
+        };
+        let (tx0, tx1) = (make_tx(0), make_tx(1));
+        let mut l1_block_info = L1BlockInfo {
+            l1_base_fee: U256::from(1_000_000_000_000u64),
+            l1_base_fee_scalar: U256::from(1_000_000),
+            ..Default::default()
+        };
+        let l1_fee = l1_block_info
+            .l1_tx_data_fee(OP_MAINNET.clone(), 0, tx0.encoded_2718().as_ref(), false)
+            .unwrap();
+        let l2_cost = *tx0.cost();
+        assert!(l1_fee > l2_cost, "L1 fee must dominate for this regression");
+        let balance = l2_cost * U256::from(2) + l1_fee + l1_fee / U256::from(2);
+        let client = MockEthProvider::<CeloPrimitives>::new()
+            .with_chain_spec(OP_MAINNET.clone())
+            .with_genesis_block();
+        client.add_account(signer, ExtendedAccount::new(0, balance));
+        let inner =
+            EthTransactionValidatorBuilder::new(client, CeloEvmConfig::celo(OP_MAINNET.clone()))
+                .build(InMemoryBlobStore::default());
+        let validator = OpTransactionValidator::new(inner);
+        let mut l1_calldata = vec![0u8; 260];
+        l1_calldata[..4].copy_from_slice(&[0x01, 0x5d, 0x8e, 0xb9]);
+        l1_calldata[68..100].copy_from_slice(&l1_block_info.l1_base_fee.to_be_bytes::<32>());
+        l1_calldata[228..260]
+            .copy_from_slice(&l1_block_info.l1_base_fee_scalar.to_be_bytes::<32>());
+        let l1_info_tx = TxEip1559 { input: l1_calldata.into(), ..Default::default() };
+        validator.update_l1_block_info(&Header::default(), Some(&l1_info_tx));
+        let pool = Pool::new(
+            validator,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        pool.add_transaction(TransactionOrigin::External, tx0).await.unwrap();
+        pool.add_transaction(TransactionOrigin::External, tx1).await.unwrap();
+        let pending: Vec<_> =
+            pool.get_pending_transactions_by_sender(signer).iter().map(|tx| tx.nonce()).collect();
+        let queued: Vec<_> =
+            pool.get_queued_transactions_by_sender(signer).iter().map(|tx| tx.nonce()).collect();
+        assert_eq!(pending, vec![0]);
+        assert_eq!(queued, vec![1], "nonce 1 cannot pay its L1 fee after nonce 0");
     }
 
     #[test]

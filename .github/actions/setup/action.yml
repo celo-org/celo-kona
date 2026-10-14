@@ -15,15 +15,21 @@ inputs:
     description: The prefix key for the rust cache
     required: false
     default: "v0-rust"
+  save-cache:
+    description: >-
+      Whether to save the rust cache on main. Turn it off for jobs whose cache
+      is not worth a slot in the repo's 10 GB cache quota.
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
   steps:
     - name: Install Just
-      uses: taiki-e/install-action@just
-
-    - name: Install mold linker
-      uses: rui314/setup-mold@v1
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just@1.58.0
+        fallback: none
 
     - name: Installs stable rust toolchain
       if: ${{ inputs.channel == 'stable' && inputs.components == '' }}
@@ -53,4 +59,4 @@ runs:
       with:
         cache-on-failure: true
         prefix-key: ${{ inputs.prefix-key }}
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        save-if: ${{ inputs.save-cache == 'true' && github.ref == 'refs/heads/main' }}
