@@ -1,11 +1,14 @@
 //! Tests for the Celo half of the reth fork's block-replay context hook.
 //!
-//! The RPC replay paths run against a *forked* reth (`celo-org/reth`) that
-//! captures a per-block replay context before replaying a block prefix and seeds
-//! it into every call EVM it builds over mid-block state (`debug_traceCall` with
-//! a `txIndex`, `debug_traceCallMany`, `eth_callMany`). The fork tests its own
-//! side of that hook with an Ethereum `ConfigureEvm`; these tests cover the Celo
-//! implementations — `CeloEvmConfig::capture_block_replay_ctx`,
+//! The RPC call paths run against a *forked* reth (`celo-org/reth`) that
+//! captures a per-block replay context and seeds it into every call EVM it builds
+//! (`debug_traceCall` with a `txIndex`, `debug_traceCallMany`, `eth_callMany`,
+//! `trace_callMany`). Paths that replay a block prefix capture before replaying
+//! it; `trace_callMany` replays nothing and captures on the state its calls run
+//! on; each later callMany bundle captures again, on top of the state the earlier
+//! bundles left. The fork tests its own side of that hook with an Ethereum
+//! `ConfigureEvm`; these tests cover the Celo implementations —
+//! `CeloEvmConfig::capture_block_replay_ctx`,
 //! `CeloEvmConfig::seed_block_replay_ctx` and the
 //! `CeloEvm::set_fee_currency_context` they delegate to.
 //!
