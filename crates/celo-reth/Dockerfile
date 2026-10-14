@@ -1,5 +1,9 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
+# Without the toolchain file `cargo chef cook` runs the image's default
+# toolchain, then `COPY . .` switches the final build to the pinned one, and
+# every cooked dependency is recompiled.
+COPY rust-toolchain.toml .
 RUN apt-get update && apt-get install -y libclang-dev pkg-config && rm -rf /var/lib/apt/lists/*
 
 FROM chef AS planner
@@ -21,7 +25,7 @@ ENV RUSTFLAGS=$RUSTFLAGS
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo chef cook --profile $BUILD_PROFILE --recipe-path recipe.json --bin celo-reth
+    cargo chef cook --profile $BUILD_PROFILE --recipe-path recipe.json -p celo-reth --bin celo-reth
 COPY . .
 # SHA injected AFTER chef cook so dep-cache layer stays valid across PR commits.
 # `.dockerignore` excludes `.git/`, so `crates/celo-reth/build.rs` cannot run
