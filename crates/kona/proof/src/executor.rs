@@ -81,7 +81,7 @@ where
     /// Execute the given payload attributes.
     ///
     /// The CIP-64 fee records in the builder's outcome are not part of the driver contract and
-    /// are dropped here; the receipts already carry the per-transaction CIP-64 fields.
+    /// are dropped here; nothing in the proof path reads them.
     async fn execute_payload(
         &mut self,
         attributes: OpPayloadAttributes,
