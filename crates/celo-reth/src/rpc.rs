@@ -1024,6 +1024,20 @@ fn rate_overflow_error(method: &'static str) -> jsonrpsee_types::ErrorObjectOwne
     )
 }
 
+/// Error for an `eth_feeHistory` call that cannot read the exchange rate of a fee currency
+/// used in block `block_num`, for example because this node has pruned that block's state.
+/// op-geth fails the call the same way (`eth/gasprice/feehistory.go`, `processBlock`).
+fn fee_history_exchange_rate_error(
+    block_num: u64,
+    cause: &jsonrpsee_types::ErrorObjectOwned,
+) -> jsonrpsee_types::ErrorObjectOwned {
+    jsonrpsee_types::ErrorObject::owned(
+        RPC_SERVER_ERROR,
+        format!("failed to get exchange rates for block {block_num}: {}", cause.message()),
+        None::<()>,
+    )
+}
+
 /// Build a [`jsonrpsee::RpcModule`] with fee-currency-aware `eth_gasPrice` and
 /// `eth_maxPriorityFeePerGas` that accept an optional `feeCurrency` parameter.
 ///
@@ -1120,10 +1134,10 @@ pub fn celo_tx_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc<CeloFeeA
 /// Computes: `min(max_fee_fc - base_fee_fc, priority_fee_fc) * rate_denom / rate_num`
 /// where `base_fee_fc = base_fee_native * rate_num / rate_denom`.
 ///
-/// Returns `0` if either rate component is zero (degenerate rate) or if either
-/// scaling step overflows `U256` (extreme rate). Overflow is treated the same
-/// as a degenerate rate — the tx is effectively skipped from `eth_feeHistory`
-/// reward percentiles rather than panicking the handler.
+/// Returns `0` if either rate component is zero or if either scaling step
+/// overflows `U256` (extreme rate), rather than panicking the handler. Rates
+/// from [`CeloFeeApi::exchange_rate`] never have a zero component, so for
+/// `eth_feeHistory` only overflow can put `0` in place of a tip it cannot compute.
 pub(crate) fn cip64_native_tip(
     max_fee: Fc,
     priority_fee: Fc,
@@ -1150,28 +1164,6 @@ pub(crate) fn cip64_native_tip(
         );
     }
     native_tip.saturating_to_u128()
-}
-
-/// Compute the native-equivalent tip for a CIP-64 tx in `eth_feeHistory`.
-///
-/// When the rate is `None` (exchange rate lookup failed — e.g. the fee currency
-/// was deregistered after the historical block, or the underlying `eth_call`
-/// errored transiently), returning `tx.effective_tip_per_gas(base_fee)` would
-/// mix FC-denominated `max_fee`/`priority_fee` with a native-denominated
-/// `base_fee` and produce garbage. Instead, skip the tx by reporting a tip of
-/// `0`; callers can emit a warning for observability.
-pub(crate) fn cip64_fee_history_tip(
-    max_fee: Fc,
-    priority_fee: Fc,
-    base_fee: Native,
-    rate: Option<RateU256>,
-) -> Native {
-    match rate {
-        Some(rate) if !rate.numerator.is_zero() => {
-            cip64_native_tip(max_fee, priority_fee, base_fee, rate)
-        }
-        _ => Native::new(0),
-    }
 }
 
 /// Compute gas-weighted reward percentiles from a pre-sorted `(tip, gas_used)` slice.
@@ -1246,10 +1238,8 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
             // are normalizing — this yields correct per-block reward
             // percentiles even when rates changed mid-range. The cache still
             // dedupes lookups for multiple CIP-64 txs within the same block.
-            let mut rate_cache: std::collections::HashMap<
-                (u64, Address),
-                Option<RateU256>,
-            > = std::collections::HashMap::new();
+            let mut rate_cache: std::collections::HashMap<(u64, Address), RateU256> =
+                std::collections::HashMap::new();
             for (i, block_rewards) in rewards.iter_mut().enumerate() {
                 let block_num = oldest_block + i as u64;
                 let block_tag = alloy_rpc_types_eth::BlockNumberOrTag::Number(block_num);
@@ -1290,9 +1280,10 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                     let bf = base_fee.unwrap_or(0);
 
                     // A CIP-64 tx pays fees in native CELO only when `fee_currency` is
-                    // absent; any address it carries is looked up and converted. A tx whose
-                    // currency has no rate at this block reports a zero tip (see
-                    // `cip64_fee_history_tip`) rather than failing the whole call.
+                    // absent; any address it carries is looked up and converted. If the
+                    // rate cannot be read at this block the whole call fails: without it
+                    // the tip has no native value, and reporting 0 would return wrong
+                    // percentiles as if they were right.
                     let cip64_fc = if tx.ty() == cip64_ty { tx.fee_currency() } else { None };
 
                     let tip = match cip64_fc {
@@ -1307,20 +1298,15 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                                             Some(alloy_eips::BlockId::Number(block_tag)),
                                         )
                                         .await
-                                        .ok();
+                                        .map_err(|e| {
+                                            fee_history_exchange_rate_error(block_num, &e)
+                                        })?;
                                     rate_cache.insert(cache_key, r);
                                     r
                                 }
                             };
 
-                            if rate.is_none() {
-                                tracing::warn!(
-                                    target: "celo::rpc",
-                                    ?fc,
-                                    "eth_feeHistory: exchange rate lookup failed for CIP-64 tx; treating tip as 0"
-                                );
-                            }
-                            cip64_fee_history_tip(
+                            cip64_native_tip(
                                 Fc::new(tx.max_fee_per_gas()),
                                 Fc::new(tx.max_priority_fee_per_gas().unwrap_or(0)),
                                 Native::new(bf as u128),
@@ -1329,8 +1315,7 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                             .into_inner()
                         }
                         None => {
-                            // Native tx, CIP-64 tx with native fee currency, or a
-                            // non-Cip64 envelope in the CIP-64 branch (defensive).
+                            // Any tx that pays its fees in native CELO.
                             tx.effective_tip_per_gas(bf).unwrap_or(0)
                         }
                     };
@@ -1771,40 +1756,6 @@ mod tests {
             json["effectiveGasPrice"], "0x1dcdb320",
             "effectiveGasPrice must use the FC base fee, not native"
         );
-    }
-
-    #[test]
-    fn cip64_fee_history_tip_uses_rate_when_present() {
-        // rate: 1 FC = 0.5 native (numerator=2, denominator=1)
-        // max_fee_fc=500, priority_fc=10, base_fee_native=100
-        // base_fee_fc = 100 * 2 / 1 = 200
-        // tip_fc = min(500 - 200, 10) = 10
-        // native_tip = 10 * 1 / 2 = 5
-        let tip =
-            cip64_fee_history_tip(Fc::new(500), Fc::new(10), Native::new(100), Some(rate(2, 1)));
-        assert_eq!(tip, Native::new(5));
-    }
-
-    #[test]
-    fn cip64_fee_history_tip_returns_zero_when_rate_missing() {
-        // Rate lookup failed — must NOT mix FC-denominated fees with a native
-        // base_fee via effective_tip_per_gas (which used to produce a bogus
-        // positive tip and corrupt reward percentiles). Report 0 instead.
-        let tip =
-            cip64_fee_history_tip(Fc::new(1_000_000_000), Fc::new(100), Native::new(100), None);
-        assert_eq!(tip, Native::new(0));
-    }
-
-    #[test]
-    fn cip64_fee_history_tip_returns_zero_for_zero_numerator() {
-        // Degenerate rate (num=0) — same safe fallback as `None`.
-        let tip = cip64_fee_history_tip(
-            Fc::new(1_000_000_000),
-            Fc::new(100),
-            Native::new(100),
-            Some(RateU256 { numerator: U256::ZERO, denominator: U256::from(1) }),
-        );
-        assert_eq!(tip, Native::new(0));
     }
 
     #[test]
@@ -2989,6 +2940,368 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0], Some(block_42));
         assert_eq!(seen[1], None);
+    }
+
+    // -----------------------------------------------------------------------
+    // eth_feeHistory handler: CIP-64 tip normalization
+    // -----------------------------------------------------------------------
+
+    const FEE_HISTORY_BLOCK: u64 = 100;
+    const FEE_HISTORY_BASE_FEE: u64 = 100;
+    /// Reward the stubbed upstream `eth_feeHistory` reports for the block. It is the
+    /// fee-currency tip read as if it were native, which the override must replace.
+    const FEE_HISTORY_UPSTREAM_REWARD: u128 = 10;
+
+    /// A CIP-64 RPC transaction with `max_fee_per_gas = 500` and
+    /// `max_priority_fee_per_gas = 10`. Both are in `fee_currency` units, or in native
+    /// CELO when `fee_currency` is `None`.
+    fn cip64_rpc_tx(fee_currency: Option<Address>) -> CeloRpcTransaction {
+        use alloy_consensus::SignableTransaction;
+        use celo_alloy_consensus::TxCip64;
+
+        let tx = TxCip64 {
+            chain_id: 0xa4ec,
+            nonce: 0,
+            gas_limit: 21_000,
+            max_fee_per_gas: 500,
+            max_priority_fee_per_gas: 10,
+            to: alloy_primitives::TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            fee_currency,
+            input: Bytes::new(),
+        };
+        fee_history_rpc_tx(CeloTxEnvelope::Cip64(tx.into_signed(Signature::test_signature())))
+    }
+
+    /// An EIP-1559 RPC transaction paying in native CELO with `max_fee_per_gas = 500` and
+    /// `max_priority_fee_per_gas = 3`.
+    fn native_rpc_tx() -> CeloRpcTransaction {
+        use alloy_consensus::{SignableTransaction, TxEip1559};
+
+        let tx = TxEip1559 {
+            chain_id: 0xa4ec,
+            gas_limit: 21_000,
+            max_fee_per_gas: 500,
+            max_priority_fee_per_gas: 3,
+            to: alloy_primitives::TxKind::Call(Address::ZERO),
+            ..Default::default()
+        };
+        fee_history_rpc_tx(CeloTxEnvelope::Eip1559(tx.into_signed(Signature::test_signature())))
+    }
+
+    /// Wrap `envelope` as the RPC transaction a block fetched by the override returns.
+    fn fee_history_rpc_tx(envelope: CeloTxEnvelope) -> CeloRpcTransaction {
+        use alloy_consensus::transaction::TransactionInfo;
+        use op_alloy_consensus::transaction::{OpDepositInfo, OpTransactionInfo};
+        use reth_rpc_traits::FromConsensusTx;
+
+        let tx_info = CeloTransactionInfo {
+            inner: OpTransactionInfo::new(
+                TransactionInfo {
+                    hash: None,
+                    index: Some(0),
+                    block_hash: None,
+                    block_number: Some(FEE_HISTORY_BLOCK),
+                    base_fee: Some(FEE_HISTORY_BASE_FEE),
+                    block_timestamp: None,
+                },
+                OpDepositInfo { deposit_nonce: None, deposit_receipt_version: None },
+            ),
+            cip64_fc_base_fee: None,
+        };
+        CeloRpcTransaction::from_consensus_tx(envelope, Address::ZERO, tx_info).unwrap()
+    }
+
+    /// A receipt with `gas_used = 21_000`, the only field the override reads, so one
+    /// receipt serves every transaction type.
+    fn fee_history_receipt() -> CeloTransactionReceipt {
+        use alloy_consensus::Receipt;
+        use alloy_primitives::B256;
+
+        CeloTransactionReceipt {
+            inner: alloy_rpc_types_eth::TransactionReceipt {
+                inner: CeloReceiptEnvelope::Cip64(CeloCip64ReceiptWithBloom {
+                    receipt: CeloCip64Receipt {
+                        inner: Receipt {
+                            status: true.into(),
+                            cumulative_gas_used: 21_000,
+                            logs: vec![],
+                        },
+                        base_fee: Some(200),
+                    },
+                    logs_bloom: Default::default(),
+                }),
+                transaction_hash: B256::ZERO,
+                transaction_index: Some(0),
+                block_hash: Some(B256::ZERO),
+                block_number: Some(FEE_HISTORY_BLOCK),
+                from: Address::ZERO,
+                to: Some(Address::ZERO),
+                gas_used: 21_000,
+                contract_address: None,
+                effective_gas_price: 210,
+                blob_gas_price: None,
+                blob_gas_used: None,
+            },
+            l1_block_info: Default::default(),
+        }
+    }
+
+    /// Build a [`CeloFeeApi`] whose upstream `eth_feeHistory` covers one block per entry of
+    /// `blocks`, numbered upwards from [`FEE_HISTORY_BLOCK`], each holding its transactions.
+    /// `rate_lookup` answers the exchange-rate `eth_call` and receives the block number the
+    /// rate is read at.
+    fn make_fee_history_api(
+        blocks: Vec<Vec<CeloRpcTransaction>>,
+        rate_lookup: impl Fn(u64) -> jsonrpsee::core::RpcResult<Bytes> + Send + Sync + 'static,
+    ) -> Arc<CeloFeeApi> {
+        fn block_index(tag: alloy_rpc_types_eth::BlockNumberOrTag) -> usize {
+            let number = tag.as_number().expect("the override fetches blocks by number");
+            (number - FEE_HISTORY_BLOCK) as usize
+        }
+
+        let block_count = blocks.len();
+        let blocks = Arc::new(blocks);
+        let receipt_blocks = blocks.clone();
+        Arc::new(CeloFeeApi {
+            gas_price: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
+            priority_fee: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
+            eth_call: Box::new(move |_, block_id| {
+                let Some(alloy_eips::BlockId::Number(tag)) = block_id else {
+                    panic!("the rate must be read at a block number, got {block_id:?}");
+                };
+                let result = rate_lookup(tag.as_number().expect("a numbered block"));
+                Box::pin(async move { result })
+            }),
+            fee_history: Box::new(move |_, _, _| {
+                Box::pin(async move {
+                    Ok(alloy_rpc_types_eth::FeeHistory {
+                        oldest_block: FEE_HISTORY_BLOCK,
+                        reward: Some(vec![vec![FEE_HISTORY_UPSTREAM_REWARD]; block_count]),
+                        ..Default::default()
+                    })
+                })
+            }),
+            block_by_number: Box::new(move |tag| {
+                let block = CeloRpcBlock {
+                    header: alloy_rpc_types_eth::Header {
+                        inner: alloy_consensus::Header {
+                            number: tag.as_number().unwrap(),
+                            base_fee_per_gas: Some(FEE_HISTORY_BASE_FEE),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    transactions: alloy_rpc_types_eth::BlockTransactions::Full(
+                        blocks[block_index(tag)].clone(),
+                    ),
+                    ..Default::default()
+                };
+                Box::pin(async move { Ok(Some(block)) })
+            }),
+            block_receipts: Box::new(move |tag| {
+                let receipts = receipt_blocks[block_index(tag)]
+                    .iter()
+                    .map(|_| fee_history_receipt())
+                    .collect();
+                Box::pin(async move { Ok(Some(receipts)) })
+            }),
+            send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
+            sign_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fill_transaction_rpc: Box::new(|_| Box::pin(async { unimplemented!() })),
+            fee_currency_directory: Address::ZERO,
+        })
+    }
+
+    /// Call `eth_feeHistory` for the `block_count` blocks starting at [`FEE_HISTORY_BLOCK`],
+    /// asking for the median reward.
+    async fn call_fee_history(
+        api: Arc<CeloFeeApi>,
+        block_count: u64,
+    ) -> Result<alloy_rpc_types_eth::FeeHistory, jsonrpsee::core::server::MethodsError> {
+        celo_fee_history_module(api)
+            .call(
+                "eth_feeHistory",
+                (
+                    alloy_primitives::U64::from(block_count),
+                    alloy_rpc_types_eth::BlockNumberOrTag::Number(
+                        FEE_HISTORY_BLOCK + block_count - 1,
+                    ),
+                    vec![50.0f64],
+                ),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn fee_history_converts_cip64_tip_at_the_blocks_rate() {
+        use std::sync::Mutex;
+
+        let lookups: Arc<Mutex<Vec<u64>>> = Arc::default();
+        let api =
+            make_fee_history_api(vec![vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))]], {
+                let lookups = lookups.clone();
+                move |block_num| {
+                    lookups.lock().unwrap().push(block_num);
+                    Ok(encode_exchange_rate(2, 1))
+                }
+            });
+
+        let history = call_fee_history(api, 1).await.unwrap();
+
+        // rate 2/1: base_fee_fc = 100 * 2 = 200, tip_fc = min(500 - 200, 10) = 10,
+        // native tip = 10 / 2 = 5.
+        assert_eq!(history.reward, Some(vec![vec![5]]));
+        assert_eq!(
+            *lookups.lock().unwrap(),
+            vec![FEE_HISTORY_BLOCK],
+            "the rate must be read once, at the block being normalized"
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_history_reads_each_blocks_own_rate() {
+        use std::sync::Mutex;
+
+        let fc = Some(Address::with_last_byte(0xAA));
+        let lookups: Arc<Mutex<Vec<u64>>> = Arc::default();
+        let api = make_fee_history_api(vec![vec![cip64_rpc_tx(fc)], vec![cip64_rpc_tx(fc)]], {
+            let lookups = lookups.clone();
+            move |block_num| {
+                lookups.lock().unwrap().push(block_num);
+                // The currency's rate changes between the two blocks.
+                if block_num == FEE_HISTORY_BLOCK {
+                    Ok(encode_exchange_rate(2, 1))
+                } else {
+                    Ok(encode_exchange_rate(1, 1))
+                }
+            }
+        });
+
+        let history = call_fee_history(api, 2).await.unwrap();
+
+        // Block 100 at rate 2/1 gives 5 (see above). Block 101 at rate 1/1:
+        // base_fee_fc = 100, tip_fc = min(500 - 100, 10) = 10, native tip = 10.
+        assert_eq!(history.reward, Some(vec![vec![5], vec![10]]));
+        assert_eq!(*lookups.lock().unwrap(), vec![FEE_HISTORY_BLOCK, FEE_HISTORY_BLOCK + 1]);
+    }
+
+    #[tokio::test]
+    async fn fee_history_fails_when_exchange_rate_cannot_be_read() {
+        // A `--full` node answers the rate read for a block older than its state history
+        // with this error. The call must fail rather than report the tip as 0.
+        let api = make_fee_history_api(
+            vec![vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))]],
+            |_| {
+                Err(jsonrpsee_types::ErrorObject::owned(
+                    -32603,
+                    "state at block #101 is pruned",
+                    None::<()>,
+                ))
+            },
+        );
+
+        let err =
+            call_fee_history(api, 1).await.expect_err("an unreadable rate must fail the call");
+
+        let jsonrpsee::core::server::MethodsError::JsonRpc(err) = err else {
+            panic!("expected a JSON-RPC error, got: {err}");
+        };
+        assert_eq!(err.code(), RPC_SERVER_ERROR);
+        assert_eq!(
+            err.message(),
+            "failed to get exchange rates for block 100: state at block #101 is pruned"
+        );
+
+        // A rate with a zero component cannot convert a tip either.
+        let api = make_fee_history_api(
+            vec![vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))]],
+            |_| Ok(encode_exchange_rate(0, 1)),
+        );
+
+        let err = call_fee_history(api, 1).await.expect_err("a zero rate must fail the call");
+
+        assert!(
+            err.to_string().contains(
+                "failed to get exchange rates for block 100: Exchange rate has zero component"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_history_fails_on_a_later_block_whose_rate_cannot_be_read() {
+        // Block 100 converts fine, but the same currency's rate cannot be read at block
+        // 101. The rate from block 100 must not stand in for it, and the error must name
+        // the block that failed.
+        let fc = Some(Address::with_last_byte(0xAA));
+        let api = make_fee_history_api(
+            vec![vec![cip64_rpc_tx(fc)], vec![cip64_rpc_tx(fc)]],
+            |block_num| {
+                if block_num == FEE_HISTORY_BLOCK {
+                    Ok(encode_exchange_rate(2, 1))
+                } else {
+                    Err(jsonrpsee_types::ErrorObject::owned(
+                        -32603,
+                        "state at block #101 is pruned",
+                        None::<()>,
+                    ))
+                }
+            },
+        );
+
+        let err =
+            call_fee_history(api, 2).await.expect_err("an unreadable rate must fail the call");
+
+        assert!(
+            err.to_string().contains(
+                "failed to get exchange rates for block 101: state at block #101 is pruned"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_history_without_cip64_txs_reads_no_exchange_rate() {
+        // Blocks without CIP-64 txs keep the upstream reward and never touch the rate, so a
+        // node that cannot read old state still answers for them.
+        let api = make_fee_history_api(vec![vec![native_rpc_tx()]], |_| {
+            panic!("no exchange rate must be read for a block without CIP-64 txs")
+        });
+
+        let history = call_fee_history(api, 1).await.unwrap();
+
+        assert_eq!(history.reward, Some(vec![vec![FEE_HISTORY_UPSTREAM_REWARD]]));
+    }
+
+    #[tokio::test]
+    async fn fee_history_takes_native_fee_cip64_tip_as_is() {
+        // A CIP-64 tx without a fee currency pays in native CELO, so it needs no rate, even
+        // though its type makes the override recompute the block's rewards.
+        let api = make_fee_history_api(vec![vec![cip64_rpc_tx(None)]], |_| {
+            panic!("no exchange rate must be read for a CIP-64 tx without a fee currency")
+        });
+
+        let history = call_fee_history(api, 1).await.unwrap();
+
+        // Native tip = min(500 - 100, 10) = 10. The upstream stub also reports 10, so the
+        // panicking rate lookup is what shows this tx takes the native path.
+        assert_eq!(history.reward, Some(vec![vec![10]]));
+    }
+
+    #[tokio::test]
+    async fn fee_history_keeps_native_tips_in_a_block_with_cip64_txs() {
+        let api = make_fee_history_api(
+            vec![vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA))), native_rpc_tx()]],
+            |_| Ok(encode_exchange_rate(2, 1)),
+        );
+
+        let history = call_fee_history(api, 1).await.unwrap();
+
+        // Equal gas, so the median is the lower tip: the native tx's 3, taken as is, below
+        // the CIP-64 tx's converted 5.
+        assert_eq!(history.reward, Some(vec![vec![3]]));
     }
 
     #[tokio::test]

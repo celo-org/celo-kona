@@ -687,9 +687,8 @@ rpc_expect_error send_cip64_unregistered_currency eth_sendRawTransaction \
 # units back to native before computing percentiles, and it looks the rate up at
 # the block whose transactions it is normalizing rather than at the head. That
 # distinction is deliberate — the rate cache is keyed by `(block_number,
-# fee_currency)` for exactly this reason — but the unit tests only cover the two
-# pure halves (converting a tip *given* a rate, and the gas-weighted percentile
-# math), not which block's rate gets passed in.
+# fee_currency)` for exactly this reason — but the unit tests stub the rate
+# read, so they cannot show that a real rate change lands on the right blocks.
 #
 # So: one CIP-64 transaction at the current rate, then a rate change, then an
 # identical CIP-64 transaction, then one fee history spanning all three blocks.
@@ -782,8 +781,7 @@ if [[ -n "$before_block" && -n "$after_block" &&
     rpc_expect_eq feeHistory_tip_halves_across_rate_change \
         "$tip_before" \
         "$(( $(jq -r '.[2][0]' <<<"$rewards" | xargs cast to-dec) * 2 ))"
-    # A failed rate lookup reports every tip as zero, which satisfies the
-    # halving check above.
+    # All-zero tips would also satisfy the halving check above.
     rpc_expect_eq feeHistory_tip_nonzero_before_rate_change \
         "$(( tip_before > 0 ))" 1
 else
