@@ -1,6 +1,6 @@
 //! Infrastructure failures must abort execution without classifying the payload as invalid.
 
-use alloy_celo_evm::{CeloEvmFactory, blocklist::FeeCurrencyBlocklist, celo_precompiles_map};
+use alloy_celo_evm::{CeloEvmFactory, blocklist::FeeCurrencyBlocklist};
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
     block::{BlockExecutionError, BlockValidationError},
@@ -8,8 +8,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use celo_revm::{
-    CeloBuilder, CeloTransaction, DefaultCelo, FeeCurrencyContext, constants::get_addresses,
-    fee_currency_context::FeeCurrencyInfo, precompiles::TRANSFER_ADDRESS,
+    CeloBuilder, CeloTransaction, DefaultCelo, FeeCurrencyContext,
+    constants::get_addresses,
+    fee_currency_context::FeeCurrencyInfo,
+    precompiles::{TRANSFER_ADDRESS, celo_precompiles_map},
 };
 use op_revm::{OpSpecId, OpTransaction};
 use revm::{
@@ -164,7 +166,7 @@ fn transfer_data() -> Bytes {
 }
 
 #[test]
-fn transfer_database_failure_aborts_both_precompile_providers() {
+fn transfer_database_failure_aborts_execution() {
     for spec in [OpSpecId::FJORD, OpSpecId::JOVIAN] {
         for fail_addr in [MISSING_ACCOUNT, RECIPIENT] {
             for failures_left in [1, usize::MAX] {
@@ -172,25 +174,14 @@ fn transfer_database_failure_aborts_both_precompile_providers() {
                 cfg.chain_id = 42220;
                 cfg.spec = spec;
                 let caller = get_addresses(42220).celo_token;
-                let mut direct = Context::celo()
-                    .with_db(MissingAccountDb::new(fail_addr, failures_left))
-                    .with_cfg(cfg.clone())
-                    .build_celo();
-                let result =
-                    direct.system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data());
-                assert!(
-                    matches!(result, Err(EVMError::Database(ReadError))),
-                    "{spec:?}: {result:?}"
-                );
-
-                let mut mapped = Context::celo()
+                let mut evm = Context::celo()
                     .with_db(MissingAccountDb::new(fail_addr, failures_left))
                     .with_cfg(cfg)
-                    .build_celo()
-                    .with_precompiles(celo_precompiles_map(spec));
-                let error = mapped
+                    .build_celo();
+                let error = evm
                     .system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data())
-                    .expect_err("dynamic transfer precompile must propagate database failure");
+                    .expect_err("transfer precompile must propagate database failure");
+                // The pinned alloy PrecompilesMap converts FatalAny to Custom(String).
                 assert!(
                     matches!(&error, EVMError::Custom(message) if message.contains("injected missing account")),
                     "{spec:?}: {error:?}"
