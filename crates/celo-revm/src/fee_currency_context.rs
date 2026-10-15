@@ -5,9 +5,10 @@ use crate::{
     units::{FcU256, NativeU256},
 };
 use alloy_primitives::map::HashMap;
+use op_revm::transaction::OpTransactionError;
 use revm::{
     Database, Inspector,
-    context_interface::ContextTr,
+    context_interface::{ContextTr, result::EVMError},
     handler::{EvmTr, PrecompileProvider},
     interpreter::InterpreterResult,
     primitives::{Address, U256},
@@ -65,8 +66,10 @@ impl FeeCurrencyContext {
         }
     }
 
-    /// Initialize with values read from the EVM, propagating unavailable database state.
-    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> Result<Self, DB::Error>
+    /// Initialize with values read from the EVM, propagating fatal EVM errors.
+    pub fn new_from_evm<DB, INSP, P>(
+        evm: &mut CeloEvm<DB, INSP, P>,
+    ) -> Result<Self, EVMError<DB::Error, OpTransactionError>>
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,

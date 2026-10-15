@@ -5527,7 +5527,9 @@ mod tests {
             )
         ));
         assert!(!is_explicit_balance_revert(&CoreContractError::<core::convert::Infallible>::Evm(
-            "database failure".into()
+            Box::new(revm::context_interface::result::EVMError::Custom(
+                "infrastructure failure".into()
+            ))
         )));
         assert!(!is_explicit_balance_revert(&CoreContractError::Database("provider failure")));
     }

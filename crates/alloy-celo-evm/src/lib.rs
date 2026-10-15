@@ -169,32 +169,39 @@ fn transfer_precompile(
     let to = Address::from_slice(&input.data[44..64]);
     let value = U256::from_be_slice(&input.data[64..96]);
 
+    // PrecompilesMap's pinned interface turns fatal errors into EVMError::Custom.
+    // Preserve the DB cause here and abort the attempt, rather than returning a Halt.
+    let fatal_db_error = |error| {
+        revm::precompile::PrecompileError::FatalAny(revm::context_interface::result::AnyError::new(
+            error,
+        ))
+    };
     let revert_cold_status = !spec_id.is_enabled_in(OpSpecId::JOVIAN);
     let revert_from_cold =
-        revert_cold_status && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
+        revert_cold_status && input.internals.load_account(from).map_err(fatal_db_error)?.is_cold;
     let revert_to_cold =
-        revert_cold_status && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
+        revert_cold_status && input.internals.load_account(to).map_err(fatal_db_error)?.is_cold;
 
-    let result = input.internals.transfer(from, to, value);
+    let result = input.internals.transfer(from, to, value).map_err(fatal_db_error)?;
 
-    if revert_from_cold && let Ok(mut account) = input.internals.load_account_mut(from) {
-        account.data.unsafe_mark_cold();
+    if revert_from_cold {
+        input.internals.load_account_mut(from).map_err(fatal_db_error)?.data.unsafe_mark_cold();
     }
-    if revert_to_cold && let Ok(mut account) = input.internals.load_account_mut(to) {
-        account.data.unsafe_mark_cold();
+    if revert_to_cold {
+        input.internals.load_account_mut(to).map_err(fatal_db_error)?.data.unsafe_mark_cold();
     }
 
-    match result {
-        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0)),
-        Ok(Some(transfer_err)) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("transfer error occurred: {transfer_err:?}"))),
-            0,
-        )),
-        Err(db_err) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
-            0,
-        )),
-    }
+    Ok(result.map_or_else(
+        || PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0),
+        |transfer_err| {
+            PrecompileOutput::halt(
+                PrecompileHalt::Other(Cow::Owned(format!(
+                    "transfer error occurred: {transfer_err:?}"
+                ))),
+                0,
+            )
+        },
+    ))
 }
 
 /// Celo EVM implementation.
@@ -242,7 +249,8 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `replay_transactions_until` use loose EVMs without receipt building and leave it off.
     cip64_store_enabled: bool,
     /// Failed block-start capture must prevent replay against a different, mid-block context.
-    block_replay_error: Option<revm::context_interface::result::AnyError>,
+    block_replay_error:
+        Option<EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>>,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -259,7 +267,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     /// Creates a FeeCurrencyContext from the current EVM state.
     pub fn create_fee_currency_context(
         &mut self,
-    ) -> Result<celo_revm::FeeCurrencyContext, DB::Error>
+    ) -> Result<celo_revm::FeeCurrencyContext, EVMError<DB::Error, op_revm::OpTransactionError>>
     where
         I: Inspector<CeloContext<DB>>,
         P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
@@ -286,7 +294,10 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
 
     /// Records an error from the type-erased RPC block-start capture. Every subsequent
     /// transaction fails rather than loading fee-currency state at a mid-block position.
-    pub fn set_block_replay_error(&mut self, error: revm::context_interface::result::AnyError) {
+    pub fn set_block_replay_error(
+        &mut self,
+        error: EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>,
+    ) {
         self.block_replay_error = Some(error);
     }
 
@@ -389,7 +400,16 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         if let Some(error) = &self.block_replay_error {
-            return Err(EVMError::CustomAny(error.clone()));
+            return Err(match error {
+                // Capture and replay can use different DB types. Keep the original
+                // DB error object in a fatal error instead of rebuilding DB::Error.
+                EVMError::Database(error) | EVMError::CustomAny(error) => {
+                    EVMError::CustomAny(error.clone())
+                }
+                EVMError::Header(error) => EVMError::Header(*error),
+                EVMError::Custom(error) => EVMError::Custom(error.clone()),
+                EVMError::Transaction(error) => map_op_err(EVMError::Transaction(error.clone())),
+            });
         }
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
@@ -564,15 +584,12 @@ where
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
                     } else {
-                        // Neither marker: a non-database EVM-infrastructure failure
-                        // (`CoreContractError::Evm`). That is this
-                        // node's fault, not the currency's; blocklisting here
-                        // would dark-list a healthy currency for 2h over a local
-                        // I/O hiccup.
+                        // Other contract-call failures retain the tx-only policy.
+                        // Fatal EVM errors propagate before this Transaction-only branch.
                         tracing::warn!(
                             target: "celo",
-                            "fee-currency debit/credit failed with an EVM-level error for \
-                             {fc}: {e} — dropping tx without blocklisting the currency"
+                            "fee-currency debit/credit failed for \
+                             {fc}: {e}; dropping tx without blocklisting the currency"
                         );
                         #[cfg(feature = "std")]
                         metrics::counter!(

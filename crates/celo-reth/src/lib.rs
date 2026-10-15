@@ -312,7 +312,7 @@ where
         // fee-currency state at a mid-block position.
         Some(Box::new(
             evm.create_fee_currency_context()
-                .map_err(revm::context_interface::result::AnyError::new),
+                .map_err(|error| error.map_db_err(revm::context_interface::result::AnyError::new)),
         ))
     }
 
@@ -326,9 +326,13 @@ where
         DB: Database,
         I: InspectorFor<Self, DB>,
     {
-        if let Some(context) =
-            ctx.downcast_ref::<Result<celo_revm::FeeCurrencyContext, revm::context_interface::result::AnyError>>()
-        {
+        if let Some(context) = ctx.downcast_ref::<Result<
+            celo_revm::FeeCurrencyContext,
+            revm::context_interface::result::EVMError<
+                revm::context_interface::result::AnyError,
+                op_revm::OpTransactionError,
+            >,
+        >>() {
             match context {
                 Ok(context) => evm.set_fee_currency_context(context.clone()),
                 Err(error) => evm.set_block_replay_error(error.clone()),

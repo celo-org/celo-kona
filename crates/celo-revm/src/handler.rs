@@ -27,7 +27,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         cfg::{GasId, gas_params::Eip2780TxInfo},
         journaled_state::account::JournaledAccountTr,
-        result::{ExecutionResult, FromStringError},
+        result::{EVMError, ExecutionResult, FromStringError},
     },
     handler::{
         EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS,
@@ -177,8 +177,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP, P>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
@@ -363,6 +366,7 @@ where
         )
         .map_err(|e| match e {
             CoreContractError::Database(error) => ERROR::from(error),
+            CoreContractError::Evm(error) => ERROR::from(*error),
             e => ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_CREDIT_ERROR_PREFIX}: {e}"
             ))),
@@ -495,6 +499,7 @@ where
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
             |e| match e {
                 CoreContractError::Database(error) => ERROR::from(error),
+                CoreContractError::Evm(error) => ERROR::from(*error),
                 e => ERROR::from(InvalidTransaction::from(format!(
                     "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
                 ))),
@@ -576,6 +581,7 @@ where
         )
         .map_err(|e| match e {
             CoreContractError::Database(error) => ERROR::from(error),
+            CoreContractError::Evm(error) => ERROR::from(*error),
             e => ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_DEBIT_ERROR_PREFIX}: {e}"
             ))),
@@ -1007,8 +1013,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
     type Evm = CeloEvm<DB, INSP, P>;
     type Error = ERROR;
@@ -1399,8 +1408,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
     type IT = EthInterpreter;
 }

@@ -88,7 +88,7 @@ Modules under `crates/celo-reth/src/`:
 
   `units.rs` holds newtypes for the two fee denominations (native CELO vs fee currency). Mixing them is a recurring bug class, so the types make it a compile error; the `units_compile_fail` trybuild suite guards the defenses and runs via `just test-trybuild`, not `just test`.
 
-- **`alloy-celo-evm`**: Wraps `celo-revm` into `alloy-evm`'s `Evm` trait (`CeloEvm`). Adds the fee currency blocklist (blocks currencies whose debit/credit calls *halt* during block building, with time-based eviction; reverts and EVM-level errors drop the tx without blocklisting). Contains `CeloEvmFactory` and `Cip64Storage` for passing fee info to receipt builder.
+- **`alloy-celo-evm`**: Wraps `celo-revm` into `alloy-evm`'s `Evm` trait (`CeloEvm`). Adds the fee currency blocklist (blocks currencies whose debit/credit calls *halt* during block building, with time-based eviction; reverts drop the tx without blocklisting, while fatal EVM errors abort the build attempt). Contains `CeloEvmFactory` and `Cip64Storage` for passing fee info to receipt builder.
 
 - **`celo-alloy`**: Consensus types (`CeloTxEnvelope`, `TxCip64`, `CeloReceipt`), network types, and RPC types. Workspace subcrates under `crates/celo-alloy/`.
 
@@ -108,7 +108,7 @@ Verify with `just hack`.
 
 1. **Pool entry** (`pool.rs`): `CeloExchangeRateApplier` looks up the exchange rate from `FeeCurrencyDirectory` contract, checks ERC20 balance, validates base fee floor and min tip, then overwrites `max_fee_per_gas`/`max_priority_fee_per_gas` with native equivalents.
 2. **Block building** (`payload.rs`): `CeloFeeCurrencyFilter` enforces per-currency gas limits (default 50% of block).
-3. **Execution** (`celo-revm` handler): Pre-tx debit of gas cost in fee currency, post-tx credit of refund. If the debit/credit *halts* (unambiguous currency fault), the currency is added to the blocklist; reverts and EVM-level errors just drop the tx.
+3. **Execution** (`celo-revm` handler): Pre-tx debit of gas cost in fee currency, post-tx credit of refund. If the debit/credit *halts* (unambiguous currency fault), the currency is added to the blocklist; reverts just drop the tx, while fatal EVM errors abort the build attempt.
 4. **Receipt** (`alloy-celo-evm`): `Cip64Storage` passes fee currency info from execution to receipt builder.
 
 ## E2E Tests
