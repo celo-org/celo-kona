@@ -929,6 +929,7 @@ pub(crate) mod tests {
     /// target address, delegating everything else to an inner [`InMemoryDB`]. Stands in for a
     /// backing-store read failure inside a bracketed non-committing call — e.g. an `SLOAD` in a
     /// nested `debitGasFees` frame.
+    #[derive(Debug)]
     struct StorageFailingDb {
         inner: InMemoryDB,
         fail_addr: Address,

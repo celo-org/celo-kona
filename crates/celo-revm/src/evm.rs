@@ -1,4 +1,7 @@
-use crate::{CeloContext, CeloPrecompiles, fee_currency_context::FeeCurrencyContext};
+use crate::{
+    CeloContext, fee_currency_context::FeeCurrencyContext, precompiles::celo_precompiles_map,
+};
+use alloy_evm::precompiles::PrecompilesMap;
 use op_revm::{OpEvm, OpSpecId};
 use revm::{
     Database, Inspector,
@@ -14,12 +17,17 @@ use revm::{
 
 /// Celo EVM wrapper around the OP Stack EVM.
 ///
-/// `P` (precompile provider) defaults to [`CeloPrecompiles`] and is never
-/// used directly by Celo code, but must be threaded through every `impl`
-/// block and helper function because revm's `EvmTr` / `ExecuteEvm` /
-/// `SystemCallEvm` trait bounds require it. This matches the upstream
+/// `P` (precompile provider) defaults to [`PrecompilesMap`], built by
+/// [`celo_precompiles_map`] for the context's spec. It is never used directly
+/// by Celo code, but must be threaded through every `impl` block and helper
+/// function because revm's `EvmTr` / `ExecuteEvm` / `SystemCallEvm` trait
+/// bounds require it. This matches the upstream
 /// `op_revm::OpEvm<DB, I, P = OpPrecompiles>` pattern.
-pub struct CeloEvm<DB: Database, INSP, P = CeloPrecompiles> {
+///
+/// The precompile set is fixed at construction: `PrecompilesMap::set_spec` is a
+/// no-op, so changing `cfg.spec` afterwards does not rebuild it. Set the spec on
+/// the context before building the EVM.
+pub struct CeloEvm<DB: Database, INSP, P = PrecompilesMap> {
     pub inner: OpEvm<CeloContext<DB>, INSP, EthInstructions<EthInterpreter, CeloContext<DB>>, P>,
     pub fee_currency_context: FeeCurrencyContext,
 }
@@ -40,18 +48,16 @@ where
 {
     pub fn new(ctx: CeloContext<DB>, inspector: INSP) -> Self {
         // Derive the spec from the context, like upstream `OpEvm::new`, instead of hardcoding
-        // OSAKA instructions + ISTHMUS precompiles. This is a parity/future-proofing change with
-        // no behavior delta today: the production factory overrides precompiles per-block via
-        // `with_precompiles(celo_precompiles_map(spec))`, and EVM instruction static gas is
-        // identical for every spec >= BERLIN (Celo only runs post-Berlin). Reading the spec here
-        // keeps a directly-constructed `CeloEvm` correct without relying on those overrides.
+        // OSAKA instructions + ISTHMUS precompiles. EVM instruction static gas is identical for
+        // every spec >= BERLIN (Celo only runs post-Berlin). The precompile map is built once
+        // for this spec and is not rebuilt if `cfg.spec` changes later.
         let spec = *ctx.cfg().spec();
         Self {
             inner: OpEvm(Evm {
                 ctx,
                 inspector,
                 instruction: EthInstructions::new_mainnet_with_spec(spec.into_eth_spec()),
-                precompiles: CeloPrecompiles::new_with_spec(spec),
+                precompiles: celo_precompiles_map(spec),
                 frame_stack: FrameStack::new(),
             }),
             fee_currency_context: FeeCurrencyContext::default(),
@@ -195,6 +201,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    // `CeloEvm` uses the same `PrecompilesMap` as block execution, which reports a non-OOG
+    // precompile halt as a plain `HaltReason::PrecompileError`, without the precompile's message.
+    // The halt tests below therefore assert the halt, not a message.
+
     use crate::{CeloBuilder, CeloTransaction, DefaultCelo};
     use op_revm::{
         OpHaltReason, OpSpecId, precompiles::bn254_pair::GRANITE_MAX_INPUT_SIZE,
@@ -378,9 +388,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bn254 invalid pair length"
+            }
         ));
     }
 
@@ -431,9 +441,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 g1 add input length error"
+            }
         ));
     }
 
@@ -482,9 +492,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 g1 msm input length error"
+            }
         ));
     }
 
@@ -516,9 +526,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
+            }
         ));
     }
 
@@ -570,9 +580,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 g2 add input length error"
+            }
         ));
     }
 
@@ -621,9 +631,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 g2 msm input length error"
+            }
         ));
     }
 
@@ -655,9 +665,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
+            }
         ));
     }
 
@@ -704,9 +714,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 pairing input length error"
+            }
         ));
     }
 
@@ -738,9 +748,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 fp 64 top bytes of input are not zero"
+            }
         ));
     }
 
@@ -801,9 +811,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 map fp to g1 input length error"
+            }
         ));
     }
 
@@ -864,9 +874,9 @@ mod tests {
         assert!(matches!(
             output.result,
             ExecutionResult::Halt {
-                reason: OpHaltReason::Base(HaltReason::PrecompileErrorWithContext(ref msg)),
+                reason: OpHaltReason::Base(HaltReason::PrecompileError),
                 ..
-            } if msg == "bls12-381 map fp2 to g2 input length error"
+            }
         ));
     }
 }

@@ -1,110 +1,22 @@
 pub mod transfer;
 
-pub use transfer::{TRANSFER_ADDRESS, transfer_run};
+pub use transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST};
 
-use crate::CeloContext;
+use alloy_evm::precompiles::PrecompilesMap;
 use op_revm::{OpSpecId, precompiles::OpPrecompiles};
-use revm::{
-    context::Cfg,
-    context_interface::ContextTr,
-    database::EmptyDB,
-    handler::PrecompileProvider,
-    interpreter::{CallInputs, InterpreterResult},
-    primitives::{Address, AddressSet},
-};
-use std::string::String;
 
-// Celo precompile provider
-#[derive(Debug, Clone)]
-pub struct CeloPrecompiles {
-    op_precompiles: OpPrecompiles,
-    /// The OP precompile addresses plus Celo's transfer precompile.
-    ///
-    /// `PrecompileProvider::warm_addresses` returns a borrowed set as of revm 41,
-    /// so the union has to be materialised rather than produced lazily. It is
-    /// rebuilt in `new_with_spec` and whenever `set_spec` changes the OP set, so it
-    /// can never lag `op_precompiles`: this set is what pre-warms accounts under
-    /// EIP-2929, so a stale entry would change warm/cold gas accounting.
-    warm_addresses: AddressSet,
-}
-
-impl CeloPrecompiles {
-    /// Create a new precompile provider with the given OpSpec.
-    #[inline]
-    pub fn new_with_spec(spec: OpSpecId) -> Self {
-        let op_precompiles = OpPrecompiles::new_with_spec(spec);
-        let warm_addresses = Self::warm_addresses_for(&op_precompiles);
-        Self {
-            op_precompiles,
-            warm_addresses,
-        }
-    }
-
-    /// The OP warm set for `op_precompiles`, plus [`TRANSFER_ADDRESS`].
-    ///
-    /// `OpPrecompiles` exposes its warm set only through `PrecompileProvider`, which
-    /// is generic over the context, so a context type has to be named to call it.
-    /// The returned set does not depend on that type — `CeloContext<EmptyDB>` is a
-    /// type-level witness here and nothing is constructed.
-    fn warm_addresses_for(op_precompiles: &OpPrecompiles) -> AddressSet {
-        let mut warm = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
-            op_precompiles,
-        )
-        .clone();
-        warm.insert(TRANSFER_ADDRESS);
-        warm
-    }
-}
-
-impl<CTX> PrecompileProvider<CTX> for CeloPrecompiles
-where
-    CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
-{
-    type Output = InterpreterResult;
-
-    #[inline]
-    fn set_spec(&mut self, spec: <CTX::Cfg as Cfg>::Spec) -> bool {
-        let changed =
-            <OpPrecompiles as PrecompileProvider<CTX>>::set_spec(&mut self.op_precompiles, spec);
-        // `OpPrecompiles::set_spec` returns `false` only for an unchanged spec, and then leaves
-        // itself untouched, so the derived warm set is still current. revm calls this once per
-        // transaction, so rebuilding regardless would cost an `AddressSet` allocation and copy
-        // per transaction on the block-building path and inside the FPVM client.
-        if changed {
-            self.warm_addresses = Self::warm_addresses_for(&self.op_precompiles);
-        }
-        changed
-    }
-
-    #[inline]
-    fn run(
-        &mut self,
-        context: &mut CTX,
-        inputs: &CallInputs,
-    ) -> Result<Option<Self::Output>, String> {
-        if inputs.bytecode_address == TRANSFER_ADDRESS {
-            transfer_run(context, inputs)
-        } else {
-            self.op_precompiles.run(context, inputs)
-        }
-    }
-
-    #[inline]
-    fn warm_addresses(&self) -> &AddressSet {
-        &self.warm_addresses
-    }
-
-    #[inline]
-    fn contains(&self, address: &Address) -> bool {
-        *address == TRANSFER_ADDRESS
-            || <OpPrecompiles as PrecompileProvider<CTX>>::contains(&self.op_precompiles, address)
-    }
-}
-
-impl Default for CeloPrecompiles {
-    fn default() -> Self {
-        Self::new_with_spec(OpSpecId::ISTHMUS)
-    }
+/// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
+/// transfer precompile for the given spec.
+///
+/// The spec is fixed when the map is built: `PrecompilesMap::set_spec` is a no-op, so an EVM
+/// keeps the precompile set (and the transfer precompile's Jovian behaviour) it was built with.
+pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
+    let mut map = PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
+    map.extend_precompiles([(
+        TRANSFER_ADDRESS,
+        transfer::make_transfer_precompile(spec_id),
+    )]);
+    map
 }
 
 #[cfg(test)]
@@ -114,30 +26,34 @@ mod tests {
         CeloBuilder, CeloContext, CeloTransaction, DefaultCelo,
         constants::{CELO_MAINNET_CHAIN_ID, get_addresses},
         contracts::get_revert_message,
-        precompiles::transfer::TRANSFER_GAS_COST,
     };
     use alloy_primitives::{TxKind, U256, address, hex};
     use alloy_sol_types::{SolCall, sol};
     use op_revm::OpTransaction;
     use revm::{
         Context, ExecuteEvm,
-        context::{JournalTr, TxEnv, result::ExecutionResult},
+        context::{Evm, JournalTr, TxEnv, result::ExecutionResult},
+        context_interface::ContextTr,
         database::{EmptyDB, in_memory_db::InMemoryDB},
-        interpreter::{CallInput, CallScheme, CallValue, InstructionResult},
-        primitives::Bytes,
-        state::{AccountInfo, Bytecode},
+        handler::PrecompileProvider,
+        interpreter::{
+            CallInput, CallInputs, CallScheme, CallValue, InstructionResult, InterpreterResult,
+        },
+        primitives::{Address, AddressSet, Bytes},
+        state::{AccountInfo, AccountStatus, Bytecode},
     };
+    use std::{vec, vec::Vec};
+
+    fn warm_addresses(map: &PrecompilesMap) -> AddressSet {
+        <PrecompilesMap as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(map).clone()
+    }
 
     #[test]
     fn test_celo_precompiles_count() {
-        let celo_precompiles = CeloPrecompiles::default();
-        let op_precompiles = OpPrecompiles::default();
+        let celo_precompiles = celo_precompiles_map(OpSpecId::ISTHMUS);
+        let op_precompiles = OpPrecompiles::new_with_spec(OpSpecId::ISTHMUS);
 
-        let celo_count =
-            <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
-                &celo_precompiles,
-            )
-            .len();
+        let celo_count = warm_addresses(&celo_precompiles).len();
         let op_count = <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
             &op_precompiles,
         )
@@ -146,22 +62,16 @@ mod tests {
         assert_eq!(celo_count, op_count + 1);
     }
 
-    /// The Celo warm set must equal the OP warm set for the current spec plus the transfer
-    /// precompile -- after a spec change, and after a repeat `set_spec` that reports no change
-    /// and therefore skips the rebuild.
+    /// An EVM holds the precompile set of the spec its context had when it was built: the OP
+    /// precompiles for that spec plus the transfer precompile. The map ignores later spec changes
+    /// (`PrecompilesMap::set_spec` is a no-op), so callers set the spec before building.
     #[test]
-    fn warm_addresses_track_the_op_set_across_set_spec() {
-        let mut celo = CeloPrecompiles::new_with_spec(OpSpecId::BEDROCK);
-
-        for spec in [
-            OpSpecId::BEDROCK,
-            OpSpecId::FJORD,
-            OpSpecId::ISTHMUS,
-            OpSpecId::ISTHMUS,
-        ] {
-            <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::set_spec(
-                &mut celo, spec,
-            );
+    fn evm_holds_the_precompiles_of_its_build_spec() {
+        let mut seen = Vec::new();
+        for spec in [OpSpecId::BEDROCK, OpSpecId::JOVIAN] {
+            let evm = Context::celo()
+                .modify_cfg_chained(|cfg| cfg.spec = spec)
+                .build_celo();
 
             let mut want =
                 <OpPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
@@ -170,20 +80,18 @@ mod tests {
                 .clone();
             want.insert(TRANSFER_ADDRESS);
 
-            assert_eq!(
-                <CeloPrecompiles as PrecompileProvider<CeloContext<EmptyDB>>>::warm_addresses(
-                    &celo,
-                ),
-                &want,
-                "warm set is stale for {spec:?}"
-            );
+            let have = warm_addresses(&evm.inner.0.precompiles);
+            assert_eq!(have, want, "wrong precompile set for {spec:?}");
+            seen.push(have);
         }
+        assert_ne!(
+            seen[0], seen[1],
+            "the two specs must differ for this test to pin anything"
+        );
     }
 
     #[test]
     fn test_transfer() {
-        let mut precompiles = CeloPrecompiles::default();
-
         let from = Address::with_last_byte(1);
         let to = Address::with_last_byte(2);
         let value = 10;
@@ -222,14 +130,18 @@ mod tests {
         );
 
         // Test calling with valid parameters
-        let mut ctx = Context::celo()
+        let ctx = Context::celo()
             .modify_tx_chained(|tx| {
                 tx.op_tx.base.caller = from;
             })
             .modify_cfg_chained(|cfg| cfg.chain_id = CELO_MAINNET_CHAIN_ID)
             .with_db(db);
+        let mut evm = ctx.build_celo();
+        let Evm {
+            ctx, precompiles, ..
+        } = &mut evm.inner.0;
 
-        let res = precompiles.run(&mut ctx, &inputs);
+        let res = precompiles.run(ctx, &inputs);
         assert!(res.is_ok());
 
         let state = ctx.journal_mut().finalize();
@@ -246,7 +158,7 @@ mod tests {
             target_address: Address::with_last_byte(3),
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &different_target_addr_inputs);
+        let res = precompiles.run(ctx, &different_target_addr_inputs);
         assert!(res.is_ok());
 
         let state = ctx.journal_mut().finalize();
@@ -263,7 +175,7 @@ mod tests {
             gas_limit: TRANSFER_GAS_COST - 1000,
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &low_gas_inputs);
+        let res = precompiles.run(ctx, &low_gas_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -278,7 +190,7 @@ mod tests {
             input: short_input,
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &bad_input);
+        let res = precompiles.run(ctx, &bad_input);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -292,7 +204,7 @@ mod tests {
             caller: Address::with_last_byte(3),
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &wrong_inputs);
+        let res = precompiles.run(ctx, &wrong_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -311,7 +223,7 @@ mod tests {
             input,
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &big_value_input);
+        let res = precompiles.run(ctx, &big_value_input);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -325,7 +237,7 @@ mod tests {
             is_static: true,
             ..inputs.clone()
         };
-        let res = precompiles.run(&mut ctx, &static_inputs);
+        let res = precompiles.run(ctx, &static_inputs);
         assert!(matches!(
             res,
             Ok(Some(InterpreterResult {
@@ -333,6 +245,67 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    /// Runs one transfer through the precompile of an EVM built at `spec` and reports whether
+    /// `from` and `to` are cold afterwards.
+    fn cold_after_transfer(spec: OpSpecId) -> (bool, bool) {
+        let from = Address::with_last_byte(1);
+        let to = Address::with_last_byte(2);
+        let mut input = vec![0u8; 96];
+        input[31] = 1;
+        input[63] = 2;
+        input[95] = 10;
+
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            from,
+            AccountInfo {
+                balance: U256::from(100),
+                ..Default::default()
+            },
+        );
+        let mut evm = Context::celo()
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = spec;
+                cfg.chain_id = CELO_MAINNET_CHAIN_ID;
+            })
+            .with_db(db)
+            .build_celo();
+        let Evm {
+            ctx, precompiles, ..
+        } = &mut evm.inner.0;
+
+        let inputs = CallInputs {
+            target_address: TRANSFER_ADDRESS,
+            bytecode_address: TRANSFER_ADDRESS,
+            caller: get_addresses(CELO_MAINNET_CHAIN_ID).celo_token,
+            input: CallInput::Bytes(Bytes::from(input)),
+            value: CallValue::Transfer(U256::from(10)),
+            return_memory_offset: 0..0,
+            gas_limit: TRANSFER_GAS_COST,
+            reservoir: 0,
+            known_bytecode: (Default::default(), Default::default()),
+            scheme: CallScheme::Call,
+            is_static: false,
+            charged_new_account_state_gas: false,
+        };
+        let res = precompiles.run(ctx, &inputs).unwrap().unwrap();
+        assert_eq!(res.result, InstructionResult::Return);
+
+        let state = ctx.journal_mut().finalize();
+        (
+            state[&from].status.contains(AccountStatus::Cold),
+            state[&to].status.contains(AccountStatus::Cold),
+        )
+    }
+
+    /// Before Jovian the transfer precompile leaves `from` and `to` cold, as Celo's original
+    /// implementation did; from Jovian on it leaves them warm.
+    #[test]
+    fn transfer_leaves_accounts_cold_only_before_jovian() {
+        assert_eq!(cold_after_transfer(OpSpecId::ISTHMUS), (true, true));
+        assert_eq!(cold_after_transfer(OpSpecId::JOVIAN), (false, false));
     }
 
     fn make_celo_test_db(celo_address: Address, caller: Address) -> InMemoryDB {
