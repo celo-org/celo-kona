@@ -616,10 +616,6 @@ where
         self.inner.system_call_with_caller(caller, contract, data).map_err(map_op_err)
     }
 
-    fn db_mut(&mut self) -> &mut Self::DB {
-        &mut self.journaled_state.database
-    }
-
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
         let Context { block: block_env, cfg: cfg_env, journaled_state, .. } =
             self.inner.inner.0.ctx;
@@ -629,22 +625,6 @@ where
 
     fn set_inspector_enabled(&mut self, enabled: bool) {
         self.inspect = enabled;
-    }
-
-    fn precompiles(&self) -> &Self::Precompiles {
-        &self.inner.inner.0.precompiles
-    }
-
-    fn precompiles_mut(&mut self) -> &mut Self::Precompiles {
-        &mut self.inner.inner.0.precompiles
-    }
-
-    fn inspector(&self) -> &Self::Inspector {
-        &self.inner.inner.0.inspector
-    }
-
-    fn inspector_mut(&mut self) -> &mut Self::Inspector {
-        &mut self.inner.inner.0.inspector
     }
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
