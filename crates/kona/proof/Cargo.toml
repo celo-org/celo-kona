@@ -58,6 +58,8 @@ spin.workspace = true
 tokio = { workspace = true, features = ["full"], optional = true }
 
 [dev-dependencies]
+celo-executor = { workspace = true, features = ["test-utils"] }
+kona-executor = { workspace = true, features = ["test-utils"] }
 alloy-rlp.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
