@@ -4,11 +4,12 @@ use alloc::boxed::Box;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use async_trait::async_trait;
-use celo_driver::CeloExecutorTr;
-use celo_executor::{CeloBlockBuildingOutcome, CeloEvmFactory, CeloStatelessL2Builder};
+use celo_alloy_consensus::CeloReceiptEnvelope;
+use celo_executor::{CeloEvmFactory, CeloStatelessL2Builder};
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
-use kona_executor::TrieDBProvider;
+use kona_driver::Executor;
+use kona_executor::{BlockBuildingOutcome, TrieDBProvider};
 use kona_mpt::TrieHinter;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 
@@ -49,12 +50,13 @@ where
 }
 
 #[async_trait]
-impl<P, H> CeloExecutorTr for CeloExecutor<'_, P, H>
+impl<P, H> Executor for CeloExecutor<'_, P, H>
 where
     P: TrieDBProvider + Debug + Send + Sync + Clone,
     H: TrieHinter + Debug + Send + Sync + Clone,
 {
     type Error = kona_executor::ExecutorError;
+    type Receipt = CeloReceiptEnvelope;
 
     /// Waits for the executor to be ready.
     async fn wait_until_ready(&mut self) {
@@ -77,13 +79,20 @@ where
     }
 
     /// Execute the given payload attributes.
+    ///
+    /// The CIP-64 fee records in the builder's outcome are not part of the driver contract and
+    /// are dropped here; the receipts already carry the per-transaction CIP-64 fields.
     async fn execute_payload(
         &mut self,
         attributes: OpPayloadAttributes,
-    ) -> Result<CeloBlockBuildingOutcome, Self::Error> {
+    ) -> Result<BlockBuildingOutcome<Self::Receipt>, Self::Error> {
         self.inner.as_mut().map_or_else(
             || Err(kona_executor::ExecutorError::MissingExecutor),
-            |e| e.build_block(attributes),
+            |e| {
+                e.build_block(attributes).map(|outcome| {
+                    BlockBuildingOutcome::from((outcome.header, outcome.execution_result))
+                })
+            },
         )
     }
 

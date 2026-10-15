@@ -5,7 +5,6 @@ use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use alloy_primitives::B256;
 use celo_derive::CeloEthereumDataSource;
-use celo_driver::CeloDriver;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use core::fmt::Debug;
@@ -14,6 +13,7 @@ use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
 #[cfg(feature = "eigenda")]
 use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
+use kona_driver::Driver;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
 use kona_proof::{
@@ -135,13 +135,13 @@ where
         evm_factory,
         None,
     );
-    let mut driver = CeloDriver::new(cursor, executor, pipeline);
+    let mut driver = Driver::new(cursor, executor, pipeline);
 
     // Run the derivation pipeline until we are able to produce the output root of the claimed
     // L2 block.
     let (safe_head, output_root) = driver
         .advance_to_target(
-            celo_rollup_config.as_ref(),
+            &celo_rollup_config.op_rollup_config,
             Some(boot.op_boot_info.claimed_l2_block_number),
         )
         .await?;

@@ -15,13 +15,13 @@ workspace = true
 # Workspace
 alloy-celo-evm.workspace = true
 celo-proof.workspace = true
-celo-driver.workspace = true
 celo-derive.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 celo-protocol.workspace = true
 
 # Kona
 kona-client.workspace = true
+kona-driver.workspace = true
 
 # Proof
 kona-preimage.workspace = true
