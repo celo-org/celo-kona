@@ -2175,7 +2175,6 @@ dependencies = [
  "op-alloy-consensus",
  "rand 0.9.5",
  "reth-codecs",
- "reth-db-api",
  "reth-primitives-traits",
  "serde",
  "serde_json",

@@ -274,20 +274,4 @@ impl Compact for CeloTxEnvelope {
 // Database compression: CeloTxEnvelope Compress + Decompress
 // ---------------------------------------------------------------------------
 
-use reth_codecs::DecompressError;
-use reth_db_api::table::{Compress, Decompress};
-
-impl Compress for CeloTxEnvelope {
-    type Compressed = Vec<u8>;
-
-    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = Compact::to_compact(self, buf);
-    }
-}
-
-impl Decompress for CeloTxEnvelope {
-    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
-        let (obj, _) = Compact::from_compact(value, value.len());
-        Ok(obj)
-    }
-}
+reth_codecs::impl_compression_for_compact!(CeloTxEnvelope);
