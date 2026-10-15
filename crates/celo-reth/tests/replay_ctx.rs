@@ -39,6 +39,7 @@ use op_revm::OpTransaction;
 use reth_evm::{ConfigureEvm, Database, EvmFor, InspectorFor};
 use revm::{
     context::TxEnv,
+    context_interface::result::AnyError,
     database::InMemoryDB,
     inspector::NoOpInspector,
     state::{AccountInfo, Bytecode},
@@ -167,8 +168,10 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .capture_block_replay_ctx(&mut db, &evm_env)
         .expect("Celo must capture a replay context");
     let ctx = captured
-        .downcast_ref::<FeeCurrencyContext>()
-        .expect("the captured context is a FeeCurrencyContext");
+        .downcast_ref::<Result<FeeCurrencyContext, AnyError>>()
+        .expect("the captured context is a fee-currency load result")
+        .as_ref()
+        .expect("block-start fee-currency loading must succeed");
 
     assert_eq!(
         ctx.currency_exchange_rate(Some(TEST_FC)).expect("TEST_FC is registered"),
@@ -195,8 +198,10 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .expect("Celo must capture a replay context");
     assert_eq!(
         recaptured
-            .downcast_ref::<FeeCurrencyContext>()
-            .expect("the captured context is a FeeCurrencyContext")
+            .downcast_ref::<Result<FeeCurrencyContext, AnyError>>()
+            .expect("the captured context is a fee-currency load result")
+            .as_ref()
+            .expect("block-start fee-currency loading must succeed")
             .currency_exchange_rate(Some(TEST_FC))
             .expect("TEST_FC is registered"),
         (U256::from(MID_BLOCK_RATE.0), U256::from(MID_BLOCK_RATE.1)),
