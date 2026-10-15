@@ -6,6 +6,10 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc as std;
 
+// Needed by `reth_codecs::impl_compression_for_compact!`, which names `alloc::vec::Vec`.
+#[cfg(feature = "reth")]
+extern crate alloc;
+
 mod receipt;
 pub use receipt::{CeloCip64Receipt, CeloCip64ReceiptWithBloom, CeloReceiptEnvelope};
 
