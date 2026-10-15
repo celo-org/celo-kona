@@ -1,6 +1,7 @@
-//! Tests for output-root preimage validation in the single-chain client.
+//! Tests for output-root preimage validation in the upstream
+//! `kona_proof::sync::fetch_safe_head_hash`, which the single-chain client relies on.
 //!
-//! The helper uses `get_exact` with a `[u8; 128]` buffer. These tests cover
+//! The function uses `get_exact` with a `[u8; 128]` buffer. These tests cover
 //! both the version-word check and that implicit length check.
 
 use alloy_primitives::B256;
