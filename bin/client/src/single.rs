@@ -3,7 +3,6 @@
 use alloc::sync::Arc;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
-use alloy_primitives::B256;
 use celo_derive::CeloEthereumDataSource;
 use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
@@ -15,12 +14,12 @@ use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
 use kona_driver::Driver;
 use kona_executor::TrieDBProvider;
-use kona_preimage::{CommsClient, HintWriterClient, PreimageKey, PreimageOracleClient};
+use kona_preimage::{HintWriterClient, PreimageOracleClient};
 use kona_proof::{
-    CachingOracle, HintType,
+    CachingOracle,
     errors::OracleProviderError,
     l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
-    sync::new_oracle_pipeline_cursor,
+    sync::{fetch_safe_head_hash, new_oracle_pipeline_cursor},
 };
 use tracing::{error, info};
 
@@ -190,31 +189,4 @@ where
     );
 
     Ok(())
-}
-
-/// Fetches the safe head hash of the L2 chain based on the agreed upon L2 output root in the
-/// [CeloBootInfo].
-pub async fn fetch_safe_head_hash<O>(
-    caching_oracle: &O,
-    agreed_l2_output_root: B256,
-) -> Result<B256, OracleProviderError>
-where
-    O: CommsClient,
-{
-    let mut output_preimage = [0u8; 128];
-    HintType::StartingL2Output
-        .with_data(&[agreed_l2_output_root.as_ref()])
-        .send(caching_oracle)
-        .await?;
-    caching_oracle
-        .get_exact(PreimageKey::new_keccak256(*agreed_l2_output_root), output_preimage.as_mut())
-        .await?;
-
-    if output_preimage[..32] != [0u8; 32] {
-        return Err(OracleProviderError::UnknownOutputVersion(B256::from_slice(
-            &output_preimage[..32],
-        )));
-    }
-
-    output_preimage[96..128].try_into().map_err(OracleProviderError::SliceConversion)
 }

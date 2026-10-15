@@ -4,9 +4,8 @@
 //! both the version-word check and that implicit length check.
 
 use alloy_primitives::B256;
-use celo_client::single;
 use kona_preimage::{PreimageKey, errors::PreimageOracleError};
-use kona_proof::errors::OracleProviderError;
+use kona_proof::{errors::OracleProviderError, sync::fetch_safe_head_hash};
 
 mod common;
 use common::MockOracle;
@@ -23,7 +22,7 @@ async fn fetch_safe_head_hash_rejects_unknown_output_version() {
     let oracle =
         MockOracle::single(PreimageKey::new_keccak256(*agreed_root), bad_preimage.to_vec());
 
-    let err = single::fetch_safe_head_hash(&oracle, agreed_root).await.unwrap_err();
+    let err = fetch_safe_head_hash(&oracle, agreed_root).await.unwrap_err();
     match err {
         OracleProviderError::UnknownOutputVersion(version) => {
             assert_eq!(version[0], 0x01);
@@ -39,7 +38,7 @@ async fn fetch_safe_head_hash_rejects_wrong_preimage_length() {
     let agreed_root = b256(0xAA);
     let oracle = MockOracle::single(PreimageKey::new_keccak256(*agreed_root), vec![0u8; 127]);
 
-    let err = single::fetch_safe_head_hash(&oracle, agreed_root).await.unwrap_err();
+    let err = fetch_safe_head_hash(&oracle, agreed_root).await.unwrap_err();
     match err {
         OracleProviderError::Preimage(PreimageOracleError::BufferLengthMismatch(
             expected,
