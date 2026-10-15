@@ -94,7 +94,7 @@ Modules under `crates/celo-reth/src/`:
 
 - **`celo-otel`**: Shared OpenTelemetry setup (tracing-subscriber + OTLP exporter, metrics, resource detection). Used by the binaries for logging/telemetry; not pulled into the no-std crates.
 
-- **`kona`**: Celo-specific wrappers around Kona's `derive`, `driver`, `executor`, `genesis`, `proof`, `protocol`, and `registry` crates for ZK proof generation. Each lives at `crates/kona/<name>/`. `derive` is the newest: it duplicates kona's `EthereumDataSource` as `CeloEthereumDataSource` and adds Espresso event-based batch authentication, gated on the Espresso hardfork with a grace period (`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`).
+- **`kona`**: Celo-specific wrappers around Kona's `derive`, `executor`, `genesis`, `proof`, `protocol`, and `registry` crates for ZK proof generation. Each lives at `crates/kona/<name>/`. `derive` is the newest: it duplicates kona's `EthereumDataSource` as `CeloEthereumDataSource` and adds Espresso event-based batch authentication, gated on the Espresso hardfork with a grace period (`BATCH_AUTH_ENFORCEMENT_DELAY_SECS`).
 
 ### No-std Support
 

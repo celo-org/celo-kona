@@ -56,7 +56,6 @@ Celo's [op-succinct fork][op-succinct] uses both to produce ZK fault proofs.
 
 - [`kona/derive`](./crates/kona/derive): Derivation-pipeline extensions, including Espresso
   event-based batch authentication.
-- [`kona/driver`](./crates/kona/driver): `no_std` derivation pipeline driver.
 - [`kona/executor`](./crates/kona/executor): `no_std` stateless block builder.
 - [`kona/genesis`](./crates/kona/genesis): Celo genesis and rollup config types.
 - [`kona/proof`](./crates/kona/proof): Celo Proof SDK.

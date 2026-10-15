@@ -19,7 +19,6 @@ workspace = true
 # Workspace
 celo-executor.workspace = true
 celo-alloy-consensus.workspace = true
-celo-driver.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 celo-registry.workspace = true
 celo-protocol.workspace = true

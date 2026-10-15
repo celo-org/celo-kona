@@ -2281,28 +2281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "celo-driver"
-version = "1.0.0"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-primitives",
- "async-trait",
- "celo-alloy-consensus",
- "celo-executor",
- "celo-genesis",
- "kona-derive",
- "kona-driver",
- "kona-executor",
- "kona-genesis",
- "kona-protocol",
- "op-alloy-rpc-types-engine",
- "spin 0.10.1",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "celo-executor"
 version = "1.0.0"
 dependencies = [
@@ -2427,7 +2405,6 @@ dependencies = [
  "alloy-rlp",
  "async-trait",
  "celo-alloy-consensus",
- "celo-driver",
  "celo-executor",
  "celo-genesis",
  "celo-protocol",
