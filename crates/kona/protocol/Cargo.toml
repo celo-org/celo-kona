@@ -20,10 +20,8 @@ workspace = true
 [dependencies]
 # Workspace
 celo-alloy-consensus.workspace = true
-celo-alloy-rpc-types.workspace = true
 
 # Kona
-kona-genesis.workspace = true
 kona-protocol.workspace = true
 
 # OP Alloy
@@ -34,7 +32,6 @@ alloy-primitives = { workspace = true, features = ["map"] }
 alloy-rlp.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
-alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 op-alloy-rpc-types-engine.workspace = true
 
@@ -42,25 +39,18 @@ op-alloy-rpc-types-engine.workspace = true
 rand = { workspace = true, features = ["small_rng"] }
 thiserror.workspace = true
 unsigned-varint.workspace = true
-derive_more = { workspace = true, features = ["display"] }
 async-trait.workspace = true
 tracing.workspace = true
 
 # Compression
 miniz_oxide.workspace = true
 
-# `arbitrary` feature
-arbitrary = { workspace = true, features = ["derive"], optional = true }
-
-# `serde` feature
-serde = { workspace = true, optional = true }
-alloy-serde = { workspace = true, optional = true }
-
 # `test-utils` feature
 spin = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["fmt"], optional = true }
 
 [dev-dependencies]
+kona-genesis.workspace = true
 kona-protocol = { workspace = true, features = ["test-utils"] }
 spin.workspace = true
 rand = { workspace = true, features = ["std", "std_rng"] }
@@ -69,18 +59,15 @@ arbitrary = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 alloy-primitives = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus.workspace = true
-alloy-rpc-types-eth.workspace = true
 
 [features]
 default = []
 std = [
-    "kona-genesis/std",
     "op-alloy-consensus/std",
     "celo-alloy-consensus/std",
     "alloy-consensus/std",
     "alloy-primitives/std",
     "alloy-rlp/std",
-    "alloy-serde?/std",
     "miniz_oxide/std",
     "thiserror/std",
     "unsigned-varint/std"
@@ -88,30 +75,6 @@ std = [
 test-utils = [
     "dep:spin",
     "dep:tracing-subscriber",
-]
-arbitrary = [
-    "std",
-    "dep:arbitrary",
-    "kona-genesis/arbitrary",
-    "kona-protocol/arbitrary",
-    "op-alloy-consensus/arbitrary",
-    "celo-alloy-consensus/arbitrary",
-    "alloy-consensus/arbitrary",
-    "alloy-eips/arbitrary",
-    "alloy-primitives/rand",
-    "alloy-primitives/arbitrary",
-]
-serde = [
-    "dep:serde",
-    "dep:alloy-serde",
-    "kona-genesis/serde",
-    "kona-protocol/serde",
-    "op-alloy-consensus/serde",
-    "celo-alloy-consensus/serde",
-    "alloy-consensus/serde",
-    "alloy-eips/serde",
-    "alloy-primitives/serde",
-    "tracing-subscriber?/serde"
 ]
 
 [package.metadata.cargo-udeps.ignore]

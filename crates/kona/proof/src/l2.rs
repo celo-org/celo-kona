@@ -6,9 +6,7 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
-use celo_protocol::{
-    CeloL2BlockInfo, convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked,
-};
+use celo_protocol::{convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked};
 use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
@@ -234,9 +232,7 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
         number: u64,
     ) -> Result<L2BlockInfo, OracleProviderError> {
         let block = self.celo_block_by_number(number).await?;
-        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
-            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
-            .map(|celo_info| celo_info.op_l2_block_info)
+        L2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             .map_err(OracleProviderError::BlockInfo)
     }
 
@@ -247,9 +243,7 @@ impl<T: CommsClient + Send + Sync> BatchValidationProvider for CeloOracleL2Chain
         // A hash addresses the header directly, sparing the walk back from the safe head that a
         // lookup by number requires.
         let block = self.celo_block_from_header(self.header_by_hash(hash)?, hash).await?;
-        CeloL2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
-            // Convert CeloL2BlockInfo to L2BlockInfo to match the original interface
-            .map(|celo_info| celo_info.op_l2_block_info)
+        L2BlockInfo::from_block_and_genesis(&block, &self.rollup_config.genesis)
             .map_err(OracleProviderError::BlockInfo)
     }
 
