@@ -2970,6 +2970,84 @@ mod tests {
         assert_eq!(queued, vec![1], "nonce 1 cannot pay its L1 fee after nonce 0");
     }
 
+    /// `CeloExchangeRateApplier::validate_transaction` must hand the tx's real
+    /// origin to the fee-cap gate: the same over-cap tx is rejected when
+    /// submitted through this node (Local, Private) and admitted from gossip
+    /// (External).
+    #[tokio::test]
+    async fn validator_applies_fee_cap_by_origin() {
+        use crate::{CeloEvmConfig, CeloPrimitives};
+        use alloy_consensus::{SignableTransaction, TxEip1559};
+        use alloy_eips::Encodable2718;
+        use alloy_primitives::Signature;
+        use reth_optimism_chainspec::OP_MAINNET;
+        use reth_optimism_txpool::OpTransactionValidator;
+        use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+        use reth_transaction_pool::{
+            blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
+        };
+
+        let signer = Address::with_last_byte(1);
+        let client = MockEthProvider::<CeloPrimitives>::new()
+            .with_chain_spec(OP_MAINNET.clone())
+            .with_genesis_block();
+        client.add_account(signer, ExtendedAccount::new(0, U256::from(10u128.pow(18))));
+        let inner = OpTransactionValidator::new(
+            EthTransactionValidatorBuilder::new(
+                client.clone(),
+                CeloEvmConfig::celo(OP_MAINNET.clone()),
+            )
+            .build(InMemoryBlobStore::default()),
+        );
+        // 1000 Gwei, below the tx's 21_000 * 1_000_000_000 = 2.1e13 wei fee.
+        let cap = 1_000_000_000_000u128;
+        let validator = CeloExchangeRateApplier::new(
+            inner,
+            client,
+            Address::ZERO,
+            0,
+            Arc::new(|_: &dyn alloy_consensus::BlockHeader, _| 0),
+            Arc::new(|_| OpSpecId::JOVIAN),
+            Arc::new(|_: &Header, _| 0),
+            0,
+            Some(cap),
+            Arc::new(OnceLock::from(
+                Arc::new(|_, _, _, _| (U256::ZERO, U256::ZERO)) as PooledFcCostsFn
+            )),
+        );
+
+        for (origin, capped) in [
+            (TransactionOrigin::Local, true),
+            (TransactionOrigin::Private, true),
+            (TransactionOrigin::External, false),
+        ] {
+            let tx = CeloTransactionSigned::Eip1559(
+                TxEip1559 {
+                    chain_id: 10,
+                    gas_limit: 21_000,
+                    max_fee_per_gas: 1_000_000_000,
+                    to: TxKind::Call(Address::with_last_byte(0x42)),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            );
+            let recovered = Recovered::new_unchecked(tx, signer);
+            let len = recovered.encode_2718_len();
+            let tx = CeloPoolTx::new(InnerPoolTx::new(recovered, len));
+
+            match validator.validate_transaction(origin, tx).await {
+                TransactionValidationOutcome::Invalid(_, err) if capped => assert!(
+                    err.to_string().contains("exceeds the configured cap"),
+                    "{origin:?}: unexpected rejection {err}"
+                ),
+                outcome if !capped => {
+                    assert!(outcome.is_valid(), "{origin:?} must not be fee-capped: {outcome:?}")
+                }
+                outcome => panic!("{origin:?} must be fee-capped, got {outcome:?}"),
+            }
+        }
+    }
+
     #[test]
     fn test_apply_exchange_rate_noop_for_native() {
         let mut tx = make_test_tx(None, 21_000, 1_000_000_000, 100, Address::with_last_byte(1));
