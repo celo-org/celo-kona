@@ -1,7 +1,8 @@
 //! Transaction types for Celo.
 
-mod canonical;
-pub use canonical::decode_2718_canonical;
+#[cfg(test)]
+mod canonical_tests;
+pub use op_alloy_consensus::decode_2718_canonical;
 
 pub mod cip64;
 pub mod envelope;
