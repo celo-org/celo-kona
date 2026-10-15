@@ -35,7 +35,6 @@ kona-derive.workspace = true
 
 # Alloy
 alloy-consensus.workspace = true
-alloy-primitives.workspace = true
 
 # Hokulea (optional – gated behind the `eigenda` feature)
 hokulea-eigenda = { workspace = true, optional = true }
@@ -48,6 +47,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+alloy-primitives.workspace = true
 async-trait.workspace = true
 kona-preimage = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["full"] }
