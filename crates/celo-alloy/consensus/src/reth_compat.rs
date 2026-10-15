@@ -146,12 +146,11 @@ use alloy_rlp::BufMut;
 use reth_codecs::{
     Compact,
     alloy::transaction::{CompactEnvelope, Envelope, FromTxCompact, ToTxCompact},
+    txtype::{
+        COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559, COMPACT_IDENTIFIER_EIP2930,
+        COMPACT_IDENTIFIER_LEGACY,
+    },
 };
-
-const COMPACT_IDENTIFIER_LEGACY: usize = 0;
-const COMPACT_IDENTIFIER_EIP2930: usize = 1;
-const COMPACT_IDENTIFIER_EIP1559: usize = 2;
-const COMPACT_EXTENDED_IDENTIFIER_FLAG: usize = 3;
 
 impl Compact for CeloTxType {
     fn to_compact<B>(&self, buf: &mut B) -> usize
