@@ -16,7 +16,6 @@ no_std_packages=(
   # kona
   celo-executor
   celo-proof
-  celo-driver
   celo-protocol
   celo-genesis
 )
