@@ -30,7 +30,6 @@ op-alloy-consensus.workspace = true
 # Alloy
 alloy-primitives = { workspace = true, features = ["map"] }
 alloy-rlp.workspace = true
-alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-rpc-types-engine.workspace = true
 op-alloy-rpc-types-engine.workspace = true
@@ -56,6 +55,7 @@ spin.workspace = true
 rand = { workspace = true, features = ["std", "std_rng"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 op-alloy-consensus.workspace = true
+alloy-eips.workspace = true
 
 [features]
 default = []
