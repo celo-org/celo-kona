@@ -54,10 +54,7 @@ kona-genesis.workspace = true
 kona-protocol = { workspace = true, features = ["test-utils"] }
 spin.workspace = true
 rand = { workspace = true, features = ["std", "std_rng"] }
-serde_json.workspace = true
-arbitrary = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
-alloy-primitives = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus.workspace = true
 
 [features]
