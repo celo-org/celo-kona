@@ -1441,8 +1441,9 @@ pub struct CeloExchangeRateApplier<V, P> {
     minimum_priority_fee: u128,
     /// Maximum transaction fee in wei (`gas_limit * max_fee_per_gas`). `None` or
     /// `Some(0)` disables the check. For CIP-64 txs, this uses the native-equivalent
-    /// max fee after exchange-rate conversion. Enforced only for locally submitted
-    /// txs: it is node-local RPC config, not a protocol rule.
+    /// max fee after exchange-rate conversion. Enforced only for txs submitted
+    /// through this node (`Local` and `Private` origins): it is node-local RPC
+    /// config, not a protocol rule.
     tx_fee_cap: Option<u128>,
     /// Live pooled-expenditure reader for the CIP-64 cumulative balance check.
     ///
@@ -1690,7 +1691,7 @@ impl PoolTransactionError for CeloPoolRejection {
 /// Apply the fee-currency exchange rate to a [`CeloPoolTx`] (no-op for native
 /// txs) and run the CIP-64-specific admission checks: base-fee floor, minimum
 /// tip, ERC20 balance with cumulative tracking, `debitGasFees` simulation, and,
-/// for locally submitted txs, the configured tx fee cap.
+/// for txs submitted through this node, the configured tx fee cap.
 ///
 /// Must run **before** the wrapped inner validator's stateless checks because
 /// those checks read `max_fee_per_gas()`/`max_priority_fee_per_gas()`, which
@@ -1932,15 +1933,17 @@ fn apply_exchange_rates_to_pool_tx(
     }
 
     // Fee cap check: applies to both CIP-64 (using native-equivalent fee) and native txs,
-    // but only to locally submitted ones. The cap is node-local RPC config
-    // (`--rpc.txfeecap`, a fat-finger guard), not a protocol rule, so txs from other
-    // origins must not be rejected by it. Matches the inner validator's `is_local` gate;
-    // geth likewise applies `checkTxFee` only at RPC submission, never to gossip.
+    // but only to ones submitted through this node. The cap is node-local RPC config
+    // (`--rpc.txfeecap`, a fat-finger guard), not a protocol rule, so `External` txs
+    // (p2p gossip, reorg re-injection) must not be rejected by it. geth likewise applies
+    // `checkTxFee` only at RPC submission, never to gossip. `Private` txs
+    // (`eth_sendRawTransactionConditional`) come from this node's RPC too, so they are
+    // capped here even though the inner validator's `is_local` gate skips them.
     // We derive the gas fee from `gas_limit * max_fee_per_gas` rather than `cost - value`,
     // because for CIP-64 `native_cost` excludes gas (gas is paid in fee currency, not CELO).
     if let Some(cap) = tx_fee_cap &&
         cap > 0 &&
-        origin.is_local()
+        !origin.is_external()
     {
         // Widen to U256 only to multiply gas_limit without overflow.
         let fee_cost = NativeU256::new(
@@ -3863,12 +3866,12 @@ mod tests {
         }
     }
 
-    /// The fee cap is node-local RPC config, not a protocol rule: txs arriving
-    /// from other origins (p2p gossip = External, conditional txs = Private)
-    /// must not be rejected by it, no matter how high their fee, because other
-    /// nodes run other caps. Only locally submitted txs are capped.
+    /// The fee cap is node-local RPC config, not a protocol rule: gossiped txs
+    /// (External) must not be rejected by it, no matter how high their fee,
+    /// because other nodes run other caps. Txs submitted through this node's
+    /// RPC are capped, including conditional txs (Private).
     #[test]
-    fn test_fee_cap_not_enforced_for_non_local_origins() {
+    fn test_fee_cap_enforced_only_for_txs_submitted_through_this_node() {
         let fc = Address::with_last_byte(0xAA);
         // 1000 Gwei, far below both txs' 21_000 * 1_000_000_000 = 2.1e13 wei fee.
         let cap = Some(1_000_000_000_000u128);
@@ -3878,7 +3881,11 @@ mod tests {
             debit_ok: Some(true),
             intrinsic_gas: None,
         };
-        for origin in [TransactionOrigin::External, TransactionOrigin::Private] {
+        for (origin, capped) in [
+            (TransactionOrigin::Local, true),
+            (TransactionOrigin::Private, true),
+            (TransactionOrigin::External, false),
+        ] {
             for fee_currency in [None, Some(fc)] {
                 let mut tx = make_test_tx(
                     fee_currency,
@@ -3897,11 +3904,13 @@ mod tests {
                     cap,
                     &no_pooled_txs,
                 );
-                assert!(
-                    result.is_ok(),
-                    "{origin:?} tx (fee_currency: {fee_currency:?}) must not be fee-capped; \
+                assert_eq!(
+                    matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
+                    capped,
+                    "{origin:?} tx (fee_currency: {fee_currency:?}) fee-capped must be {capped}; \
                      got {result:?}"
                 );
+                assert_eq!(result.is_ok(), !capped, "{origin:?}: unexpected result {result:?}");
             }
         }
     }

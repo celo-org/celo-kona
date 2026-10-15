@@ -916,7 +916,7 @@ mod tests {
         let line = help
             .lines()
             .skip_while(|l| !l.contains("--rpc.txfeecap"))
-            .take_while(|l| !l.trim_start().starts_with("--rpc.max-simulate-blocks"))
+            .take_while(|l| !l.trim_start().starts_with("--") || l.contains("--rpc.txfeecap"))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(line.contains("[default: 1000]"), "unexpected help for --rpc.txfeecap:\n{line}");
