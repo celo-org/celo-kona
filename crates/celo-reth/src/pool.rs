@@ -2258,7 +2258,7 @@ where
         evm: &mut celo_revm::CeloEvm<DB, revm::inspector::NoOpInspector>,
     ) -> Option<HashSet<Address>>
     where
-        DB: revm::Database,
+        DB: alloy_evm::Database,
     {
         use alloy_sol_types::SolCall;
         use celo_revm::contracts::core_contracts::{
@@ -2333,7 +2333,7 @@ where
         fee_currency: Address,
     ) -> CanonicalBalanceRead
     where
-        DB: revm::Database,
+        DB: alloy_evm::Database,
     {
         use alloy_sol_types::SolCall;
         use celo_revm::contracts::{core_contracts::call_read_only, erc20::IFeeCurrencyERC20};

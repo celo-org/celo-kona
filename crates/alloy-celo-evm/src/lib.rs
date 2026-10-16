@@ -5,30 +5,25 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, format};
-use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory,
-    precompiles::{DynPrecompile, PrecompilesMap},
-};
+use alloy_evm::{Database, Evm, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
 use alloy_op_evm::{
     OpTxError, map_op_err,
     post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext},
 };
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
-    CeloBuilder, CeloContext, CeloPrecompiles, CeloTransaction, DefaultCelo, constants,
+    CeloBuilder, CeloContext, CeloTransaction, DefaultCelo, constants,
     constants::{
         FEE_BASE_FEE_OVERFLOW_PREFIX, FEE_CREDIT_ERROR_PREFIX, FEE_CURRENCY_HALT_MARKER,
         FEE_CURRENCY_MALFORMED_RETURN_MARKER, FEE_CURRENCY_NOT_REGISTERED_PREFIX,
         FEE_CURRENCY_REVERT_MARKER, FEE_DEBIT_ERROR_PREFIX,
     },
-    precompiles::transfer::{TRANSFER_ADDRESS, TRANSFER_GAS_COST},
 };
 use core::{
     fmt::Debug,
     ops::{Deref, DerefMut},
 };
-use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId, precompiles::OpPrecompiles};
+use op_revm::{L1BlockInfo, OpHaltReason, OpSpecId};
 use revm::{
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     context::{BlockEnv, TxEnv},
@@ -40,7 +35,6 @@ use revm::{
     handler::PrecompileProvider,
     inspector::NoOpInspector,
     interpreter::InterpreterResult,
-    precompile::{PrecompileHalt, PrecompileOutput},
 };
 
 pub mod block;
@@ -103,107 +97,13 @@ fn classify_fee_hook_failure(message: &str) -> Option<(&'static str, &'static st
     Some((phase, kind))
 }
 
-/// Creates a [`PrecompilesMap`] containing the standard OP Stack precompiles plus the Celo
-/// transfer precompile for the given spec.
-pub fn celo_precompiles_map(spec_id: OpSpecId) -> PrecompilesMap {
-    let mut map = PrecompilesMap::from_static(OpPrecompiles::new_with_spec(spec_id).precompiles());
-    map.extend_precompiles([(TRANSFER_ADDRESS, make_transfer_precompile(spec_id))]);
-    map
-}
-
-/// Creates the Celo transfer [`DynPrecompile`] for the given spec.
-fn make_transfer_precompile(spec_id: OpSpecId) -> DynPrecompile {
-    const fn coerce<
-        F: Fn(alloy_evm::precompiles::PrecompileInput<'_>) -> revm::precompile::PrecompileResult
-            + Send
-            + Sync
-            + 'static,
-    >(
-        f: F,
-    ) -> F {
-        f
-    }
-    DynPrecompile::from(coerce(move |input| transfer_precompile(spec_id, input))).stateful()
-}
-
-/// Transfer precompile implementation for use as a [`DynPrecompile`].
-///
-/// This duplicates the logic in `celo_revm::precompiles::transfer::transfer_run` because the two
-/// dispatch models are incompatible: `celo-revm`'s version operates on a full `ContextTr` (used
-/// by the handler-based precompile pipeline), while this version targets `alloy-evm`'s stateless
-/// `DynPrecompile` interface (balance changes go through `PrecompileInput::internals`). Both
-/// implementations must be kept in sync.
-fn transfer_precompile(
-    spec_id: OpSpecId,
-    mut input: alloy_evm::precompiles::PrecompileInput<'_>,
-) -> revm::precompile::PrecompileResult {
-    if input.is_static {
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Borrowed(
-                "transfer precompile cannot be called in static context",
-            )),
-            0,
-        ));
-    }
-
-    if input.gas < TRANSFER_GAS_COST {
-        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0));
-    }
-
-    let chain_id = input.internals.chain_id();
-    if input.caller != constants::get_addresses(chain_id).celo_token {
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Borrowed("invalid caller for transfer precompile")),
-            0,
-        ));
-    }
-
-    if input.data.len() != 96 {
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Borrowed("invalid input length")),
-            0,
-        ));
-    }
-
-    let from = Address::from_slice(&input.data[12..32]);
-    let to = Address::from_slice(&input.data[44..64]);
-    let value = U256::from_be_slice(&input.data[64..96]);
-
-    let revert_cold_status = !spec_id.is_enabled_in(OpSpecId::JOVIAN);
-    let revert_from_cold =
-        revert_cold_status && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
-    let revert_to_cold =
-        revert_cold_status && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
-
-    let result = input.internals.transfer(from, to, value);
-
-    if revert_from_cold && let Ok(mut account) = input.internals.load_account_mut(from) {
-        account.data.unsafe_mark_cold();
-    }
-    if revert_to_cold && let Ok(mut account) = input.internals.load_account_mut(to) {
-        account.data.unsafe_mark_cold();
-    }
-
-    match result {
-        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0)),
-        Ok(Some(transfer_err)) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("transfer error occurred: {transfer_err:?}"))),
-            0,
-        )),
-        Err(db_err) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
-            0,
-        )),
-    }
-}
-
 /// Celo EVM implementation.
 ///
 /// This is a wrapper type around the `revm` evm with optional [`Inspector`] (tracing)
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// [`CeloEvm`](celo_revm::CeloEvm) type.
 #[allow(missing_debug_implementations)] // missing celo_revm::CeloContext Debug impl
-pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
+pub struct CeloEvm<DB: Database, I, P = PrecompilesMap> {
     inner: celo_revm::CeloEvm<DB, I, P>,
     inspect: bool,
     cip64_storage: Cip64Storage,
@@ -682,7 +582,7 @@ fn make_test_evm_with_db<DB: Database>(
             .with_cfg(cfg)
             .with_chain(default_l1_block_info(spec_id))
             .build_celo_with_inspector(revm::inspector::NoOpInspector {})
-            .with_precompiles(CeloPrecompiles::new_with_spec(spec_id)),
+            .with_precompiles(celo_revm::precompiles::celo_precompiles_map(spec_id)),
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
@@ -771,8 +671,7 @@ impl CeloEvmFactory {
                 .with_block(input.block_env)
                 .with_cfg(input.cfg_env)
                 .with_chain(default_l1_block_info(spec_id))
-                .build_celo_with_inspector(inspector)
-                .with_precompiles(celo_precompiles_map(spec_id)),
+                .build_celo_with_inspector(inspector),
             inspect,
             cip64_storage: Cip64Storage::default(),
             blocklist: self.blocklist.clone(),
@@ -1193,7 +1092,7 @@ mod tests {
         fc: Address,
     ) -> String
     where
-        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+        PrecompilesMap: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
         use celo_revm::fee_currency_context::FeeCurrencyInfo;
 
