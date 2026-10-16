@@ -54,7 +54,7 @@ where
         .into();
 
     // Use the read-only call function to ensure no state changes
-    let (output_bytes, _, _, _) =
+    let (output_bytes, _, _) =
         core_contracts::call_read_only(evm, token_address, calldata, gas_limit)?;
 
     // Decode the balance. Output that does not decode as a `uint256` is the currency's
@@ -73,14 +73,14 @@ where
 /// `CeloHandler::cip64_rollbackable_debit_and_deduct_caller`). Its state changes remain in
 /// the EVM's journal for the main transaction to see, exactly as the committing path left
 /// them.
-/// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (logs, gas_spent) where gas_spent is raw, before refunds.
 pub fn debit_gas_fees<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_address: Address,
     from: Address,
     value: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -91,14 +91,14 @@ where
         .into();
 
     // debitGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_used, gas_refunded) =
+    let (_, logs, gas_spent) =
         core_contracts::call_no_commit(evm, fee_currency_address, calldata, Some(gas_limit))?;
-    Ok((logs, gas_used, gas_refunded))
+    Ok((logs, gas_spent))
 }
 
 /// Call creditGasFees to distribute gas fees.
 /// State changes remain in the EVM's journal for the main transaction to see.
-/// Returns (logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (logs, gas_spent) where gas_spent is raw, before refunds.
 #[allow(clippy::too_many_arguments)]
 pub fn credit_gas_fees<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
@@ -110,7 +110,7 @@ pub fn credit_gas_fees<DB, INSP, P>(
     tip_tx_fee: U256,
     base_tx_fee: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -130,10 +130,10 @@ where
     .into();
 
     // creditGasFees returns void, so we just need to check that the call succeeded
-    let (_, logs, gas_used, gas_refunded) =
+    let (_, logs, gas_spent) =
         core_contracts::call(evm, fee_currency_address, calldata, Some(gas_limit))?;
 
-    Ok((logs, gas_used, gas_refunded))
+    Ok((logs, gas_spent))
 }
 
 #[cfg(test)]

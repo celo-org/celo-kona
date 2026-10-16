@@ -233,13 +233,13 @@ mod cip64_gas_tests {
     /// Test that verifies the CIP-64 gas calculation matches op-geth for the
     /// sepolia-cip64-erc20-transfer fixture.
     ///
-    /// Expected values from op-geth (gas_used + gas_refunded):
+    /// Expected values from op-geth (raw gas, before refunds):
     /// - Debit: 47756
     /// - Credit: 22997
     /// These values are taken from the call_tracer/celo-kona-comparison.json test in op-geth.
     ///
     /// op-geth calculates: `gasUsed = maxIntrinsicGasCost - leftoverGas`
-    /// which equals `gas_used + gas_refunded` in revm terminology.
+    /// which equals revm's `total_gas_spent`.
     #[tokio::test]
     async fn test_cip64_gas_matches_opgeth_sepolia_erc20_transfer() {
         let cip64_info = run_fixture_and_get_cip64_info("sepolia-cip64-erc20-transfer")
@@ -250,21 +250,21 @@ mod cip64_gas_tests {
         // See: https://github.com/celo-org/op-geth/blob/main/contracts/fee_currencies.go
         //
         // op-geth calculates: gasUsed = maxIntrinsicGasCost - leftoverGas
-        // which equals gas_used + gas_refunded in revm terminology
+        // which equals revm's total_gas_spent
         const EXPECTED_DEBIT_RAW_GAS: u64 = 47756;
         const EXPECTED_CREDIT_RAW_GAS: u64 = 22997;
 
-        let debit_raw_gas = cip64_info.debit_gas_used + cip64_info.debit_gas_refunded;
-        let credit_raw_gas = cip64_info.credit_gas_used + cip64_info.credit_gas_refunded;
+        let debit_raw_gas = cip64_info.debit_gas_spent;
+        let credit_raw_gas = cip64_info.credit_gas_spent;
 
         assert_eq!(
             debit_raw_gas, EXPECTED_DEBIT_RAW_GAS,
-            "Debit raw gas (gas_used + gas_refunded) should match op-geth"
+            "Debit raw gas (spent before refunds) should match op-geth"
         );
 
         assert_eq!(
             credit_raw_gas, EXPECTED_CREDIT_RAW_GAS,
-            "Credit raw gas (gas_used + gas_refunded) should match op-geth"
+            "Credit raw gas (spent before refunds) should match op-geth"
         );
     }
 }
