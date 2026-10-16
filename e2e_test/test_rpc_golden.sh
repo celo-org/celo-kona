@@ -148,13 +148,15 @@ fi
 
 # `trace` and `ots` are enabled because their replay paths share the machinery
 # the CIP-64 scenarios below exercise; the shared runner node does not enable
-# them. `txpool` is only for Phase 6's barrier.
+# them. `txpool` is only for Phase 6's barrier. The fee cap is pinned to 1 CELO
+# so Phase 5's over-cap transaction does not depend on the node's default.
 "$CELO_RETH" node --dev \
     --chain "$GENESIS_JSON" \
     --datadir "$DATADIR" \
     --http \
     --http.port 0 \
     --http.api eth,web3,net,debug,trace,ots,txpool \
+    --rpc.txfeecap 1 \
     --authrpc.port 0 \
     --port 0 \
     --disable-discovery \

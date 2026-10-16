@@ -287,9 +287,11 @@ where
         .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
         .kzg_settings(ctx.kzg_settings()?)
         // Matches op-reth's own pool builder. reth's inner cap defaults to `Some(1e18)`, and
-        // its check is gated on `is_local`; since reth #25412 every RPC transaction is local,
-        // so leaving the default in place would silently override `--rpc.txfeecap` above
-        // 1 CELO and ignore `0`.
+        // its check is gated on `is_local`; since reth #25412 `eth_sendRawTransaction` and
+        // `eth_sendTransaction` submit as `Local`, so leaving the default in place would
+        // silently override `--rpc.txfeecap` above 1 CELO and ignore `0`. Conditional txs
+        // (`eth_sendRawTransactionConditional`) submit as `Private`, which the inner check
+        // skips; only `CeloExchangeRateApplier` caps those.
         //
         // This leaves native transactions capped twice against the same value — redundant but
         // upstream's shape. It does *not* make `CeloExchangeRateApplier`'s cap redundant:
