@@ -1671,8 +1671,8 @@ impl PoolTransactionError for CeloPoolRejection {
             // Transient — the minimum tip is rate-converted the same way.
             Self::BelowMinTip { .. } => false,
             // Not protocol invalidity — the cap is node-local RPC config
-            // (`--rpc.txfeecap`); other nodes run other caps, so peers must
-            // not be penalized for relaying a tx that exceeds ours.
+            // (`--rpc.txfeecap`) and applies only to txs submitted through
+            // this node, never to ones relayed by peers.
             Self::ExceedsFeeCap { .. } => false,
             // Permanent in practice — registration changes only by governance,
             // and an unregistered currency cannot pay fees today.
@@ -1690,8 +1690,9 @@ impl PoolTransactionError for CeloPoolRejection {
 
 /// Apply the fee-currency exchange rate to a [`CeloPoolTx`] (no-op for native
 /// txs) and run the CIP-64-specific admission checks: base-fee floor, minimum
-/// tip, ERC20 balance with cumulative tracking, `debitGasFees` simulation, and,
-/// for txs submitted through this node, the configured tx fee cap.
+/// tip, ERC20 balance with cumulative tracking, `debitGasFees` simulation, and
+/// the tx fee cap. The caller passes `tx_fee_cap` as `None` for txs the cap
+/// must not apply to; see [`CeloExchangeRateApplier::tx_fee_cap`].
 ///
 /// Must run **before** the wrapped inner validator's stateless checks because
 /// those checks read `max_fee_per_gas()`/`max_priority_fee_per_gas()`, which
@@ -1699,11 +1700,9 @@ impl PoolTransactionError for CeloPoolRejection {
 ///
 /// `pooled_fc_costs` supplies the sender's live pooled expenditure for the
 /// cumulative balance check; see [`PooledFcCostsFn`].
-#[allow(clippy::too_many_arguments)] // flat pool-admission config; a struct adds no clarity here
 fn apply_exchange_rates_to_pool_tx(
     lookup: &dyn FcLookup,
     tx: &mut CeloPoolTx,
-    origin: TransactionOrigin,
     fee_currency_directory: Address,
     base_fee_floor: u64,
     minimum_priority_fee: u128,
@@ -1932,18 +1931,11 @@ fn apply_exchange_rates_to_pool_tx(
         }
     }
 
-    // Fee cap check: applies to both CIP-64 (using native-equivalent fee) and native txs,
-    // but only to ones submitted through this node. The cap is node-local RPC config
-    // (`--rpc.txfeecap`, a fat-finger guard), not a protocol rule, so `External` txs
-    // (p2p gossip, reorg re-injection) must not be rejected by it. geth likewise applies
-    // `checkTxFee` only at RPC submission, never to gossip. `Private` txs
-    // (`eth_sendRawTransactionConditional`) come from this node's RPC too, so they are
-    // capped here even though the inner validator's `is_local` gate skips them.
+    // Fee cap check: applies to both CIP-64 (using native-equivalent fee) and native txs.
     // We derive the gas fee from `gas_limit * max_fee_per_gas` rather than `cost - value`,
     // because for CIP-64 `native_cost` excludes gas (gas is paid in fee currency, not CELO).
     if let Some(cap) = tx_fee_cap &&
-        cap > 0 &&
-        !origin.is_external()
+        cap > 0
     {
         // Widen to U256 only to multiply gas_limit without overflow.
         let fee_cost = NativeU256::new(
@@ -2011,11 +2003,16 @@ where
         let prepared = apply_exchange_rates_to_pool_tx(
             &lookup,
             &mut transaction,
-            origin,
             self.fee_currency_directory,
             base_fee_floor,
             self.minimum_priority_fee,
-            self.tx_fee_cap,
+            // The cap is node-local RPC config (`--rpc.txfeecap`, a fat-finger guard), not
+            // a protocol rule, so `External` txs (p2p gossip, reorg re-injection) must not be
+            // rejected by it. geth likewise applies `checkTxFee` only at RPC submission, never
+            // to gossip. `Private` txs (`eth_sendRawTransactionConditional`) come from this
+            // node's RPC too, so they are capped even though the inner validator's `is_local`
+            // gate skips them.
+            self.tx_fee_cap.filter(|_| !origin.is_external()),
             &|sender, fc, nonce, state_nonce| pooled_fc_costs(sender, fc, nonce, state_nonce),
         );
         // Split into Ok/Err up-front so both branches of the async block
@@ -3364,7 +3361,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3407,7 +3403,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &lookup,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3439,7 +3434,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3467,7 +3461,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3503,17 +3496,8 @@ mod tests {
             intrinsic_gas: None,
         };
 
-        apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            TransactionOrigin::Local,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &no_pooled_txs,
-        )
-        .expect("ok");
+        apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &no_pooled_txs)
+            .expect("ok");
 
         assert_eq!(
             *tx.cost(),
@@ -3531,7 +3515,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3560,7 +3543,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3589,7 +3571,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3621,7 +3602,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3649,7 +3629,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &MissingStateNonceLookup(&mock),
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3671,7 +3650,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &MissingStateNonceLookup(&mock),
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3703,7 +3681,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             25_000_000_000,
             0,
@@ -3731,7 +3708,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             100,
@@ -3755,7 +3731,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3865,7 +3840,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3892,7 +3866,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3912,7 +3885,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -3933,7 +3905,6 @@ mod tests {
             let result = apply_exchange_rates_to_pool_tx(
                 &mock,
                 &mut tx,
-                TransactionOrigin::Local,
                 Address::ZERO,
                 0,
                 0,
@@ -3941,55 +3912,6 @@ mod tests {
                 &no_pooled_txs,
             );
             assert!(result.is_ok(), "cap={cap:?} should disable fee cap check");
-        }
-    }
-
-    /// The fee cap is node-local RPC config, not a protocol rule: gossiped txs
-    /// (External) must not be rejected by it, no matter how high their fee,
-    /// because other nodes run other caps. Txs submitted through this node's
-    /// RPC are capped, including conditional txs (Private).
-    #[test]
-    fn test_fee_cap_enforced_only_for_txs_submitted_through_this_node() {
-        let fc = Address::with_last_byte(0xAA);
-        // 1000 Gwei, far below both txs' 21_000 * 1_000_000_000 = 2.1e13 wei fee.
-        let cap = Some(1_000_000_000_000u128);
-        let mock = MockFcLookup {
-            rate: Some(ExchangeRate { numerator: 1, denominator: 1 }),
-            balance: Some(U256::MAX),
-            debit_ok: Some(true),
-            intrinsic_gas: None,
-        };
-        for (origin, capped) in [
-            (TransactionOrigin::Local, true),
-            (TransactionOrigin::Private, true),
-            (TransactionOrigin::External, false),
-        ] {
-            for fee_currency in [None, Some(fc)] {
-                let mut tx = make_test_tx(
-                    fee_currency,
-                    21_000,
-                    1_000_000_000,
-                    100,
-                    Address::with_last_byte(1),
-                );
-                let result = apply_exchange_rates_to_pool_tx(
-                    &mock,
-                    &mut tx,
-                    origin,
-                    Address::ZERO,
-                    0,
-                    0,
-                    cap,
-                    &no_pooled_txs,
-                );
-                assert_eq!(
-                    matches!(result, Err(CeloPoolRejection::ExceedsFeeCap { .. })),
-                    capped,
-                    "{origin:?} tx (fee_currency: {fee_currency:?}) fee-capped must be {capped}; \
-                     got {result:?}"
-                );
-                assert_eq!(result.is_ok(), !capped, "{origin:?}: unexpected result {result:?}");
-            }
         }
     }
 
@@ -4017,7 +3939,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             1_000_000_000,
             150,
@@ -4050,7 +3971,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             1_000_000_000,
             100,
@@ -4115,7 +4035,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -4145,7 +4064,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -4176,7 +4094,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             0,
             0,
@@ -4203,7 +4120,6 @@ mod tests {
         let result = apply_exchange_rates_to_pool_tx(
             &mock,
             &mut tx,
-            TransactionOrigin::Local,
             Address::ZERO,
             1000,
             0,
@@ -4238,16 +4154,7 @@ mod tests {
 
         // gas=100, max_fee=100 → required_fc = 10_000; 10_000 + 10_000 > 15_000 → reject
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            TransactionOrigin::Local,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(
             matches!(r, Err(CeloPoolRejection::InsufficientBalance { cumulative: true, .. })),
             "tx exceeding pooled expenditure + balance must be rejected; got {r:?}"
@@ -4284,16 +4191,7 @@ mod tests {
         let validate =
             |max_fee: u128, pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
                 let mut tx = make_test_tx(Some(fc), 21_000, max_fee, 1, sender);
-                apply_exchange_rates_to_pool_tx(
-                    &mock,
-                    &mut tx,
-                    TransactionOrigin::Local,
-                    Address::ZERO,
-                    0,
-                    0,
-                    None,
-                    pooled,
-                )
+                apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
             };
 
         // 1. Empty pool.
@@ -4336,16 +4234,7 @@ mod tests {
         };
         let validate = |pooled: &dyn Fn(Address, Address, u64, u64) -> (U256, U256)| {
             let mut tx = make_test_tx(Some(fc), 21_000, 120, 1, sender);
-            apply_exchange_rates_to_pool_tx(
-                &mock,
-                &mut tx,
-                TransactionOrigin::Local,
-                Address::ZERO,
-                0,
-                0,
-                None,
-                pooled,
-            )
+            apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, pooled)
         };
 
         let replacing = |_: Address, _: Address, _: u64, _: u64| {
@@ -4387,16 +4276,7 @@ mod tests {
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
         let expected_nonce = tx.nonce();
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            TransactionOrigin::Local,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "tx should be admitted; got {r:?}");
         assert_eq!(
             queried.get(),
@@ -4422,16 +4302,7 @@ mod tests {
         let pooled = |_: Address, _: Address, _: u64, _: u64| (U256::from(15_000u64), U256::ZERO);
 
         let mut tx = make_test_tx(Some(fc), 100, 100, 10, sender);
-        let r = apply_exchange_rates_to_pool_tx(
-            &mock,
-            &mut tx,
-            TransactionOrigin::Local,
-            Address::ZERO,
-            0,
-            0,
-            None,
-            &pooled,
-        );
+        let r = apply_exchange_rates_to_pool_tx(&mock, &mut tx, Address::ZERO, 0, 0, None, &pooled);
         assert!(r.is_ok(), "spending exactly the full balance must be admitted; got {r:?}");
     }
 
@@ -4712,7 +4583,7 @@ mod tests {
 
             async fn validate_transaction(
                 &self,
-                origin: TransactionOrigin,
+                _origin: TransactionOrigin,
                 mut transaction: CeloPoolTx,
             ) -> TransactionValidationOutcome<CeloPoolTx> {
                 let state_nonce = self.state_nonce.load(AtomicOrdering::SeqCst);
@@ -4725,7 +4596,6 @@ mod tests {
                 let result = apply_exchange_rates_to_pool_tx(
                     &lookup,
                     &mut transaction,
-                    origin,
                     Address::ZERO,
                     0,
                     0,
