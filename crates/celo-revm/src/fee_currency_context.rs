@@ -5,9 +5,10 @@ use crate::{
     units::{FcU256, NativeU256},
 };
 use alloy_primitives::map::HashMap;
+use op_revm::transaction::OpTransactionError;
 use revm::{
     Database, Inspector,
-    context_interface::ContextTr,
+    context_interface::{ContextTr, result::EVMError},
     handler::{EvmTr, PrecompileProvider},
     interpreter::InterpreterResult,
     primitives::{Address, U256},
@@ -65,16 +66,18 @@ impl FeeCurrencyContext {
         }
     }
 
-    /// Initialize with values read from the EVM
-    pub fn new_from_evm<DB, INSP, P>(evm: &mut CeloEvm<DB, INSP, P>) -> Self
+    /// Initialize with values read from the EVM, propagating fatal EVM errors.
+    pub fn new_from_evm<DB, INSP, P>(
+        evm: &mut CeloEvm<DB, INSP, P>,
+    ) -> Result<Self, EVMError<DB::Error, OpTransactionError>>
     where
         DB: Database,
         INSP: Inspector<CeloContext<DB>>,
         P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
-        let currencies = get_currency_info(evm);
+        let currencies = get_currency_info(evm)?;
         let current_block_number = evm.ctx().block().number;
-        Self::new(currencies, Some(current_block_number))
+        Ok(Self::new(currencies, Some(current_block_number)))
     }
 
     /// Look up a registered currency, erroring for unregistered addresses.
@@ -165,7 +168,7 @@ mod tests {
     fn test_new_from_evm() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let fee_currency_context = FeeCurrencyContext::new_from_evm(&mut evm);
+        let fee_currency_context = FeeCurrencyContext::new_from_evm(&mut evm).unwrap();
 
         let test_currency = address!("0x1111111111111111111111111111111111111111");
 

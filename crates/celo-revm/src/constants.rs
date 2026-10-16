@@ -59,9 +59,8 @@ pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: re
 /// handler. The sequencing blocklist matches this marker to positively
 /// identify an unambiguous currency fault: only halts blocklist. Failures
 /// carrying neither this marker nor [`FEE_CURRENCY_REVERT_MARKER`] are
-/// EVM-infrastructure errors (e.g. a database read failing mid-call,
-/// `CoreContractError::Evm`) — the node's fault, not the currency's — and
-/// must not blocklist either.
+/// EVM-infrastructure errors (`CoreContractError::Evm`) and must not blocklist
+/// either. Database errors propagate separately and abort the build attempt.
 pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt:";
 
 /// Marker present in the `Display` output of a fee-currency failure caused by the
