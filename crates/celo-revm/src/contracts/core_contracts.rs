@@ -139,13 +139,13 @@ pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
 /// returns. See the module docs for why the committing [`call`] path cannot provide this
 /// guarantee.
 ///
-/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (output, logs, gas_spent) where gas_spent is raw, before refunds.
 pub fn call_read_only<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -187,13 +187,13 @@ where
 }
 
 /// Call a core contract function. State changes remain in the EVM's journal.
-/// Returns (output, logs, gas_used, gas_refunded) where gas_used is net after refunds.
+/// Returns (output, logs, gas_spent) where gas_spent is raw, before refunds.
 pub fn call<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -216,7 +216,7 @@ fn call_inner<DB, INSP, P>(
     calldata: Bytes,
     gas_limit: Option<u64>,
     commit: bool,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -275,7 +275,7 @@ pub(crate) fn call_no_commit<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError>
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -284,12 +284,14 @@ where
     call_inner(evm, address, calldata, gas_limit, false)
 }
 
-/// Decode a finished system-call result into (output, logs, gas_used, gas_refunded),
+/// Decode a finished system-call result into (output, logs, gas_spent),
 /// mapping halts/reverts/errors to [`CoreContractError`]. Shared by [`call`] and
 /// [`call_read_only`].
+///
+/// Not `tx_gas_used`: a system call's refund can be negative, which revm's `u64` wraps.
 fn process_call_result<E: core::fmt::Display>(
     call_result: Result<ExecutionResult<OpHaltReason>, E>,
-) -> Result<(Bytes, Vec<Log>, u64, u64), CoreContractError> {
+) -> Result<(Bytes, Vec<Log>, u64), CoreContractError> {
     let exec_result = match call_result {
         Err(e) => return Err(CoreContractError::Evm(e.to_string())),
         Ok(o) => o,
@@ -302,7 +304,7 @@ fn process_call_result<E: core::fmt::Display>(
             gas,
             logs,
             ..
-        } => Ok((bytes, logs, gas.tx_gas_used(), gas.inner_refunded())),
+        } => Ok((bytes, logs, gas.total_gas_spent())),
         ExecutionResult::Halt { reason, .. } => Err(CoreContractError::ExecutionFailed(format!(
             "halt: {reason:?}"
         ))),
@@ -334,7 +336,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _, _)) => bytes,
+        Ok((bytes, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
             return Vec::new();
@@ -435,7 +437,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _, _)) => bytes,
+        Ok((bytes, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
             return None;
@@ -478,7 +480,7 @@ where
     );
 
     let output_bytes = match call_result {
-        Ok((bytes, _, _, _)) => bytes,
+        Ok((bytes, _, _)) => bytes,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
             return None;
@@ -773,7 +775,7 @@ pub(crate) mod tests {
         let ctx = Context::celo().with_db(make_sstore_stub_db());
         let mut evm = ctx.build_celo();
 
-        let (out1, _, gas1, _) =
+        let (out1, _, gas1) =
             call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("first call ok");
         assert_eq!(
             U256::from_be_slice(out1.as_ref()),
@@ -781,7 +783,7 @@ pub(crate) mod tests {
             "stub returns slot0 + 1 == 1 on a pristine slot"
         );
 
-        let (out2, _, gas2, _) =
+        let (out2, _, gas2) =
             call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("second call ok");
         assert_eq!(
             U256::from_be_slice(out2.as_ref()),
@@ -804,14 +806,14 @@ pub(crate) mod tests {
         let mut evm = ctx.build_celo();
 
         // Committing call: slot0 0 -> 1, returns 1, and the write persists.
-        let (out, _, _, _) =
+        let (out, _, _) =
             call(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
         assert_eq!(U256::from_be_slice(out.as_ref()), U256::from(1));
 
         // Read-only calls now see the persisted slot0 == 1 -> return 2, and each rolls
         // back its own increment, so slot0 never moves past 1.
         for _ in 0..2 {
-            let (out, _, _, _) = call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
+            let (out, _, _) = call_read_only(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
                 .expect("read-only call ok");
             assert_eq!(
                 U256::from_be_slice(out.as_ref()),
@@ -856,7 +858,7 @@ pub(crate) mod tests {
             Bytes::new(),
         ));
 
-        let (_out, call_logs, _, _) =
+        let (_out, call_logs, _) =
             call_read_only(&mut evm, LOG_STUB_ADDR, Bytes::new(), None).expect("call ok");
 
         // The read-only target's own log is returned to the caller...
@@ -884,13 +886,13 @@ pub(crate) mod tests {
     fn call_and_call_no_commit_agree_on_outcome_and_state() {
         // Committing path.
         let mut evm_c = Context::celo().with_db(make_sstore_stub_db()).build_celo();
-        let (out_c, _logs_c, gas_c, refund_c) =
+        let (out_c, _logs_c, gas_c) =
             call(&mut evm_c, SSTORE_STUB_ADDR, Bytes::new(), None).expect("committing call ok");
         let state_c = evm_c.finalize();
 
         // Non-committing path, fresh EVM over an identical DB.
         let mut evm_n = Context::celo().with_db(make_sstore_stub_db()).build_celo();
-        let (out_n, _logs_n, gas_n, refund_n) =
+        let (out_n, _logs_n, gas_n) =
             call_no_commit(&mut evm_n, SSTORE_STUB_ADDR, Bytes::new(), None)
                 .expect("no-commit call ok");
         let state_n = evm_n.finalize();
@@ -901,8 +903,7 @@ pub(crate) mod tests {
             "committing and non-committing paths returned different output"
         );
         assert_eq!(
-            (gas_c, refund_c),
-            (gas_n, refund_n),
+            gas_c, gas_n,
             "committing and non-committing paths disagree on gas accounting"
         );
 
@@ -1020,7 +1021,7 @@ pub(crate) mod tests {
         // shared revert log — a real pre-bracket entry that an ungated `discard_tx` would wipe
         // but `checkpoint_revert` must not. See this test's doc comment for why the committing
         // `call` cannot be used here.
-        let (out, _, _, _) = call_no_commit(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
+        let (out, _, _) = call_no_commit(&mut evm, SSTORE_STUB_ADDR, Bytes::new(), None)
             .expect("non-committing call ok");
         assert_eq!(U256::from_be_slice(out.as_ref()), U256::from(1));
 
