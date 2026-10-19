@@ -42,7 +42,7 @@ pub fn get_balance<DB, INSP, P>(
     token_address: Address,
     account: Address,
     gas_limit: Option<u64>,
-) -> Result<U256, CoreContractError>
+) -> Result<U256, CoreContractError<DB::Error>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -80,7 +80,7 @@ pub fn debit_gas_fees<DB, INSP, P>(
     from: Address,
     value: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64), CoreContractError<DB::Error>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -110,7 +110,7 @@ pub fn credit_gas_fees<DB, INSP, P>(
     tip_tx_fee: U256,
     base_tx_fee: U256,
     gas_limit: u64,
-) -> Result<(Vec<Log>, u64), CoreContractError>
+) -> Result<(Vec<Log>, u64), CoreContractError<DB::Error>>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,

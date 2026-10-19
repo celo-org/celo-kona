@@ -9,12 +9,11 @@
 use crate::constants;
 use op_revm::OpSpecId;
 use revm::{
+    Database,
     context::{Cfg, ContextTr, JournalTr},
-    context_interface::journaled_state::account::JournaledAccountTr,
+    context_interface::{ContextError, journaled_state::account::JournaledAccountTr},
     interpreter::{CallInputs, Gas, InstructionResult, InterpreterResult},
-    precompile::{
-        PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult, u64_to_address,
-    },
+    precompile::{PrecompileHalt, PrecompileOutput, u64_to_address},
     primitives::{Address, Bytes, U256},
 };
 use std::borrow::Cow;
@@ -64,8 +63,12 @@ where
                 InstructionResult::PrecompileError
             };
         }
-        Err(PrecompileError::Fatal(e)) => return Err(e),
-        Err(PrecompileError::FatalAny(e)) => return Err(format!("{e}")),
+        Err(error) => {
+            // Match revm's database-failure path: stop execution and let the handler
+            // return the original DB error, rather than a recoverable CALL failure.
+            *context.error() = Err(ContextError::Db(error));
+            result.result = InstructionResult::FatalExternalError;
+        }
     }
     Ok(Some(result))
 }
@@ -76,7 +79,7 @@ fn run<CTX>(
     caller_address: Address,
     is_static: bool,
     gas_limit: u64,
-) -> PrecompileResult
+) -> Result<PrecompileOutput, <CTX::Db as Database>::Error>
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
@@ -116,26 +119,23 @@ where
     // make them cold again after the transfer. Starting with Jovian, this quirk is removed.
     let spec = context.cfg().spec();
     let revert_cold_status = !spec.is_enabled_in(OpSpecId::JOVIAN);
-    let revert_from_cold = revert_cold_status && account_cold_status(context, from);
-    let revert_to_cold = revert_cold_status && account_cold_status(context, to);
+    let revert_from_cold = revert_cold_status && account_cold_status(context, from)?;
+    let revert_to_cold = revert_cold_status && account_cold_status(context, to)?;
 
     // Now do the transfer (which will load both accounts and warm them)
-    let result = context.journal_mut().transfer(from, to, value);
+    let result = context.journal_mut().transfer(from, to, value)?;
 
-    // If the addresses were cold initially and we're pre-Jovian, make them cold again.
-    revert_account_cold_status(context, from, revert_from_cold);
-    revert_account_cold_status(context, to, revert_to_cold);
+    // Restore pre-Jovian warmth. Both accounts are already in the pinned journal,
+    // so restoration changes metadata without another DB read. Keep `?` for the
+    // fallible journal API.
+    revert_account_cold_status(context, from, revert_from_cold)?;
+    revert_account_cold_status(context, to, revert_to_cold)?;
 
-    if let Ok(Some(transfer_err)) = result {
+    if let Some(transfer_err) = result {
         return Ok(PrecompileOutput::halt(
             PrecompileHalt::Other(Cow::Owned(format!(
                 "transfer error occurred: {transfer_err:?}"
             ))),
-            0,
-        ));
-    } else if let Err(db_err) = result {
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
             0,
         ));
     }
@@ -143,22 +143,29 @@ where
     Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0))
 }
 
-fn account_cold_status<CTX>(context: &mut CTX, address: Address) -> bool
+fn account_cold_status<CTX>(
+    context: &mut CTX,
+    address: Address,
+) -> Result<bool, <CTX::Db as Database>::Error>
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    // A missing account or load error is treated as cold.
-    context
-        .journal_mut()
-        .load_account(address)
-        .map_or(true, |account| account.is_cold)
+    Ok(context.journal_mut().load_account(address)?.is_cold)
 }
 
-fn revert_account_cold_status<CTX>(context: &mut CTX, address: Address, was_cold: bool)
+fn revert_account_cold_status<CTX>(
+    context: &mut CTX,
+    address: Address,
+    was_cold: bool,
+) -> Result<(), <CTX::Db as Database>::Error>
 where
     CTX: ContextTr<Cfg: Cfg<Spec = OpSpecId>>,
 {
-    if was_cold && let Ok(mut journaled_account) = context.journal_mut().load_account_mut(address) {
-        journaled_account.unsafe_mark_cold();
+    if was_cold {
+        context
+            .journal_mut()
+            .load_account_mut(address)?
+            .unsafe_mark_cold();
     }
+    Ok(())
 }

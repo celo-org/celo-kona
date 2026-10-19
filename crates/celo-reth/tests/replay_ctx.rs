@@ -29,16 +29,18 @@
 
 mod common;
 
+use alloy_celo_evm::{FeeCurrencyReplayContext, FeeCurrencyReplayError};
 use alloy_consensus::Header;
 use alloy_evm::Evm;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_reth::CeloEvmConfig;
-use celo_revm::{CeloTransaction, FeeCurrencyContext};
+use celo_revm::CeloTransaction;
 use op_revm::OpTransaction;
 use reth_evm::{ConfigureEvm, Database, EvmFor, InspectorFor};
 use revm::{
     context::TxEnv,
+    context_interface::result::{AnyError, EVMError},
     database::InMemoryDB,
     inspector::NoOpInspector,
     state::{AccountInfo, Bytecode},
@@ -167,8 +169,10 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .capture_block_replay_ctx(&mut db, &evm_env)
         .expect("Celo must capture a replay context");
     let ctx = captured
-        .downcast_ref::<FeeCurrencyContext>()
-        .expect("the captured context is a FeeCurrencyContext");
+        .downcast_ref::<FeeCurrencyReplayContext>()
+        .expect("the captured context is a fee-currency load result")
+        .as_ref()
+        .expect("block-start fee-currency loading must succeed");
 
     assert_eq!(
         ctx.currency_exchange_rate(Some(TEST_FC)).expect("TEST_FC is registered"),
@@ -195,8 +199,10 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .expect("Celo must capture a replay context");
     assert_eq!(
         recaptured
-            .downcast_ref::<FeeCurrencyContext>()
-            .expect("the captured context is a FeeCurrencyContext")
+            .downcast_ref::<FeeCurrencyReplayContext>()
+            .expect("the captured context is a fee-currency load result")
+            .as_ref()
+            .expect("block-start fee-currency loading must succeed")
             .currency_exchange_rate(Some(TEST_FC))
             .expect("TEST_FC is registered"),
         (U256::from(MID_BLOCK_RATE.0), U256::from(MID_BLOCK_RATE.1)),
@@ -357,4 +363,45 @@ fn seeded_context_keeps_a_currency_removed_mid_block() {
         U256::from(BASE_FEE_AT_BLOCK_START_RATE),
         "a seeded call must see the block-start directory"
     );
+}
+
+#[test]
+fn seeded_replay_failure_preserves_fatal_evm_error_categories() {
+    use revm::context_interface::result::InvalidHeader;
+
+    let fatal = AnyError::from("injected replay context failure");
+    let cases: [(FeeCurrencyReplayError, FeeCurrencyReplayError); 4] = [
+        (
+            EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+            EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+        ),
+        (
+            EVMError::Custom("injected fatal context".into()),
+            EVMError::Custom("injected fatal context".into()),
+        ),
+        (EVMError::CustomAny(fatal.clone()), EVMError::CustomAny(fatal.clone())),
+        // Capture and replay DB types may differ, so preserve the DB error object
+        // as a fatal CustomAny instead of attempting to construct the replay DB error.
+        (EVMError::Database(fatal.clone()), EVMError::CustomAny(fatal)),
+    ];
+    for (failure, expected) in cases {
+        let captured: FeeCurrencyReplayContext = Err(failure);
+        let mut db = test_db();
+        let evm_config = CeloEvmConfig::celo(test_chain_spec());
+        let evm_env = evm_config.evm_env(&header(CAPTURED_BLOCK)).expect("evm env");
+        let mut evm = evm_config.evm_with_env(&mut db, evm_env);
+        evm_config.seed_block_replay_ctx(&mut evm, &captured);
+        let actual =
+            evm.transact_raw(cip64_probe_call()).expect_err("seeded failure must abort the call");
+        match (actual, expected) {
+            (EVMError::Header(actual), EVMError::Header(expected)) => assert_eq!(actual, expected),
+            (EVMError::Custom(actual), EVMError::Custom(expected)) => assert_eq!(actual, expected),
+            (EVMError::CustomAny(actual), EVMError::CustomAny(expected)) => {
+                assert_eq!(actual, expected)
+            }
+            (actual, expected) => {
+                panic!("seeded fatal error changed category: {actual:?}, expected {expected:?}")
+            }
+        }
+    }
 }

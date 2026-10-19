@@ -56,6 +56,13 @@ use {
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
 
+/// A block-start capture error whose database cause can cross different replay DB types.
+pub type FeeCurrencyReplayError =
+    EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>;
+
+/// The payload shared by block-start capture and the type-erased replay seed hook.
+pub type FeeCurrencyReplayContext = Result<celo_revm::FeeCurrencyContext, FeeCurrencyReplayError>;
+
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
 /// `operator_fee_scalar`/`operator_fee_constant` are `None`.
@@ -98,7 +105,7 @@ fn classify_fee_hook_failure(message: &str) -> Option<(&'static str, &'static st
     } else if suffix.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
         "malformed_return"
     } else {
-        "evm_error"
+        return None;
     };
     Some((phase, kind))
 }
@@ -169,32 +176,41 @@ fn transfer_precompile(
     let to = Address::from_slice(&input.data[44..64]);
     let value = U256::from_be_slice(&input.data[64..96]);
 
+    // PrecompilesMap's pinned interface turns fatal errors into EVMError::Custom.
+    // Preserve the DB cause here and abort the attempt, rather than returning a Halt.
+    let fatal_db_error = |error| {
+        revm::precompile::PrecompileError::FatalAny(revm::context_interface::result::AnyError::new(
+            error,
+        ))
+    };
     let revert_cold_status = !spec_id.is_enabled_in(OpSpecId::JOVIAN);
     let revert_from_cold =
-        revert_cold_status && input.internals.load_account(from).map(|a| a.is_cold).unwrap_or(true);
+        revert_cold_status && input.internals.load_account(from).map_err(fatal_db_error)?.is_cold;
     let revert_to_cold =
-        revert_cold_status && input.internals.load_account(to).map(|a| a.is_cold).unwrap_or(true);
+        revert_cold_status && input.internals.load_account(to).map_err(fatal_db_error)?.is_cold;
 
-    let result = input.internals.transfer(from, to, value);
+    let result = input.internals.transfer(from, to, value).map_err(fatal_db_error)?;
 
-    if revert_from_cold && let Ok(mut account) = input.internals.load_account_mut(from) {
-        account.data.unsafe_mark_cold();
+    // Both accounts are already in the pinned journal. Restoration changes
+    // warmth without another DB read; keep `?` for the fallible internals API.
+    if revert_from_cold {
+        input.internals.load_account_mut(from).map_err(fatal_db_error)?.data.unsafe_mark_cold();
     }
-    if revert_to_cold && let Ok(mut account) = input.internals.load_account_mut(to) {
-        account.data.unsafe_mark_cold();
+    if revert_to_cold {
+        input.internals.load_account_mut(to).map_err(fatal_db_error)?.data.unsafe_mark_cold();
     }
 
-    match result {
-        Ok(None) => Ok(PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0)),
-        Ok(Some(transfer_err)) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("transfer error occurred: {transfer_err:?}"))),
-            0,
-        )),
-        Err(db_err) => Ok(PrecompileOutput::halt(
-            PrecompileHalt::Other(Cow::Owned(format!("database error occurred: {db_err:?}"))),
-            0,
-        )),
-    }
+    Ok(result.map_or_else(
+        || PrecompileOutput::new(TRANSFER_GAS_COST, Bytes::new(), 0),
+        |transfer_err| {
+            PrecompileOutput::halt(
+                PrecompileHalt::Other(Cow::Owned(format!(
+                    "transfer error occurred: {transfer_err:?}"
+                ))),
+                0,
+            )
+        },
+    ))
 }
 
 /// Celo EVM implementation.
@@ -241,6 +257,8 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `trace_*`, otterscan `ots_*`, and
     /// `replay_transactions_until` use loose EVMs without receipt building and leave it off.
     cip64_store_enabled: bool,
+    /// Failed block-start capture must prevent replay against a different, mid-block context.
+    block_replay_error: Option<FeeCurrencyReplayError>,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -255,7 +273,9 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
     }
 
     /// Creates a FeeCurrencyContext from the current EVM state.
-    pub fn create_fee_currency_context(&mut self) -> celo_revm::FeeCurrencyContext
+    pub fn create_fee_currency_context(
+        &mut self,
+    ) -> Result<celo_revm::FeeCurrencyContext, EVMError<DB::Error, op_revm::OpTransactionError>>
     where
         I: Inspector<CeloContext<DB>>,
         P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
@@ -272,12 +292,18 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
         token: Address,
         account: Address,
         gas_limit: u64,
-    ) -> Result<U256, celo_revm::contracts::CoreContractError>
+    ) -> Result<U256, celo_revm::contracts::CoreContractError<DB::Error>>
     where
         I: Inspector<CeloContext<DB>>,
         P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
         celo_revm::contracts::get_balance(&mut self.inner, token, account, Some(gas_limit))
+    }
+
+    /// Records an error from the type-erased RPC block-start capture. Every subsequent
+    /// transaction fails rather than loading fee-currency state at a mid-block position.
+    pub fn set_block_replay_error(&mut self, error: FeeCurrencyReplayError) {
+        self.block_replay_error = Some(error);
     }
 
     /// Replaces the EVM's fee currency context, e.g. with a block-start context captured before
@@ -309,6 +335,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
             blocklist: FeeCurrencyBlocklist::default(),
             blocklist_enabled: false,
             cip64_store_enabled: false,
+            block_replay_error: None,
         }
     }
 
@@ -377,6 +404,18 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        if let Some(error) = &self.block_replay_error {
+            return Err(match error {
+                // Capture and replay can use different DB types. Keep the original
+                // DB error object in a fatal error instead of rebuilding DB::Error.
+                EVMError::Database(error) | EVMError::CustomAny(error) => {
+                    EVMError::CustomAny(error.clone())
+                }
+                EVMError::Header(error) => EVMError::Header(*error),
+                EVMError::Custom(error) => EVMError::Custom(error.clone()),
+                EVMError::Transaction(error) => map_op_err(EVMError::Transaction(error.clone())),
+            });
+        }
         // Capture fee_currency before execution (it's consumed by transact)
         let fee_currency = tx.fee_currency;
 
@@ -426,7 +465,11 @@ where
                     self.cip64_storage.store_cip64_info(fee_currency, cip64_info);
                 }
             }
-            Err(e) if apply_blocklist && fee_currency.is_some() => {
+            Err(e)
+                if apply_blocklist
+                    && fee_currency.is_some()
+                    && matches!(e, EVMError::Transaction(_)) =>
+            {
                 // Classify why this CIP-64 tx failed during block building. Only a
                 // fee-currency debit/credit failure should blocklist the currency, not
                 // unrelated validation errors (nonce, gas limit, etc.) that happen to
@@ -545,32 +588,11 @@ where
                         .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
-                    } else {
-                        // Neither marker: the system call itself errored — an
-                        // EVM-infrastructure failure (`CoreContractError::Evm`,
-                        // e.g. a database read failing mid-call). That is this
-                        // node's fault, not the currency's; blocklisting here
-                        // would dark-list a healthy currency for 2h over a local
-                        // I/O hiccup.
-                        tracing::warn!(
-                            target: "celo",
-                            "fee-currency debit/credit failed with an EVM-level error for \
-                             {fc}: {e} — dropping tx without blocklisting the currency"
-                        );
-                        #[cfg(feature = "std")]
-                        metrics::counter!(
-                            "celo_payload_skipped_total",
-                            "reason" => "debit_credit_evm_error"
-                        )
-                        .increment(1);
                     }
                 } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
-                    // The fee currency is not in the per-block fee-currency context: its
-                    // directory config could not be read, so it was dropped while loading
-                    // (see `celo_revm::contracts::core_contracts::get_currency_info`). The
-                    // tx is excluded from the block. This is otherwise silent — it fails
-                    // before debit/credit, so the blocklist branch above never logs it —
-                    // so surface it here as both a log and a metric.
+                    // The currency is absent or was excluded after a contract/configuration
+                    // failure. Fatal context reads abort before this Transaction-only branch.
+                    // Surface the excluded transaction here because no fee hook was called.
                     tracing::warn!(
                         target: "celo",
                         "CIP-64 tx excluded from block: fee currency {fc} is not loaded in the \
@@ -691,6 +713,7 @@ fn make_test_evm_with_db<DB: Database>(
         // Default to the receipt-building executor path; loose-EVM tests build through the
         // factory instead (`make_loose_test_evm`).
         cip64_store_enabled: true,
+        block_replay_error: None,
     }
 }
 
@@ -782,6 +805,7 @@ impl CeloEvmFactory {
             blocklist_enabled: false,
             // Off by default; receipt-building executors and post-exec builders enable it.
             cip64_store_enabled: false,
+            block_replay_error: None,
         }
     }
 }
@@ -931,6 +955,10 @@ mod tests {
         );
         assert_eq!(classify_fee_hook_failure(&malformed), Some(("balance_of", "malformed_return")));
         assert_eq!(classify_fee_hook_failure("invalid nonce"), None);
+        assert_eq!(
+            classify_fee_hook_failure(&format!("{FEE_DEBIT_ERROR_PREFIX}: unknown failure")),
+            None
+        );
     }
 
     #[cfg(feature = "std")]
@@ -1187,11 +1215,11 @@ mod tests {
     /// Put the given sequencing-mode EVM in block-building mode, register `fc`
     /// in the per-block fee-currency context, and run a CIP-64 tx through
     /// `transact_raw`, driving the `debitGasFees` system call against whatever
-    /// state the EVM's database holds. Returns the resulting error, stringified.
-    fn run_cip64_debit<DB: Database>(
+    /// state the EVM's database holds.
+    fn run_cip64_transaction<DB: Database>(
         evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
         fc: Address,
-    ) -> String
+    ) -> Result<ResultAndState<OpHaltReason>, EVMError<DB::Error, OpTxError>>
     where
         CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
     {
@@ -1217,8 +1245,17 @@ mod tests {
         let mut tx = make_cip64_tx(fc);
         // Cover the standard intrinsic plus the currency's extra intrinsic gas.
         tx.op_tx.base.gas_limit = 200_000;
-        let result = evm.transact_raw(tx);
-        format!("{:?}", result.expect_err("CIP-64 tx with a failing debit must error"))
+        evm.transact_raw(tx)
+    }
+
+    fn run_cip64_debit<DB: Database>(
+        evm: &mut CeloEvm<DB, revm::inspector::NoOpInspector>,
+        fc: Address,
+    ) -> String
+    where
+        CeloPrecompiles: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
+    {
+        format!("{:?}", run_cip64_transaction(evm, fc).expect_err("CIP-64 fee call must fail"))
     }
 
     /// `balanceOf(address)` calldata: 4-byte selector + one word.
@@ -1524,15 +1561,9 @@ mod tests {
         );
     }
 
-    /// A debit failure carrying neither the revert nor the halt marker is an
-    /// EVM-infrastructure error (`CoreContractError::Evm`, e.g. a database read
-    /// failing mid-call) — the node's fault, not the currency's — and must not
-    /// blocklist. It must instead be metered as
-    /// `celo_payload_skipped_total{reason=debit_credit_evm_error}`.
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_debit_evm_error_does_not_blocklist_currency() {
-        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    /// A database failure in any CIP-64 fee call must abort the build attempt and must
+    /// not be classified as a bad transaction or a currency fault.
+    fn assert_fee_database_error_propagates(failing_calldata_size: u16) {
         use revm::state::{AccountInfo, Bytecode};
 
         #[derive(Debug)]
@@ -1545,14 +1576,13 @@ mod tests {
         impl core::error::Error for TestDbError {}
         impl revm::database_interface::DBErrorMarker for TestDbError {}
 
-        /// Delegates to an [`revm::database::InMemoryDB`] but fails every storage
-        /// read of `fail_addr`, simulating a state-provider I/O error surfacing
-        /// mid-debit (and only there — unrelated reads keep working so the tx
-        /// genuinely reaches the debit system call).
+        /// Fails the slot read only by the selected fee-call phase, while all
+        /// other storage reads succeed.
         #[derive(Debug)]
         struct FailingStorageDb {
             inner: revm::database::InMemoryDB,
             fail_addr: Address,
+            fail_slot: U256,
         }
         impl revm::Database for FailingStorageDb {
             type Error = TestDbError;
@@ -1570,7 +1600,7 @@ mod tests {
                 address: Address,
                 index: revm::primitives::StorageKey,
             ) -> Result<revm::primitives::StorageValue, Self::Error> {
-                if address == self.fail_addr {
+                if address == self.fail_addr && index == self.fail_slot {
                     return Err(TestDbError);
                 }
                 Ok(revm::Database::storage(&mut self.inner, address, index).unwrap())
@@ -1582,57 +1612,44 @@ mod tests {
 
         let fc = Address::with_last_byte(0xD2);
         let blocklist = FeeCurrencyBlocklist::default();
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
 
-        // Fault body: PUSH1 0, SLOAD, STOP — the debit call reads the token's storage, which
-        // the wrapper DB fails with a genuine database error. It has to sit behind the
-        // calldata-size guard: the max-fee check's `balanceOf` would otherwise hit the same
-        // failing `SLOAD` first, and the error would never come from the debit.
+        // Each call reads a different slot keyed by its calldata size. Only the
+        // selected phase fails, so a swallowed balance error cannot be masked by debit.
         let mut inner = revm::database::InMemoryDB::default();
         inner.insert_account_info(
             fc,
             AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
-                BALANCE_OF_CALLDATA_SIZE,
-                &[0x60, 0x00, 0x54, 0x00],
+                0,
+                // CALLDATASIZE, SLOAD, POP, then return uint256::MAX for balanceOf.
+                &[
+                    0x36, 0x54, 0x50, 0x60, 0x00, 0x19, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00,
+                    0xf3,
+                ],
             ))),
         );
 
-        let err = metrics::with_local_recorder(&recorder, || {
-            let mut evm =
-                make_test_evm_with_db(FailingStorageDb { inner, fail_addr: fc }, blocklist.clone());
-            run_cip64_debit(&mut evm, fc)
-        });
-
-        assert!(err.contains(FEE_DEBIT_ERROR_PREFIX), "expected a debit failure, got: {err}");
-        assert_faulted_in_debit(&err);
-        assert!(
-            !err.contains(FEE_CURRENCY_REVERT_MARKER) && !err.contains(FEE_CURRENCY_HALT_MARKER),
-            "a database error must carry neither contract-fault marker, got: {err}"
+        let mut evm = make_test_evm_with_db(
+            FailingStorageDb { inner, fail_addr: fc, fail_slot: U256::from(failing_calldata_size) },
+            blocklist.clone(),
         );
-        assert!(
-            !blocklist.is_blocked(fc),
-            "an EVM-infrastructure error is the node's fault and must not blocklist the \
-             currency; got error: {err}"
-        );
+        let err = run_cip64_transaction(&mut evm, fc).expect_err("database must fail");
+        assert!(matches!(err, EVMError::Database(TestDbError)), "{err:?}");
+        assert!(!blocklist.is_blocked(fc));
+    }
 
-        let snapshot = snapshotter.snapshot().into_vec();
-        assert_fee_failure_counters(&snapshot, &[("debit", "evm_error", 1)]);
-        let skipped: u64 = snapshot
-            .into_iter()
-            .filter(|(ck, _, _, _)| {
-                ck.key().name() == "celo_payload_skipped_total"
-                    && ck
-                        .key()
-                        .labels()
-                        .any(|l| l.key() == "reason" && l.value() == "debit_credit_evm_error")
-            })
-            .map(|(_, _, _, v)| match v {
-                DebugValue::Counter(c) => c,
-                other => panic!("expected a counter, got {other:?}"),
-            })
-            .sum();
-        assert_eq!(skipped, 1, "celo_payload_skipped_total must increment exactly once");
+    #[test]
+    fn balance_database_error_propagates() {
+        assert_fee_database_error_propagates(u16::from(BALANCE_OF_CALLDATA_SIZE));
+    }
+
+    #[test]
+    fn debit_database_error_propagates() {
+        assert_fee_database_error_propagates(u16::from(DEBIT_CALLDATA_SIZE));
+    }
+
+    #[test]
+    fn credit_database_error_propagates() {
+        assert_fee_database_error_propagates(4 + 8 * 32);
     }
 
     /// An exchange rate extreme enough that the block's base fee no longer fits a `u128` once

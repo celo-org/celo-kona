@@ -265,3 +265,6 @@ mod cip64_gas_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod missing_preimages;

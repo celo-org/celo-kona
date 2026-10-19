@@ -6,7 +6,7 @@ use crate::{
         CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX,
         FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
-    contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
+    contracts::{CoreContractError, core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
@@ -27,7 +27,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         cfg::{GasId, gas_params::Eip2780TxInfo},
         journaled_state::account::JournaledAccountTr,
-        result::{ExecutionResult, FromStringError},
+        result::{EVMError, ExecutionResult, FromStringError},
     },
     handler::{
         EvmTr, FrameResult, Handler, PrecompileProvider, SYSTEM_ADDRESS,
@@ -177,15 +177,36 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
+    fn contract_failure_or_fatal(
+        error: CoreContractError<DB::Error>,
+        fee_currency: Address,
+        phase: &'static str,
+    ) -> Result<CoreContractError<DB::Error>, ERROR> {
+        error.into_contract_failure().map_err(|error| {
+            warn!(
+                target: "celo",
+                phase,
+                %fee_currency,
+                %error,
+                "Fatal fee-currency call failure; aborting execution"
+            );
+            ERROR::from(error)
+        })
+    }
+
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP, P>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
         if evm.fee_currency_context.updated_at_block != Some(current_block) {
             // Update the chain with the new fee currency context.
             // If core contracts are missing, we'll get an empty context (for non-celo test environments).
-            let fee_currency_context = FeeCurrencyContext::new_from_evm(evm);
+            let fee_currency_context =
+                FeeCurrencyContext::new_from_evm(evm).map_err(ERROR::from)?;
             evm.fee_currency_context = fee_currency_context;
 
             // Context loading is internal: it reads on-chain fee-currency config and is not
@@ -364,7 +385,14 @@ where
             base_tx_charge.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("{FEE_CREDIT_ERROR_PREFIX}: {e}")))?;
+        .map_err(|e| {
+            match Self::contract_failure_or_fatal(e, fee_currency.unwrap(), "credit") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_CREDIT_ERROR_PREFIX}: {error}"
+                ))),
+            }
+        })?;
 
         // Collect logs from the system call to be included in the final receipt
         let info = evm.ctx().tx.cip64_tx_info.as_mut().unwrap();
@@ -485,10 +513,11 @@ where
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
-            |e| {
-                InvalidTransaction::from(format!(
-                    "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
-                ))
+            |e| match Self::contract_failure_or_fatal(e, fee_currency, "balance_of") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {error}"
+                ))),
             },
         )?);
 
@@ -565,7 +594,14 @@ where
             gas_cost.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| InvalidTransaction::from(format!("{FEE_DEBIT_ERROR_PREFIX}: {e}")))?;
+        .map_err(|e| {
+            match Self::contract_failure_or_fatal(e, fee_currency_addr, "debit") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_DEBIT_ERROR_PREFIX}: {error}"
+                ))),
+            }
+        })?;
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
         // types; we narrow back to `u128` at this boundary rather than widening them.
@@ -991,8 +1027,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
     type Evm = CeloEvm<DB, INSP, P>;
     type Error = ERROR;
@@ -1340,27 +1379,16 @@ where
         Ok(exec_result)
     }
 
-    /// Error-arm counterpart to [`Self::execution_result`]'s `no_commit` gate.
+    /// Preserve the enclosing journal when a non-committing system call fails.
     ///
-    /// op-revm routes every non-deposit transaction error — and every unconvertible type byte,
-    /// which includes CIP-64's `0x7b` — through `discard_tx`. For a real transaction that is
-    /// exactly right: it unwinds the rejected tx so its writes and EIP-2929 warm stamps cannot
-    /// leak into the next tx built on the same EVM.
+    /// The pinned op-revm calls `discard_tx` for failed non-deposit transactions.
+    /// Inside a bracketed system call this would drain the enclosing revert log
+    /// and reset warmth. The caller owns rollback and depth restoration.
     ///
-    /// A **non-committing system call** is not a transaction, and the journal it runs against is
-    /// not its own. `run_system_call_no_commit`'s callers bracket the call with
-    /// `checkpoint` / `checkpoint_revert` precisely so they can undo the call's own entries and
-    /// nothing else (see `core_contracts::call_read_only`). `discard_tx` drains the *entire*
-    /// shared revert log, clears transient storage and the selfdestruct list, bumps
-    /// `transaction_id` and clears coinbase/access-list warmth — so letting it run here would
-    /// discard everything the *enclosing* transaction recorded before the bracket and reset its
-    /// warm/cold accounting mid-execution. The read-only callers (`get_currencies` /
-    /// `get_exchange_rate` / `get_intrinsic_gas`) swallow the error and continue, so that damage
-    /// would be silent rather than fatal.
-    ///
-    /// Skip only the journal work: the rest of op-revm's teardown (L1-cost cache, local context,
-    /// frame stack) runs either way, matching `execution_result`. Depth is left for the caller's
-    /// bracket to restore, which is what `call_read_only`'s error arm already does.
+    /// Fatal errors propagate, but directory readers may absorb contract failures,
+    /// and pool balance revalidation can reuse the EVM after a failed read. Skip
+    /// journal discard under `no_commit`; keep the upstream L1-cost, local-context
+    /// and frame-stack cleanup on both paths.
     fn catch_error(
         &self,
         evm: &mut Self::Evm,
@@ -1383,8 +1411,11 @@ where
     DB: Database,
     INSP: Inspector<CeloContext<DB>, EthInterpreter>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
-    ERROR:
-        EvmTrError<CeloEvm<DB, INSP, P>> + From<OpTransactionError> + FromStringError + IsTxError,
+    ERROR: EvmTrError<CeloEvm<DB, INSP, P>>
+        + From<OpTransactionError>
+        + From<EVMError<DB::Error, OpTransactionError>>
+        + FromStringError
+        + IsTxError,
 {
     type IT = EthInterpreter;
 }

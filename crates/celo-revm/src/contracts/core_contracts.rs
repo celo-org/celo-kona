@@ -35,7 +35,7 @@ use alloy_primitives::{
     map::{DefaultHashBuilder, HashMap},
 };
 use alloy_sol_types::{SolCall, SolType, sol, sol_data};
-use op_revm::OpHaltReason;
+use op_revm::{OpHaltReason, transaction::OpTransactionError};
 use revm::{
     Database,
     context_interface::ContextTr,
@@ -46,26 +46,35 @@ use revm::{
 };
 use revm_context_interface::{
     ContextSetters,
-    result::{ExecutionResult, Output},
+    result::{EVMError, ExecutionResult, Output},
 };
-use std::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use std::{boxed::Box, format, string::String, vec::Vec};
 use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
-pub enum CoreContractError {
-    #[error("Core contract missing at address {0}")]
-    CoreContractMissing(Address),
-    #[error("sol type error: {0}")]
-    AlloySolTypes(#[from] alloy_sol_types::Error),
+pub enum CoreContractError<DBError> {
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
     #[error("Evm error: {0}")]
-    Evm(String),
+    Evm(Box<EVMError<DBError, OpTransactionError>>),
 }
+
+impl<DBError> CoreContractError<DBError> {
+    /// Separate contract failures from fatal EVM errors that the caller must propagate.
+    pub fn into_contract_failure(self) -> Result<Self, EVMError<DBError, OpTransactionError>> {
+        match self {
+            Self::Evm(error) => Err(*error),
+            error @ Self::ExecutionFailed(_) => Ok(error),
+        }
+    }
+}
+
+/// A core call's output, logs and raw gas spent, or its structured error.
+pub type CoreContractCallResult<DBError> =
+    Result<(Bytes, Vec<Log>, u64), CoreContractError<DBError>>;
+
+/// A fee-currency configuration read, preserving EVM errors.
+pub type FeeCurrencyReadResult<T, DBError> = Result<T, EVMError<DBError, OpTransactionError>>;
 
 sol! {
     struct CurrencyConfig {
@@ -101,21 +110,12 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-/// `debug_assert` that the journal's call-stack depth is back to `depth_before` — the depth
-/// captured immediately before opening a non-committing checkpoint bracket ([`call_read_only`]
-/// here, and the CIP-64 rollbackable debit in the handler).
+/// Assert that a bracketed non-committing call restores the journal's call depth.
 ///
-/// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
-/// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
-/// call ends — the happy path and a system-call error alike. The balance comes from our own
-/// checkpoint bookkeeping, not from `discard_tx`: op-revm at `kona-client/v1.7.0-rc.1` discards
-/// the journal in `catch_error` on a non-deposit error, and `CeloHandler::catch_error` gates
-/// that on `no_commit` so it cannot run for these system calls.
-/// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
-/// `get_intrinsic_gas`) swallow the error and drop the currency rather than aborting the tx, so
-/// a leaked depth would be silent. The one path this guards is a *fatal* error inside the call
-/// that unwinds past a frame-level checkpoint without reverting it (e.g. a DB error), which
-/// would leave depth inflated; the assert then trips tests loudly instead of being masked.
+/// The enclosing checkpoint owns rollback; `catch_error` must not discard the
+/// enclosing transaction's journal. Directory readers still absorb contract
+/// reverts/halts. Fatal errors propagate, but pool balance revalidation may reuse
+/// the same EVM after a failed read, so depth must be restored on errors too.
 pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     depth_before: usize,
@@ -145,7 +145,7 @@ pub fn call_read_only<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> CoreContractCallResult<DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -174,10 +174,9 @@ where
     // touches only journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
-    // A *fatal* (non-revert) error inside the call can leave `depth` inflated (the window
-    // `debug_assert_call_depth_unchanged` documents). The read-only callers swallow the error
-    // and continue, so force depth back to the snapshot on the error arm; the happy path is
-    // already balanced, so the assert still guards it.
+    // Fatal errors can leave frame depth inflated. Restore it before returning:
+    // pool balance revalidation may reuse this EVM even after a fatal read error.
+    // Contract failures may also be absorbed by directory readers.
     if result.is_err() {
         evm.ctx().journal_mut().depth = prev_depth;
     }
@@ -193,7 +192,7 @@ pub fn call<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> CoreContractCallResult<DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -216,7 +215,7 @@ fn call_inner<DB, INSP, P>(
     calldata: Bytes,
     gas_limit: Option<u64>,
     commit: bool,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> CoreContractCallResult<DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -275,7 +274,7 @@ pub(crate) fn call_no_commit<DB, INSP, P>(
     address: Address,
     calldata: Bytes,
     gas_limit: Option<u64>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError>
+) -> CoreContractCallResult<DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -289,11 +288,24 @@ where
 /// [`call_read_only`].
 ///
 /// Not `tx_gas_used`: a system call's refund can be negative, which revm's `u64` wraps.
-fn process_call_result<E: core::fmt::Display>(
-    call_result: Result<ExecutionResult<OpHaltReason>, E>,
-) -> Result<(Bytes, Vec<Log>, u64), CoreContractError> {
+fn process_call_result<DBError: core::fmt::Display>(
+    call_result: Result<
+        ExecutionResult<OpHaltReason>,
+        revm::context_interface::result::EVMError<
+            DBError,
+            op_revm::transaction::OpTransactionError,
+        >,
+    >,
+) -> CoreContractCallResult<DBError> {
     let exec_result = match call_result {
-        Err(e) => return Err(CoreContractError::Evm(e.to_string())),
+        // System-call validation describes our synthetic transaction, not the
+        // surrounding user's transaction. Keep it fatal at that boundary.
+        Err(EVMError::Transaction(error)) => {
+            return Err(CoreContractError::Evm(Box::new(EVMError::Custom(format!(
+                "core contract system-call validation failed: {error}"
+            )))));
+        }
+        Err(e) => return Err(CoreContractError::Evm(Box::new(e))),
         Ok(o) => o,
     };
 
@@ -322,7 +334,7 @@ fn process_call_result<E: core::fmt::Display>(
 fn get_currencies<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
-) -> Vec<Address>
+) -> FeeCurrencyReadResult<Vec<Address>, DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -338,22 +350,23 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _)) => bytes,
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
 
     if output_bytes.is_empty() {
         debug!(target: "celo_core_contracts", "get_currencies: core contract missing at address 0x{:x}", fee_currency_directory);
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Decode the output
     match getCurrenciesCall::abi_decode_returns(output_bytes.as_ref()) {
-        Ok(decoded_return) => decoded_return,
+        Ok(decoded_return) => Ok(decoded_return),
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to decode (bytes: 0x{}): {}", hex::encode(output_bytes), e);
-            Vec::new()
+            Ok(Vec::new())
         }
     }
 }
@@ -363,14 +376,14 @@ where
 /// This ensures no partial/inconsistent currency data can exist.
 pub fn get_currency_info<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
-) -> HashMap<Address, FeeCurrencyInfo>
+) -> FeeCurrencyReadResult<HashMap<Address, FeeCurrencyInfo>, DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
     P: PrecompileProvider<CeloContext<DB>, Output = InterpreterResult>,
 {
     let fee_currency_directory = get_addresses(evm.ctx_ref().cfg().chain_id).fee_currency_directory;
-    let currencies = get_currencies(evm, fee_currency_directory);
+    let currencies = get_currencies(evm, fee_currency_directory)?;
     let mut currency_info =
         HashMap::with_capacity_and_hasher(currencies.len(), DefaultHashBuilder::default());
 
@@ -380,7 +393,7 @@ where
         // CIP-64 tx paying in this currency is excluded from blocks with no trace
         // (it fails with "fee currency not registered" before debit/credit, so the
         // blocklist path never logs it).
-        let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, token) {
+        let exchange_rate = match get_exchange_rate(evm, fee_currency_directory, token)? {
             Some(rate) => rate,
             None => {
                 warn!(
@@ -393,7 +406,7 @@ where
         };
 
         // Fetch intrinsic gas (same drop semantics as the exchange rate above).
-        let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, token) {
+        let intrinsic_gas = match get_intrinsic_gas(evm, fee_currency_directory, token)? {
             Some(gas) => gas,
             None => {
                 warn!(
@@ -415,15 +428,15 @@ where
         );
     }
 
-    currency_info
+    Ok(currency_info)
 }
 
-/// Fetches the exchange rate for a single token. Returns None on any failure.
+/// Fetches the exchange rate, propagating fatal EVM errors and returning `None` for contract failures.
 fn get_exchange_rate<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
     token: Address,
-) -> Option<(U256, U256)>
+) -> FeeCurrencyReadResult<Option<(U256, U256)>, DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -439,8 +452,9 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _)) => bytes,
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
-            return None;
+            return Ok(None);
         }
     };
 
@@ -448,25 +462,25 @@ where
         Ok(decoded_return) => decoded_return,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to decode exchange rate for token 0x{:x} (bytes: 0x{:x}): {}", token, output_bytes, e);
-            return None;
+            return Ok(None);
         }
     };
 
     // Validate that neither numerator nor denominator is zero
     if rate.numerator.is_zero() || rate.denominator.is_zero() {
         debug!(target: "celo_core_contracts", "get_exchange_rate: invalid exchange rate for token 0x{:x} (numerator: {}, denominator: {})", token, rate.numerator, rate.denominator);
-        return None;
+        return Ok(None);
     }
 
-    Some((rate.numerator, rate.denominator))
+    Ok(Some((rate.numerator, rate.denominator)))
 }
 
-/// Fetches the intrinsic gas for a single token. Returns None on any failure.
+/// Fetches intrinsic gas, propagating fatal EVM errors and returning `None` for contract failures.
 fn get_intrinsic_gas<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     fee_currency_directory: Address,
     token: Address,
-) -> Option<u64>
+) -> FeeCurrencyReadResult<Option<u64>, DB::Error>
 where
     DB: Database,
     INSP: Inspector<CeloContext<DB>>,
@@ -482,8 +496,9 @@ where
     let output_bytes = match call_result {
         Ok((bytes, _, _)) => bytes,
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
-            return None;
+            return Ok(None);
         }
     };
 
@@ -491,7 +506,7 @@ where
         Ok(decoded_return) => decoded_return,
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to decode intrinsic gas for token 0x{:x} (bytes: 0x{}): {}", token, hex::encode(output_bytes), e);
-            return None;
+            return Ok(None);
         }
     };
 
@@ -501,7 +516,7 @@ where
         u64::MAX
     });
 
-    Some(intrinsic_gas_value)
+    Ok(Some(intrinsic_gas_value))
 }
 
 #[cfg(test)]
@@ -515,6 +530,134 @@ pub(crate) mod tests {
         primitives::{Address, Bytes, U256},
         state::{AccountInfo, Bytecode, EvmState},
     };
+    use std::string::ToString;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("injected fatal core call failure")]
+    struct FatalCoreCall;
+
+    #[test]
+    fn process_call_result_preserves_fatal_evm_variants() {
+        use revm::context_interface::result::{AnyError, EVMError, InvalidHeader};
+
+        let cases = [
+            EVMError::Custom("injected failure".into()),
+            EVMError::CustomAny(AnyError::new(FatalCoreCall)),
+            EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+            EVMError::Database("injected database failure".to_string()),
+        ];
+        for failure in cases {
+            let error = process_call_result::<String>(Err(failure.clone()))
+                .expect_err("fatal core call must fail");
+            let CoreContractError::Evm(actual) = error else {
+                panic!("fatal EVM error changed category: {error:?}");
+            };
+            assert_eq!(*actual, failure);
+        }
+    }
+
+    #[test]
+    fn core_call_classification_preserves_fatal_errors() {
+        use revm::context_interface::result::{AnyError, InvalidHeader};
+
+        let cases = [
+            EVMError::Database("provider failure".to_string()),
+            EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+            EVMError::Custom("infrastructure failure".into()),
+            EVMError::CustomAny(AnyError::new(FatalCoreCall)),
+        ];
+        for error in cases {
+            assert_eq!(
+                CoreContractError::Evm(Box::new(error.clone()))
+                    .into_contract_failure()
+                    .unwrap_err(),
+                error
+            );
+        }
+        let failure = CoreContractError::<String>::ExecutionFailed("revert: denied".into());
+        assert!(matches!(
+            failure.into_contract_failure(),
+            Ok(CoreContractError::ExecutionFailed(_))
+        ));
+    }
+
+    #[test]
+    fn system_call_transaction_error_is_fatal() {
+        use revm::context_interface::result::InvalidTransaction;
+
+        let transaction_error =
+            OpTransactionError::Base(InvalidTransaction::TxGasLimitGreaterThanCap {
+                gas_limit: 30_000_000,
+                cap: 16_777_216,
+            });
+        let error = process_call_result::<core::convert::Infallible>(Err(EVMError::Transaction(
+            transaction_error.clone(),
+        )))
+        .expect_err("internal transaction validation must fail");
+        let CoreContractError::Evm(error) = error else {
+            panic!("internal validation must remain an EVM failure: {error:?}");
+        };
+        assert!(
+            matches!(&*error, EVMError::Custom(message) if message.contains(&transaction_error.to_string())),
+            "internal validation must be fatal, not an outer transaction error: {error:?}"
+        );
+    }
+
+    struct FailingDirectoryCall {
+        selector: [u8; 4],
+        inner: crate::CeloPrecompiles,
+    }
+
+    impl PrecompileProvider<CeloContext<InMemoryDB>> for FailingDirectoryCall {
+        type Output = InterpreterResult;
+
+        fn set_spec(&mut self, spec: op_revm::OpSpecId) -> bool {
+            <crate::CeloPrecompiles as PrecompileProvider<CeloContext<InMemoryDB>>>::set_spec(
+                &mut self.inner,
+                spec,
+            )
+        }
+
+        fn run(
+            &mut self,
+            context: &mut CeloContext<InMemoryDB>,
+            inputs: &revm::interpreter::CallInputs,
+        ) -> Result<Option<Self::Output>, String> {
+            if inputs.bytecode_address == get_addresses(0).fee_currency_directory
+                && inputs.input.bytes(context).starts_with(&self.selector)
+            {
+                return Err("injected fatal directory call".into());
+            }
+            self.inner.run(context, inputs)
+        }
+
+        fn warm_addresses(&self) -> &revm::primitives::AddressSet {
+            <crate::CeloPrecompiles as PrecompileProvider<CeloContext<InMemoryDB>>>::warm_addresses(
+                &self.inner,
+            )
+        }
+    }
+
+    #[test]
+    fn fee_currency_context_propagates_fatal_error_at_each_read() {
+        for selector in [
+            getCurrenciesCall::SELECTOR,
+            getExchangeRateCall::SELECTOR,
+            getCurrencyConfigCall::SELECTOR,
+        ] {
+            let mut evm = Context::celo()
+                .with_db(make_celo_test_db())
+                .build_celo()
+                .with_precompiles(FailingDirectoryCall {
+                    selector,
+                    inner: crate::CeloPrecompiles::default(),
+                });
+            let error = crate::FeeCurrencyContext::new_from_evm(&mut evm)
+                .expect_err("fatal directory call must abort loading rather than drop a currency");
+            assert_eq!(error.to_string(), "injected fatal directory call");
+            assert_eq!(evm.ctx().journal_ref().depth, 0);
+        }
+    }
 
     pub(crate) fn make_celo_test_db() -> InMemoryDB {
         let oracle_address = address!("0x1111111111111111111111111111111111111112");
@@ -682,7 +825,7 @@ pub(crate) mod tests {
     fn test_get_currency_info() {
         let ctx = Context::celo().with_db(make_celo_test_db());
         let mut evm = ctx.build_celo();
-        let currency_info = get_currency_info(&mut evm);
+        let currency_info = get_currency_info(&mut evm).unwrap();
 
         let mut expected = HashMap::with_hasher(DefaultHashBuilder::default());
         _ = expected.insert(
@@ -722,7 +865,7 @@ pub(crate) mod tests {
 
         let ctx = Context::celo().with_db(db);
         let mut evm = ctx.build_celo();
-        let currency_info = get_currency_info(&mut evm);
+        let currency_info = get_currency_info(&mut evm).unwrap();
 
         assert!(
             currency_info.contains_key(&TEST_FEE_CURRENCY),
@@ -933,6 +1076,7 @@ pub(crate) mod tests {
     struct StorageFailingDb {
         inner: InMemoryDB,
         fail_addr: Address,
+        fail_slot: Option<U256>,
     }
 
     /// Error type for [`StorageFailingDb`]. `InMemoryDB`'s own error is `Infallible`, which
@@ -967,7 +1111,7 @@ pub(crate) mod tests {
         }
 
         fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-            if address == self.fail_addr {
+            if address == self.fail_addr && self.fail_slot.is_none_or(|slot| slot == index) {
                 return Err(InjectedDbError);
             }
             Ok(self.inner.storage(address, index).unwrap())
@@ -978,21 +1122,117 @@ pub(crate) mod tests {
         }
     }
 
-    /// Rollback correctness requires that a fatal error inside a bracketed non-committing call
-    /// leaves the journal intact, so `checkpoint_revert` undoes exactly the call — and nothing
-    /// recorded before the bracket. On the error-swallowing `call_read_only` path a violation is
-    /// a silent state divergence, not a crash.
+    fn context_failure_location(phase: u8) -> (Address, U256) {
+        let directory = get_addresses(0).fee_currency_directory;
+        match phase {
+            0 => (directory, U256::from(2)), // getCurrencies array length
+            1 => (
+                address!("0x1111111111111111111111111111111111111112"),
+                U256::ZERO,
+            ),
+            2 => {
+                // currencyConfig[token] at mapping slot 1; intrinsicGas is its second word.
+                let mut key = [0u8; 64];
+                key[12..32].copy_from_slice(TEST_FEE_CURRENCY.as_slice());
+                key[63] = 1;
+                (
+                    directory,
+                    U256::from_be_bytes(keccak256(key).0) + U256::from(1),
+                )
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::directory(0)]
+    #[case::exchange_rate(1)]
+    #[case::intrinsic_gas(2)]
+    fn fee_currency_context_preserves_database_errors(#[case] phase: u8) {
+        let (address, slot) = context_failure_location(phase);
+        let mut evm = Context::celo()
+            .with_db(StorageFailingDb {
+                inner: make_celo_test_db(),
+                fail_addr: address,
+                fail_slot: Some(slot),
+            })
+            .build_celo();
+        let result = crate::FeeCurrencyContext::new_from_evm(&mut evm);
+        assert!(
+            matches!(result, Err(EVMError::Database(InjectedDbError))),
+            "{result:?}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::directory(0)]
+    #[case::exchange_rate(1)]
+    #[case::intrinsic_gas(2)]
+    fn failed_context_load_is_not_installed_and_retries_on_the_same_evm(#[case] phase: u8) {
+        let caller = Address::with_last_byte(0xa1);
+        let (address, slot) = context_failure_location(phase);
+        let mut evm = Context::celo()
+            .with_db(StorageFailingDb {
+                inner: make_celo_test_db_with_fee_currency(caller, U256::from(1_000_000_000)),
+                fail_addr: address,
+                fail_slot: Some(slot),
+            })
+            .build_celo();
+        evm.ctx().cfg.chain_id = 0;
+        evm.ctx().cfg.spec = op_revm::OpSpecId::FJORD;
+        evm.ctx().block.number = U256::from(7);
+        evm.ctx().block.prevrandao = Some(Default::default());
+        let mut tx = crate::CeloTransaction::new(op_revm::OpTransaction {
+            base: revm::context::TxEnv {
+                caller,
+                kind: alloy_primitives::TxKind::Call(Address::with_last_byte(0xa2)),
+                tx_type: 0x7b,
+                chain_id: Some(0),
+                gas_limit: 200_000,
+                gas_price: 1,
+                ..Default::default()
+            },
+            enveloped_tx: Some(Bytes::new()),
+            deposit: Default::default(),
+        });
+        tx.fee_currency = Some(TEST_FEE_CURRENCY);
+
+        let error = evm
+            .transact(tx.clone())
+            .expect_err("context loading must fail");
+        assert!(
+            matches!(error, EVMError::Database(InjectedDbError)),
+            "{error:?}"
+        );
+        assert_eq!(
+            evm.fee_currency_context.updated_at_block, None,
+            "a failed load must not install a block-stamped context"
+        );
+
+        // Repair the backing store, preserving the EVM and its context cache.
+        evm.ctx().db_mut().fail_addr = Address::ZERO;
+        let outcome = evm
+            .transact(tx)
+            .expect("the next transaction must reload the context");
+        assert!(outcome.result.is_success(), "{outcome:?}");
+        assert_eq!(
+            evm.fee_currency_context.updated_at_block,
+            Some(U256::from(7))
+        );
+        assert_eq!(
+            evm.fee_currency_context
+                .currency_exchange_rate(Some(TEST_FEE_CURRENCY))
+                .unwrap(),
+            (U256::from(20), U256::from(10))
+        );
+    }
+
+    /// A failed non-committing call must not discard pre-bracket journal entries.
+    /// Read-only callers such as pool balance revalidation may reuse the EVM after
+    /// a fatal error, so local rollback must finish before returning the error.
     ///
-    /// op-revm at `kona-client/v1.7.0-rc.1` does journal work in `catch_error`: it routes
-    /// non-deposit tx errors through `discard_tx`, which drains the *whole* shared revert log.
-    /// `CeloHandler::catch_error` gates that on `no_commit` so a non-committing system call
-    /// cannot discard the enclosing transaction's journal. This test is what pins that gate.
-    ///
-    /// The pre-bracket write deliberately goes through the **non-committing** `call_no_commit`.
-    /// A committing `call` ends in `commit_tx`, whose `journal.clear()` empties the revert log —
-    /// which would leave an ungated `discard_tx` nothing to drain and make this test vacuous.
-    /// Writing through the non-committing path keeps the entry in the revert log, exactly where
-    /// an ungated `discard_tx` would revert it.
+    /// The pre-bracket write uses `call_no_commit`, which keeps its revert entry.
+    /// A committing `call` would clear the log and make this assertion vacuous.
     #[test]
     fn fatal_error_in_bracketed_call_preserves_pre_bracket_journal() {
         // A second copy of the SSTORE stub, deployed at an address whose storage reads fail.
@@ -1014,6 +1254,7 @@ pub(crate) mod tests {
         let db = StorageFailingDb {
             inner,
             fail_addr: FAIL_STUB_ADDR,
+            fail_slot: None,
         };
         let mut evm = Context::celo().with_db(db).build_celo();
 
@@ -1067,7 +1308,7 @@ pub(crate) mod tests {
         use crate::constants::{FEE_CURRENCY_HALT_MARKER, FEE_CURRENCY_REVERT_MARKER};
 
         let render = |result: ExecutionResult<OpHaltReason>| {
-            process_call_result::<CoreContractError>(Ok(result))
+            process_call_result::<core::convert::Infallible>(Ok(result))
                 .expect_err("non-success results must map to an error")
                 .to_string()
         };
