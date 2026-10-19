@@ -23,6 +23,7 @@ use revm::{
 
 const FEE_CURRENCY: Address = Address::with_last_byte(0xc1);
 const MISSING_ACCOUNT: Address = Address::with_last_byte(0xd1);
+const RECIPIENT: Address = Address::with_last_byte(0xd2);
 
 #[derive(Debug)]
 struct ReadError;
@@ -121,22 +122,23 @@ fn fatal_fee_calls_are_not_invalid_transactions_or_blocklisted() {
 #[derive(Debug)]
 struct MissingAccountDb {
     inner: InMemoryDB,
+    fail_addr: Address,
     failures_left: usize,
 }
 impl MissingAccountDb {
-    fn new(failures_left: usize) -> Self {
+    fn new(fail_addr: Address, failures_left: usize) -> Self {
         let mut inner = InMemoryDB::default();
         inner.insert_account_info(
             MISSING_ACCOUNT,
             AccountInfo { balance: U256::from(100), ..Default::default() },
         );
-        Self { inner, failures_left }
+        Self { inner, fail_addr, failures_left }
     }
 }
 impl Database for MissingAccountDb {
     type Error = ReadError;
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if address == MISSING_ACCOUNT && self.failures_left != 0 {
+        if address == self.fail_addr && self.failures_left != 0 {
             self.failures_left -= 1;
             return Err(ReadError);
         }
@@ -156,7 +158,7 @@ impl Database for MissingAccountDb {
 fn transfer_data() -> Bytes {
     let mut data = Vec::new();
     data.extend_from_slice(MISSING_ACCOUNT.into_word().as_slice());
-    data.extend_from_slice(Address::with_last_byte(0xd2).into_word().as_slice());
+    data.extend_from_slice(RECIPIENT.into_word().as_slice());
     data.extend_from_slice(&U256::ONE.to_be_bytes::<32>());
     data.into()
 }
@@ -164,31 +166,36 @@ fn transfer_data() -> Bytes {
 #[test]
 fn transfer_database_failure_aborts_both_precompile_providers() {
     for spec in [OpSpecId::FJORD, OpSpecId::JOVIAN] {
-        for failures_left in [1, usize::MAX] {
-            let mut cfg = CfgEnv::<OpSpecId>::default();
-            cfg.chain_id = 42220;
-            cfg.spec = spec;
-            let caller = get_addresses(42220).celo_token;
-            let mut direct = Context::celo()
-                .with_db(MissingAccountDb::new(failures_left))
-                .with_cfg(cfg.clone())
-                .build_celo();
-            let result =
-                direct.system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data());
-            assert!(matches!(result, Err(EVMError::Database(ReadError))), "{spec:?}: {result:?}");
+        for fail_addr in [MISSING_ACCOUNT, RECIPIENT] {
+            for failures_left in [1, usize::MAX] {
+                let mut cfg = CfgEnv::<OpSpecId>::default();
+                cfg.chain_id = 42220;
+                cfg.spec = spec;
+                let caller = get_addresses(42220).celo_token;
+                let mut direct = Context::celo()
+                    .with_db(MissingAccountDb::new(fail_addr, failures_left))
+                    .with_cfg(cfg.clone())
+                    .build_celo();
+                let result =
+                    direct.system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data());
+                assert!(
+                    matches!(result, Err(EVMError::Database(ReadError))),
+                    "{spec:?}: {result:?}"
+                );
 
-            let mut mapped = Context::celo()
-                .with_db(MissingAccountDb::new(failures_left))
-                .with_cfg(cfg)
-                .build_celo()
-                .with_precompiles(celo_precompiles_map(spec));
-            let error = mapped
-                .system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data())
-                .expect_err("dynamic transfer precompile must propagate database failure");
-            assert!(
-                matches!(&error, EVMError::Custom(message) if message.contains("injected missing account")),
-                "{spec:?}: {error:?}"
-            );
+                let mut mapped = Context::celo()
+                    .with_db(MissingAccountDb::new(fail_addr, failures_left))
+                    .with_cfg(cfg)
+                    .build_celo()
+                    .with_precompiles(celo_precompiles_map(spec));
+                let error = mapped
+                    .system_call_one_with_caller(caller, TRANSFER_ADDRESS, transfer_data())
+                    .expect_err("dynamic transfer precompile must propagate database failure");
+                assert!(
+                    matches!(&error, EVMError::Custom(message) if message.contains("injected missing account")),
+                    "{spec:?}: {error:?}"
+                );
+            }
         }
     }
 }
