@@ -310,10 +310,10 @@ where
         // Capture and replay EVMs may use different DB types. Preserve the error object
         // across this type-erased hook so seeding fails closed instead of reloading
         // fee-currency state at a mid-block position.
-        Some(Box::new(
-            evm.create_fee_currency_context()
-                .map_err(|error| error.map_db_err(revm::context_interface::result::AnyError::new)),
-        ))
+        let context: alloy_celo_evm::FeeCurrencyReplayContext = evm
+            .create_fee_currency_context()
+            .map_err(|error| error.map_db_err(revm::context_interface::result::AnyError::new));
+        Some(Box::new(context))
     }
 
     /// Seeds a mid-block call simulation EVM with the captured block-start fee currency context.
@@ -326,13 +326,7 @@ where
         DB: Database,
         I: InspectorFor<Self, DB>,
     {
-        if let Some(context) = ctx.downcast_ref::<Result<
-            celo_revm::FeeCurrencyContext,
-            revm::context_interface::result::EVMError<
-                revm::context_interface::result::AnyError,
-                op_revm::OpTransactionError,
-            >,
-        >>() {
+        if let Some(context) = ctx.downcast_ref::<alloy_celo_evm::FeeCurrencyReplayContext>() {
             match context {
                 Ok(context) => evm.set_fee_currency_context(context.clone()),
                 Err(error) => evm.set_block_replay_error(error.clone()),

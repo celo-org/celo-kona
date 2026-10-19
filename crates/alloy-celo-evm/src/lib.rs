@@ -56,6 +56,13 @@ use {
 use blocklist::FeeCurrencyBlocklist;
 use cip64_storage::Cip64Storage;
 
+/// A block-start capture error whose database cause can cross different replay DB types.
+pub type FeeCurrencyReplayError =
+    EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>;
+
+/// The payload shared by block-start capture and the type-erased replay seed hook.
+pub type FeeCurrencyReplayContext = Result<celo_revm::FeeCurrencyContext, FeeCurrencyReplayError>;
+
 /// Creates a default [`L1BlockInfo`] with zeroed operator fee fields for specs that require
 /// them. Without this, `eth_call` panics on Isthmus+ because
 /// `operator_fee_scalar`/`operator_fee_constant` are `None`.
@@ -249,8 +256,7 @@ pub struct CeloEvm<DB: Database, I, P = CeloPrecompiles> {
     /// `replay_transactions_until` use loose EVMs without receipt building and leave it off.
     cip64_store_enabled: bool,
     /// Failed block-start capture must prevent replay against a different, mid-block context.
-    block_replay_error:
-        Option<EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>>,
+    block_replay_error: Option<FeeCurrencyReplayError>,
 }
 
 impl<DB: Database, I, P> CeloEvm<DB, I, P> {
@@ -294,10 +300,7 @@ impl<DB: Database, I, P> CeloEvm<DB, I, P> {
 
     /// Records an error from the type-erased RPC block-start capture. Every subsequent
     /// transaction fails rather than loading fee-currency state at a mid-block position.
-    pub fn set_block_replay_error(
-        &mut self,
-        error: EVMError<revm::context_interface::result::AnyError, op_revm::OpTransactionError>,
-    ) {
+    pub fn set_block_replay_error(&mut self, error: FeeCurrencyReplayError) {
         self.block_replay_error = Some(error);
     }
 

@@ -29,12 +29,13 @@
 
 mod common;
 
+use alloy_celo_evm::{FeeCurrencyReplayContext, FeeCurrencyReplayError};
 use alloy_consensus::Header;
 use alloy_evm::Evm;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use celo_alloy_consensus::CeloTxType;
 use celo_reth::CeloEvmConfig;
-use celo_revm::{CeloTransaction, FeeCurrencyContext};
+use celo_revm::CeloTransaction;
 use op_revm::OpTransaction;
 use reth_evm::{ConfigureEvm, Database, EvmFor, InspectorFor};
 use revm::{
@@ -168,7 +169,7 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .capture_block_replay_ctx(&mut db, &evm_env)
         .expect("Celo must capture a replay context");
     let ctx = captured
-        .downcast_ref::<Result<FeeCurrencyContext, EVMError<AnyError, op_revm::OpTransactionError>>>()
+        .downcast_ref::<FeeCurrencyReplayContext>()
         .expect("the captured context is a fee-currency load result")
         .as_ref()
         .expect("block-start fee-currency loading must succeed");
@@ -198,7 +199,7 @@ fn capture_reads_the_fee_currency_directory_from_block_start_state() {
         .expect("Celo must capture a replay context");
     assert_eq!(
         recaptured
-            .downcast_ref::<Result<FeeCurrencyContext, EVMError<AnyError, op_revm::OpTransactionError>>>()
+            .downcast_ref::<FeeCurrencyReplayContext>()
             .expect("the captured context is a fee-currency load result")
             .as_ref()
             .expect("block-start fee-currency loading must succeed")
@@ -366,12 +367,10 @@ fn seeded_context_keeps_a_currency_removed_mid_block() {
 
 #[test]
 fn seeded_replay_failure_preserves_fatal_evm_error_categories() {
-    use op_revm::OpTransactionError;
     use revm::context_interface::result::InvalidHeader;
 
     let fatal = AnyError::from("injected replay context failure");
-    type CapturedError = EVMError<AnyError, OpTransactionError>;
-    let cases: [(CapturedError, CapturedError); 4] = [
+    let cases: [(FeeCurrencyReplayError, FeeCurrencyReplayError); 4] = [
         (
             EVMError::Header(InvalidHeader::PrevrandaoNotSet),
             EVMError::Header(InvalidHeader::PrevrandaoNotSet),
@@ -386,8 +385,7 @@ fn seeded_replay_failure_preserves_fatal_evm_error_categories() {
         (EVMError::Database(fatal.clone()), EVMError::CustomAny(fatal)),
     ];
     for (failure, expected) in cases {
-        let captured: Result<FeeCurrencyContext, EVMError<AnyError, OpTransactionError>> =
-            Err(failure);
+        let captured: FeeCurrencyReplayContext = Err(failure);
         let mut db = test_db();
         let evm_config = CeloEvmConfig::celo(test_chain_spec());
         let evm_env = evm_config.evm_env(&header(CAPTURED_BLOCK)).expect("evm env");
