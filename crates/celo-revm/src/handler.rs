@@ -342,12 +342,16 @@ where
 
         // Subtract raw debit gas (before refunds) to match op-geth, which computes
         // gasUsed = maxIntrinsicGasCost - leftoverGas (no refund adjustment).
-        let ctx = evm.ctx();
-        let cip64_info = ctx.tx().cip64_tx_info.as_ref().unwrap();
-        let debit_raw_gas = cip64_info.debit_gas_spent;
+        let debit_gas_spent = evm
+            .ctx()
+            .tx()
+            .cip64_tx_info
+            .as_ref()
+            .unwrap()
+            .debit_gas_spent;
         let max_allowed_gas_cost = self
             .cip64_max_allowed_gas_cost(evm, fee_currency)?
-            .saturating_sub(debit_raw_gas);
+            .saturating_sub(debit_gas_spent);
 
         let (logs, credit_gas_spent) = erc20::credit_gas_fees(
             evm,
