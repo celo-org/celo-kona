@@ -270,5 +270,4 @@ mod cip64_gas_tests {
 }
 
 #[cfg(test)]
-#[path = "missing_preimages.rs"]
 mod missing_preimages;
