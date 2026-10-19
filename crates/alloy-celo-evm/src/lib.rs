@@ -98,7 +98,7 @@ fn classify_fee_hook_failure(message: &str) -> Option<(&'static str, &'static st
     } else if suffix.contains(FEE_CURRENCY_MALFORMED_RETURN_MARKER) {
         "malformed_return"
     } else {
-        "evm_error"
+        return None;
     };
     Some((phase, kind))
 }
@@ -583,20 +583,6 @@ where
                         .increment(1);
                         let block_timestamp: u64 = self.ctx().block.timestamp.to();
                         self.blocklist.block_currency(fc, block_timestamp);
-                    } else {
-                        // Other contract-call failures retain the tx-only policy.
-                        // Fatal EVM errors propagate before this Transaction-only branch.
-                        tracing::warn!(
-                            target: "celo",
-                            "fee-currency debit/credit failed for \
-                             {fc}: {e}; dropping tx without blocklisting the currency"
-                        );
-                        #[cfg(feature = "std")]
-                        metrics::counter!(
-                            "celo_payload_skipped_total",
-                            "reason" => "debit_credit_evm_error"
-                        )
-                        .increment(1);
                     }
                 } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
                     // The fee currency is not in the per-block fee-currency context: its
@@ -987,6 +973,10 @@ mod tests {
         );
         assert_eq!(classify_fee_hook_failure(&malformed), Some(("balance_of", "malformed_return")));
         assert_eq!(classify_fee_hook_failure("invalid nonce"), None);
+        assert_eq!(
+            classify_fee_hook_failure(&format!("{FEE_DEBIT_ERROR_PREFIX}: unknown failure")),
+            None
+        );
     }
 
     #[cfg(feature = "std")]

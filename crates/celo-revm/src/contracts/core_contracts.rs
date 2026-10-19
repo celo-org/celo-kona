@@ -53,10 +53,6 @@ use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError<DBError = core::convert::Infallible> {
-    #[error("Core contract missing at address {0}")]
-    CoreContractMissing(Address),
-    #[error("sol type error: {0}")]
-    AlloySolTypes(#[from] alloy_sol_types::Error),
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
     #[error("Evm error: {0}")]
@@ -68,9 +64,7 @@ impl<DBError> CoreContractError<DBError> {
     pub fn into_contract_failure(self) -> Result<Self, EVMError<DBError, OpTransactionError>> {
         match self {
             Self::Evm(error) => Err(*error),
-            error @ (Self::CoreContractMissing(_)
-            | Self::AlloySolTypes(_)
-            | Self::ExecutionFailed(_)) => Ok(error),
+            error @ Self::ExecutionFailed(_) => Ok(error),
         }
     }
 }
