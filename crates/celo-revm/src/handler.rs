@@ -366,7 +366,16 @@ where
         )
         .map_err(|e| {
             let e = match e.into_contract_failure() {
-                Err(error) => return ERROR::from(error),
+                Err(error) => {
+                    warn!(
+                        target: "celo",
+                        phase = "credit",
+                        fee_currency = ?fee_currency,
+                        %error,
+                        "Fatal fee-currency call failure; aborting execution"
+                    );
+                    return ERROR::from(error);
+                }
                 Ok(error) => error,
             };
             ERROR::from(InvalidTransaction::from(format!(
@@ -501,7 +510,16 @@ where
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
             |e| {
                 let e = match e.into_contract_failure() {
-                    Err(error) => return ERROR::from(error),
+                    Err(error) => {
+                        warn!(
+                            target: "celo",
+                            phase = "balance_of",
+                            fee_currency = ?fee_currency,
+                            %error,
+                            "Fatal fee-currency call failure; aborting execution"
+                        );
+                        return ERROR::from(error);
+                    }
                     Ok(error) => error,
                 };
                 ERROR::from(InvalidTransaction::from(format!(
@@ -585,7 +603,16 @@ where
         )
         .map_err(|e| {
             let e = match e.into_contract_failure() {
-                Err(error) => return ERROR::from(error),
+                Err(error) => {
+                    warn!(
+                        target: "celo",
+                        phase = "debit",
+                        fee_currency = ?fee_currency_addr,
+                        %error,
+                        "Fatal fee-currency call failure; aborting execution"
+                    );
+                    return ERROR::from(error);
+                }
                 Ok(error) => error,
             };
             ERROR::from(InvalidTransaction::from(format!(
