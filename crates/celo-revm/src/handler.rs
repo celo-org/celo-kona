@@ -6,7 +6,7 @@ use crate::{
         CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX,
         FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
-    contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
+    contracts::{CoreContractError, core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
@@ -183,6 +183,23 @@ where
         + FromStringError
         + IsTxError,
 {
+    fn contract_failure_or_fatal(
+        error: CoreContractError<DB::Error>,
+        fee_currency: Address,
+        phase: &'static str,
+    ) -> Result<CoreContractError<DB::Error>, ERROR> {
+        error.into_contract_failure().map_err(|error| {
+            warn!(
+                target: "celo",
+                phase,
+                %fee_currency,
+                %error,
+                "Fatal fee-currency call failure; aborting execution"
+            );
+            ERROR::from(error)
+        })
+    }
+
     fn load_fee_currency_context(&self, evm: &mut CeloEvm<DB, INSP, P>) -> Result<(), ERROR> {
         let current_block = evm.ctx().block().number();
         if evm.fee_currency_context.updated_at_block != Some(current_block) {
@@ -365,22 +382,12 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| {
-            let e = match e.into_contract_failure() {
-                Err(error) => {
-                    warn!(
-                        target: "celo",
-                        phase = "credit",
-                        fee_currency = ?fee_currency,
-                        %error,
-                        "Fatal fee-currency call failure; aborting execution"
-                    );
-                    return ERROR::from(error);
-                }
-                Ok(error) => error,
-            };
-            ERROR::from(InvalidTransaction::from(format!(
-                "{FEE_CREDIT_ERROR_PREFIX}: {e}"
-            )))
+            match Self::contract_failure_or_fatal(e, fee_currency.unwrap(), "credit") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_CREDIT_ERROR_PREFIX}: {error}"
+                ))),
+            }
         })?;
 
         // Collect logs from the system call to be included in the final receipt
@@ -508,23 +515,11 @@ where
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
-            |e| {
-                let e = match e.into_contract_failure() {
-                    Err(error) => {
-                        warn!(
-                            target: "celo",
-                            phase = "balance_of",
-                            fee_currency = ?fee_currency,
-                            %error,
-                            "Fatal fee-currency call failure; aborting execution"
-                        );
-                        return ERROR::from(error);
-                    }
-                    Ok(error) => error,
-                };
-                ERROR::from(InvalidTransaction::from(format!(
-                    "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
-                )))
+            |e| match Self::contract_failure_or_fatal(e, fee_currency, "balance_of") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {error}"
+                ))),
             },
         )?);
 
@@ -602,22 +597,12 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| {
-            let e = match e.into_contract_failure() {
-                Err(error) => {
-                    warn!(
-                        target: "celo",
-                        phase = "debit",
-                        fee_currency = ?fee_currency_addr,
-                        %error,
-                        "Fatal fee-currency call failure; aborting execution"
-                    );
-                    return ERROR::from(error);
-                }
-                Ok(error) => error,
-            };
-            ERROR::from(InvalidTransaction::from(format!(
-                "{FEE_DEBIT_ERROR_PREFIX}: {e}"
-            )))
+            match Self::contract_failure_or_fatal(e, fee_currency_addr, "debit") {
+                Err(error) => error,
+                Ok(error) => ERROR::from(InvalidTransaction::from(format!(
+                    "{FEE_DEBIT_ERROR_PREFIX}: {error}"
+                ))),
+            }
         })?;
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
