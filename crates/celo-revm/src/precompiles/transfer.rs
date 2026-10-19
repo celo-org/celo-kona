@@ -125,7 +125,9 @@ where
     // Now do the transfer (which will load both accounts and warm them)
     let result = context.journal_mut().transfer(from, to, value)?;
 
-    // If the addresses were cold initially and we're pre-Jovian, make them cold again.
+    // Restore pre-Jovian warmth. Both accounts are already in the pinned journal,
+    // so restoration changes metadata without another DB read. Keep `?` for the
+    // fallible journal API.
     revert_account_cold_status(context, from, revert_from_cold)?;
     revert_account_cold_status(context, to, revert_to_cold)?;
 

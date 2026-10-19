@@ -191,6 +191,8 @@ fn transfer_precompile(
 
     let result = input.internals.transfer(from, to, value).map_err(fatal_db_error)?;
 
+    // Both accounts are already in the pinned journal. Restoration changes
+    // warmth without another DB read; keep `?` for the fallible internals API.
     if revert_from_cold {
         input.internals.load_account_mut(from).map_err(fatal_db_error)?.data.unsafe_mark_cold();
     }
