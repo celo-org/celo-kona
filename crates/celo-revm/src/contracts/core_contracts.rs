@@ -305,6 +305,13 @@ fn process_call_result<DBError: core::fmt::Display>(
         Err(revm::context_interface::result::EVMError::Database(error)) => {
             return Err(CoreContractError::Database(error));
         }
+        // System-call validation describes our synthetic transaction, not the
+        // surrounding user's transaction. Keep it fatal at that boundary.
+        Err(EVMError::Transaction(error)) => {
+            return Err(CoreContractError::Evm(Box::new(EVMError::Custom(format!(
+                "core contract system-call validation failed: {error}"
+            )))));
+        }
         Err(e) => return Err(CoreContractError::Evm(Box::new(e))),
         Ok(o) => o,
     };
@@ -556,6 +563,28 @@ pub(crate) mod tests {
             };
             assert_eq!(*actual, failure);
         }
+    }
+
+    #[test]
+    fn system_call_transaction_error_is_fatal() {
+        use revm::context_interface::result::InvalidTransaction;
+
+        let transaction_error =
+            OpTransactionError::Base(InvalidTransaction::TxGasLimitGreaterThanCap {
+                gas_limit: 30_000_000,
+                cap: 16_777_216,
+            });
+        let error = process_call_result::<core::convert::Infallible>(Err(EVMError::Transaction(
+            transaction_error.clone(),
+        )))
+        .expect_err("internal transaction validation must fail");
+        let CoreContractError::Evm(error) = error else {
+            panic!("internal validation must remain an EVM failure: {error:?}");
+        };
+        assert!(
+            matches!(&*error, EVMError::Custom(message) if message.contains(&transaction_error.to_string())),
+            "internal validation must be fatal, not an outer transaction error: {error:?}"
+        );
     }
 
     struct FailingDirectoryCall {
