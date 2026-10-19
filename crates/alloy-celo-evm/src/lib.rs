@@ -590,12 +590,9 @@ where
                         self.blocklist.block_currency(fc, block_timestamp);
                     }
                 } else if err_msg.contains(FEE_CURRENCY_NOT_REGISTERED_PREFIX) {
-                    // The fee currency is not in the per-block fee-currency context: its
-                    // directory config could not be read, so it was dropped while loading
-                    // (see `celo_revm::contracts::core_contracts::get_currency_info`). The
-                    // tx is excluded from the block. This is otherwise silent — it fails
-                    // before debit/credit, so the blocklist branch above never logs it —
-                    // so surface it here as both a log and a metric.
+                    // The currency is absent or was excluded after a contract/configuration
+                    // failure. Fatal context reads abort before this Transaction-only branch.
+                    // Surface the excluded transaction here because no fee hook was called.
                     tracing::warn!(
                         target: "celo",
                         "CIP-64 tx excluded from block: fee currency {fc} is not loaded in the \

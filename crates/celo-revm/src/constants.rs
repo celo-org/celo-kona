@@ -27,11 +27,10 @@ pub const FEE_CREDIT_ERROR_PREFIX: &str = "Failed to credit gas fees";
 /// absence assertions — and any operator reading the log — unable to tell the two apart.
 pub const FEE_BALANCE_READ_MARKER: &str = "max-fee balanceOf read";
 
-/// Error message prefix used when a CIP-64 transaction's fee currency is not
-/// present in the per-block fee-currency context (the directory read failed, or
-/// the currency was dropped while loading). It surfaces as an
-/// `InvalidTransaction`, which excludes the transaction from the block. The EVM
-/// layer matches this prefix to log and meter the otherwise-silent exclusion.
+/// Error message prefix used when a CIP-64 transaction's fee currency is absent
+/// from the directory or was dropped after a contract/configuration failure.
+/// Fatal context-read errors propagate instead. This prefix surfaces as an
+/// `InvalidTransaction`; the EVM layer logs and meters the excluded transaction.
 pub const FEE_CURRENCY_NOT_REGISTERED_PREFIX: &str = "fee currency not registered";
 
 /// Marker present in the `Display` output of a debit/credit failure caused by
@@ -45,7 +44,7 @@ pub const FEE_CURRENCY_NOT_REGISTERED_PREFIX: &str = "fee currency not registere
 /// handler. The sequencing blocklist matches this marker to identify
 /// ambiguous revert failures (canonically an underfunded sender's `ERC20:
 /// transfer amount exceeds balance`) — a revert never blocklists the
-/// currency; only a halt ([`FEE_CURRENCY_HALT_MARKER`]) does.
+/// currency. Halts and malformed return data identify currency faults.
 pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: revert:";
 
 /// Marker present in the `Display` output of a debit/credit failure caused by
@@ -57,10 +56,9 @@ pub const FEE_CURRENCY_REVERT_MARKER: &str = "core contract execution failed: re
 /// arm built in `process_call_result` (`contracts/core_contracts.rs`), nested
 /// under [`FEE_DEBIT_ERROR_PREFIX`]/[`FEE_CREDIT_ERROR_PREFIX`] by the
 /// handler. The sequencing blocklist matches this marker to positively
-/// identify an unambiguous currency fault: only halts blocklist. Failures
-/// carrying neither this marker nor [`FEE_CURRENCY_REVERT_MARKER`] are
-/// EVM-infrastructure errors (`CoreContractError::Evm`) and must not blocklist
-/// either. Database errors propagate separately and abort the build attempt.
+/// identify a currency fault, as does [`FEE_CURRENCY_MALFORMED_RETURN_MARKER`].
+/// Fatal EVM errors, including database failures, bypass this string classifier
+/// and abort the execution attempt without blocklisting a currency.
 pub const FEE_CURRENCY_HALT_MARKER: &str = "core contract execution failed: halt:";
 
 /// Marker present in the `Display` output of a fee-currency failure caused by the
