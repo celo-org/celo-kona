@@ -446,23 +446,7 @@ impl From<CeloReceiptEnvelope> for CeloReceipt {
     }
 }
 
-use reth_codecs::DecompressError;
-use reth_db_api::table::{Compress, Decompress};
-
-impl Compress for CeloReceipt {
-    type Compressed = Vec<u8>;
-
-    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = reth_codecs::Compact::to_compact(self, buf);
-    }
-}
-
-impl Decompress for CeloReceipt {
-    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
-        let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
-        Ok(obj)
-    }
-}
+reth_codecs::impl_compression_for_compact!(CeloReceipt);
 
 impl reth_codecs::Compact for CeloReceipt {
     fn to_compact<B>(&self, buf: &mut B) -> usize

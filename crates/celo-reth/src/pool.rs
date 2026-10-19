@@ -2345,7 +2345,7 @@ where
             calldata.into(),
             Some(POOL_SYSTEM_CALL_GAS_LIMIT),
         ) {
-            Ok((output, _, _, _)) => output,
+            Ok((output, _, _)) => output,
             Err(error) if is_explicit_balance_revert(&error) => {
                 tracing::debug!(
                     target: "celo::pool",

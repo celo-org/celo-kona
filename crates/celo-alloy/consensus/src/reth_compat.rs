@@ -146,12 +146,11 @@ use alloy_rlp::BufMut;
 use reth_codecs::{
     Compact,
     alloy::transaction::{CompactEnvelope, Envelope, FromTxCompact, ToTxCompact},
+    txtype::{
+        COMPACT_EXTENDED_IDENTIFIER_FLAG, COMPACT_IDENTIFIER_EIP1559, COMPACT_IDENTIFIER_EIP2930,
+        COMPACT_IDENTIFIER_LEGACY,
+    },
 };
-
-const COMPACT_IDENTIFIER_LEGACY: usize = 0;
-const COMPACT_IDENTIFIER_EIP2930: usize = 1;
-const COMPACT_IDENTIFIER_EIP1559: usize = 2;
-const COMPACT_EXTENDED_IDENTIFIER_FLAG: usize = 3;
 
 impl Compact for CeloTxType {
     fn to_compact<B>(&self, buf: &mut B) -> usize
@@ -274,20 +273,4 @@ impl Compact for CeloTxEnvelope {
 // Database compression: CeloTxEnvelope Compress + Decompress
 // ---------------------------------------------------------------------------
 
-use reth_codecs::DecompressError;
-use reth_db_api::table::{Compress, Decompress};
-
-impl Compress for CeloTxEnvelope {
-    type Compressed = Vec<u8>;
-
-    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        let _ = Compact::to_compact(self, buf);
-    }
-}
-
-impl Decompress for CeloTxEnvelope {
-    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
-        let (obj, _) = Compact::from_compact(value, value.len());
-        Ok(obj)
-    }
-}
+reth_codecs::impl_compression_for_compact!(CeloTxEnvelope);
