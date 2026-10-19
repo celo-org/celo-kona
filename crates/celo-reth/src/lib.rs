@@ -370,9 +370,14 @@ where
                 let mut evm = self.evm_with_env(&mut *db, evm_env.clone());
                 evm.erc20_balance(fee_currency, caller, FEE_BALANCE_READ_GAS_LIMIT).map_err(
                     |err| match err {
-                        celo_revm::contracts::CoreContractError::Database(error) => {
-                            CallerGasAllowanceError::Database(error)
-                        }
+                        celo_revm::contracts::CoreContractError::Evm(error) => match *error {
+                            revm::context_interface::result::EVMError::Database(error) => {
+                                CallerGasAllowanceError::Database(error)
+                            }
+                            error => CallerGasAllowanceError::FeeBalance(format!(
+                                "balanceOf({caller}) on fee currency {fee_currency} failed: {error}"
+                            )),
+                        },
                         err => CallerGasAllowanceError::FeeBalance(format!(
                             "balanceOf({caller}) on fee currency {fee_currency} failed: {err}"
                         )),

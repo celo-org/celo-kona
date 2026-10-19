@@ -365,7 +365,6 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| match e {
-            CoreContractError::Database(error) => ERROR::from(error),
             CoreContractError::Evm(error) => ERROR::from(*error),
             e => ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_CREDIT_ERROR_PREFIX}: {e}"
@@ -498,7 +497,6 @@ where
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
             |e| match e {
-                CoreContractError::Database(error) => ERROR::from(error),
                 CoreContractError::Evm(error) => ERROR::from(*error),
                 e => ERROR::from(InvalidTransaction::from(format!(
                     "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
@@ -580,7 +578,6 @@ where
             max_allowed_gas_cost,
         )
         .map_err(|e| match e {
-            CoreContractError::Database(error) => ERROR::from(error),
             CoreContractError::Evm(error) => ERROR::from(*error),
             e => ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_DEBIT_ERROR_PREFIX}: {e}"

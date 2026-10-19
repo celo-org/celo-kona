@@ -53,8 +53,6 @@ use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreContractError<DBError = core::convert::Infallible> {
-    #[error("Database error: {0}")]
-    Database(DBError),
     #[error("Core contract missing at address {0}")]
     CoreContractMissing(Address),
     #[error("sol type error: {0}")]
@@ -302,9 +300,6 @@ fn process_call_result<DBError: core::fmt::Display>(
     >,
 ) -> CoreContractCallResult<DBError> {
     let exec_result = match call_result {
-        Err(revm::context_interface::result::EVMError::Database(error)) => {
-            return Err(CoreContractError::Database(error));
-        }
         // System-call validation describes our synthetic transaction, not the
         // surrounding user's transaction. Keep it fatal at that boundary.
         Err(EVMError::Transaction(error)) => {
@@ -356,7 +351,6 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Database(error)) => return Err(EVMError::Database(error)),
         Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
@@ -459,7 +453,6 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Database(error)) => return Err(EVMError::Database(error)),
         Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
@@ -504,7 +497,6 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Database(error)) => return Err(EVMError::Database(error)),
         Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
@@ -554,9 +546,10 @@ pub(crate) mod tests {
             EVMError::Custom("injected failure".into()),
             EVMError::CustomAny(AnyError::new(FatalCoreCall)),
             EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+            EVMError::Database("injected database failure".to_string()),
         ];
         for failure in cases {
-            let error = process_call_result::<core::convert::Infallible>(Err(failure.clone()))
+            let error = process_call_result::<String>(Err(failure.clone()))
                 .expect_err("fatal core call must fail");
             let CoreContractError::Evm(actual) = error else {
                 panic!("fatal EVM error changed category: {error:?}");

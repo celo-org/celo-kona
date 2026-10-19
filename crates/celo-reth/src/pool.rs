@@ -5531,7 +5531,9 @@ mod tests {
                 "infrastructure failure".into()
             ))
         )));
-        assert!(!is_explicit_balance_revert(&CoreContractError::Database("provider failure")));
+        assert!(!is_explicit_balance_revert(&CoreContractError::Evm(Box::new(
+            revm::context_interface::result::EVMError::Database("provider failure")
+        ))));
     }
 
     #[test]
