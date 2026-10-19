@@ -640,7 +640,6 @@ pub(crate) mod tests {
                 .expect_err("fatal directory call must abort loading rather than drop a currency");
             assert_eq!(error.to_string(), "injected fatal directory call");
             assert_eq!(evm.ctx().journal_ref().depth, 0);
-            assert_eq!(evm.fee_currency_context.updated_at_block, None);
         }
     }
 
@@ -1108,13 +1107,9 @@ pub(crate) mod tests {
         }
     }
 
-    #[rstest::rstest]
-    #[case::directory(0)]
-    #[case::exchange_rate(1)]
-    #[case::intrinsic_gas(2)]
-    fn fee_currency_context_preserves_database_errors(#[case] phase: u8) {
+    fn context_failure_location(phase: u8) -> (Address, U256) {
         let directory = get_addresses(0).fee_currency_directory;
-        let (address, slot) = match phase {
+        match phase {
             0 => (directory, U256::from(2)), // getCurrencies array length
             1 => (
                 address!("0x1111111111111111111111111111111111111112"),
@@ -1131,7 +1126,15 @@ pub(crate) mod tests {
                 )
             }
             _ => unreachable!(),
-        };
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::directory(0)]
+    #[case::exchange_rate(1)]
+    #[case::intrinsic_gas(2)]
+    fn fee_currency_context_preserves_database_errors(#[case] phase: u8) {
+        let (address, slot) = context_failure_location(phase);
         let mut evm = Context::celo()
             .with_db(StorageFailingDb {
                 inner: make_celo_test_db(),
@@ -1144,7 +1147,69 @@ pub(crate) mod tests {
             matches!(result, Err(EVMError::Database(InjectedDbError))),
             "{result:?}"
         );
-        assert!(evm.fee_currency_context.updated_at_block.is_none());
+    }
+
+    #[rstest::rstest]
+    #[case::directory(0)]
+    #[case::exchange_rate(1)]
+    #[case::intrinsic_gas(2)]
+    fn failed_context_load_is_not_installed_and_retries_on_the_same_evm(#[case] phase: u8) {
+        let caller = Address::with_last_byte(0xa1);
+        let (address, slot) = context_failure_location(phase);
+        let mut evm = Context::celo()
+            .with_db(StorageFailingDb {
+                inner: make_celo_test_db_with_fee_currency(caller, U256::from(1_000_000_000)),
+                fail_addr: address,
+                fail_slot: Some(slot),
+            })
+            .build_celo();
+        evm.ctx().cfg.chain_id = 0;
+        evm.ctx().cfg.spec = op_revm::OpSpecId::FJORD;
+        evm.ctx().block.number = U256::from(7);
+        evm.ctx().block.prevrandao = Some(Default::default());
+        let mut tx = crate::CeloTransaction::new(op_revm::OpTransaction {
+            base: revm::context::TxEnv {
+                caller,
+                kind: alloy_primitives::TxKind::Call(Address::with_last_byte(0xa2)),
+                tx_type: 0x7b,
+                chain_id: Some(0),
+                gas_limit: 200_000,
+                gas_price: 1,
+                ..Default::default()
+            },
+            enveloped_tx: Some(Bytes::new()),
+            deposit: Default::default(),
+        });
+        tx.fee_currency = Some(TEST_FEE_CURRENCY);
+
+        let error = evm
+            .transact(tx.clone())
+            .expect_err("context loading must fail");
+        assert!(
+            matches!(error, EVMError::Database(InjectedDbError)),
+            "{error:?}"
+        );
+        assert_eq!(
+            evm.fee_currency_context.updated_at_block, None,
+            "a failed load must not install a block-stamped context"
+        );
+
+        // Repair the backing store, preserving the EVM and its context cache.
+        evm.ctx().db_mut().fail_addr = Address::ZERO;
+        let outcome = evm
+            .transact(tx)
+            .expect("the next transaction must reload the context");
+        assert!(outcome.result.is_success(), "{outcome:?}");
+        assert_eq!(
+            evm.fee_currency_context.updated_at_block,
+            Some(U256::from(7))
+        );
+        assert_eq!(
+            evm.fee_currency_context
+                .currency_exchange_rate(Some(TEST_FEE_CURRENCY))
+                .unwrap(),
+            (U256::from(20), U256::from(10))
+        );
     }
 
     /// Rollback correctness requires that a fatal error inside a bracketed non-committing call
