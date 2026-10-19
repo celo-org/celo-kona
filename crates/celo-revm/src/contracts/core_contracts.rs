@@ -63,6 +63,18 @@ pub enum CoreContractError<DBError = core::convert::Infallible> {
     Evm(Box<EVMError<DBError, OpTransactionError>>),
 }
 
+impl<DBError> CoreContractError<DBError> {
+    /// Separate contract failures from fatal EVM errors that the caller must propagate.
+    pub fn into_contract_failure(self) -> Result<Self, EVMError<DBError, OpTransactionError>> {
+        match self {
+            Self::Evm(error) => Err(*error),
+            error @ (Self::CoreContractMissing(_)
+            | Self::AlloySolTypes(_)
+            | Self::ExecutionFailed(_)) => Ok(error),
+        }
+    }
+}
+
 /// A core call's output, logs, gas used and gas refunded, or its structured error.
 pub type CoreContractCallResult<DBError> =
     Result<(Bytes, Vec<Log>, u64, u64), CoreContractError<DBError>>;
@@ -351,8 +363,8 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_currencies: failed to call 0x{:x}: {}", fee_currency_directory, e);
             return Ok(Vec::new());
         }
@@ -453,8 +465,8 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_exchange_rate: failed to get exchange rate for token 0x{:x}: {}", token, e);
             return Ok(None);
         }
@@ -497,8 +509,8 @@ where
 
     let output_bytes = match call_result {
         Ok((bytes, _, _, _)) => bytes,
-        Err(CoreContractError::Evm(error)) => return Err(*error),
         Err(e) => {
+            let e = e.into_contract_failure()?;
             debug!(target: "celo_core_contracts", "get_intrinsic_gas: failed to get intrinsic gas for token 0x{:x}: {}", token, e);
             return Ok(None);
         }
@@ -556,6 +568,31 @@ pub(crate) mod tests {
             };
             assert_eq!(*actual, failure);
         }
+    }
+
+    #[test]
+    fn core_call_classification_preserves_fatal_errors() {
+        use revm::context_interface::result::{AnyError, InvalidHeader};
+
+        let cases = [
+            EVMError::Database("provider failure".to_string()),
+            EVMError::Header(InvalidHeader::PrevrandaoNotSet),
+            EVMError::Custom("infrastructure failure".into()),
+            EVMError::CustomAny(AnyError::new(FatalCoreCall)),
+        ];
+        for error in cases {
+            assert_eq!(
+                CoreContractError::Evm(Box::new(error.clone()))
+                    .into_contract_failure()
+                    .unwrap_err(),
+                error
+            );
+        }
+        let failure = CoreContractError::<String>::ExecutionFailed("revert: denied".into());
+        assert!(matches!(
+            failure.into_contract_failure(),
+            Ok(CoreContractError::ExecutionFailed(_))
+        ));
     }
 
     #[test]

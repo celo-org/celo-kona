@@ -6,7 +6,7 @@ use crate::{
         CELO_SYSTEM_ADDRESS, FEE_BALANCE_READ_MARKER, FEE_BASE_FEE_OVERFLOW_PREFIX,
         FEE_CREDIT_ERROR_PREFIX, FEE_DEBIT_ERROR_PREFIX, get_addresses,
     },
-    contracts::{CoreContractError, core_contracts::debug_assert_call_depth_unchanged, erc20},
+    contracts::{core_contracts::debug_assert_call_depth_unchanged, erc20},
     evm::CeloEvm,
     fee_currency_context::FeeCurrencyContext,
     transaction::{CeloTxTr, Cip64Info},
@@ -364,11 +364,14 @@ where
             base_tx_charge.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| match e {
-            CoreContractError::Evm(error) => ERROR::from(*error),
-            e => ERROR::from(InvalidTransaction::from(format!(
+        .map_err(|e| {
+            let e = match e.into_contract_failure() {
+                Err(error) => return ERROR::from(error),
+                Ok(error) => error,
+            };
+            ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_CREDIT_ERROR_PREFIX}: {e}"
-            ))),
+            )))
         })?;
 
         // Collect logs from the system call to be included in the final receipt
@@ -496,11 +499,14 @@ where
         // errors carrying it, and a fee currency whose `balanceOf` halts is the same
         // unambiguous currency fault a halting `debitGasFees` was.
         let balance = FcU256::new(erc20::get_balance(evm, fee_currency, caller, None).map_err(
-            |e| match e {
-                CoreContractError::Evm(error) => ERROR::from(*error),
-                e => ERROR::from(InvalidTransaction::from(format!(
+            |e| {
+                let e = match e.into_contract_failure() {
+                    Err(error) => return ERROR::from(error),
+                    Ok(error) => error,
+                };
+                ERROR::from(InvalidTransaction::from(format!(
                     "{FEE_DEBIT_ERROR_PREFIX}: {FEE_BALANCE_READ_MARKER}: {e}"
-                ))),
+                )))
             },
         )?);
 
@@ -577,11 +583,14 @@ where
             gas_cost.into_inner(),
             max_allowed_gas_cost,
         )
-        .map_err(|e| match e {
-            CoreContractError::Evm(error) => ERROR::from(*error),
-            e => ERROR::from(InvalidTransaction::from(format!(
+        .map_err(|e| {
+            let e = match e.into_contract_failure() {
+                Err(error) => return ERROR::from(error),
+                Ok(error) => error,
+            };
+            ERROR::from(InvalidTransaction::from(format!(
                 "{FEE_DEBIT_ERROR_PREFIX}: {e}"
-            ))),
+            )))
         })?;
 
         // `Cip64Info` and `CeloTransaction::effective_gas_price` are serialized public
