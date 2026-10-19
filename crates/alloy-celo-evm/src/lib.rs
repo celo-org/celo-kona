@@ -1592,7 +1592,7 @@ mod tests {
     /// A database failure in any CIP-64 fee call must abort the build attempt and must
     /// not be classified as a bad transaction or a currency fault.
     #[cfg(feature = "std")]
-    fn assert_fee_database_error_propagates(answered_size: u8) {
+    fn assert_fee_database_error_propagates(failing_calldata_size: u16) {
         use revm::state::{AccountInfo, Bytecode};
 
         #[derive(Debug)]
@@ -1605,14 +1605,13 @@ mod tests {
         impl core::error::Error for TestDbError {}
         impl revm::database_interface::DBErrorMarker for TestDbError {}
 
-        /// Delegates to an [`revm::database::InMemoryDB`] but fails every storage
-        /// read of `fail_addr`, simulating a state-provider I/O error surfacing
-        /// mid-debit (and only there — unrelated reads keep working so the tx
-        /// genuinely reaches the debit system call).
+        /// Fails the slot read only by the selected fee-call phase, while all
+        /// other storage reads succeed.
         #[derive(Debug)]
         struct FailingStorageDb {
             inner: revm::database::InMemoryDB,
             fail_addr: Address,
+            fail_slot: U256,
         }
         impl revm::Database for FailingStorageDb {
             type Error = TestDbError;
@@ -1630,7 +1629,7 @@ mod tests {
                 address: Address,
                 index: revm::primitives::StorageKey,
             ) -> Result<revm::primitives::StorageValue, Self::Error> {
-                if address == self.fail_addr {
+                if address == self.fail_addr && index == self.fail_slot {
                     return Err(TestDbError);
                 }
                 Ok(revm::Database::storage(&mut self.inner, address, index).unwrap())
@@ -1643,19 +1642,25 @@ mod tests {
         let fc = Address::with_last_byte(0xD2);
         let blocklist = FeeCurrencyBlocklist::default();
 
-        // Answer calls up to the selected phase, then fail on its SLOAD. The stub
-        // distinguishes balance/debit/credit by their increasing calldata sizes.
+        // Each call reads a different slot keyed by its calldata size. Only the
+        // selected phase fails, so a swallowed balance error cannot be masked by debit.
         let mut inner = revm::database::InMemoryDB::default();
         inner.insert_account_info(
             fc,
             AccountInfo::from_bytecode(Bytecode::new_raw(fee_currency_stub(
-                answered_size,
-                &[0x60, 0x00, 0x54, 0x00],
+                0,
+                // CALLDATASIZE, SLOAD, POP, then return uint256::MAX for balanceOf.
+                &[
+                    0x36, 0x54, 0x50, 0x60, 0x00, 0x19, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00,
+                    0xf3,
+                ],
             ))),
         );
 
-        let mut evm =
-            make_test_evm_with_db(FailingStorageDb { inner, fail_addr: fc }, blocklist.clone());
+        let mut evm = make_test_evm_with_db(
+            FailingStorageDb { inner, fail_addr: fc, fail_slot: U256::from(failing_calldata_size) },
+            blocklist.clone(),
+        );
         let err = run_cip64_transaction(&mut evm, fc).expect_err("database must fail");
         assert!(matches!(err, EVMError::Database(TestDbError)), "{err:?}");
         assert!(!blocklist.is_blocked(fc));
@@ -1664,19 +1669,19 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn balance_database_error_propagates() {
-        assert_fee_database_error_propagates(0);
+        assert_fee_database_error_propagates(u16::from(BALANCE_OF_CALLDATA_SIZE));
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn debit_database_error_propagates() {
-        assert_fee_database_error_propagates(BALANCE_OF_CALLDATA_SIZE);
+        assert_fee_database_error_propagates(u16::from(DEBIT_CALLDATA_SIZE));
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn credit_database_error_propagates() {
-        assert_fee_database_error_propagates(DEBIT_CALLDATA_SIZE);
+        assert_fee_database_error_propagates(4 + 8 * 32);
     }
 
     /// An exchange rate extreme enough that the block's base fee no longer fits a `u128` once

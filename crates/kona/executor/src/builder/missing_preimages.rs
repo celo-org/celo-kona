@@ -13,6 +13,7 @@ struct WitnessProvider {
     inner: Arc<DiskTrieNodeProvider>,
     missing: Option<B256>,
     reads: Arc<Mutex<Vec<B256>>>,
+    missing_read_seen: Arc<Mutex<bool>>,
 }
 
 impl TrieProvider for WitnessProvider {
@@ -21,7 +22,11 @@ impl TrieProvider for WitnessProvider {
     fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
         self.reads.lock().unwrap().push(key);
         if self.missing == Some(key) {
-            return Err("injected missing CIP-64 preimage".into());
+            let mut seen = self.missing_read_seen.lock().unwrap();
+            if !*seen {
+                *seen = true;
+                return Err("injected missing CIP-64 preimage".into());
+            }
         }
         self.inner.trie_node_by_hash(key).map_err(|err| err.to_string())
     }
@@ -51,6 +56,7 @@ async fn missing_cip64_preimage_is_not_an_invalid_payload(#[case] directory: boo
         inner: Arc::new(loaded.provider),
         missing: None,
         reads: Arc::new(Mutex::new(Vec::new())),
+        missing_read_seen: Arc::new(Mutex::new(false)),
     };
     let builder = |provider| {
         CeloStatelessL2Builder::new(
@@ -105,6 +111,9 @@ async fn missing_cip64_preimage_is_not_an_invalid_payload(#[case] directory: boo
 
     let mut incomplete = provider;
     incomplete.missing = Some(missing);
+    // A retry can read the leaf. A swallowed balanceOf error must not be masked
+    // by another missing-preimage error in debitGasFees.
+    *incomplete.missing_read_seen.lock().unwrap() = false;
     let error = builder(incomplete)
         .build_block(fixture.executing_payload.clone())
         .expect_err("missing witness must fail execution");
