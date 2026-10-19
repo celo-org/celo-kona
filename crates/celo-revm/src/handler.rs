@@ -1398,27 +1398,16 @@ where
         Ok(exec_result)
     }
 
-    /// Error-arm counterpart to [`Self::execution_result`]'s `no_commit` gate.
+    /// Preserve the enclosing journal when a non-committing system call fails.
     ///
-    /// op-revm routes every non-deposit transaction error — and every unconvertible type byte,
-    /// which includes CIP-64's `0x7b` — through `discard_tx`. For a real transaction that is
-    /// exactly right: it unwinds the rejected tx so its writes and EIP-2929 warm stamps cannot
-    /// leak into the next tx built on the same EVM.
+    /// The pinned op-revm calls `discard_tx` for failed non-deposit transactions.
+    /// Inside a bracketed system call this would drain the enclosing revert log
+    /// and reset warmth. The caller owns rollback and depth restoration.
     ///
-    /// A **non-committing system call** is not a transaction, and the journal it runs against is
-    /// not its own. `run_system_call_no_commit`'s callers bracket the call with
-    /// `checkpoint` / `checkpoint_revert` precisely so they can undo the call's own entries and
-    /// nothing else (see `core_contracts::call_read_only`). `discard_tx` drains the *entire*
-    /// shared revert log, clears transient storage and the selfdestruct list, bumps
-    /// `transaction_id` and clears coinbase/access-list warmth — so letting it run here would
-    /// discard everything the *enclosing* transaction recorded before the bracket and reset its
-    /// warm/cold accounting mid-execution. The read-only callers (`get_currencies` /
-    /// `get_exchange_rate` / `get_intrinsic_gas`) can swallow contract errors and continue, so that damage
-    /// would be silent rather than fatal.
-    ///
-    /// Skip only the journal work: the rest of op-revm's teardown (L1-cost cache, local context,
-    /// frame stack) runs either way, matching `execution_result`. Depth is left for the caller's
-    /// bracket to restore, which is what `call_read_only`'s error arm already does.
+    /// Fatal errors propagate, but directory readers may absorb contract failures,
+    /// and pool balance revalidation can reuse the EVM after a failed read. Skip
+    /// journal discard under `no_commit`; keep the upstream L1-cost, local-context
+    /// and frame-stack cleanup on both paths.
     fn catch_error(
         &self,
         evm: &mut Self::Evm,

@@ -110,21 +110,12 @@ pub fn get_revert_message(output: Bytes) -> String {
     }
 }
 
-/// `debug_assert` that the journal's call-stack depth is back to `depth_before` — the depth
-/// captured immediately before opening a non-committing checkpoint bracket ([`call_read_only`]
-/// here, and the CIP-64 rollbackable debit in the handler).
+/// Assert that a bracketed non-committing call restores the journal's call depth.
 ///
-/// The explicit `checkpoint` (+1) that opens such a bracket is paired with exactly one
-/// `checkpoint_commit` / `checkpoint_revert` (-1), so depth ends balanced however the bracketed
-/// call ends — the happy path and a system-call error alike. The balance comes from our own
-/// checkpoint bookkeeping, not from `discard_tx`: op-revm at `kona-client/v1.7.0-rc.1` discards
-/// the journal in `catch_error` on a non-deposit error, and `CeloHandler::catch_error` gates
-/// that on `no_commit` so it cannot run for these system calls.
-/// This matters because the read-only callers (`get_currencies` / `get_exchange_rate` /
-/// `get_intrinsic_gas`) swallow contract errors and drop the currency rather than aborting the tx, so
-/// a leaked depth would be silent. The one path this guards is a *fatal* error inside the call
-/// that unwinds past a frame-level checkpoint without reverting it (e.g. a DB error), which
-/// would leave depth inflated; the assert then trips tests loudly instead of being masked.
+/// The enclosing checkpoint owns rollback; `catch_error` must not discard the
+/// enclosing transaction's journal. Directory readers still absorb contract
+/// reverts/halts. Fatal errors propagate, but pool balance revalidation may reuse
+/// the same EVM after a failed read, so depth must be restored on errors too.
 pub(crate) fn debug_assert_call_depth_unchanged<DB, INSP, P>(
     evm: &mut CeloEvm<DB, INSP, P>,
     depth_before: usize,
@@ -183,10 +174,9 @@ where
     // touches only journal state, not the already-decoded `result` or the restored tx env.
     evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
-    // A *fatal* (non-revert) error inside the call can leave `depth` inflated (the window
-    // `debug_assert_call_depth_unchanged` documents). The read-only callers can swallow contract errors
-    // and continue, so force depth back to the snapshot on the error arm; the happy path is
-    // already balanced, so the assert still guards it.
+    // Fatal errors can leave frame depth inflated. Restore it before returning:
+    // pool balance revalidation may reuse this EVM even after a fatal read error.
+    // Contract failures may also be absorbed by directory readers.
     if result.is_err() {
         evm.ctx().journal_mut().depth = prev_depth;
     }
@@ -1236,21 +1226,12 @@ pub(crate) mod tests {
         );
     }
 
-    /// Rollback correctness requires that a fatal error inside a bracketed non-committing call
-    /// leaves the journal intact, so `checkpoint_revert` undoes exactly the call — and nothing
-    /// recorded before the bracket. On the error-swallowing `call_read_only` path a violation is
-    /// a silent state divergence, not a crash.
+    /// A failed non-committing call must not discard pre-bracket journal entries.
+    /// Read-only callers such as pool balance revalidation may reuse the EVM after
+    /// a fatal error, so local rollback must finish before returning the error.
     ///
-    /// op-revm at `kona-client/v1.7.0-rc.1` does journal work in `catch_error`: it routes
-    /// non-deposit tx errors through `discard_tx`, which drains the *whole* shared revert log.
-    /// `CeloHandler::catch_error` gates that on `no_commit` so a non-committing system call
-    /// cannot discard the enclosing transaction's journal. This test is what pins that gate.
-    ///
-    /// The pre-bracket write deliberately goes through the **non-committing** `call_no_commit`.
-    /// A committing `call` ends in `commit_tx`, whose `journal.clear()` empties the revert log —
-    /// which would leave an ungated `discard_tx` nothing to drain and make this test vacuous.
-    /// Writing through the non-committing path keeps the entry in the revert log, exactly where
-    /// an ungated `discard_tx` would revert it.
+    /// The pre-bracket write uses `call_no_commit`, which keeps its revert entry.
+    /// A committing `call` would clear the log and make this assertion vacuous.
     #[test]
     fn fatal_error_in_bracketed_call_preserves_pre_bracket_journal() {
         // A second copy of the SSTORE stub, deployed at an address whose storage reads fail.
