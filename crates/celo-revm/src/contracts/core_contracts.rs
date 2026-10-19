@@ -52,7 +52,7 @@ use std::{boxed::Box, format, string::String, vec::Vec};
 use tracing::{debug, warn};
 
 #[derive(thiserror::Error, Debug)]
-pub enum CoreContractError<DBError = core::convert::Infallible> {
+pub enum CoreContractError<DBError> {
     #[error("core contract execution failed: {0}")]
     ExecutionFailed(String),
     #[error("Evm error: {0}")]

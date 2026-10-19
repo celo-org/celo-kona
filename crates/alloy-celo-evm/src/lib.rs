@@ -1584,7 +1584,6 @@ mod tests {
 
     /// A database failure in any CIP-64 fee call must abort the build attempt and must
     /// not be classified as a bad transaction or a currency fault.
-    #[cfg(feature = "std")]
     fn assert_fee_database_error_propagates(failing_calldata_size: u16) {
         use revm::state::{AccountInfo, Bytecode};
 
@@ -1659,19 +1658,16 @@ mod tests {
         assert!(!blocklist.is_blocked(fc));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn balance_database_error_propagates() {
         assert_fee_database_error_propagates(u16::from(BALANCE_OF_CALLDATA_SIZE));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn debit_database_error_propagates() {
         assert_fee_database_error_propagates(u16::from(DEBIT_CALLDATA_SIZE));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn credit_database_error_propagates() {
         assert_fee_database_error_propagates(4 + 8 * 32);
