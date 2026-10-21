@@ -51,6 +51,8 @@ tracing.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
 
 
 [lints]

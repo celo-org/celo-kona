@@ -70,7 +70,13 @@ pub struct ExecutionVerifierCommand {
     #[arg(long)]
     pub end_block: Option<u64>,
     /// Number of concurrent tasks to run.
-    #[arg(long, default_value = "25")]
+    /// Zero would spawn no verification tasks at all, which reports success
+    /// without replaying a block, so the range starts at one.
+    #[arg(
+        long,
+        default_value = "25",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
     pub concurrency: usize,
     /// File that persists the highest verified block number.
     /// If this exists already, the persisted number will be
@@ -87,20 +93,9 @@ pub struct ExecutionVerifierCommand {
 async fn main() -> anyhow::Result<()> {
     let cli = ExecutionVerifierCommand::parse();
 
-    if let Some(start_block) = cli.start_block {
-        if start_block == 0 {
-            return Err(anyhow::anyhow!(
-                "start_block {start_block} must be > 0 (need parent block)"
-            ));
-        }
-        if let Some(end_block) = cli.end_block &&
-            start_block > end_block
-        {
-            return Err(anyhow::anyhow!(
-                "start_block {start_block} must be <= end_block {end_block}"
-            ));
-        }
-    } else if let Some(end_block) = cli.end_block {
+    if cli.start_block.is_none() &&
+        let Some(end_block) = cli.end_block
+    {
         return Err(anyhow::anyhow!("end-block {end_block} provided without start-block"));
     }
 
@@ -125,6 +120,31 @@ async fn main() -> anyhow::Result<()> {
     run(cli, cancel_token).await
 }
 
+/// Validates the block range that will actually be verified.
+///
+/// This runs on the *resolved* start block rather than on `--start-block`, because a
+/// `--state-file` overrides the argument (see [`run`]) and so can reintroduce a value the
+/// argument itself was checked against. A start block of zero has no parent to replay from
+/// and reaches `block_number - 1` in the fetch path, which wraps rather than panicking
+/// (the workspace disables overflow checks).
+fn validate_block_range(start_block: Option<u64>, end_block: Option<u64>) -> anyhow::Result<()> {
+    let Some(start_block) = start_block else {
+        return Ok(());
+    };
+
+    if start_block == 0 {
+        return Err(anyhow::anyhow!("start_block {start_block} must be > 0 (need parent block)"));
+    }
+
+    if let Some(end_block) = end_block &&
+        start_block > end_block
+    {
+        return Err(anyhow::anyhow!("start_block {start_block} must be <= end_block {end_block}"));
+    }
+
+    Ok(())
+}
+
 async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> anyhow::Result<()> {
     // Use the stored starting block or the CLI-provided one, but only
     // if a persistence-file option is given
@@ -140,6 +160,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             })
             .or(cli.start_block),
     };
+
+    validate_block_range(start_block, cli.end_block)?;
 
     tracing::info!(start_block_number = start_block, "Using start-block");
 
@@ -601,4 +623,127 @@ pub enum TrieError {
     /// Failed to write back to the key-value store.
     #[error("Failed to write back to key value store")]
     KVStore,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// The arguments every invocation needs, so each case only varies what it tests.
+    fn args(extra: &[&str]) -> Vec<String> {
+        ["execution-verifier", "--l2-rpc", "ws://localhost:8546"]
+            .iter()
+            .chain(extra.iter())
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
+    fn parse(extra: &[&str]) -> Result<ExecutionVerifierCommand, clap::Error> {
+        ExecutionVerifierCommand::try_parse_from(args(extra))
+    }
+
+    #[test]
+    fn concurrency_rejects_zero() {
+        // Zero spawns no tasks, so every mode reports success having verified nothing.
+        let err = parse(&["--concurrency", "0"]).expect_err("zero concurrency must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn concurrency_accepts_one_and_above() {
+        assert_eq!(parse(&["--concurrency", "1"]).unwrap().concurrency, 1);
+        assert_eq!(parse(&["--concurrency", "64"]).unwrap().concurrency, 64);
+    }
+
+    #[test]
+    fn concurrency_defaults_to_25() {
+        assert_eq!(parse(&[]).unwrap().concurrency, 25);
+    }
+
+    #[test]
+    fn no_start_block_is_unconstrained() {
+        // Follow-only mode: the tracker anchors on the first head it verifies.
+        assert!(validate_block_range(None, None).is_ok());
+    }
+
+    #[test]
+    fn start_block_zero_is_rejected() {
+        let err = validate_block_range(Some(0), None).unwrap_err();
+        assert!(err.to_string().contains("must be > 0"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn start_block_zero_is_rejected_with_an_end_block() {
+        // The zero check must precede the ordering check, so the message names the real fault.
+        let err = validate_block_range(Some(0), Some(100)).unwrap_err();
+        assert!(err.to_string().contains("must be > 0"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn start_block_after_end_block_is_rejected() {
+        let err = validate_block_range(Some(201), Some(200)).unwrap_err();
+        assert!(err.to_string().contains("must be <= end_block"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn range_bounds_are_inclusive() {
+        assert!(validate_block_range(Some(200), Some(200)).is_ok());
+        assert!(validate_block_range(Some(100), Some(200)).is_ok());
+        assert!(validate_block_range(Some(1), None).is_ok());
+    }
+
+    /// Runs [`run`] with `--state-file` holding `contents` and returns its error.
+    ///
+    /// `--l2-rpc` names an IPC path that does not exist, so a range that passes validation
+    /// fails at the provider step with "Invalid L2 RPC" instead of connecting anywhere.
+    async fn run_with_state_file(contents: &str, extra: &[&str]) -> anyhow::Error {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("state.txt");
+        std::fs::write(&state_file, contents).unwrap();
+        let l2_rpc = dir.path().join("missing.ipc");
+
+        let mut argv = vec![
+            "execution-verifier",
+            "--l2-rpc",
+            l2_rpc.to_str().unwrap(),
+            "--state-file",
+            state_file.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        let cli = ExecutionVerifierCommand::try_parse_from(argv).unwrap();
+
+        run(cli, CancellationToken::new()).await.expect_err("run must fail")
+    }
+
+    /// A `--state-file` overrides `--start-block`, so the file's contents must face the
+    /// same validation the argument does. Unchecked, a file holding `0` reaches the fetch
+    /// path and wraps `block_number - 1` to `u64::MAX`, and a file holding a number past
+    /// `--end-block` verifies nothing while exiting successfully.
+    #[tokio::test]
+    async fn run_validates_the_state_file_value_not_just_the_argument() {
+        let err = run_with_state_file("0", &["--start-block", "1"]).await;
+        assert!(err.to_string().contains("start_block 0 must be > 0"), "unexpected: {err}");
+
+        let err = run_with_state_file("500", &["--start-block", "100", "--end-block", "200"]).await;
+        assert!(
+            err.to_string().contains("start_block 500 must be <= end_block 200"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// An unparseable state file falls back to `--start-block`, which must still be
+    /// validated.
+    #[tokio::test]
+    async fn run_validates_the_argument_when_the_state_file_is_unparseable() {
+        let err = run_with_state_file("not a block number", &["--start-block", "0"]).await;
+        assert!(err.to_string().contains("start_block 0 must be > 0"), "unexpected: {err}");
+    }
+
+    /// A valid resolved range gets past validation to the provider step.
+    #[tokio::test]
+    async fn run_accepts_a_valid_state_file_value() {
+        let err = run_with_state_file("150", &["--start-block", "100", "--end-block", "200"]).await;
+        assert!(err.to_string().contains("Invalid L2 RPC"), "unexpected: {err}");
+    }
 }
