@@ -58,6 +58,7 @@ fn receipt_builder_uses_evm_cip64_storage() {
     storage.store_cip64_info(fee_currency, celo_revm::Cip64Info::default());
 
     let data = executor
+        .inner()
         .receipt_builder
         .cip64_storage
         .pop_cip64_receipt_data()
