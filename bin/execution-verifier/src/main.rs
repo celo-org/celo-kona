@@ -629,7 +629,6 @@ pub enum TrieError {
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::io::Write;
 
     /// The arguments every invocation needs, so each case only varies what it tests.
     fn args(extra: &[&str]) -> Vec<String> {
@@ -694,40 +693,57 @@ mod tests {
         assert!(validate_block_range(Some(1), None).is_ok());
     }
 
-    /// A `--state-file` overrides `--start-block`, so the file's contents must face the
-    /// same validation the argument does. Before this was checked on the resolved value,
-    /// a file holding `0` reached the fetch path and wrapped `block_number - 1` to
-    /// `u64::MAX`, and a file holding a number past `--end-block` verified nothing while
-    /// exiting successfully.
-    #[test]
-    fn state_file_value_is_validated_not_just_the_argument() {
-        let dir = std::env::temp_dir().join("celo-exec-verifier-validation-test");
-        std::fs::create_dir_all(&dir).unwrap();
+    /// Runs [`run`] with `--state-file` holding `contents` and returns its error.
+    ///
+    /// `--l2-rpc` names an IPC path that does not exist, so a range that passes validation
+    /// fails at the provider step with "Invalid L2 RPC" instead of connecting anywhere.
+    async fn run_with_state_file(contents: &str, extra: &[&str]) -> anyhow::Error {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("state.txt");
+        std::fs::write(&state_file, contents).unwrap();
+        let l2_rpc = dir.path().join("missing.ipc");
 
-        for (contents, cli_start, end, expected) in [
-            ("0", Some(1), None, "must be > 0"),
-            ("500", Some(100), Some(200), "must be <= end_block"),
-        ] {
-            let path = dir.join(format!("state-{contents}.txt"));
-            let mut f = std::fs::File::create(&path).unwrap();
-            write!(f, "{contents}").unwrap();
+        let mut argv = vec![
+            "execution-verifier",
+            "--l2-rpc",
+            l2_rpc.to_str().unwrap(),
+            "--state-file",
+            state_file.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        let cli = ExecutionVerifierCommand::try_parse_from(argv).unwrap();
 
-            let resolved = read_verified_block(&path).or(cli_start);
-            assert_eq!(resolved, Some(contents.parse().unwrap()), "state file should win");
-
-            let err = validate_block_range(resolved, end).unwrap_err();
-            assert!(err.to_string().contains(expected), "unexpected message: {err}");
-
-            std::fs::remove_file(&path).unwrap();
-        }
+        run(cli, CancellationToken::new()).await.expect_err("run must fail")
     }
 
-    /// An unreadable or unparseable state file falls back to the CLI argument, which must
-    /// still be validated.
-    #[test]
-    fn unparseable_state_file_falls_back_to_the_argument() {
-        let missing = std::env::temp_dir().join("celo-exec-verifier-does-not-exist.txt");
-        assert_eq!(read_verified_block(&missing), None);
-        assert!(validate_block_range(read_verified_block(&missing).or(Some(1)), None).is_ok());
+    /// A `--state-file` overrides `--start-block`, so the file's contents must face the
+    /// same validation the argument does. Unchecked, a file holding `0` reaches the fetch
+    /// path and wraps `block_number - 1` to `u64::MAX`, and a file holding a number past
+    /// `--end-block` verifies nothing while exiting successfully.
+    #[tokio::test]
+    async fn run_validates_the_state_file_value_not_just_the_argument() {
+        let err = run_with_state_file("0", &["--start-block", "1"]).await;
+        assert!(err.to_string().contains("start_block 0 must be > 0"), "unexpected: {err}");
+
+        let err = run_with_state_file("500", &["--start-block", "100", "--end-block", "200"]).await;
+        assert!(
+            err.to_string().contains("start_block 500 must be <= end_block 200"),
+            "unexpected: {err}"
+        );
+    }
+
+    /// An unparseable state file falls back to `--start-block`, which must still be
+    /// validated.
+    #[tokio::test]
+    async fn run_validates_the_argument_when_the_state_file_is_unparseable() {
+        let err = run_with_state_file("not a block number", &["--start-block", "0"]).await;
+        assert!(err.to_string().contains("start_block 0 must be > 0"), "unexpected: {err}");
+    }
+
+    /// A valid resolved range gets past validation to the provider step.
+    #[tokio::test]
+    async fn run_accepts_a_valid_state_file_value() {
+        let err = run_with_state_file("150", &["--start-block", "100", "--end-block", "200"]).await;
+        assert!(err.to_string().contains("Invalid L2 RPC"), "unexpected: {err}");
     }
 }

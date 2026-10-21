@@ -3789,6 +3789,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "parking_lot",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
