@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use celo_derive::CeloEthereumDataSource;
-use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use core::fmt::Debug;
 #[cfg(feature = "eigenda")]

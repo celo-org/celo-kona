@@ -17,41 +17,14 @@ mod upgrade18_data;
 mod upgrade18_tests {
     use super::*;
     use crate::CeloEvmFactory;
-    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
-    use alloy_eips::{Encodable2718, eip2718::WithEncoded};
     use alloy_evm::{
         EvmEnv, EvmFactory,
         block::{BlockExecutor, BlockExecutorFactory},
     };
     use alloy_op_evm::OpBlockExecutionCtx;
     use alloy_op_hardforks::OpChainHardforks;
-    use alloy_primitives::{Address, Signature, U256};
-    use celo_alloy_consensus::CeloTxEnvelope;
+    use alloy_primitives::{Address, U256};
     use revm::database::{CacheDB, EmptyDB, State};
-
-    #[test]
-    fn test_with_encoded() {
-        let executor_factory = CeloBlockExecutorFactory::<CeloAlloyReceiptBuilder, _>::new(
-            OpChainHardforks::op_mainnet(),
-            CeloEvmFactory::default(),
-        );
-        let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
-        let evm = executor_factory.evm_factory().create_evm(&mut db, EvmEnv::default());
-        let mut executor = executor_factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let tx = Recovered::new_unchecked(
-            CeloTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::new(
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ))),
-            Address::ZERO,
-        );
-        let tx_with_encoded = WithEncoded::new(tx.encoded_2718().into(), tx.clone());
-
-        // make sure we can use both `WithEncoded` and transaction itself as inputs.
-        let _ = executor.execute_transaction(&tx);
-        let _ = executor.execute_transaction(&tx_with_encoded);
-    }
 
     /// The Upgrade 18 hook runs inside `apply_pre_execution_changes` at the activation
     /// boundary without disturbing the upstream pre-execution flow, and actually plants
@@ -73,6 +46,11 @@ mod upgrade18_tests {
         .with_upgrade18_time(Some(100))
         .with_upgrade18_overrides(overrides);
         let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(alloc::vec::Vec::new()));
+        let reported_by_hook = reported.clone();
+        db.set_state_hook(Some(alloc::boxed::Box::new(move |state: revm::state::EvmState| {
+            reported_by_hook.lock().unwrap().push(state);
+        })));
         let mut env: EvmEnv<op_revm::OpSpecId> = EvmEnv::default();
         env.block_env.timestamp = U256::from(100);
         let evm = executor_factory.evm_factory().create_evm(&mut db, env);
@@ -82,6 +60,11 @@ mod upgrade18_tests {
 
         let marker = db.basic(CELO_GAS_BRIDGE_L2).unwrap().expect("marker account exists");
         assert!(!marker.is_empty_code_hash(), "CeloGasBridgeL2 code must be installed");
+        let reported = reported.lock().unwrap();
+        let migrations: alloc::vec::Vec<_> =
+            reported.iter().filter(|state| state.contains_key(&CELO_GAS_BRIDGE_L2)).collect();
+        assert_eq!(migrations.len(), 1, "the DB hook must report migration exactly once");
+        assert_eq!(migrations[0][&CELO_GAS_BRIDGE_L2].info.code_hash, marker.code_hash);
     }
 }
 

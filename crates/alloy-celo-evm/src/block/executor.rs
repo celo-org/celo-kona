@@ -12,38 +12,23 @@
 //! [`CeloBlockExecutorFactory`]: super::CeloBlockExecutorFactory
 
 use crate::block::upgrade18::{Upgrade18Overrides, cgt_v2_state_changes};
-use alloc::{boxed::Box, sync::Arc};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded,
     block::{
-        BlockExecutionError, BlockExecutionResult, BlockExecutor, ExecutableTx, GasOutput,
-        OnStateHook, StateChangePreBlockSource, StateChangeSource, StateDB,
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, CommitChanges, ExecutableTx,
+        GasOutput, StateDB,
     },
 };
 use alloy_op_evm::{
     OpBlockExecutor,
     block::{OpTxEnv, OpTxResult, receipt_builder::OpReceiptBuilder},
-    post_exec::{PostExecEvm, PostExecExecutorExt, WarmingRefundEvent, WarmingState},
+    post_exec::{PostExecEvm, PostExecExecutorExt, PostExecRefundEvent},
 };
 use alloy_op_hardforks::OpHardforks;
 use op_alloy_consensus::{OpTransaction as OpConsensusTransaction, post_exec::SDMGasEntry};
-use revm::{DatabaseCommit, context_interface::Block, state::EvmState};
-
-/// [`StateChangeSource`] reported for the Upgrade 18 irregular state transition.
-const UPGRADE18_STATE_CHANGE: StateChangeSource =
-    StateChangeSource::PreBlock(StateChangePreBlockSource::Other("celo-upgrade18-cgt-v2"));
-
-/// An [`OnStateHook`] handle that can be shared between this wrapper and the inner
-/// [`OpBlockExecutor`], so both can report state changes to the same consumer.
-struct SharedHook(Arc<spin::Mutex<Box<dyn OnStateHook>>>);
-
-impl OnStateHook for SharedHook {
-    fn on_state(&mut self, source: StateChangeSource, state: &EvmState) {
-        self.0.lock().on_state(source, state);
-    }
-}
+use revm::{DatabaseCommit, context_interface::Block};
 
 /// Block executor for Celo: the upstream [`OpBlockExecutor`] plus the Upgrade 18 (CGT v2)
 /// irregular state transition at the fork-activation block.
@@ -54,11 +39,6 @@ pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     upgrade18_time: Option<u64>,
     /// Caller-supplied values for the activation artifact's `param:` placeholders.
     upgrade18_overrides: Upgrade18Overrides,
-    /// Our handle on the block's state hook (shared with the inner executor). The
-    /// Upgrade 18 transition must report its changes here: reth's live engine derives
-    /// the state root from hook-streamed updates, so unreported direct commits would be
-    /// missing from the sealed root.
-    state_hook: Option<SharedHook>,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
@@ -76,7 +56,7 @@ impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
         upgrade18_time: Option<u64>,
         upgrade18_overrides: Upgrade18Overrides,
     ) -> Self {
-        Self { inner, upgrade18_time, upgrade18_overrides, state_hook: None }
+        Self { inner, upgrade18_time, upgrade18_overrides }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -108,8 +88,8 @@ where
 
         // Upgrade 18 (CGT v2) irregular state transition. Runs after the upstream
         // pre-execution changes (system calls, Canyon create2deployer) and before any
-        // transaction of the block. Report to the state hook first, then commit — the
-        // same order `SystemCaller` uses for pre-block system calls.
+        // transaction of the block. The DB commit reports the changes to its state hook,
+        // as it does for upstream pre-block system calls.
         let timestamp = self.inner.evm.block().timestamp().saturating_to();
         let chain_id = self.inner.evm.chain_id();
         if let Some(changes) = cgt_v2_state_changes(
@@ -119,12 +99,18 @@ where
             timestamp,
             self.inner.evm.db_mut(),
         )? {
-            if let Some(hook) = self.state_hook.as_mut() {
-                hook.on_state(UPGRADE18_STATE_CHANGE, &changes);
-            }
             self.inner.evm.db_mut().commit(changes.into_iter().collect());
         }
         Ok(())
+    }
+
+    fn execute_transaction_with_commit_condition(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(&Self::Result) -> CommitChanges,
+    ) -> Result<Option<GasOutput>, BlockExecutionError> {
+        // Preserve the inner executor's producer-policy rollback for discarded candidates.
+        self.inner.execute_transaction_with_commit_condition(tx, f)
     }
 
     fn execute_transaction_without_commit(
@@ -142,22 +128,6 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         self.inner.finish()
-    }
-
-    fn set_state_hook(&mut self, hook: Option<alloc::boxed::Box<dyn OnStateHook>>) {
-        match hook {
-            Some(hook) => {
-                // Share the hook between this wrapper (Upgrade 18 reporting) and the
-                // inner executor (system calls + per-transaction reporting).
-                let shared = Arc::new(spin::Mutex::new(hook));
-                self.state_hook = Some(SharedHook(Arc::clone(&shared)));
-                self.inner.set_state_hook(Some(Box::new(SharedHook(shared))));
-            }
-            None => {
-                self.state_hook = None;
-                self.inner.set_state_hook(None);
-            }
-        }
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -183,6 +153,8 @@ where
     R: OpReceiptBuilder,
     Spec: OpHardforks + Clone,
 {
+    type Snapshot = E::Snapshot;
+
     fn post_exec_entries(&self) -> &[SDMGasEntry] {
         self.inner.post_exec_entries()
     }
@@ -191,17 +163,20 @@ where
         self.inner.take_post_exec_entries()
     }
 
-    fn take_warming_events_by_tx(
+    fn take_refund_events_by_tx(
         &mut self,
-    ) -> alloc::vec::Vec<alloc::vec::Vec<WarmingRefundEvent>> {
-        self.inner.take_warming_events_by_tx()
+    ) -> alloc::vec::Vec<alloc::vec::Vec<PostExecRefundEvent>> {
+        self.inner.take_refund_events_by_tx()
     }
 
-    fn warming_state(&self) -> WarmingState {
-        PostExecExecutorExt::warming_state(&self.inner)
+    fn refund_snapshot(&self) -> Self::Snapshot {
+        PostExecExecutorExt::refund_snapshot(&self.inner)
     }
 
-    fn seed_warming_state(&mut self, state: WarmingState) {
-        PostExecExecutorExt::seed_warming_state(&mut self.inner, state)
+    fn seed_refund_snapshot(&mut self, state: Self::Snapshot) {
+        PostExecExecutorExt::seed_refund_snapshot(&mut self.inner, state)
     }
 }
+
+#[cfg(test)]
+mod tests;

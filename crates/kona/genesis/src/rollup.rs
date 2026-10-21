@@ -487,7 +487,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_batch_auth_helpers() {
         let mut cfg = CeloRollupConfig::new(RollupConfig::default());

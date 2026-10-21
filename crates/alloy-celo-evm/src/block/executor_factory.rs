@@ -126,6 +126,14 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
         // long-lived receipt builder or storage handle — both are scoped to this executor.
         let builder = R::from(evm.cip64_storage().clone());
+        // Every consensus execution path, including block import, derivation, sequencing, and
+        // kona proofs, gets its EVM here, so this is where CIP-64 receipt-data storage is enabled.
+        // Loose RPC EVMs built via `EvmFactory::create_evm*` leave it off (see
+        // `CeloEvm::cip64_store_enabled`). Caveat: reth's Amsterdam-gated BAL executors break
+        // "`create_executor` implies pops per CIP-64 tx" in both directions: the BAL worker
+        // executes without popping, while the canonical replay pops without storing. This is
+        // unreachable while Celo schedules no Amsterdam fork, but it is a landmine on a rebase
+        // onto an Amsterdam-active stack.
         let evm = evm.with_cip64_store_enabled();
         CeloBlockExecutor::new(
             OpBlockExecutor::new(evm, ctx, &self.spec, builder),

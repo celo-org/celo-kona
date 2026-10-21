@@ -62,6 +62,11 @@ fn is_retryable_rpc(rpc_err: &RpcError<TransportErrorKind>) -> bool {
     }
 }
 
+/// Only method-not-found permits falling back from the raw-debug API to standard RPC.
+const fn is_rpc_method_not_found(err: &RpcError<TransportErrorKind>) -> bool {
+    matches!(err, RpcError::ErrorResp(payload) if payload.code == -32601)
+}
+
 fn is_retryable_transport_err(err: &anyhow::Error) -> bool {
     err.downcast_ref::<RpcError<TransportErrorKind>>().is_some_and(is_retryable_rpc)
 }
