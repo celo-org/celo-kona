@@ -167,12 +167,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         Some(end) => tracing::info!(
             start_block_number = start_block,
             end_block_number = end,
-            "Using start-block with end-block"
+            "Using fixed block range"
         ),
-        None => tracing::info!(
-            start_block_number = start_block,
-            "Using start-block with no end block defined (following the head)"
-        ),
+        None => tracing::info!(start_block_number = start_block, "Following the head"),
     }
 
     // Check if l2_rpc is a URL or a file path
@@ -265,8 +262,8 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         let end = first_head_block - 1;
         let concurrency_handle = verify_new_heads_concurrency.clone();
         handles.spawn({
-            let cloned_cancel_token = cancel_token.clone();
-            let cloned_tracker = tracker.clone();
+            let cancel_token = cancel_token.clone();
+            let tracker = tracker.clone();
             async move {
                 let result = verify_block_range(
                     start_block,
@@ -274,9 +271,9 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                     provider.clone(),
                     rollup_config.clone(),
                     std::cmp::max(1, cli.concurrency - 1),
-                    cloned_cancel_token,
+                    cancel_token.clone(),
                     metrics.clone(),
-                    cloned_tracker,
+                    tracker.clone(),
                 )
                 .await;
 
@@ -306,14 +303,24 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
-                let _ = persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await;
+                // Best effort: a persist failure must not mask the task error.
+                if let Err(persist_err) =
+                    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await
+                {
+                    tracing::error!("Error storing verified block: {persist_err}");
+                }
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
-                let _ = persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await;
+                // Best effort: a persist failure must not mask the panic.
+                if let Err(persist_err) =
+                    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await
+                {
+                    tracing::error!("Error storing verified block: {persist_err}");
+                }
                 return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
             _ => {}
@@ -321,8 +328,10 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     }
 
     // Persist progress before exiting so short-lived runs don't lose work
-    verified_block_store_task.abort();
+    cancel_token.cancel();
+    verified_block_store_task.await?;
     persist_verified_block(tracker, cli.state_file.as_ref()).await?;
+    tracing::info!(end_block_number = cli.end_block, "Verification finished");
     Ok(())
 }
 
