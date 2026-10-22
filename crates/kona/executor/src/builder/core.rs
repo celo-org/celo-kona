@@ -205,4 +205,38 @@ mod test {
 
 /// Timestamp-generated fixtures cannot describe the signal-driven migration.
 #[cfg(test)]
+mod legacy_cgt_fixtures {
+    #[tokio::test]
+    async fn cgt_v2_rejects_timestamp_fixture_configuration() {
+        for name in [
+            "devnet-upgrade18-boundary_block-2.tar.gz",
+            "devnet-upgrade18-post-boundary_block-3.tar.gz",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/legacy-timestamp-cgtv2")
+                .join(name);
+            let temp = tempfile::tempdir().unwrap();
+            let status = tokio::process::Command::new("tar")
+                .arg("-xf")
+                .arg(path)
+                .arg("-C")
+                .arg(temp.path())
+                .arg("--strip-components=1")
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(temp.path().join("fixture.json")).unwrap())
+                    .unwrap();
+            let err = serde_json::from_value::<celo_genesis::CeloRollupConfig>(
+                value["rollup_config"].clone(),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{err}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod missing_preimages;

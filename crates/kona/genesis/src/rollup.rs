@@ -1,7 +1,7 @@
 //! Rollup Config Types
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition};
 use alloy_op_hardforks::{OpHardfork, OpHardforks};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use kona_genesis::RollupConfig;
 
 /// The batch-auth lookback window, in L1 blocks.
@@ -72,33 +72,6 @@ pub struct CeloRollupConfig {
     /// Celo-specific Espresso batch-authentication settings parsed from the same `rollup.json`.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub espresso: CeloEspressoConfig,
-    /// Activation timestamp (L2) for Upgrade 18 (CGT v2). `None` = not scheduled.
-    ///
-    /// Gates the CGT v2 predeploy irregular state transition in the shared block executor
-    /// (`alloy-celo-evm`'s `CeloBlockExecutor`). The field name is provisional — the final
-    /// activation trigger is still an open decision (celo-blockchain-planning#1407) — but
-    /// whatever is chosen must stay keyed identically here and in the node's chain spec.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub upgrade18_time: Option<u64>,
-    // The four Upgrade 18 activation-artifact `param:` overrides (`alloy-celo-evm`'s
-    // `Upgrade18Overrides`). An override beats the artifact's per-network constant; on chains
-    // the artifact does not know (dev/e2e) all four are required once the fork is scheduled,
-    // otherwise the boundary block fails with `Upgrade18ParamMissing`. These are the
-    // `rollup.json` twins of the node's genesis `config` extra fields
-    // (`upgrade18LiquidityControllerOwner`, …) — the two sides must stay key-compatible.
-    /// Overrides `liquidityControllerOwner` in the Upgrade 18 activation artifact.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub upgrade18_liquidity_controller_owner: Option<Address>,
-    /// Overrides `celoTokenL1` in the Upgrade 18 activation artifact.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub upgrade18_celo_token_l1: Option<Address>,
-    /// Overrides `celoGasBridgeL1` in the Upgrade 18 activation artifact.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub upgrade18_celo_gas_bridge_l1: Option<Address>,
-    /// Overrides `nativeAssetLiquidityAmount` (the reserve seed, in wei) in the Upgrade 18
-    /// activation artifact.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
-    pub upgrade18_native_asset_liquidity_amount: Option<U256>,
 }
 
 impl CeloRollupConfig {
@@ -108,11 +81,6 @@ impl CeloRollupConfig {
         Self {
             op_rollup_config,
             espresso: CeloEspressoConfig { espresso_time: None, batch_authenticator_address: None },
-            upgrade18_time: None,
-            upgrade18_liquidity_controller_owner: None,
-            upgrade18_celo_token_l1: None,
-            upgrade18_celo_gas_bridge_l1: None,
-            upgrade18_native_asset_liquidity_amount: None,
         }
     }
 
@@ -215,9 +183,8 @@ impl From<RollupConfig> for CeloRollupConfig {
     }
 }
 
-// Custom deserialization that filters out cel2_time and the Celo-only fields (Espresso,
-// Upgrade 18) before handing the remainder to the upstream `RollupConfig` deserializer (which
-// would reject unknown keys otherwise), then re-attaches them.
+// Custom deserialization rejects obsolete CGTv2 overrides, removes cel2_time, and
+// extracts Espresso settings before passing the remainder to the upstream config.
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -227,6 +194,12 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
         let value = serde_json::Value::deserialize(deserializer)?;
         let mut json_obj =
             value.as_object().ok_or_else(|| serde::de::Error::custom("expected object"))?.clone();
+
+        if let Some(key) = json_obj.keys().find(|key| key.starts_with("upgrade18_")) {
+            return Err(serde::de::Error::custom(alloc::format!(
+                "obsolete CGTv2 config `{key}`: activation uses the L1-origin signal and fixed network rules"
+            )));
+        }
 
         json_obj.remove("cel2_time");
 
@@ -242,32 +215,10 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
             .map_err(serde::de::Error::custom)?,
         };
 
-        let upgrade18_time =
-            take::<u64>(&mut json_obj, "upgrade18_time").map_err(serde::de::Error::custom)?;
-        let upgrade18_liquidity_controller_owner =
-            take::<Address>(&mut json_obj, "upgrade18_liquidity_controller_owner")
-                .map_err(serde::de::Error::custom)?;
-        let upgrade18_celo_token_l1 = take::<Address>(&mut json_obj, "upgrade18_celo_token_l1")
-            .map_err(serde::de::Error::custom)?;
-        let upgrade18_celo_gas_bridge_l1 =
-            take::<Address>(&mut json_obj, "upgrade18_celo_gas_bridge_l1")
-                .map_err(serde::de::Error::custom)?;
-        let upgrade18_native_asset_liquidity_amount =
-            take::<U256>(&mut json_obj, "upgrade18_native_asset_liquidity_amount")
-                .map_err(serde::de::Error::custom)?;
-
         let op_rollup_config = RollupConfig::deserialize(serde_json::Value::Object(json_obj))
             .map_err(serde::de::Error::custom)?;
 
-        Ok(Self {
-            op_rollup_config,
-            espresso,
-            upgrade18_time,
-            upgrade18_liquidity_controller_owner,
-            upgrade18_celo_token_l1,
-            upgrade18_celo_gas_bridge_l1,
-            upgrade18_native_asset_liquidity_amount,
-        })
+        Ok(Self { op_rollup_config, espresso })
     }
 }
 
@@ -432,58 +383,22 @@ mod tests {
         assert!(!deserialized.is_batch_auth_enabled());
     }
 
-    /// `upgrade18_time` and the four artifact param overrides must survive a serialize →
-    /// deserialize round-trip in the same flat `rollup.json` shape as the Espresso fields
-    /// (the host/oracle boot-info round-trip and the executor test fixtures depend on this).
     #[test]
     #[cfg(feature = "serde")]
-    fn test_serialize_deserialize_roundtrip_with_upgrade18() {
-        let mut original = CeloRollupConfig::new(RollupConfig::default());
-        original.upgrade18_time = Some(4242);
-        original.upgrade18_liquidity_controller_owner =
-            Some(address!("00000000000000000000000000000000000000aa"));
-        original.upgrade18_celo_token_l1 =
-            Some(address!("00000000000000000000000000000000000000bb"));
-        original.upgrade18_celo_gas_bridge_l1 =
-            Some(address!("00000000000000000000000000000000000000cc"));
-        original.upgrade18_native_asset_liquidity_amount = Some(U256::from(1_000_000u64));
-
-        let json = serde_json::to_string(&original).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value.get("upgrade18_time").and_then(serde_json::Value::as_u64), Some(4242));
-        assert!(value.get("upgrade18_celo_gas_bridge_l1").is_some());
-        assert!(value.get("upgrade18_native_asset_liquidity_amount").is_some());
-
-        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped, original);
-
-        // Unset: the keys are omitted and deserialize back to None.
-        let original = CeloRollupConfig::new(RollupConfig::default());
-        let json = serde_json::to_string(&original).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(value.get("upgrade18_time").is_none());
-        assert!(value.get("upgrade18_liquidity_controller_owner").is_none());
-        let roundtripped: CeloRollupConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.upgrade18_time, None);
-        assert_eq!(roundtripped.upgrade18_native_asset_liquidity_amount, None);
-    }
-
-    /// The reserve seed accepts both `rollup.json` spellings a hand-written config is likely
-    /// to use: a `0x`-quantity string and a decimal string (1M CELO does not fit a JSON number
-    /// that survives f64, so decimal strings matter).
-    #[test]
-    #[cfg(feature = "serde")]
-    fn test_deserialize_native_asset_liquidity_amount_spellings() {
-        let seed = U256::from_str_radix("1000000000000000000000000", 10).unwrap();
-        for literal in ["0xd3c21bcecceda1000000", "1000000000000000000000000"] {
+    fn cgt_v2_rejects_obsolete_timestamp_and_reserve_overrides() {
+        use alloc::string::ToString;
+        for key in [
+            "upgrade18_time",
+            "upgrade18_liquidity_controller_owner",
+            "upgrade18_celo_token_l1",
+            "upgrade18_celo_gas_bridge_l1",
+            "upgrade18_native_asset_liquidity_amount",
+        ] {
             let mut value =
                 serde_json::to_value(CeloRollupConfig::new(RollupConfig::default())).unwrap();
-            value.as_object_mut().unwrap().insert(
-                String::from("upgrade18_native_asset_liquidity_amount"),
-                serde_json::Value::String(String::from(literal)),
-            );
-            let cfg: CeloRollupConfig = serde_json::from_value(value).unwrap();
-            assert_eq!(cfg.upgrade18_native_asset_liquidity_amount, Some(seed), "{literal}");
+            value.as_object_mut().unwrap().insert(key.into(), serde_json::Value::Null);
+            let err = serde_json::from_value::<CeloRollupConfig>(value).unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{key}: {err}");
         }
     }
 

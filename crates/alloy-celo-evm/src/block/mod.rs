@@ -3,7 +3,7 @@
 pub use executor::CeloBlockExecutor;
 pub use executor_factory::CeloBlockExecutorFactory;
 pub use receipt_builder::CeloAlloyReceiptBuilder;
-pub use upgrade18::{CELO_GAS_BRIDGE_L2, Upgrade18Overrides};
+pub use upgrade18::CELO_GAS_BRIDGE_L2;
 
 pub mod executor;
 pub mod executor_factory;
