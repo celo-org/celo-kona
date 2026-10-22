@@ -330,8 +330,20 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // Persist progress before exiting so short-lived runs don't lose work
     cancel_token.cancel();
     verified_block_store_task.await?;
-    persist_verified_block(tracker, cli.state_file.as_ref()).await?;
-    tracing::info!(end_block_number = cli.end_block, "Verification finished");
+    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await?;
+    let highest_verified_block = tracker.lock().highest_verified_block();
+    match cli.end_block {
+        Some(end) if highest_verified_block < Some(end) => tracing::warn!(
+            end_block_number = end,
+            highest_verified_block,
+            "Verification finished with unverified blocks in range"
+        ),
+        _ => tracing::info!(
+            end_block_number = cli.end_block,
+            highest_verified_block,
+            "Verification finished"
+        ),
+    }
     Ok(())
 }
 
