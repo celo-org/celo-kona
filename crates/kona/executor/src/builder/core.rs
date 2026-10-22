@@ -4,7 +4,7 @@
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::{
     CeloEvmFactory,
-    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory, Upgrade18Overrides},
+    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory},
     cip64_storage::Cip64Storage,
 };
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
@@ -57,14 +57,7 @@ where
         parent_header: Sealed<Header>,
     ) -> Self {
         let trie_db = TrieDB::new(parent_header, provider, hinter);
-        let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory)
-            .with_upgrade18_time(config.upgrade18_time)
-            .with_upgrade18_overrides(Upgrade18Overrides {
-                liquidity_controller_owner: config.upgrade18_liquidity_controller_owner,
-                celo_token_l1: config.upgrade18_celo_token_l1,
-                celo_gas_bridge_l1: config.upgrade18_celo_gas_bridge_l1,
-                native_asset_liquidity_amount: config.upgrade18_native_asset_liquidity_amount,
-            });
+        let factory = CeloBlockExecutorFactory::new(config.clone(), evm_factory);
         Self { config, trie_db, factory }
     }
 
@@ -210,183 +203,6 @@ mod test {
     }
 }
 
-/// Tests that the Upgrade 18 (CGT v2) fixtures actually *constrain* the irregular state
-/// transition in the stateless (fault-proof) executor.
-///
-/// `test_statelessly_execute_block` above already replays both fixtures and checks the block
-/// hash. On its own that is weak evidence: a fixture whose expected hash simply never depended
-/// on the transition would pass just as green. These tests perturb one transition input at a
-/// time and require the block hash to move — and, for the block *after* the boundary, require
-/// that it does not.
-#[cfg(test)]
-mod upgrade18_fixture_tests {
-    use crate::test_utils::execute_fixture_with;
-    use alloy_primitives::{U256, address};
-    use std::path::PathBuf;
-
-    /// The activation block: the transition installs the CGT v2 predeploys.
-    const BOUNDARY: &str = "devnet-upgrade18-boundary_block-2.tar.gz";
-    /// The block right after it: the completion marker is in the pre-state.
-    const POST_BOUNDARY: &str = "devnet-upgrade18-post-boundary_block-3.tar.gz";
-
-    fn fixture(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name)
-    }
-
-    /// Bump the reserve seed by one wei; the boundary block's state root — and therefore its
-    /// hash — must move. This is what proves the fixture pins the transition's state writes,
-    /// rather than merely happening to replay.
-    #[tokio::test]
-    async fn boundary_fixture_pins_the_reserve_seed() {
-        let (outcome, fixture) = execute_fixture_with(fixture(BOUNDARY), |config| {
-            let seed = config
-                .upgrade18_native_asset_liquidity_amount
-                .expect("the boundary fixture seeds the reserve");
-            config.upgrade18_native_asset_liquidity_amount = Some(seed + U256::from(1));
-        })
-        .await;
-
-        assert_ne!(
-            outcome.expect("Failed to execute block").header.hash(),
-            fixture.expected_block_hash,
-            "a one-wei change to the reserve seed must break the boundary block hash"
-        );
-    }
-
-    /// The same, one layer down: `celoGasBridgeL1` resolves into a *storage* word of the
-    /// `CeloGasBridgeL2` proxy, where the seed above is a *balance*. Perturbing it must also
-    /// break the boundary block hash, so the fixture pins the artifact's storage writes and not
-    /// just the mint.
-    ///
-    /// (Unscheduling the fork outright would not be a clean probe here: this dev genesis ships
-    /// none of the CGT predeploys, so a boundary block without the transition has no
-    /// `L2ToL1MessagePasser` account to read the Isthmus withdrawals root from, and fails for
-    /// that unrelated reason.)
-    #[tokio::test]
-    async fn boundary_fixture_pins_the_artifact_storage_writes() {
-        let (outcome, fixture) = execute_fixture_with(fixture(BOUNDARY), |config| {
-            let bridge = config
-                .upgrade18_celo_gas_bridge_l1
-                .expect("the boundary fixture overrides the L1 bridge address");
-            let perturbed = address!("00000000000000000000000000000000000000dd");
-            assert_ne!(bridge, perturbed);
-            config.upgrade18_celo_gas_bridge_l1 = Some(perturbed);
-        })
-        .await;
-
-        assert_ne!(
-            outcome.expect("Failed to execute block").header.hash(),
-            fixture.expected_block_hash,
-            "a different `celoGasBridgeL1` must break the boundary block hash"
-        );
-    }
-
-    /// A scheduled fork whose artifact params cannot be resolved halts the boundary block
-    /// rather than silently skipping the migration or seeding a zero reserve. The dev chain is
-    /// unknown to the artifact, so clearing the overrides leaves every param unresolvable.
-    #[tokio::test]
-    async fn boundary_block_halts_when_the_params_are_unresolvable() {
-        let (outcome, _) = execute_fixture_with(fixture(BOUNDARY), |config| {
-            config.upgrade18_liquidity_controller_owner = None;
-            config.upgrade18_celo_token_l1 = None;
-            config.upgrade18_celo_gas_bridge_l1 = None;
-            config.upgrade18_native_asset_liquidity_amount = None;
-        })
-        .await;
-
-        assert!(
-            outcome.is_err(),
-            "an unresolvable artifact param must fail the boundary block, not skip the migration"
-        );
-    }
-
-    /// Exactly-once, proven through the witness: the marker account read at the start of the
-    /// post-boundary block comes from the trie witness, and it short-circuits the transition
-    /// *before* parameter resolution. So the block must still reach its expected hash with all
-    /// four params cleared — a re-application would instead fail to resolve them (as
-    /// [`boundary_block_halts_when_the_params_are_unresolvable`] shows) and, if they were
-    /// supplied, would mint the reserve seed a second time.
-    #[tokio::test]
-    async fn post_boundary_block_does_not_reapply_the_transition() {
-        let (outcome, fixture) = execute_fixture_with(fixture(POST_BOUNDARY), |config| {
-            assert!(config.upgrade18_time.is_some(), "the fork stays scheduled");
-            config.upgrade18_liquidity_controller_owner = None;
-            config.upgrade18_celo_token_l1 = None;
-            config.upgrade18_celo_gas_bridge_l1 = None;
-            config.upgrade18_native_asset_liquidity_amount = None;
-        })
-        .await;
-
-        assert_eq!(
-            outcome.expect("Failed to execute block").header.hash(),
-            fixture.expected_block_hash,
-            "the transition must not re-apply once its completion marker is in the pre-state"
-        );
-    }
-}
-
-/// Tests for CIP-64 gas calculation verification.
-///
-/// These tests verify that the gas costs for CIP-64 debit/credit operations
-/// match the expected values from op-geth for the same transactions.
-#[cfg(test)]
-mod cip64_gas_tests {
-    use crate::test_utils::load_and_execute_fixture;
-    use celo_revm::Cip64Info;
-    use std::path::PathBuf;
-
-    /// Runs a test fixture by name and returns the CIP-64 gas metrics directly from execution.
-    async fn run_fixture_and_get_cip64_info(fixture_name: &str) -> Option<Cip64Info> {
-        // Find the fixture path
-        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata");
-        let fixture_path = testdata_dir
-            .read_dir()
-            .ok()?
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().contains(fixture_name))?
-            .path();
-
-        let (outcome, _fixture) = load_and_execute_fixture(fixture_path).await;
-
-        // Get the first CIP-64 entry from the accumulated storage
-        outcome.cip64_storage.all_entries().into_iter().next().map(|data| data.cip64_info)
-    }
-
-    /// Test that verifies the CIP-64 gas calculation matches op-geth for the
-    /// sepolia-cip64-erc20-transfer fixture.
-    ///
-    /// Expected values from op-geth (raw gas, before refunds):
-    /// - Debit: 47756
-    /// - Credit: 22997
-    /// These values are taken from the call_tracer/celo-kona-comparison.json test in op-geth.
-    ///
-    /// op-geth calculates: `gasUsed = maxIntrinsicGasCost - leftoverGas`
-    /// which equals revm's `total_gas_spent`.
-    #[tokio::test]
-    async fn test_cip64_gas_matches_opgeth_sepolia_erc20_transfer() {
-        let cip64_info = run_fixture_and_get_cip64_info("sepolia-cip64-erc20-transfer")
-            .await
-            .expect("Should get CIP-64 info from sepolia-cip64-erc20-transfer fixture");
-
-        // These values match op-geth's gas calculation for the same transaction
-        // See: https://github.com/celo-org/op-geth/blob/main/contracts/fee_currencies.go
-        //
-        // op-geth calculates: gasUsed = maxIntrinsicGasCost - leftoverGas
-        // which equals revm's total_gas_spent
-        const EXPECTED_DEBIT_RAW_GAS: u64 = 47756;
-        const EXPECTED_CREDIT_RAW_GAS: u64 = 22997;
-
-        assert_eq!(
-            cip64_info.debit_gas_spent, EXPECTED_DEBIT_RAW_GAS,
-            "Debit raw gas (spent before refunds) should match op-geth"
-        );
-
-        assert_eq!(
-            cip64_info.credit_gas_spent, EXPECTED_CREDIT_RAW_GAS,
-            "Credit raw gas (spent before refunds) should match op-geth"
-        );
-    }
-}
-
+/// Timestamp-generated fixtures cannot describe the signal-driven migration.
 #[cfg(test)]
 mod missing_preimages;

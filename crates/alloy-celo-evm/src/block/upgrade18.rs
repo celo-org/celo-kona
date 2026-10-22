@@ -240,7 +240,7 @@ fn resolve_state_diff(
 /// block — node import, payload building, or the kona proof — reaches the same decision.
 /// The cost is one account read per post-activation block. Because the marker check runs
 /// *before* parameter resolution, already-migrated chains never need the parameters.
-pub(crate) fn cgt_v2_state_changes<DB>(
+pub fn cgt_v2_state_changes<DB>(
     upgrade18_time: Option<u64>,
     overrides: &Upgrade18Overrides,
     chain_id: u64,

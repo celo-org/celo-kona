@@ -1,24 +1,17 @@
-//! Celo block executor.
-//!
-//! [`CeloBlockExecutor`] wraps the upstream [`OpBlockExecutor`] and extends its
-//! pre-execution phase with the Celo-specific Upgrade 18 (CGT v2) irregular state
-//! transition (see [`super::upgrade18`]). Everything else — transaction execution,
-//! receipts, post-execution — delegates to the inner OP executor unchanged.
-//!
-//! Both celo-reth (block import / building) and celo-kona (stateless proof execution)
-//! obtain their executor through [`CeloBlockExecutorFactory`], so this single wrapper is
-//! the one place fork-boundary state injection happens for node and proof client alike.
-//!
-//! [`CeloBlockExecutorFactory`]: super::CeloBlockExecutorFactory
+//! Shared ordered CGTv2 execution for celo-reth and Kona.
+//! The protocol activation deposit stages migration at its position in the transaction list.
 
-use crate::block::upgrade18::{Upgrade18Overrides, cgt_v2_state_changes};
+use crate::block::{
+    migration::CgtV2Evm,
+    upgrade18::{CELO_GAS_BRIDGE_L2, prepare_cgt_v2_migration},
+};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
-    Database, FromRecoveredTx, FromTxWithEncoded,
+    Database, FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
     block::{
-        BlockExecutionError, BlockExecutionResult, BlockExecutor, CommitChanges, ExecutableTx,
-        GasOutput, StateDB,
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
+        CommitChanges, ExecutableTx, GasOutput, StateDB,
     },
 };
 use alloy_op_evm::{
@@ -27,36 +20,35 @@ use alloy_op_evm::{
     post_exec::{PostExecEvm, PostExecExecutorExt, PostExecRefundEvent},
 };
 use alloy_op_hardforks::OpHardforks;
+use alloy_primitives::{B256, U256};
+use celo_alloy_consensus::{
+    cgt_v2::{CGT_V2_L1_BLOCK, CgtV2Activation},
+    cgt_v2_params::cgt_v2_params,
+};
 use op_alloy_consensus::{OpTransaction as OpConsensusTransaction, post_exec::SDMGasEntry};
-use revm::{DatabaseCommit, context_interface::Block};
+use revm::{Database as _, DatabaseCommit};
+
+fn invalid_cgt_signal(message: &'static str) -> BlockExecutionError {
+    BlockValidationError::msg(message).into()
+}
 
 /// Block executor for Celo: the upstream [`OpBlockExecutor`] plus the Upgrade 18 (CGT v2)
-/// irregular state transition at the fork-activation block.
+/// irregular state transition at the activation deposit.
 pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     /// The wrapped OP Stack block executor.
     inner: OpBlockExecutor<E, R, Spec>,
-    /// Provisional Upgrade 18 (CGT v2) activation timestamp; `None` = not scheduled.
-    upgrade18_time: Option<u64>,
-    /// Caller-supplied values for the activation artifact's `param:` placeholders.
-    upgrade18_overrides: Upgrade18Overrides,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CeloBlockExecutor")
-            .field("upgrade18_time", &self.upgrade18_time)
-            .finish_non_exhaustive()
+        f.debug_struct("CeloBlockExecutor").finish_non_exhaustive()
     }
 }
 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
-    pub const fn new(
-        inner: OpBlockExecutor<E, R, Spec>,
-        upgrade18_time: Option<u64>,
-        upgrade18_overrides: Upgrade18Overrides,
-    ) -> Self {
-        Self { inner, upgrade18_time, upgrade18_overrides }
+    pub const fn new(inner: OpBlockExecutor<E, R, Spec>) -> Self {
+        Self { inner }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -71,7 +63,7 @@ where
             DB: Database + DatabaseCommit + StateDB,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction> + OpTxEnv,
             HaltReason: Send + 'static,
-        >,
+        > + CgtV2Evm,
     R: OpReceiptBuilder<
             Transaction: Transaction + Encodable2718 + OpConsensusTransaction,
             Receipt: TxReceipt,
@@ -84,24 +76,7 @@ where
     type Result = OpTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()?;
-
-        // Upgrade 18 (CGT v2) irregular state transition. Runs after the upstream
-        // pre-execution changes (system calls, Canyon create2deployer) and before any
-        // transaction of the block. The DB commit reports the changes to its state hook,
-        // as it does for upstream pre-block system calls.
-        let timestamp = self.inner.evm.block().timestamp().saturating_to();
-        let chain_id = self.inner.evm.chain_id();
-        if let Some(changes) = cgt_v2_state_changes(
-            self.upgrade18_time,
-            &self.upgrade18_overrides,
-            chain_id,
-            timestamp,
-            self.inner.evm.db_mut(),
-        )? {
-            self.inner.evm.db_mut().commit(changes.into_iter().collect());
-        }
-        Ok(())
+        self.inner.apply_pre_execution_changes()
     }
 
     fn execute_transaction_with_commit_condition(
@@ -109,19 +84,114 @@ where
         tx: impl ExecutableTx<Self>,
         f: impl FnOnce(&Self::Result) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
-        // Preserve the inner executor's producer-policy rollback for discarded candidates.
-        self.inner.execute_transaction_with_commit_condition(tx, f)
+        let refund_snapshot =
+            matches!(self.inner.ctx.post_exec_mode, alloy_op_evm::PostExecMode::Produce)
+                .then(|| self.inner.evm.refund_snapshot());
+        let output = match self.execute_transaction_without_commit(tx) {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(snapshot) = refund_snapshot {
+                    self.inner.evm.seed_refund_snapshot(snapshot);
+                }
+                return Err(error);
+            }
+        };
+        if !f(&output).should_commit() {
+            if let Some(snapshot) = refund_snapshot {
+                self.inner.evm.seed_refund_snapshot(snapshot);
+            }
+            return Ok(None);
+        }
+        Ok(Some(self.commit_transaction(output)))
     }
 
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        self.inner.execute_transaction_without_commit(tx)
+        let (tx_env, tx) = tx.into_parts();
+        let activation = tx
+            .tx()
+            .as_deposit()
+            .map(|deposit| CgtV2Activation::decode_deposit(deposit))
+            .transpose()
+            .map_err(|error| BlockExecutionError::Validation(BlockValidationError::other(error)))?
+            .flatten();
+        let Some(activation) = activation else {
+            return self.inner.execute_transaction_without_commit((tx_env, tx));
+        };
+        if self.inner.receipts.is_empty() {
+            return Err(invalid_cgt_signal(
+                "CGTv2 activation requires the block's L1-info transaction first",
+            ));
+        }
+        if self
+            .inner
+            .evm
+            .db_mut()
+            .basic(CELO_GAS_BRIDGE_L2)
+            .map_err(BlockExecutionError::other)?
+            .is_some_and(|a| !a.is_empty_code_hash())
+        {
+            return Err(invalid_cgt_signal("CGTv2 activation cannot repeat"));
+        }
+        // L1Block.hash occupies slot 2 in the pinned legacy and CGT layouts. It has
+        // already been updated by this block's committed L1-info transaction.
+        let origin = self
+            .inner
+            .evm
+            .db_mut()
+            .storage(CGT_V2_L1_BLOCK, U256::from(2))
+            .map_err(BlockExecutionError::other)?;
+        if B256::from(origin.to_be_bytes::<32>()) != activation.l1_origin_hash {
+            return Err(invalid_cgt_signal("CGTv2 signal does not match the block's L1 origin"));
+        }
+        let params =
+            cgt_v2_params(self.inner.evm.chain_id()).map_err(BlockExecutionError::other)?;
+        // Journal staging avoids committing a transition or notifying state hooks for a
+        // candidate that can still fail or be declined by the payload builder.
+        let journal = self.inner.evm.cgt_v2_journal().inner.clone();
+        let outcome = (|| {
+            let vault = self.inner.evm.read_cgt_v2_vault_config()?;
+            let changes =
+                prepare_cgt_v2_migration(self.inner.evm.db_mut(), &params, &activation, vault)?;
+            for (address, mut account) in changes.clone() {
+                account.mark_cold();
+                for slot in account.storage.values_mut() {
+                    // EVM gas uses the state immediately after installation. Restore the
+                    // actual pre-migration originals in the final diff before commit.
+                    slot.original_value = slot.present_value;
+                    slot.mark_cold();
+                }
+                self.inner.evm.cgt_v2_journal().state.insert(address, account);
+            }
+            let mut output = self.inner.execute_transaction_without_commit((tx_env, tx))?;
+            if !output.inner.result.result.is_success() {
+                return Err(invalid_cgt_signal("CGTv2 activation setter reverted or halted"));
+            }
+            for (address, change) in changes {
+                let account =
+                    output.inner.result.state.entry(address).or_insert_with(|| change.clone());
+                for (key, slot) in change.storage {
+                    account
+                        .storage
+                        .entry(key)
+                        .and_modify(|final_slot| final_slot.original_value = slot.original_value)
+                        .or_insert(slot);
+                }
+            }
+            Ok(output)
+        })();
+        self.inner.evm.cgt_v2_journal().inner = journal;
+        outcome
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
-        self.inner.commit_transaction(output)
+        let gas = self.inner.commit_transaction(output);
+        // An activation candidate restores the pre-execution journal until accepted.
+        // Its cached legacy accounts must not survive the accepted state transition.
+        self.inner.evm.cgt_v2_journal().inner.finalize();
+        gas
     }
 
     fn finish(
