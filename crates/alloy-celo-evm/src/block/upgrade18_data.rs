@@ -316,3 +316,25 @@ pub(super) const fn known_param(chain_id: u64, param: Upgrade18Param) -> Option<
         _ => None,
     }
 }
+
+/// Migration storage definition pinned by the artifact source/layout metadata.
+pub(super) const CGT_FLAG_SLOT: U256 = U256::from_limbs([
+    0x824162e8dad020aa,
+    0xb0b81e2ae2ba427f,
+    0x9f530b1c627ffb4,
+    0xd2ff82c9b477ff6a,
+]);
+
+/// Migration storage definition pinned by the artifact source/layout metadata.
+pub(super) const FEE_VAULT_MIN_WITHDRAWAL_SLOT: U256 = U256::from_limbs([0x1, 0x0, 0x0, 0x0]);
+
+/// Migration storage definition pinned by the artifact source/layout metadata.
+pub(super) const FEE_VAULT_RECIPIENT_SLOT: U256 = U256::from_limbs([0x2, 0x0, 0x0, 0x0]);
+
+/// Migration storage definition pinned by the artifact source/layout metadata.
+pub(super) const FEE_VAULT_INITIALIZER_SLOT: U256 = U256::from_limbs([
+    0x662efc9c229c6a00,
+    0x1c3923bec73e23a9,
+    0xf15088dc2f81fe39,
+    0xf0c57e16840df040,
+]);
