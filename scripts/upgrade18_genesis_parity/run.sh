@@ -88,11 +88,13 @@ git -C "$CHECKOUT" submodule update --init --depth 1 -- packages/contracts-bedro
 CONTRACTS="$CHECKOUT/packages/contracts-bedrock"
 cp "$SCRIPT_DIR/L2GenesisCGTDump.s.sol" "$CONTRACTS/scripts/"
 
+# The pinned tests import solady/src/...; Forge auto-detects solady/ at lib/solady/src/.
+# Resolve that prefix from the library root in both build and script commands.
 echo "Building L2Genesis at the pinned commit..."
-(cd "$CONTRACTS" && forge build scripts/L2GenesisCGTDump.s.sol)
+(cd "$CONTRACTS" && forge build scripts/L2GenesisCGTDump.s.sol --remappings "solady/=lib/solady/")
 
 echo "Running L2Genesis (useCustomGasToken = true)..."
-(cd "$CONTRACTS" && forge script scripts/L2GenesisCGTDump.s.sol --sig 'dump()') >/dev/null
+(cd "$CONTRACTS" && forge script scripts/L2GenesisCGTDump.s.sol --sig 'dump()' --remappings "solady/=lib/solady/") >/dev/null
 [[ -s "$CGT_STATE_DUMP_PATH" ]] || fail "L2Genesis produced no state dump"
 
 # ---------------------------------------------------------------------------
