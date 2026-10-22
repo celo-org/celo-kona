@@ -1,4 +1,7 @@
 #!/bin/bash
+# Historical timestamp-based CGTv2 harness for commit 827d31d34f32d17aed6da1807fc1e90d4fe6ce2d.
+# Current CGTv2 uses an L1-origin activation deposit. Do not use this harness as
+# evidence for the current protocol; signal-based integration replaces it later.
 #
 # E2E test for the Upgrade 18 (CGT v2) migration boundary.
 #

@@ -17,13 +17,12 @@ six migrated predeploys — proxy and implementation accounts:
 and classifies every genesis slot the artifact does *not* write into two closed,
 value-asserted sets (`live_state` and `impl_init` below):
 
-  * live_state — slots on the three *upgraded* proxies (SequencerFeeVault 0x…11,
-    L1Block 0x…15, L2ToL1MessagePasser 0x…16). Those proxies already exist on the live
-    chain — the migration only swaps their implementation — so the artifact rightly
-    omits state they already carry: the EIP-1967 admin slot, and the fee vault's
-    operating config (written by its v1 initialization, carried across the upgrade).
-    That the live chain really does carry these slots is established by the live-chain
-    audit (#1404), not here; this script only pins what a fresh genesis puts there.
+  * live_state: expected final slots on the three upgraded proxies (SequencerFeeVault,
+    L1Block, L2ToL1MessagePasser). The runtime migration preserves each proxy admin,
+    copies fee-vault settings from the old implementation's getters, and completes
+    the new initializer. The artifact omits these runtime-dependent writes. This
+    script checks fresh-genesis values; the Rust executor tests exercise the populated
+    legacy vault upgrade, including native and token withdrawals.
   * impl_init — storage that `L2Genesis` writes to *implementation* accounts and the
     migration does not. The `initializer` guard lives in per-account storage, and
     initializing a proxy marks only the proxy — so an implementation's own
@@ -95,10 +94,9 @@ def main() -> int:
             return params[value.removeprefix("param:")]
         return int(value, 16)
 
-    # Slots the migration expects the live pre-fork chain to already carry (the artifact
-    # omits them on purpose — see the docstring), keyed by proxy address. The values are
-    # derived from the same env inputs `run.sh` fed to the genesis run, so a fresh
-    # genesis is fully pinned even where the live chain is the real source of truth.
+    # Expected final runtime-dependent slots omitted from the static artifact.
+    # Use the same settings as the reference genesis. This does not assume that the
+    # legacy implementation stores its getter values at the new implementation's slots.
     live_state = {
         SEQUENCER_FEE_VAULT: {
             ADMIN_SLOT: PROXY_ADMIN,
