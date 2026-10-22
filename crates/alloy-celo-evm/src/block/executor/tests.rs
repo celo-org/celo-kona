@@ -98,16 +98,12 @@ fn discarded_candidate_restores_inner_refund_policy() {
         .with_block(BlockEnv { gas_limit: 500_000, ..Default::default() });
     let evm: OpEvm<_, _, _, OpTx, ScriptedRefundPolicy> =
         OpEvm::new(context.build_op_with_inspector(NoOpInspector {}), true);
-    let mut executor = CeloBlockExecutor::new(
-        OpBlockExecutor::new(
-            evm,
-            OpBlockExecutionCtx { post_exec_mode: PostExecMode::Produce, ..Default::default() },
-            OpChainHardforks::op_mainnet(),
-            OpAlloyReceiptBuilder::default(),
-        ),
-        None,
-        Upgrade18Overrides::default(),
-    );
+    let mut executor = CeloBlockExecutor::new(OpBlockExecutor::new(
+        evm,
+        OpBlockExecutionCtx { post_exec_mode: PostExecMode::Produce, ..Default::default() },
+        OpChainHardforks::op_mainnet(),
+        OpAlloyReceiptBuilder::default(),
+    ));
     let tx = |nonce| {
         Recovered::new_unchecked(
             OpTxEnvelope::Legacy(
@@ -138,4 +134,23 @@ fn discarded_candidate_restores_inner_refund_policy() {
 
     executor.execute_transaction(&tx(0)).expect("committed candidate executes");
     assert_eq!(executor.refund_snapshot(), 1);
+}
+
+impl super::super::migration::CgtV2Evm
+    for OpEvm<
+        &mut State<CacheDB<EmptyDB>>,
+        NoOpInspector,
+        op_revm::precompiles::OpPrecompiles,
+        OpTx,
+        ScriptedRefundPolicy,
+    >
+{
+    fn cgt_v2_journal(&mut self) -> &mut revm::context::Journal<Self::DB> {
+        &mut self.ctx_mut().journaled_state
+    }
+    fn read_cgt_v2_vault_config(
+        &mut self,
+    ) -> Result<super::super::upgrade18::FeeVaultConfig, BlockExecutionError> {
+        Err(BlockExecutionError::msg("this refund-policy test does not activate CGTv2"))
+    }
 }

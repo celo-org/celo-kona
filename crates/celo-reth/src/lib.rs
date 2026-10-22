@@ -166,25 +166,18 @@ impl<ChainSpec: OpHardforks + Hardforks + EthChainSpec> CeloEvmConfig<ChainSpec>
 
     /// Creates a new [`CeloEvmConfig`] with the given chain spec and shared fee currency blocklist.
     ///
-    /// The Upgrade 18 (CGT v2) activation timestamp and artifact param overrides are
-    /// derived from the chain spec here (the `Upgrade18` hardfork entry and the genesis
-    /// `config` extra fields), so no construction site can forget to wire them — a config
-    /// without them would seal blocks *without* the transition at the activation boundary.
+    /// CGTv2 uses the shared signal-driven executor in building and replay.
     pub fn celo_with_blocklist(
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
     ) -> Self {
-        let upgrade18_time = chainspec::upgrade18_time(chain_spec.as_ref());
-        let upgrade18_overrides = chainspec::upgrade18_overrides(chain_spec.as_ref());
         // No shared CIP-64 storage here: each `CeloEvm` produced by the factory owns its own,
         // and the executor factory re-binds the receipt builder to that per-EVM storage on
         // every `create_executor` call.
         let evm_factory = CeloEvmFactory::default().with_blocklist(blocklist);
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory)
-                .with_upgrade18_time(upgrade18_time)
-                .with_upgrade18_overrides(upgrade18_overrides),
+            executor_factory: CeloBlockExecutorFactory::new(chain_spec, evm_factory),
             _pd: core::marker::PhantomData,
         }
     }

@@ -9,11 +9,7 @@
 //! (e.g. the main-chain block executor and a re-executing ExEx) cannot interfere with each
 //! other's pending CIP-64 receipt data.
 
-use crate::{
-    CeloEvmFactory,
-    block::{executor::CeloBlockExecutor, upgrade18::Upgrade18Overrides},
-    cip64_storage::Cip64Storage,
-};
+use crate::{CeloEvmFactory, block::executor::CeloBlockExecutor, cip64_storage::Cip64Storage};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
@@ -40,12 +36,6 @@ use revm::{Inspector, context::TxEnv};
 pub struct CeloBlockExecutorFactory<R, Spec> {
     spec: Spec,
     evm_factory: CeloEvmFactory,
-    /// Provisional Upgrade 18 (CGT v2) activation timestamp; `None` = not scheduled.
-    /// Consumed by [`CeloBlockExecutor`] to gate the CGT v2 irregular state transition.
-    upgrade18_time: Option<u64>,
-    /// Caller-supplied values for the Upgrade 18 activation artifact's `param:`
-    /// placeholders (override > artifact per-network constant).
-    upgrade18_overrides: Upgrade18Overrides,
     _phantom: core::marker::PhantomData<fn() -> R>,
 }
 
@@ -54,42 +44,15 @@ impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
         Self {
             spec: self.spec.clone(),
             evm_factory: self.evm_factory.clone(),
-            upgrade18_time: self.upgrade18_time,
-            upgrade18_overrides: self.upgrade18_overrides.clone(),
             _phantom: core::marker::PhantomData,
         }
     }
 }
 
 impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
-    /// Creates a new factory with the given chain spec and EVM factory. Upgrade 18 starts
-    /// unscheduled; see [`with_upgrade18_time`](Self::with_upgrade18_time).
+    /// Creates a factory whose CGTv2 transition is determined by the canonical signal.
     pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
-        Self {
-            spec,
-            evm_factory,
-            upgrade18_time: None,
-            upgrade18_overrides: Upgrade18Overrides {
-                liquidity_controller_owner: None,
-                celo_token_l1: None,
-                celo_gas_bridge_l1: None,
-                native_asset_liquidity_amount: None,
-            },
-            _phantom: core::marker::PhantomData,
-        }
-    }
-
-    /// Sets the provisional Upgrade 18 (CGT v2) activation timestamp.
-    pub const fn with_upgrade18_time(mut self, upgrade18_time: Option<u64>) -> Self {
-        self.upgrade18_time = upgrade18_time;
-        self
-    }
-
-    /// Sets override values for the Upgrade 18 activation artifact's `param:`
-    /// placeholders (dev chains and tests; production values ship in the artifact).
-    pub const fn with_upgrade18_overrides(mut self, overrides: Upgrade18Overrides) -> Self {
-        self.upgrade18_overrides = overrides;
-        self
+        Self { spec, evm_factory, _phantom: core::marker::PhantomData }
     }
 
     /// Exposes the chain specification.
@@ -105,7 +68,7 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
     /// Builds the [`CeloBlockExecutor`] for the given EVM and block context: binds a
     /// fresh receipt builder to the EVM's own [`Cip64Storage`], constructs the inner
     /// [`OpBlockExecutor`] against this factory's spec, and wraps it with the factory's
-    /// Upgrade 18 (CGT v2) activation values.
+    /// CGTv2 signal handling.
     ///
     /// This is the only place executors are constructed: every execution path (import,
     /// sequencing, proof, post-exec) must come through it, directly or via
@@ -135,11 +98,7 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
         // unreachable while Celo schedules no Amsterdam fork, but it is a landmine on a rebase
         // onto an Amsterdam-active stack.
         let evm = evm.with_cip64_store_enabled();
-        CeloBlockExecutor::new(
-            OpBlockExecutor::new(evm, ctx, &self.spec, builder),
-            self.upgrade18_time,
-            self.upgrade18_overrides.clone(),
-        )
+        CeloBlockExecutor::new(OpBlockExecutor::new(evm, ctx, &self.spec, builder))
     }
 }
 
