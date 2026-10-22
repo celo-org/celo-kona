@@ -9,7 +9,11 @@
 //! (e.g. the main-chain block executor and a re-executing ExEx) cannot interfere with each
 //! other's pending CIP-64 receipt data.
 
-use crate::{CeloEvmFactory, block::executor::CeloBlockExecutor, cip64_storage::Cip64Storage};
+use crate::{
+    CeloEvmFactory,
+    block::executor::{CeloBlockExecutor, CeloTxResult},
+    cip64_storage::Cip64Storage,
+};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
@@ -17,8 +21,7 @@ use alloy_evm::{
     block::{BlockExecutorFactory, StateDB},
 };
 use alloy_op_evm::{
-    OpBlockExecutionCtx, OpBlockExecutor,
-    block::{OpTxResult, receipt_builder::OpReceiptBuilder},
+    OpBlockExecutionCtx, OpBlockExecutor, block::receipt_builder::OpReceiptBuilder,
 };
 use alloy_op_hardforks::OpHardforks;
 use celo_revm::{CeloContext, CeloTransaction};
@@ -119,7 +122,7 @@ where
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
     type TxExecutionResult =
-        OpTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
+        CeloTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
     type Executor<'a, DB: StateDB, I: Inspector<CeloContext<DB>>> =
         CeloBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
 

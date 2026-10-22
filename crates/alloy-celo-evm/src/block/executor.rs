@@ -11,12 +11,12 @@ use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        CommitChanges, ExecutableTx, GasOutput, StateDB,
+        CommitChanges, ExecutableTx, GasOutput, StateDB, TxResult,
     },
 };
 use alloy_op_evm::{
-    OpBlockExecutor,
-    block::{OpTxEnv, OpTxResult, receipt_builder::OpReceiptBuilder},
+    OpBlockExecutor, PreRefundGasUsed,
+    block::{OpBlockExecutionError, OpTxEnv, OpTxResult, receipt_builder::OpReceiptBuilder},
     post_exec::{PostExecEvm, PostExecExecutorExt, PostExecRefundEvent},
 };
 use alloy_op_hardforks::OpHardforks;
@@ -32,11 +32,48 @@ fn invalid_cgt_signal(message: &'static str) -> BlockExecutionError {
     BlockValidationError::msg(message).into()
 }
 
+/// OP execution result with the CGTv2 activation status of this candidate.
+/// Keeping the marker in the result makes it take effect only when the candidate is committed.
+#[derive(Debug)]
+pub struct CeloTxResult<H, T> {
+    /// The upstream execution result.
+    pub op: OpTxResult<H, T>,
+    activates_cgt_v2: bool,
+}
+
+impl<H, T> core::ops::Deref for CeloTxResult<H, T> {
+    type Target = OpTxResult<H, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.op
+    }
+}
+
+impl<H: Send + 'static, T: Send + 'static> TxResult for CeloTxResult<H, T> {
+    type HaltReason = H;
+
+    fn result(&self) -> &revm::context::result::ResultAndState<H> {
+        self.op.result()
+    }
+
+    fn into_result(self) -> revm::context::result::ResultAndState<H> {
+        self.op.into_result()
+    }
+}
+
+impl<H, T> PreRefundGasUsed for CeloTxResult<H, T> {
+    fn evm_gas_used(&self) -> u64 {
+        self.op.evm_gas_used()
+    }
+}
+
 /// Block executor for Celo: the upstream [`OpBlockExecutor`] plus the Upgrade 18 (CGT v2)
 /// irregular state transition at the activation deposit.
 pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     /// The wrapped OP Stack block executor.
     inner: OpBlockExecutor<E, R, Spec>,
+    /// Incremental builders may not know the signal until it is executed.
+    has_committed_user_tx: bool,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
@@ -48,7 +85,7 @@ impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
     pub const fn new(inner: OpBlockExecutor<E, R, Spec>) -> Self {
-        Self { inner }
+        Self { inner, has_committed_user_tx: false }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -73,7 +110,7 @@ where
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
     type Evm = E;
-    type Result = OpTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
+    type Result = CeloTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         self.inner.apply_pre_execution_changes()
@@ -118,8 +155,17 @@ where
             .map_err(|error| BlockExecutionError::Validation(BlockValidationError::other(error)))?
             .flatten();
         let Some(activation) = activation else {
-            return self.inner.execute_transaction_without_commit((tx_env, tx));
+            return self
+                .inner
+                .execute_transaction_without_commit((tx_env, tx))
+                .map(|op| CeloTxResult { op, activates_cgt_v2: false });
         };
+        if self.has_committed_user_tx {
+            return Err(BlockValidationError::other(
+                OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
+            )
+            .into());
+        }
         if self.inner.receipts.is_empty() {
             return Err(invalid_cgt_signal(
                 "CGTv2 activation requires the block's L1-info transaction first",
@@ -183,11 +229,13 @@ where
             Ok(output)
         })();
         self.inner.evm.cgt_v2_journal().inner = journal;
-        outcome
+        outcome.map(|op| CeloTxResult { op, activates_cgt_v2: true })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
-        let gas = self.inner.commit_transaction(output);
+        self.has_committed_user_tx |= !output.op.is_deposit && !output.op.is_post_exec;
+        self.inner.ctx.no_user_tx_activation_block |= output.activates_cgt_v2;
+        let gas = self.inner.commit_transaction(output.op);
         // An activation candidate restores the pre-execution journal until accepted.
         // Its cached legacy accounts must not survive the accepted state transition.
         self.inner.evm.cgt_v2_journal().inner.finalize();

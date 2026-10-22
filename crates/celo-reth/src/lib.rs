@@ -27,6 +27,7 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
+use celo_alloy_consensus::cgt_v2::CgtV2Activation;
 use core::any::Any;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
@@ -39,7 +40,9 @@ use reth_evm::{
 };
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
-use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
+use reth_primitives_traits::{
+    BlockBody as _, NodePrimitives, SealedBlock, SealedHeader, SignedTransaction,
+};
 use revm::context::Transaction;
 
 pub mod primitives;
@@ -54,6 +57,9 @@ pub mod pool;
 
 #[cfg(feature = "std")]
 pub mod payload;
+
+#[cfg(feature = "std")]
+pub mod cgt_v2;
 
 #[cfg(feature = "std")]
 pub mod payload_metrics;
@@ -186,7 +192,7 @@ impl<ChainSpec: OpHardforks + Hardforks + EthChainSpec> CeloEvmConfig<ChainSpec>
 impl<ChainSpec, N, R> CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: OpHardforks,
-    N: NodePrimitives,
+    N: NodePrimitives<SignedTx: op_alloy_consensus::OpTransaction>,
 {
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
@@ -201,9 +207,13 @@ where
     ) -> OpBlockExecutionCtx {
         OpBlockExecutionCtx {
             parent_hash: block.header().parent_hash(),
-            // No parent header on this path to detect fork-activation blocks, so the executor's
-            // check is skipped; the derivation layer enforces the rule instead.
-            no_user_tx_activation_block: false,
+            // Timestamp forks need a parent header, but the CGTv2 signal identifies its
+            // activation block directly, including user txs before the signal.
+            no_user_tx_activation_block: block
+                .body()
+                .transactions()
+                .iter()
+                .any(CgtV2Activation::is_activation_transaction),
             parent_beacon_block_root: block.header().parent_beacon_block_root(),
             extra_data: block.header().extra_data().clone(),
             post_exec_mode: post_exec_mode.unwrap_or_default(),
@@ -582,9 +592,12 @@ where
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(OpBlockExecutionCtx {
             parent_hash: payload.payload.parent_hash(),
-            // No parent header on this path to detect fork-activation blocks, so the executor's
-            // check is skipped; the derivation layer enforces the rule instead.
-            no_user_tx_activation_block: false,
+            // Unsafe payloads carry the same activation signal as derived/imported blocks.
+            no_user_tx_activation_block: payload
+                .payload
+                .transactions()
+                .iter()
+                .any(|tx| CgtV2Activation::is_activation_encoded(tx)),
             parent_beacon_block_root: payload.sidecar.parent_beacon_block_root(),
             extra_data: payload.payload.as_v1().extra_data.clone(),
             post_exec_mode: PostExecMode::default(),
@@ -944,3 +957,6 @@ mod tests {
         assert_eq!(result, CELO_BASE_FEE_FLOOR, "Low base fee should be clamped to floor");
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod cgt_v2_tests;
