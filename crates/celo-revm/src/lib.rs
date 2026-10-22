@@ -27,5 +27,4 @@ pub use api::{
 };
 pub use evm::CeloEvm;
 pub use fee_currency_context::FeeCurrencyContext;
-pub use precompiles::CeloPrecompiles;
 pub use transaction::{CeloTransaction, CeloTxTr, Cip64Info};

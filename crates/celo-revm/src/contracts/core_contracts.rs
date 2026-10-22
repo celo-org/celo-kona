@@ -605,17 +605,16 @@ pub(crate) mod tests {
 
     struct FailingDirectoryCall {
         selector: [u8; 4],
-        inner: crate::CeloPrecompiles,
+        inner: alloy_evm::precompiles::PrecompilesMap,
     }
 
     impl PrecompileProvider<CeloContext<InMemoryDB>> for FailingDirectoryCall {
         type Output = InterpreterResult;
 
         fn set_spec(&mut self, spec: op_revm::OpSpecId) -> bool {
-            <crate::CeloPrecompiles as PrecompileProvider<CeloContext<InMemoryDB>>>::set_spec(
-                &mut self.inner,
-                spec,
-            )
+            <alloy_evm::precompiles::PrecompilesMap as PrecompileProvider<
+                CeloContext<InMemoryDB>,
+            >>::set_spec(&mut self.inner, spec)
         }
 
         fn run(
@@ -632,9 +631,9 @@ pub(crate) mod tests {
         }
 
         fn warm_addresses(&self) -> &revm::primitives::AddressSet {
-            <crate::CeloPrecompiles as PrecompileProvider<CeloContext<InMemoryDB>>>::warm_addresses(
-                &self.inner,
-            )
+            <alloy_evm::precompiles::PrecompilesMap as PrecompileProvider<
+                CeloContext<InMemoryDB>,
+            >>::warm_addresses(&self.inner)
         }
     }
 
@@ -645,13 +644,12 @@ pub(crate) mod tests {
             getExchangeRateCall::SELECTOR,
             getCurrencyConfigCall::SELECTOR,
         ] {
-            let mut evm = Context::celo()
-                .with_db(make_celo_test_db())
-                .build_celo()
-                .with_precompiles(FailingDirectoryCall {
-                    selector,
-                    inner: crate::CeloPrecompiles::default(),
-                });
+            let mut evm = Context::celo().with_db(make_celo_test_db()).build_celo();
+            let spec = evm.ctx().cfg.spec;
+            let mut evm = evm.with_precompiles(FailingDirectoryCall {
+                selector,
+                inner: crate::precompiles::celo_precompiles_map(spec),
+            });
             let error = crate::FeeCurrencyContext::new_from_evm(&mut evm)
                 .expect_err("fatal directory call must abort loading rather than drop a currency");
             assert_eq!(error.to_string(), "injected fatal directory call");
@@ -1073,6 +1071,7 @@ pub(crate) mod tests {
     /// target address, delegating everything else to an inner [`InMemoryDB`]. Stands in for a
     /// backing-store read failure inside a bracketed non-committing call — e.g. an `SLOAD` in a
     /// nested `debitGasFees` frame.
+    #[derive(Debug)]
     struct StorageFailingDb {
         inner: InMemoryDB,
         fail_addr: Address,
@@ -1177,9 +1176,9 @@ pub(crate) mod tests {
                 fail_addr: address,
                 fail_slot: Some(slot),
             })
+            .modify_cfg_chained(|cfg| cfg.spec = op_revm::OpSpecId::FJORD)
             .build_celo();
         evm.ctx().cfg.chain_id = 0;
-        evm.ctx().cfg.spec = op_revm::OpSpecId::FJORD;
         evm.ctx().block.number = U256::from(7);
         evm.ctx().block.prevrandao = Some(Default::default());
         let mut tx = crate::CeloTransaction::new(op_revm::OpTransaction {
