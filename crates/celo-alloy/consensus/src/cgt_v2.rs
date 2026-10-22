@@ -1,7 +1,8 @@
 //! Canonical CGTv2 activation deposit shared by execution and derivation.
 
+use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address};
-use op_alloy_consensus::{TxDeposit, UpgradeDepositSource};
+use op_alloy_consensus::{OpTransaction, OpTxEnvelope, TxDeposit, UpgradeDepositSource};
 
 /// Existing OP upgrade source-hash domain, with a Celo-specific intent.
 pub const CGT_V2_ACTIVATION_INTENT: &str = "Celo: CGTv2 Activation";
@@ -36,6 +37,19 @@ impl CgtV2Activation {
     /// Source hash calculated by the existing OP helper without additional inputs.
     pub fn source_hash() -> B256 {
         UpgradeDepositSource { intent: CGT_V2_ACTIVATION_INTENT.into() }.source_hash()
+    }
+
+    /// Recognizes the reserved source hash; canonical fields are checked by `decode_deposit`.
+    pub fn is_activation_transaction(tx: &impl OpTransaction) -> bool {
+        tx.as_deposit().is_some_and(|deposit| deposit.source_hash == Self::source_hash())
+    }
+
+    /// Recognizes the signal in encoded payloads without decoding ordinary user transactions.
+    /// Malformed transactions still fail the caller's normal transaction decoding.
+    pub fn is_activation_encoded(encoded: &[u8]) -> bool {
+        encoded.first() == Some(&op_alloy_consensus::DEPOSIT_TX_TYPE_ID)
+            && OpTxEnvelope::decode_2718_exact(encoded)
+                .is_ok_and(|tx| Self::is_activation_transaction(&tx))
     }
 
     /// Encodes version 1 as a normal upgrade deposit calling the existing zero-argument setter.

@@ -1,6 +1,6 @@
 //! Block executor for Celo.
 
-pub use executor::CeloBlockExecutor;
+pub use executor::{CeloBlockExecutor, CeloTxResult};
 pub use executor_factory::CeloBlockExecutorFactory;
 pub use receipt_builder::CeloAlloyReceiptBuilder;
 pub use upgrade18::CELO_GAS_BRIDGE_L2;

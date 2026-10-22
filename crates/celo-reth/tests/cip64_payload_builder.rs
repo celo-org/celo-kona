@@ -705,3 +705,84 @@ fn payload_metrics_cover_the_whole_sequencing_path() {
         1,
     );
 }
+
+#[test]
+fn cgt_v2_witness_rejects_user_transactions_on_either_side_of_signal() {
+    use alloy_consensus::{Sealable, SignableTransaction, TxLegacy};
+    use alloy_eips::Encodable2718;
+    use celo_alloy_consensus::cgt_v2::{CGT_V2_DEPOSITOR, CGT_V2_L1_BLOCK, CgtV2Activation};
+    use reth_optimism_chainspec::OpChainSpecBuilder;
+    use reth_optimism_payload_builder::builder::OpBuilder;
+    use reth_primitives_traits::WithEncoded;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+
+    let origin = B256::repeat_byte(0x11);
+    let signed = TxLegacy {
+        chain_id: Some(1337),
+        gas_limit: 21_000,
+        gas_price: 30_000_000_000,
+        to: TxKind::Call(Address::with_last_byte(0x88)),
+        ..Default::default()
+    }
+    .into_signed(Signature::test_signature());
+    let sender = signed.recover_signer().unwrap();
+    let user = CeloTxEnvelope::Legacy(signed);
+    let info: CeloTxEnvelope = op_alloy_consensus::TxDeposit {
+        from: CGT_V2_DEPOSITOR,
+        to: TxKind::Call(CGT_V2_L1_BLOCK),
+        gas_limit: 100_000,
+        source_hash: B256::repeat_byte(0x22),
+        input: origin.as_slice().to_vec().into(),
+        ..Default::default()
+    }
+    .seal_slow()
+    .into();
+    let signal: CeloTxEnvelope =
+        CgtV2Activation { l1_origin_hash: origin, migrated_amount: U256::from(600) }
+            .to_deposit()
+            .seal_slow()
+            .into();
+    let provider = MockEthProvider::default();
+    provider.add_account(sender, ExtendedAccount::new(0, U256::MAX));
+    // The legacy L1-info stand-in writes the origin to the real hash slot.
+    provider.add_account(
+        CGT_V2_L1_BLOCK,
+        ExtendedAccount::new(0, U256::ZERO).with_bytecode(hex!("60003560025500").to_vec().into()),
+    );
+    // All three legacy fee-vault getters return the valid value 1.
+    provider.add_account(
+        address!("4200000000000000000000000000000000000011"),
+        ExtendedAccount::new(0, U256::ZERO)
+            .with_bytecode(hex!("600160005260206000f3").to_vec().into()),
+    );
+    let chain_spec = Arc::new(
+        OpChainSpecBuilder::default()
+            .chain(reth_chainspec::Chain::from_id(1337))
+            .genesis(Default::default())
+            .granite_activated()
+            .build(),
+    );
+    let witness = |transactions: Vec<CeloTxEnvelope>| {
+        let mut config = test_payload_config();
+        config.attributes.transactions = transactions
+            .into_iter()
+            .map(|tx| WithEncoded::new(tx.encoded_2718().into(), tx))
+            .collect();
+        let ctx = OpPayloadBuilderCtx {
+            evm_config: CeloEvmConfig::celo(chain_spec.clone()),
+            builder_config: OpBuilderConfig::default(),
+            chain_spec: chain_spec.clone(),
+            config,
+            cancel: Default::default(),
+            best_payload: None,
+        };
+        OpBuilder::new(|_| reth_payload_util::NoopPayloadTransactions::<CeloPoolTx>::default())
+            .witness(&provider, &provider, &ctx)
+    };
+    witness(vec![info.clone(), signal.clone()]).expect("deposit-only activation witness");
+    for transactions in [vec![info.clone(), user.clone(), signal.clone()], vec![info, signal, user]]
+    {
+        let error = witness(transactions).expect_err("activation witness must reject user txs");
+        assert!(error.to_string().contains("unexpected non-deposit transactions"), "{error}");
+    }
+}

@@ -518,3 +518,73 @@ fn cgt_v2_bad_legacy_vault_getter_aborts() {
         );
     }
 }
+
+fn user_transaction() -> Recovered<CeloTxEnvelope> {
+    use alloy_consensus::{SignableTransaction, TxLegacy};
+    use alloy_primitives::Signature;
+    Recovered::new_unchecked(
+        CeloTxEnvelope::Legacy(
+            TxLegacy {
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0x88)),
+                ..Default::default()
+            }
+            .into_signed(Signature::new(U256::ZERO, U256::ZERO, false)),
+        ),
+        Address::ZERO,
+    )
+}
+
+#[test]
+fn cgt_v2_incremental_execution_rejects_users_before_and_after_signal() {
+    for user_first in [false, true] {
+        let f = factory();
+        let mut db = State::builder().with_database(database()).build();
+        let mut e = f.create_executor(
+            f.evm_factory().create_evm(&mut db, env()),
+            OpBlockExecutionCtx {
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+        );
+        e.apply_pre_execution_changes().unwrap();
+        e.execute_transaction(&info()).unwrap();
+        let error = if user_first {
+            e.execute_transaction(&user_transaction()).unwrap();
+            e.execute_transaction(&signal()).unwrap_err()
+        } else {
+            e.execute_transaction(&signal()).unwrap();
+            e.execute_transaction(&user_transaction()).unwrap_err()
+        };
+        assert!(error.to_string().contains("unexpected non-deposit transactions"), "{error}");
+    }
+}
+
+#[test]
+fn cgt_v2_discarded_candidates_do_not_change_deposits_only_rule() {
+    for discard_signal in [false, true] {
+        let f = factory();
+        let mut db = State::builder().with_database(database()).build();
+        let mut e = f.create_executor(
+            f.evm_factory().create_evm(&mut db, env()),
+            OpBlockExecutionCtx {
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+        );
+        e.apply_pre_execution_changes().unwrap();
+        e.execute_transaction(&info()).unwrap();
+        let discarded = if discard_signal { signal() } else { user_transaction() };
+        assert!(
+            e.execute_transaction_with_commit_condition(&discarded, |_| CommitChanges::No)
+                .unwrap()
+                .is_none()
+        );
+        if discard_signal {
+            e.execute_transaction(&user_transaction())
+                .expect("discarded signal does not ban users");
+        } else {
+            e.execute_transaction(&signal()).expect("discarded user does not ban activation");
+        }
+    }
+}

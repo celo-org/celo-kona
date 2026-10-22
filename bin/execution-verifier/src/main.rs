@@ -736,4 +736,3 @@ mod tests {
         assert!(err.to_string().contains("Invalid L2 RPC"), "unexpected: {err}");
     }
 }
-
