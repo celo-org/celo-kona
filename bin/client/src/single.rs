@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
 use celo_derive::CeloEthereumDataSource;
-use celo_genesis::CeloRollupConfig;
 use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
 use core::fmt::Debug;
 #[cfg(feature = "eigenda")]
@@ -40,11 +39,9 @@ where
         Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
-    // Wrap RollupConfig to CeloRollupConfig, carrying the Espresso batch-authentication settings
-    // resolved during boot.
-    let mut celo_rollup_config = CeloRollupConfig::new(boot.op_boot_info.rollup_config.clone());
-    celo_rollup_config.espresso = boot.espresso;
-    let celo_rollup_config = Arc::new(celo_rollup_config);
+    // Preserve Celo's Espresso settings. CGTv2 uses canonical activation deposits
+    // and compiled network parameters in the shared executor.
+    let celo_rollup_config = Arc::new(boot.celo_rollup_config());
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);
     let safe_head_hash =

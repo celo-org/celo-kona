@@ -15,9 +15,16 @@
 //! - `-b` or `--block-number`: L2 block number to execute for the fixture.
 //! - `-o` or `--output-dir`: (Optional) The output directory for the fixture. If not provided,
 //!   defaults to `celo-executor`'s `testdata` directory.
+//! - `-c` or `--rollup-config`: (Optional) Path to the chain's `rollup.json`. If not provided, the
+//!   config is looked up in `celo-registry` by the RPC's chain ID — which only knows the production
+//!   Celo chains, so a dev chain must pass one.
+//!
+//! Preimages are collected from the L2 node's `debug_executionWitness` (served by reth), so the
+//! RPC must be a reth-based archive node serving historical proofs (`--rpc.eth-proof-window`).
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use celo_executor::test_utils::create_static_fixture;
+use celo_genesis::CeloRollupConfig;
 use clap::Parser;
 use kona_cli::{LogArgs, LogConfig};
 use std::path::PathBuf;
@@ -41,6 +48,9 @@ pub struct ExecutionFixtureCommand {
     /// The output directory for the fixture.
     #[arg(long, short = 'o')]
     pub output_dir: Option<PathBuf>,
+    /// Path to the chain's `rollup.json`. Required for chains `celo-registry` does not know.
+    #[arg(long, short = 'c')]
+    pub rollup_config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -66,7 +76,17 @@ async fn main() -> Result<()> {
             .join("crates/kona/executor/testdata")
     };
 
-    create_static_fixture(cli.l2_rpc.as_str(), cli.block_number, output_dir).await;
+    let rollup_config = cli
+        .rollup_config
+        .map(|path| -> Result<CeloRollupConfig> {
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read rollup config at {}", path.display()))?;
+            serde_json::from_str(&raw)
+                .with_context(|| format!("Failed to parse rollup config at {}", path.display()))
+        })
+        .transpose()?;
+
+    create_static_fixture(cli.l2_rpc.as_str(), cli.block_number, output_dir, rollup_config).await;
 
     info!(block_number = cli.block_number, "Successfully created static test fixture");
     Ok(())

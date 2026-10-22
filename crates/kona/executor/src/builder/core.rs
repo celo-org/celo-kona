@@ -14,7 +14,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use alloy_op_hardforks::OpHardforks;
-use celo_alloy_consensus::CeloReceiptEnvelope;
+use celo_alloy_consensus::{CeloReceiptEnvelope, cgt_v2::CgtV2Activation};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributesExt;
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
@@ -84,7 +84,11 @@ where
         let no_user_tx_activation_block = self.config.is_no_user_tx_activation_block(
             self.trie_db.parent_block_header().timestamp,
             attrs.payload_attributes.timestamp,
-        );
+        ) || attrs
+            .transactions
+            .iter()
+            .flatten()
+            .any(|tx| CgtV2Activation::is_activation_encoded(tx));
 
         // Attempt to send a payload witness hint to the host. This hint instructs the host to
         // populate its preimage store with the preimages required to statelessly execute
@@ -192,6 +196,42 @@ mod test {
     use rstest::rstest;
     use std::path::PathBuf;
 
+    #[tokio::test]
+    async fn cgt_v2_proof_rejects_user_transactions_before_signal() {
+        use super::*;
+        use crate::test_utils::{LoadedCeloExecutorTestFixture, load_test_fixture};
+        use alloy_eips::Encodable2718;
+        use alloy_primitives::{B256, Sealable, U256};
+        use celo_alloy_consensus::cgt_v2::CgtV2Activation;
+        use kona_mpt::NoopTrieHinter;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/mainnet-token-duality-transfer-from-tx_block-43396452.tar.gz");
+        let LoadedCeloExecutorTestFixture { fixture_dir: _fixture_dir, mut fixture, provider } =
+            load_test_fixture(path).await;
+        fixture.executing_payload.transactions.as_mut().unwrap().push(
+            CgtV2Activation {
+                l1_origin_hash: B256::repeat_byte(0x11),
+                migrated_amount: U256::from(600),
+            }
+            .to_deposit()
+            .encoded_2718()
+            .into(),
+        );
+        let mut builder = CeloStatelessL2Builder::new(
+            &fixture.rollup_config,
+            CeloEvmFactory::default(),
+            provider,
+            NoopTrieHinter,
+            fixture.parent_header.seal_slow(),
+        );
+        let error = builder.build_block(fixture.executing_payload).unwrap_err();
+        assert!(
+            error.to_string().contains("unexpected non-deposit transactions"),
+            "proof execution must reject user txs before reaching the signal: {error}",
+        );
+    }
+
     #[rstest]
     #[tokio::test]
     async fn test_statelessly_execute_block(
@@ -200,6 +240,41 @@ mod test {
         path: PathBuf,
     ) {
         run_test_fixture(path).await;
+    }
+}
+
+/// Timestamp-generated fixtures cannot describe the signal-driven migration.
+#[cfg(test)]
+mod legacy_cgt_fixtures {
+    #[tokio::test]
+    async fn cgt_v2_rejects_timestamp_fixture_configuration() {
+        for name in [
+            "devnet-upgrade18-boundary_block-2.tar.gz",
+            "devnet-upgrade18-post-boundary_block-3.tar.gz",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/legacy-timestamp-cgtv2")
+                .join(name);
+            let temp = tempfile::tempdir().unwrap();
+            let status = tokio::process::Command::new("tar")
+                .arg("-xf")
+                .arg(path)
+                .arg("-C")
+                .arg(temp.path())
+                .arg("--strip-components=1")
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(temp.path().join("fixture.json")).unwrap())
+                    .unwrap();
+            let err = serde_json::from_value::<celo_genesis::CeloRollupConfig>(
+                value["rollup_config"].clone(),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{err}");
+        }
     }
 }
 

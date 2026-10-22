@@ -183,9 +183,8 @@ impl From<RollupConfig> for CeloRollupConfig {
     }
 }
 
-// Custom deserialization that filters out cel2_time and the Celo Espresso fields before handing
-// the remainder to the upstream `RollupConfig` deserializer (which would reject unknown keys
-// otherwise), then re-attaches the Espresso settings.
+// Custom deserialization rejects obsolete CGTv2 overrides, removes cel2_time, and
+// extracts Espresso settings before passing the remainder to the upstream config.
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -195,6 +194,12 @@ impl<'de> serde::Deserialize<'de> for CeloRollupConfig {
         let value = serde_json::Value::deserialize(deserializer)?;
         let mut json_obj =
             value.as_object().ok_or_else(|| serde::de::Error::custom("expected object"))?.clone();
+
+        if let Some(key) = json_obj.keys().find(|key| key.starts_with("upgrade18_")) {
+            return Err(serde::de::Error::custom(alloc::format!(
+                "obsolete CGTv2 config `{key}`: activation uses the L1-origin signal and fixed network rules"
+            )));
+        }
 
         json_obj.remove("cel2_time");
 
@@ -376,6 +381,25 @@ mod tests {
         // No Espresso fields in this config => defaults (disabled).
         assert_eq!(deserialized.espresso, CeloEspressoConfig::default());
         assert!(!deserialized.is_batch_auth_enabled());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn cgt_v2_rejects_obsolete_timestamp_and_reserve_overrides() {
+        use alloc::string::ToString;
+        for key in [
+            "upgrade18_time",
+            "upgrade18_liquidity_controller_owner",
+            "upgrade18_celo_token_l1",
+            "upgrade18_celo_gas_bridge_l1",
+            "upgrade18_native_asset_liquidity_amount",
+        ] {
+            let mut value =
+                serde_json::to_value(CeloRollupConfig::new(RollupConfig::default())).unwrap();
+            value.as_object_mut().unwrap().insert(key.into(), serde_json::Value::Null);
+            let err = serde_json::from_value::<CeloRollupConfig>(value).unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{key}: {err}");
+        }
     }
 
     #[test]

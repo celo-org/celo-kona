@@ -27,3 +27,9 @@ pub use pre_gingerbread::pre_gingerbread_header_hash;
 
 #[cfg(feature = "reth")]
 mod reth_compat;
+
+/// CGTv2 protocol activation deposit.
+pub mod cgt_v2;
+
+/// Fixed CGTv2 network parameters.
+pub mod cgt_v2_params;

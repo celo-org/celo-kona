@@ -105,6 +105,7 @@ impl CeloBootInfo {
         // Pin the Espresso settings for the known Celo chains to the program-baked values, so a
         // proof always derives with the Espresso params bound by its verification key rather than
         // any host-supplied value.
+        //
         enforce_celo_espresso(&mut celo_rollup_config.espresso, chain_id);
         // Reject internally inconsistent Espresso settings up front, so a misconfiguration fails
         // fast here instead of corrupting derivation. This covers `espresso_time` set without a
@@ -114,8 +115,10 @@ impl CeloBootInfo {
         celo_rollup_config.validate_espresso().map_err(|e| {
             OracleProviderError::Serde(<serde_json::Error as serde::de::Error>::custom(e))
         })?;
-        let espresso = celo_rollup_config.espresso;
-        let mut rollup_config = celo_rollup_config.op_rollup_config;
+        // Exhaustive destructuring: a Celo-only field added to `CeloRollupConfig` in the future
+        // must be threaded through this boot info too (or consciously dropped here) — the
+        // compiler will point at this spot.
+        let CeloRollupConfig { op_rollup_config: mut rollup_config, espresso } = celo_rollup_config;
 
         // Celo chains run with a non-default Fjord max sequencer drift (2892). The embedded
         // registry stamps it onto every Celo rollup config, but a config arriving via the
@@ -173,6 +176,15 @@ impl CeloBootInfo {
             },
             espresso,
         })
+    }
+
+    /// Reassembles the OP config and its Celo-only Espresso settings.
+    /// CGTv2 execution consumes the canonical signal and compiled chain parameters.
+    pub fn celo_rollup_config(&self) -> CeloRollupConfig {
+        CeloRollupConfig {
+            op_rollup_config: self.op_boot_info.rollup_config.clone(),
+            espresso: self.espresso,
+        }
     }
 }
 
@@ -281,6 +293,33 @@ mod tests {
             enforce_celo_espresso(&mut espresso, chain_id);
             assert_eq!(espresso, expected, "chain {chain_id} must derive with the baked Espresso");
         }
+    }
+
+    /// `celo_rollup_config` must carry every Celo-only field into the executor's config —
+    /// this is the seam where dropping one silently disables the corresponding consensus
+    /// rule in the proof.
+    #[test]
+    fn celo_rollup_config_carries_all_celo_fields() {
+        let espresso = CeloEspressoConfig {
+            espresso_time: Some(7),
+            batch_authenticator_address: Some(Address::repeat_byte(0xee)),
+        };
+        let boot = CeloBootInfo {
+            op_boot_info: BootInfo {
+                l1_head: B256::repeat_byte(1),
+                agreed_l2_output_root: B256::repeat_byte(2),
+                claimed_l2_output_root: B256::repeat_byte(3),
+                claimed_l2_block_number: 4,
+                chain_id: 1337,
+                rollup_config: RollupConfig::default(),
+                l1_config: Default::default(),
+            },
+            espresso,
+        };
+
+        let cfg = boot.celo_rollup_config();
+        assert_eq!(cfg.op_rollup_config, boot.op_boot_info.rollup_config);
+        assert_eq!(cfg.espresso, espresso);
     }
 
     #[test]
