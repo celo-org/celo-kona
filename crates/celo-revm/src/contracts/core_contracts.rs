@@ -644,13 +644,12 @@ pub(crate) mod tests {
             getExchangeRateCall::SELECTOR,
             getCurrencyConfigCall::SELECTOR,
         ] {
-            let mut evm = Context::celo()
-                .with_db(make_celo_test_db())
-                .build_celo()
-                .with_precompiles(FailingDirectoryCall {
-                    selector,
-                    inner: crate::precompiles::celo_precompiles_map(op_revm::OpSpecId::ISTHMUS),
-                });
+            let mut evm = Context::celo().with_db(make_celo_test_db()).build_celo();
+            let spec = evm.ctx().cfg.spec;
+            let mut evm = evm.with_precompiles(FailingDirectoryCall {
+                selector,
+                inner: crate::precompiles::celo_precompiles_map(spec),
+            });
             let error = crate::FeeCurrencyContext::new_from_evm(&mut evm)
                 .expect_err("fatal directory call must abort loading rather than drop a currency");
             assert_eq!(error.to_string(), "injected fatal directory call");
@@ -1177,9 +1176,9 @@ pub(crate) mod tests {
                 fail_addr: address,
                 fail_slot: Some(slot),
             })
+            .modify_cfg_chained(|cfg| cfg.spec = op_revm::OpSpecId::FJORD)
             .build_celo();
         evm.ctx().cfg.chain_id = 0;
-        evm.ctx().cfg.spec = op_revm::OpSpecId::FJORD;
         evm.ctx().block.number = U256::from(7);
         evm.ctx().block.prevrandao = Some(Default::default());
         let mut tx = crate::CeloTransaction::new(op_revm::OpTransaction {

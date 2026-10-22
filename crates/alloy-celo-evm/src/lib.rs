@@ -594,8 +594,7 @@ fn make_test_evm_with_db<DB: Database>(
             .with_db(db)
             .with_cfg(cfg)
             .with_chain(default_l1_block_info(spec_id))
-            .build_celo_with_inspector(revm::inspector::NoOpInspector {})
-            .with_precompiles(celo_revm::precompiles::celo_precompiles_map(spec_id)),
+            .build_celo_with_inspector(revm::inspector::NoOpInspector {}),
         inspect: false,
         cip64_storage: Cip64Storage::default(),
         blocklist,
