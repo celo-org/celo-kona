@@ -238,5 +238,68 @@ mod legacy_cgt_fixtures {
     }
 }
 
+/// Tests for CIP-64 gas calculation verification.
+///
+/// These tests verify that the gas costs for CIP-64 debit/credit operations
+/// match the expected values from op-geth for the same transactions.
+#[cfg(test)]
+mod cip64_gas_tests {
+    use crate::test_utils::load_and_execute_fixture;
+    use celo_revm::Cip64Info;
+    use std::path::PathBuf;
+
+    /// Runs a test fixture by name and returns the CIP-64 gas metrics directly from execution.
+    async fn run_fixture_and_get_cip64_info(fixture_name: &str) -> Option<Cip64Info> {
+        // Find the fixture path
+        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let fixture_path = testdata_dir
+            .read_dir()
+            .ok()?
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().contains(fixture_name))?
+            .path();
+
+        let (outcome, _fixture) = load_and_execute_fixture(fixture_path).await;
+
+        // Get the first CIP-64 entry from the accumulated storage
+        outcome.cip64_storage.all_entries().into_iter().next().map(|data| data.cip64_info)
+    }
+
+    /// Test that verifies the CIP-64 gas calculation matches op-geth for the
+    /// sepolia-cip64-erc20-transfer fixture.
+    ///
+    /// Expected values from op-geth (raw gas, before refunds):
+    /// - Debit: 47756
+    /// - Credit: 22997
+    /// These values are taken from the call_tracer/celo-kona-comparison.json test in op-geth.
+    ///
+    /// op-geth calculates: `gasUsed = maxIntrinsicGasCost - leftoverGas`
+    /// which equals revm's `total_gas_spent`.
+    #[tokio::test]
+    async fn test_cip64_gas_matches_opgeth_sepolia_erc20_transfer() {
+        let cip64_info = run_fixture_and_get_cip64_info("sepolia-cip64-erc20-transfer")
+            .await
+            .expect("Should get CIP-64 info from sepolia-cip64-erc20-transfer fixture");
+
+        // These values match op-geth's gas calculation for the same transaction
+        // See: https://github.com/celo-org/op-geth/blob/main/contracts/fee_currencies.go
+        //
+        // op-geth calculates: gasUsed = maxIntrinsicGasCost - leftoverGas
+        // which equals revm's total_gas_spent
+        const EXPECTED_DEBIT_RAW_GAS: u64 = 47756;
+        const EXPECTED_CREDIT_RAW_GAS: u64 = 22997;
+
+        assert_eq!(
+            cip64_info.debit_gas_spent, EXPECTED_DEBIT_RAW_GAS,
+            "Debit raw gas (spent before refunds) should match op-geth"
+        );
+
+        assert_eq!(
+            cip64_info.credit_gas_spent, EXPECTED_CREDIT_RAW_GAS,
+            "Credit raw gas (spent before refunds) should match op-geth"
+        );
+    }
+}
+
 #[cfg(test)]
 mod missing_preimages;
