@@ -9,6 +9,7 @@ pub use upgrade18::{
 
 pub mod executor;
 pub mod executor_factory;
+pub mod migration;
 pub mod receipt_builder;
 pub mod upgrade18;
 mod upgrade18_data;

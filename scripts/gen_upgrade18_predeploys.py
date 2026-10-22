@@ -146,6 +146,12 @@ def main() -> None:
     w("}")
     w("")
 
+    layout = data["migrationStorage"]
+    for name, key in [("CGT_FLAG_SLOT", "cgtFlagSlot"), ("FEE_VAULT_MIN_WITHDRAWAL_SLOT", "feeVaultMinWithdrawalSlot"), ("FEE_VAULT_RECIPIENT_SLOT", "feeVaultRecipientSlot"), ("FEE_VAULT_INITIALIZER_SLOT", "feeVaultInitializerSlot")]:
+        w("/// Migration storage definition pinned by the artifact source/layout metadata.")
+        w(f"pub(super) const {name}: U256 = {u256_limbs(int(layout[key], 16))};")
+        w("")
+
     DST.write_text("\n".join(out))
     # Normalize to the repo's rustfmt style so the checked-in file is fmt-clean.
     subprocess.run(

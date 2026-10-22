@@ -226,5 +226,13 @@
         }
       ]
     }
-  ]
+  ],
+  "migrationStorage": {
+    "sourceCommit": "db220657e2fb8ad81b4ca676193e60433a7d27ef",
+    "sourceLayout": "snapshots/storageLayout/CeloSequencerFeeVault.json; OpenZeppelin v5 Initializable ERC-7201 namespace",
+    "cgtFlagSlot": "0xd2ff82c9b477ff6a09f530b1c627ffb4b0b81e2ae2ba427f824162e8dad020aa",
+    "feeVaultMinWithdrawalSlot": "0x1",
+    "feeVaultRecipientSlot": "0x2",
+    "feeVaultInitializerSlot": "0xf0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00"
+  }
 }
