@@ -163,7 +163,14 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
 
     validate_block_range(start_block, cli.end_block)?;
 
-    tracing::info!(start_block_number = start_block, "Using start-block");
+    match cli.end_block {
+        Some(end) => tracing::info!(
+            start_block_number = start_block,
+            end_block_number = end,
+            "Using fixed block range"
+        ),
+        None => tracing::info!(start_block_number = start_block, "Following the head"),
+    }
 
     // Check if l2_rpc is a URL or a file path
     let provider: RootProvider<Ethereum> = match cli.l2_rpc.as_str() {
@@ -201,6 +208,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
     // Spawn the repeating task in the background
     let tracker_handle = tracker.clone();
     let cancel_token_clone = cancel_token.clone();
+    let state_file_clone = cli.state_file.clone();
     let verified_block_store_task = tokio::spawn(async move {
         let mut interval = interval(PERSISTANCE_INTERVAL);
 
@@ -211,7 +219,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 }
                 _ = interval.tick() => {
                     let tracker = tracker_handle.clone();
-                    if let Err(e) = persist_verified_block(tracker,cli.state_file.as_ref()).await {
+                    if let Err(e) = persist_verified_block(tracker,state_file_clone.as_ref()).await {
                         eprintln!("Error storing verified block: {e}");
                     }
                 }
@@ -255,6 +263,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         let concurrency_handle = verify_new_heads_concurrency.clone();
         handles.spawn({
             let cancel_token = cancel_token.clone();
+            let tracker = tracker.clone();
             async move {
                 let result = verify_block_range(
                     start_block,
@@ -294,19 +303,47 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
+                // Best effort: a persist failure must not mask the task error.
+                if let Err(persist_err) =
+                    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await
+                {
+                    tracing::error!("Error storing verified block: {persist_err}");
+                }
                 return Err(e);
             }
             Err(e) => {
                 // Cancel any outstanding tasks, and wait for all tasks to finish
                 cancel_token.cancel();
                 handles.join_all().await;
+                // Best effort: a persist failure must not mask the panic.
+                if let Err(persist_err) =
+                    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await
+                {
+                    tracing::error!("Error storing verified block: {persist_err}");
+                }
                 return Err(anyhow::anyhow!("Task panicked: {e}"));
             }
             _ => {}
         }
     }
 
-    verified_block_store_task.abort();
+    // Persist progress before exiting so short-lived runs don't lose work
+    cancel_token.cancel();
+    verified_block_store_task.await?;
+    persist_verified_block(tracker.clone(), cli.state_file.as_ref()).await?;
+    let highest_verified_block = tracker.lock().highest_verified_block();
+    match cli.end_block {
+        Some(end) if highest_verified_block < Some(end) => tracing::warn!(
+            end_block_number = end,
+            highest_verified_block,
+            "Verification finished with unverified blocks in range"
+        ),
+        _ => tracing::info!(
+            end_block_number = cli.end_block,
+            highest_verified_block,
+            "Verification finished"
+        ),
+    }
     Ok(())
 }
 
