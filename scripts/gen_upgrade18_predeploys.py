@@ -26,10 +26,6 @@ PARAM_VARIANTS = {
     "nativeAssetLiquidityAmount": "NativeAssetLiquidityAmount",
 }
 
-# Networks whose param values ship in the artifact, keyed by L2 chain id
-# (see `celo_revm::constants::CELO_*_CHAIN_ID`).
-NETWORKS = {"mainnet": 42_220, "sepolia": 11_142_220, "chaos": 11_162_320}
-
 
 def u256_limbs(value: int) -> str:
     limbs = [(value >> (64 * i)) & 0xFFFF_FFFF_FFFF_FFFF for i in range(4)]
@@ -48,7 +44,7 @@ def main() -> None:
 
     out = []
     w = out.append
-    w("//! Upgrade 18 (CGT v2) predeploy activation data — GENERATED, DO NOT EDIT.")
+    w("//! Upgrade 18 (CGT v2) predeploy activation data : GENERATED, DO NOT EDIT.")
     w("//!")
     w("//! Source artifact: `res/predeploys.json`, produced in celo-org/optimism at")
     w(f"//! `{build['gitBranch']}` (commit `{build['gitCommit']}`),")
@@ -62,7 +58,7 @@ def main() -> None:
     w("use alloy_primitives::{Address, B256, U256, address, b256, hex};")
     w("")
     w("/// One 32-byte storage write; `Param` values are placeholders resolved at")
-    w("/// activation time (override > per-network constant).")
+    w("/// activation time (fixed network rules and authenticated snapshot).")
     w("#[derive(Debug, Clone, Copy)]")
     w("pub(super) enum SlotValue {")
     w("    /// A literal word, identical on every network.")
@@ -75,7 +71,7 @@ def main() -> None:
     w("/// deterministic `0xc0d3…` address, plus proxy-account storage (and balance).")
     w("#[derive(Debug, Clone, Copy)]")
     w("pub(super) struct RawPredeploy {")
-    w("    /// Contract name — kept for tests and debugging output.")
+    w("    /// Contract name : kept for tests and debugging output.")
     w("    #[allow(dead_code)]")
     w("    pub(super) name: &'static str,")
     w("    /// The proxy account (the predeploy address users interact with).")
@@ -93,7 +89,7 @@ def main() -> None:
     w("}")
     w("")
     shell = data["proxyShell"]
-    w("/// `src/universal/Proxy.sol` runtime bytecode — planted on every predeploy proxy")
+    w("/// `src/universal/Proxy.sol` runtime bytecode : planted on every predeploy proxy")
     w("/// account (idempotent for the proxies that already exist on-chain).")
     w(f"pub(super) const PROXY_SHELL_BYTECODE: &[u8] = &hex!(\"{shell['bytecode'].removeprefix('0x')}\");")
     w("")
@@ -124,28 +120,6 @@ def main() -> None:
         w("    },")
     w("];")
     w("")
-    w("/// Param values shipped in the artifact for known networks, keyed by L2 chain id.")
-    w("/// The `celoGasBridgeL1` / `nativeAssetLiquidityAmount` placeholders are not yet")
-    w("/// final on any network and must arrive via overrides (or a regenerated artifact).")
-    w("pub(super) const fn known_param(chain_id: u64, param: Upgrade18Param) -> Option<U256> {")
-    w("    match (chain_id, param) {")
-    for pname, variant in PARAM_VARIANTS.items():
-        values = data["params"][pname]
-        if not isinstance(values, dict):
-            continue  # unresolved placeholder — no known values
-        for network, chain_id in NETWORKS.items():
-            value = values.get(network)
-            if value is None or not value.startswith("0x"):
-                continue
-            w(
-                f"        ({chain_id}, Upgrade18Param::{variant}) => "
-                f"Some({u256_limbs(int(value, 16))}), // {network}: {values.get('note', '')}"
-            )
-    w("        _ => None,")
-    w("    }")
-    w("}")
-    w("")
-
     layout = data["migrationStorage"]
     for name, key in [("CGT_FLAG_SLOT", "cgtFlagSlot"), ("FEE_VAULT_MIN_WITHDRAWAL_SLOT", "feeVaultMinWithdrawalSlot"), ("FEE_VAULT_RECIPIENT_SLOT", "feeVaultRecipientSlot"), ("FEE_VAULT_INITIALIZER_SLOT", "feeVaultInitializerSlot")]:
         w("/// Migration storage definition pinned by the artifact source/layout metadata.")

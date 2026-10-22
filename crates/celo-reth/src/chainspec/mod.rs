@@ -13,6 +13,6 @@ mod hardfork;
 #[cfg(feature = "std")]
 mod parser;
 
-pub use hardfork::{CeloHardfork, upgrade18_overrides, upgrade18_time};
+pub use hardfork::CeloHardfork;
 #[cfg(feature = "std")]
 pub use parser::CeloChainSpecParser;

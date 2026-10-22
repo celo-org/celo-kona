@@ -25,11 +25,8 @@ use tokio::fs;
 
 /// The test fixture format for the [`CeloStatelessL2Builder`].
 ///
-/// Identical to kona's `ExecutorTestFixture` except that `rollup_config` is a
-/// [`CeloRollupConfig`], so Celo-only settings — notably `upgrade18_time` and the CGT v2
-/// activation-artifact param overrides — survive the round-trip through the tarball. A
-/// [`CeloRollupConfig`] deserializes from a plain OP `rollup.json` document, so fixtures
-/// generated before those fields existed still load.
+/// Celo config preserves Espresso settings when fixtures round-trip. CGTv2 is
+/// driven by its deposit signal, without fixture timestamp or reserve overrides.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CeloExecutorTestFixture {
     /// The rollup configuration for the executing chain.

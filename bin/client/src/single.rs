@@ -39,9 +39,8 @@ where
         Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, oracle_client.clone(), hint_client.clone()));
     let boot = CeloBootInfo::load(oracle.as_ref()).await?;
 
-    // Reassemble the full CeloRollupConfig (Espresso + Upgrade 18 settings resolved during
-    // boot). Building it from the OP config alone would zero the Celo-only fields and execute
-    // the Upgrade 18 boundary block without the CGT v2 transition the node applies.
+    // Preserve Celo's Espresso settings. CGTv2 uses canonical activation deposits
+    // and compiled network parameters in the shared executor.
     let celo_rollup_config = Arc::new(boot.celo_rollup_config());
 
     let rollup_config = Arc::new(boot.op_boot_info.rollup_config);

@@ -75,9 +75,15 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<OpChainSpec>> {
 
     let gingerbread_block = read_u64(&genesis, "gingerbreadBlock")?;
     let cel2_time = read_u64(&genesis, "cel2Time")?;
-    let upgrade18_time = read_u64(&genesis, "upgrade18Time")?;
+    if let Some((key, _)) =
+        genesis.config.extra_fields.iter().find(|(key, _)| key.starts_with("upgrade18"))
+    {
+        eyre::bail!(
+            "obsolete CGTv2 config `{key}`: activation uses the L1-origin signal and fixed network rules"
+        );
+    }
     let mut spec: OpChainSpec = genesis.into();
-    patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time, upgrade18_time);
+    patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time);
     reseal_pre_gingerbread_genesis(&mut spec, gingerbread_block);
     Ok(Arc::new(spec))
 }
@@ -164,7 +170,7 @@ fn decompress_genesis(compressed: &[u8]) -> eyre::Result<Genesis> {
     Ok(serde_json::from_slice(&buf)?)
 }
 
-/// Inserts `Gingerbread`, `Cel2`, and `Upgrade18` into the chain hardfork list
+/// Inserts `Gingerbread` and `Cel2` into the chain hardfork list
 /// at the given activation values. `ChainHardforks::insert` orders by
 /// [`ForkCondition`]'s `Ord` impl, so positions are derived from the values
 /// themselves — block-based forks slot among the other block forks,
@@ -172,22 +178,17 @@ fn decompress_genesis(compressed: &[u8]) -> eyre::Result<Genesis> {
 ///
 /// All values are optional. If the genesis omits one, the corresponding fork
 /// is left out entirely (matches op-geth's behaviour for chains that never had
-/// that fork — e.g. a hand-rolled celo dev genesis without `cel2Time`, or any
-/// chain while Upgrade 18 is not yet scheduled).
+/// that historical fork).
 fn patch_celo_hardforks(
     forks: &mut ChainHardforks,
     gingerbread_block: Option<u64>,
     cel2_time: Option<u64>,
-    upgrade18_time: Option<u64>,
 ) {
     if let Some(block) = gingerbread_block {
         forks.insert(CeloHardfork::Gingerbread, ForkCondition::Block(block));
     }
     if let Some(time) = cel2_time {
         forks.insert(CeloHardfork::Cel2, ForkCondition::Timestamp(time));
-    }
-    if let Some(time) = upgrade18_time {
-        forks.insert(CeloHardfork::Upgrade18, ForkCondition::Timestamp(time));
     }
 }
 
@@ -247,120 +248,33 @@ mod tests {
             fork_condition(&spec, OpHardfork::Jovian),
             ForkCondition::Timestamp(1_774_958_788),
         );
-        // Upgrade 18 (CGT v2) is not scheduled yet on any embedded chain. When it is,
-        // this assertion must move to a concrete timestamp.
-        assert_eq!(fork_condition(&spec, CeloHardfork::Upgrade18), ForkCondition::Never);
-        assert_eq!(crate::chainspec::upgrade18_time(spec.as_ref()), None);
     }
 
-    /// `upgrade18_time` follows the same TOML → extra_fields → hardfork-list plumbing as
-    /// the other forks and is surfaced through the `upgrade18_time` helper.
     #[test]
-    fn patches_upgrade18_when_scheduled() {
-        let mut forks = ChainHardforks::default();
-        patch_celo_hardforks(&mut forks, None, Some(1_742_957_258), Some(1_900_000_000));
-        assert_eq!(forks.fork(CeloHardfork::Cel2), ForkCondition::Timestamp(1_742_957_258));
-        assert_eq!(forks.fork(CeloHardfork::Upgrade18), ForkCondition::Timestamp(1_900_000_000),);
-
-        // Unscheduled leaves the fork out entirely.
-        let mut forks = ChainHardforks::default();
-        patch_celo_hardforks(&mut forks, None, None, None);
-        assert_eq!(forks.fork(CeloHardfork::Upgrade18), ForkCondition::Never);
-    }
-
-    /// Upgrade 18 artifact-param overrides parse from genesis config extra fields
-    /// (addresses as hex strings; the amount as number, quantity, or decimal string).
-    #[test]
-    fn parses_upgrade18_overrides_from_extra_fields() {
-        use alloy_primitives::{U256, address};
-
-        let mut genesis = Genesis::default();
-        for (key, value) in [
-            ("upgrade18LiquidityControllerOwner", "0x00000000000000000000000000000000000000aa"),
-            ("upgrade18CeloTokenL1", "0x00000000000000000000000000000000000000bb"),
-            ("upgrade18CeloGasBridgeL1", "0x00000000000000000000000000000000000000cc"),
-            ("upgrade18NativeAssetLiquidityAmount", "1000000000000000000000000"),
+    fn cgt_v2_rejects_obsolete_genesis_overrides() {
+        for key in [
+            "upgrade18Time",
+            "upgrade18LiquidityControllerOwner",
+            "upgrade18CeloTokenL1",
+            "upgrade18CeloGasBridgeL1",
+            "upgrade18NativeAssetLiquidityAmount",
         ] {
-            genesis.config.extra_fields.insert(key.to_string(), serde_json::Value::from(value));
+            let mut genesis = Genesis::default();
+            genesis.config.extra_fields.insert(key.to_string(), serde_json::Value::Null);
+            let err =
+                CeloChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap()).unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{key}: {err}");
         }
-        let spec: OpChainSpec = genesis.into();
-
-        let overrides = crate::chainspec::upgrade18_overrides(&spec);
-        assert_eq!(
-            overrides.liquidity_controller_owner,
-            Some(address!("00000000000000000000000000000000000000aa"))
-        );
-        assert_eq!(
-            overrides.celo_token_l1,
-            Some(address!("00000000000000000000000000000000000000bb"))
-        );
-        assert_eq!(
-            overrides.celo_gas_bridge_l1,
-            Some(address!("00000000000000000000000000000000000000cc"))
-        );
-        assert_eq!(
-            overrides.native_asset_liquidity_amount,
-            Some(U256::from(10).pow(U256::from(24))),
-            "decimal string amount"
-        );
-
-        // Hex quantity and plain number forms also parse.
-        let mut genesis = Genesis::default();
-        genesis.config.extra_fields.insert(
-            "upgrade18NativeAssetLiquidityAmount".to_string(),
-            serde_json::Value::from("0x10"),
-        );
-        let spec: OpChainSpec = genesis.into();
-        let overrides = crate::chainspec::upgrade18_overrides(&spec);
-        assert_eq!(overrides.native_asset_liquidity_amount, Some(U256::from(16)));
-
-        // Absent fields stay None.
-        let spec: OpChainSpec = Genesis::default().into();
-        let overrides = crate::chainspec::upgrade18_overrides(&spec);
-        assert_eq!(overrides, Default::default());
     }
 
-    /// A present-but-malformed override must stop the node, not be treated as absent —
-    /// on artifact-known chains the artifact constant would otherwise silently win over
-    /// the operator's intended value.
-    #[test]
-    #[should_panic(expected = "upgrade18LiquidityControllerOwner")]
-    fn malformed_upgrade18_address_override_panics() {
-        let mut genesis = Genesis::default();
-        genesis.config.extra_fields.insert(
-            "upgrade18LiquidityControllerOwner".to_string(),
-            serde_json::Value::from("0xnot-an-address"),
-        );
-        let spec: OpChainSpec = genesis.into();
-        crate::chainspec::upgrade18_overrides(&spec);
-    }
-
-    /// Same for the reserve seed — including a JSON number too large for u64, which the
-    /// old parser dropped silently.
-    #[test]
-    #[should_panic(expected = "upgrade18NativeAssetLiquidityAmount")]
-    fn oversized_upgrade18_amount_number_panics() {
-        let mut genesis = Genesis::default();
-        genesis
-            .config
-            .extra_fields
-            .insert("upgrade18NativeAssetLiquidityAmount".to_string(), serde_json::json!(1e24));
-        let spec: OpChainSpec = genesis.into();
-        crate::chainspec::upgrade18_overrides(&spec);
-    }
-
-    /// A malformed fork-activation value is an error, not "fork unscheduled".
     #[test]
     fn malformed_fork_time_is_an_error() {
         let mut genesis = Genesis::default();
-        genesis
-            .config
-            .extra_fields
-            .insert("upgrade18Time".to_string(), serde_json::Value::from("soon"));
-        let err = read_u64(&genesis, "upgrade18Time").unwrap_err();
-        assert!(err.to_string().contains("upgrade18Time"), "got: {err}");
+        genesis.config.extra_fields.insert("cel2Time".to_string(), serde_json::Value::from("soon"));
+        let err = read_u64(&genesis, "cel2Time").unwrap_err();
+        assert!(err.to_string().contains("cel2Time"), "got: {err}");
         // Absent keys are still fine.
-        assert_eq!(read_u64(&genesis, "cel2Time").unwrap(), None);
+        assert_eq!(read_u64(&genesis, "gingerbreadBlock").unwrap(), None);
     }
 
     /// op-geth peers on celo mainnet send this genesis hash in their `eth/Status`

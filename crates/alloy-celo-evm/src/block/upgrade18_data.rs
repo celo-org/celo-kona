@@ -1,4 +1,4 @@
-//! Upgrade 18 (CGT v2) predeploy activation data — GENERATED, DO NOT EDIT.
+//! Upgrade 18 (CGT v2) predeploy activation data : GENERATED, DO NOT EDIT.
 //!
 //! Source artifact: `res/predeploys.json`, produced in celo-org/optimism at
 //! `celo-contracts/v6.0.0` (commit `db220657e2fb8ad81b4ca676193e60433a7d27ef`),
@@ -13,7 +13,7 @@ use super::upgrade18::Upgrade18Param;
 use alloy_primitives::{Address, B256, U256, address, b256, hex};
 
 /// One 32-byte storage write; `Param` values are placeholders resolved at
-/// activation time (override > per-network constant).
+/// activation time (fixed network rules and authenticated snapshot).
 #[derive(Debug, Clone, Copy)]
 pub(super) enum SlotValue {
     /// A literal word, identical on every network.
@@ -26,7 +26,7 @@ pub(super) enum SlotValue {
 /// deterministic `0xc0d3…` address, plus proxy-account storage (and balance).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RawPredeploy {
-    /// Contract name — kept for tests and debugging output.
+    /// Contract name : kept for tests and debugging output.
     #[allow(dead_code)]
     pub(super) name: &'static str,
     /// The proxy account (the predeploy address users interact with).
@@ -43,7 +43,7 @@ pub(super) struct RawPredeploy {
     pub(super) storage: &'static [(U256, SlotValue)],
 }
 
-/// `src/universal/Proxy.sol` runtime bytecode — planted on every predeploy proxy
+/// `src/universal/Proxy.sol` runtime bytecode : planted on every predeploy proxy
 /// account (idempotent for the proxies that already exist on-chain).
 pub(super) const PROXY_SHELL_BYTECODE: &[u8] = &hex!(
     "60806040526004361061005e5760003560e01c80635c60da1b116100435780635c60da1b146100be5780638f283970146100f8578063f851a440146101185761006d565b80633659cfe6146100755780634f1ef286146100955761006d565b3661006d5761006b61012d565b005b61006b61012d565b34801561008157600080fd5b5061006b6100903660046106dd565b610224565b6100a86100a33660046106f8565b610296565b6040516100b5919061077b565b60405180910390f35b3480156100ca57600080fd5b506100d3610419565b60405173ffffffffffffffffffffffffffffffffffffffff90911681526020016100b5565b34801561010457600080fd5b5061006b6101133660046106dd565b6104b0565b34801561012457600080fd5b506100d3610517565b60006101577f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc5490565b905073ffffffffffffffffffffffffffffffffffffffff8116610201576040517f08c379a000000000000000000000000000000000000000000000000000000000815260206004820152602560248201527f50726f78793a20696d706c656d656e746174696f6e206e6f7420696e6974696160448201527f6c697a656400000000000000000000000000000000000000000000000000000060648201526084015b60405180910390fd5b3660008037600080366000845af43d6000803e8061021e573d6000fd5b503d6000f35b7fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035473ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff16148061027d575033155b1561028e5761028b816105a3565b50565b61028b61012d565b60606102c07fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035490565b73ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff1614806102f7575033155b1561040a57610305846105a3565b6000808573ffffffffffffffffffffffffffffffffffffffff16858560405161032f9291906107ee565b600060405180830381855af49150503d806000811461036a576040519150601f19603f3d011682016040523d82523d6000602084013e61036f565b606091505b509150915081610401576040517f08c379a000000000000000000000000000000000000000000000000000000000815260206004820152603960248201527f50726f78793a2064656c656761746563616c6c20746f206e657720696d706c6560448201527f6d656e746174696f6e20636f6e7472616374206661696c65640000000000000060648201526084016101f8565b91506104129050565b61041261012d565b9392505050565b60006104437fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035490565b73ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff16148061047a575033155b156104a557507f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc5490565b6104ad61012d565b90565b7fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035473ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff161480610509575033155b1561028e5761028b8161060c565b60006105417fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035490565b73ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff161480610578575033155b156104a557507fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035490565b7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc81815560405173ffffffffffffffffffffffffffffffffffffffff8316907fbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b90600090a25050565b60006106367fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61035490565b7fb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d61038381556040805173ffffffffffffffffffffffffffffffffffffffff80851682528616602082015292935090917f7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f910160405180910390a1505050565b803573ffffffffffffffffffffffffffffffffffffffff811681146106d857600080fd5b919050565b6000602082840312156106ef57600080fd5b610412826106b4565b60008060006040848603121561070d57600080fd5b610716846106b4565b9250602084013567ffffffffffffffff8082111561073357600080fd5b818601915086601f83011261074757600080fd5b81358181111561075657600080fd5b87602082850101111561076857600080fd5b6020830194508093505050509250925092565b600060208083528351808285015260005b818110156107a85785810183015185820160400152820161078c565b818111156107ba576000604083870101525b50601f017fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe016929092016040019392505050565b818382376000910190815291905056fea164736f6c634300080f000a"
@@ -289,33 +289,6 @@ pub(super) const RAW_PREDEPLOYS: &[RawPredeploy] = &[
         ],
     },
 ];
-
-/// Param values shipped in the artifact for known networks, keyed by L2 chain id.
-/// The `celoGasBridgeL1` / `nativeAssetLiquidityAmount` placeholders are not yet
-/// final on any network and must arrive via overrides (or a regenerated artifact).
-pub(super) const fn known_param(chain_id: u64, param: Upgrade18Param) -> Option<U256> {
-    match (chain_id, param) {
-        (42220, Upgrade18Param::LiquidityControllerOwner) => {
-            Some(U256::from_limbs([0xa3faea2d63b7972, 0x9b330c7a88f74e00, 0xd533ca25, 0x0]))
-        } // mainnet: Celo Governance
-        (11142220, Upgrade18Param::LiquidityControllerOwner) => {
-            Some(U256::from_limbs([0x60d0208b00d14ad1, 0xcf5e97999bdf9d67, 0x50d2f15c, 0x0]))
-        } // sepolia: Celo Governance
-        (11162320, Upgrade18Param::LiquidityControllerOwner) => {
-            Some(U256::from_limbs([0xbe73897fe1780edb, 0xd096a650a8d30f8b, 0xd98fe96a, 0x0]))
-        } // chaos: Celo Governance
-        (42220, Upgrade18Param::CeloTokenL1) => {
-            Some(U256::from_limbs([0x56d23851f124b19f, 0xc43f129a17517b90, 0x57898f3, 0x0]))
-        } // mainnet: L1 CELO ERC20
-        (11142220, Upgrade18Param::CeloTokenL1) => {
-            Some(U256::from_limbs([0xcf8d8caba435b092, 0x5e6aed460caa4985, 0x3c7011fd, 0x0]))
-        } // sepolia: L1 CELO ERC20
-        (11162320, Upgrade18Param::CeloTokenL1) => {
-            Some(U256::from_limbs([0x2b3d07aaa027a854, 0x694c29b506d012e3, 0x894afac3, 0x0]))
-        } // chaos: L1 CELO ERC20
-        _ => None,
-    }
-}
 
 /// Migration storage definition pinned by the artifact source/layout metadata.
 pub(super) const CGT_FLAG_SLOT: U256 = U256::from_limbs([
