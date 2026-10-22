@@ -30,7 +30,7 @@ PINNED_COMMIT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[
 
 # The artifact's `param:` placeholders. Arbitrary distinguishable values — they are fed
 # to the genesis run and used to resolve the artifact, so both sides move together.
-# Deliberately the same placeholders as e2e_test/test_upgrade18_migration.sh.
+# Deliberately the same placeholders as e2e_test/legacy_timestamp_upgrade18.sh.
 export CGT_LIQUIDITY_CONTROLLER_OWNER=0x00000000000000000000000000000000000000aa
 export CGT_CELO_TOKEN_L1=0x00000000000000000000000000000000000000bb
 export CGT_CELO_GAS_BRIDGE_L1=0x00000000000000000000000000000000000000cc

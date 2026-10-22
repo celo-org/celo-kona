@@ -1,4 +1,7 @@
 #!/bin/bash
+# Historical timestamp-based CGTv2 harness for commit 827d31d34f32d17aed6da1807fc1e90d4fe6ce2d.
+# Current CGTv2 uses an L1-origin activation deposit. Do not use this harness as
+# evidence for the current protocol; signal-based integration replaces it later.
 #
 # Upgrade 18 cross-client smoke test: op-node driving celo-reth across the
 # CGT v2 migration boundary through the engine API
@@ -6,7 +9,7 @@
 # fixture that is blocked on #1415).
 #
 # This exercises the one interface the in-repo tests cannot: the op-node ↔
-# celo-reth contract. The dev-mode e2e test (e2e_test/test_upgrade18_migration.sh)
+# celo-reth contract. The dev-mode e2e test (e2e_test/legacy_timestamp_upgrade18.sh)
 # already proves the migration itself byte-for-byte against the artifact, so the
 # assertions here focus on the cross-client surface:
 #

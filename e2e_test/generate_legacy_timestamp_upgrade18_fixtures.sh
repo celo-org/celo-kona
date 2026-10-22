@@ -1,4 +1,7 @@
 #!/bin/bash
+# Historical timestamp-based CGTv2 harness for commit 827d31d34f32d17aed6da1807fc1e90d4fe6ce2d.
+# Current CGTv2 uses an L1-origin activation deposit. Do not use this harness as
+# evidence for the current protocol; signal-based integration replaces it later.
 #
 # Regenerates the two checked-in Upgrade 18 (CGT v2) executor fixtures under
 # `crates/kona/executor/testdata/`:
@@ -22,7 +25,7 @@
 # real `celoGasBridgeL1` and reserve seed land), or if the activation trigger
 # decision (celo-blockchain-planning#1407) renames the rollup config keys.
 #
-#   ./e2e_test/generate_upgrade18_fixtures.sh
+#   ./e2e_test/generate_legacy_timestamp_upgrade18_fixtures.sh
 #
 set -eo pipefail
 
