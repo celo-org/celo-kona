@@ -16,8 +16,7 @@ use alloy_evm::{
     block::{BlockExecutorFactory, StateDB},
 };
 use alloy_op_evm::{
-    OpBlockExecutionCtx, OpBlockExecutor,
-    block::{OpTxResult, receipt_builder::OpReceiptBuilder},
+    OpBlockExecutionCtx, OpBlockExecutor, block::receipt_builder::OpReceiptBuilder,
 };
 use alloy_op_hardforks::OpHardforks;
 use celo_revm::{CeloContext, CeloTransaction};
@@ -25,16 +24,18 @@ use op_alloy_consensus::OpTransaction as OpConsensusTransaction;
 use op_revm::OpHaltReason;
 use revm::{Inspector, context::TxEnv};
 
+pub use executor::{CeloBlockExecutor, CeloTxResult};
 pub use receipt_builder::CeloAlloyReceiptBuilder;
 
+pub mod executor;
 pub mod receipt_builder;
 
 /// Celo block executor factory.
 ///
 /// Behaves like [`alloy_op_evm::OpBlockExecutorFactory`] but rebuilds `R` per call to
 /// [`create_executor`](BlockExecutorFactory::create_executor) so the receipt builder is always
-/// bound to the EVM's own [`Cip64Storage`]. The `R` type parameter is the runtime receipt builder
-/// used by [`OpBlockExecutor`]; the factory itself never holds an instance of `R`.
+/// bound to the EVM's own [`Cip64Storage`]. The `R` type parameter is the runtime receipt
+/// builder used by [`OpBlockExecutor`]; the factory itself never holds an instance of `R`.
 #[derive(Debug, Default)]
 pub struct CeloBlockExecutorFactory<R, Spec> {
     spec: Spec,
@@ -53,7 +54,7 @@ impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
 }
 
 impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
-    /// Creates a new factory with the given chain spec and EVM factory.
+    /// Creates a factory whose CGTv2 transition is performed by the required upgrade deposits.
     pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
         Self { spec, evm_factory, _phantom: core::marker::PhantomData }
     }
@@ -66,6 +67,42 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
     /// Exposes the EVM factory.
     pub const fn evm_factory(&self) -> &CeloEvmFactory {
         &self.evm_factory
+    }
+
+    /// Builds the [`CeloBlockExecutor`] for the given EVM and block context: binds a
+    /// fresh receipt builder to the EVM's own [`Cip64Storage`], constructs the inner
+    /// [`OpBlockExecutor`] against this factory's spec, and wraps it with the factory's
+    /// CGTv2 upgrade group validation.
+    ///
+    /// This is the only place executors are constructed: every execution path (import,
+    /// sequencing, proof, post-exec) must come through it, directly or via
+    /// [`BlockExecutorFactory::create_executor`]; an [`OpBlockExecutor`] built anywhere
+    /// else would skip the Upgrade 18 transition on that path and split consensus at the
+    /// activation block.
+    pub fn create_wrapped_executor<DB, I>(
+        &self,
+        evm: <CeloEvmFactory as EvmFactory>::Evm<DB, I>,
+        ctx: OpBlockExecutionCtx,
+    ) -> CeloBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &Spec>
+    where
+        DB: StateDB,
+        I: Inspector<CeloContext<DB>>,
+        R: OpReceiptBuilder + From<Cip64Storage>,
+        Spec: OpHardforks + Clone,
+    {
+        // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
+        // long-lived receipt builder or storage handle; both are scoped to this executor.
+        let builder = R::from(evm.cip64_storage().clone());
+        // Every consensus execution path, including block import, derivation, sequencing, and
+        // kona proofs, gets its EVM here, so this is where CIP-64 receipt-data storage is enabled.
+        // Loose RPC EVMs built via `EvmFactory::create_evm*` leave it off (see
+        // `CeloEvm::cip64_store_enabled`). Caveat: reth's Amsterdam-gated BAL executors break
+        // "`create_executor` implies pops per CIP-64 tx" in both directions: the BAL worker
+        // executes without popping, while the canonical replay pops without storing. This is
+        // unreachable while Celo schedules no Amsterdam fork, but it is a landmine on a rebase
+        // onto an Amsterdam-active stack.
+        let evm = evm.with_cip64_store_enabled();
+        CeloBlockExecutor::new(OpBlockExecutor::new(evm, ctx, &self.spec, builder))
     }
 }
 
@@ -86,9 +123,9 @@ where
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
     type TxExecutionResult =
-        OpTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
+        CeloTxResult<OpHaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
     type Executor<'a, DB: StateDB, I: Inspector<CeloContext<DB>>> =
-        OpBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
+        CeloBlockExecutor<<CeloEvmFactory as EvmFactory>::Evm<DB, I>, R, &'a Spec>;
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.evm_factory
@@ -103,21 +140,12 @@ where
         DB: StateDB,
         I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>>,
     {
-        // Bind the receipt builder to the EVM's own CIP-64 storage. The factory holds no
-        // long-lived receipt builder or storage handle; both are scoped to this executor.
-        let builder = R::from(evm.cip64_storage().clone());
-        // Every consensus execution path, including block import, derivation, sequencing, and
-        // kona proofs, gets its EVM here, so this is where CIP-64 receipt-data storage is enabled.
-        // Loose RPC EVMs built via `EvmFactory::create_evm*` leave it off (see
-        // `CeloEvm::cip64_store_enabled`). Caveat: reth's Amsterdam-gated BAL executors break
-        // "`create_executor` implies pops per CIP-64 tx" in both directions: the BAL worker
-        // executes without popping, while the canonical replay pops without storing. This is
-        // unreachable while Celo schedules no Amsterdam fork, but it is a landmine on a rebase
-        // onto an Amsterdam-active stack.
-        let evm = evm.with_cip64_store_enabled();
-        OpBlockExecutor::new(evm, ctx, &self.spec, builder)
+        self.create_wrapped_executor(evm, ctx)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod group_tests;
