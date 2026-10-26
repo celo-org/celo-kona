@@ -29,3 +29,6 @@ pub use blobs::CeloBlobSource;
 
 mod ethereum;
 pub use ethereum::CeloEthereumDataSource;
+
+mod cgt_v2;
+pub use cgt_v2::{CgtV2AttributesBuilder, CgtV2BatchProvider, CgtV2Origin, ReceiptCacheProvider};
