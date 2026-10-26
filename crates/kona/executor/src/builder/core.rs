@@ -14,7 +14,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use alloy_op_hardforks::OpHardforks;
-use celo_alloy_consensus::{CeloReceiptEnvelope, cgt_v2::CgtV2Activation};
+use celo_alloy_consensus::{CeloReceiptEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributesExt;
 use celo_genesis::CeloRollupConfig;
 use core::fmt::Debug;
@@ -88,7 +88,7 @@ where
             .transactions
             .iter()
             .flatten()
-            .any(|tx| CgtV2Activation::is_activation_encoded(tx));
+            .any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx));
 
         // Attempt to send a payload witness hint to the host. This hint instructs the host to
         // populate its preimage store with the preimages required to statelessly execute
@@ -201,8 +201,8 @@ mod test {
         use super::*;
         use crate::test_utils::{LoadedCeloExecutorTestFixture, load_test_fixture};
         use alloy_eips::Encodable2718;
-        use alloy_primitives::{B256, Sealable, U256};
-        use celo_alloy_consensus::cgt_v2::CgtV2Activation;
+        use alloy_primitives::{Sealable, U256};
+        use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
         use kona_mpt::NoopTrieHinter;
 
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -210,13 +210,11 @@ mod test {
         let LoadedCeloExecutorTestFixture { fixture_dir: _fixture_dir, mut fixture, provider } =
             load_test_fixture(path).await;
         fixture.executing_payload.transactions.as_mut().unwrap().push(
-            CgtV2Activation {
-                l1_origin_hash: B256::repeat_byte(0x11),
-                migrated_amount: U256::from(600),
-            }
-            .to_deposit()
-            .encoded_2718()
-            .into(),
+            CgtV2UpgradeGroup::deposits(1337, U256::from(600))
+                .unwrap()
+                .remove(0)
+                .encoded_2718()
+                .into(),
         );
         let mut builder = CeloStatelessL2Builder::new(
             &fixture.rollup_config,

@@ -1,10 +1,6 @@
 //! Shared ordered CGTv2 execution for celo-reth and Kona.
-//! The protocol activation deposit stages migration at its position in the transaction list.
+//! Required upgrade deposits perform migration through normal EVM execution.
 
-use crate::block::{
-    migration::CgtV2Evm,
-    upgrade18::{CELO_GAS_BRIDGE_L2, prepare_cgt_v2_migration},
-};
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
@@ -20,10 +16,9 @@ use alloy_op_evm::{
     post_exec::{PostExecEvm, PostExecExecutorExt, PostExecRefundEvent},
 };
 use alloy_op_hardforks::OpHardforks;
-use alloy_primitives::{B256, U256};
-use celo_alloy_consensus::{
-    cgt_v2::{CGT_V2_L1_BLOCK, CgtV2Activation},
-    cgt_v2_params::cgt_v2_params,
+use alloy_primitives::U256;
+use celo_alloy_consensus::cgt_v2_group::{
+    CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_STEPS, CgtV2UpgradeGroup,
 };
 use op_alloy_consensus::{OpTransaction as OpConsensusTransaction, post_exec::SDMGasEntry};
 use revm::{Database as _, DatabaseCommit};
@@ -38,7 +33,7 @@ fn invalid_cgt_signal(message: &'static str) -> BlockExecutionError {
 pub struct CeloTxResult<H, T> {
     /// The upstream execution result.
     pub op: OpTxResult<H, T>,
-    activates_cgt_v2: bool,
+    cgt_v2_step: Option<usize>,
 }
 
 impl<H, T> core::ops::Deref for CeloTxResult<H, T> {
@@ -67,13 +62,14 @@ impl<H, T> PreRefundGasUsed for CeloTxResult<H, T> {
     }
 }
 
-/// Block executor for Celo: the upstream [`OpBlockExecutor`] plus the Upgrade 18 (CGT v2)
-/// irregular state transition at the activation deposit.
+/// Celo executor with strict ordering, completeness and success checks for CGTv2 deposits.
 pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     /// The wrapped OP Stack block executor.
     inner: OpBlockExecutor<E, R, Spec>,
     /// Incremental builders may not know the signal until it is executed.
     has_committed_user_tx: bool,
+    /// Only committed required deposits advance the group.
+    cgt_v2_next_step: usize,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
@@ -85,7 +81,7 @@ impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
     pub const fn new(inner: OpBlockExecutor<E, R, Spec>) -> Self {
-        Self { inner, has_committed_user_tx: false }
+        Self { inner, has_committed_user_tx: false, cgt_v2_next_step: 0 }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -100,7 +96,7 @@ where
             DB: Database + DatabaseCommit + StateDB,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction> + OpTxEnv,
             HaltReason: Send + 'static,
-        > + CgtV2Evm,
+        >,
     R: OpReceiptBuilder<
             Transaction: Transaction + Encodable2718 + OpConsensusTransaction,
             Receipt: TxReceipt,
@@ -147,104 +143,80 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, tx) = tx.into_parts();
-        let activation = tx
+        let step = tx
             .tx()
             .as_deposit()
-            .map(|deposit| CgtV2Activation::decode_deposit(deposit))
+            .map(|deposit| CgtV2UpgradeGroup::validate(self.inner.evm.chain_id(), deposit))
             .transpose()
             .map_err(|error| BlockExecutionError::Validation(BlockValidationError::other(error)))?
             .flatten();
-        let Some(activation) = activation else {
-            return self
-                .inner
-                .execute_transaction_without_commit((tx_env, tx))
-                .map(|op| CeloTxResult { op, activates_cgt_v2: false });
-        };
-        if self.has_committed_user_tx {
-            return Err(BlockValidationError::other(
-                OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
-            )
-            .into());
-        }
-        if self.inner.receipts.is_empty() {
-            return Err(invalid_cgt_signal(
-                "CGTv2 activation requires the block's L1-info transaction first",
-            ));
-        }
-        if self
-            .inner
-            .evm
-            .db_mut()
-            .basic(CELO_GAS_BRIDGE_L2)
-            .map_err(BlockExecutionError::other)?
-            .is_some_and(|a| !a.is_empty_code_hash())
-        {
-            return Err(invalid_cgt_signal("CGTv2 activation cannot repeat"));
-        }
-        // L1Block.hash occupies slot 2 in the pinned legacy and CGT layouts. It has
-        // already been updated by this block's committed L1-info transaction.
-        let origin = self
-            .inner
-            .evm
-            .db_mut()
-            .storage(CGT_V2_L1_BLOCK, U256::from(2))
-            .map_err(BlockExecutionError::other)?;
-        if B256::from(origin.to_be_bytes::<32>()) != activation.l1_origin_hash {
-            return Err(invalid_cgt_signal("CGTv2 signal does not match the block's L1 origin"));
-        }
-        let params =
-            cgt_v2_params(self.inner.evm.chain_id()).map_err(BlockExecutionError::other)?;
-        // Journal staging avoids committing a transition or notifying state hooks for a
-        // candidate that can still fail or be declined by the payload builder.
-        let journal = self.inner.evm.cgt_v2_journal().inner.clone();
-        let outcome = (|| {
-            let vault = self.inner.evm.read_cgt_v2_vault_config()?;
-            let changes =
-                prepare_cgt_v2_migration(self.inner.evm.db_mut(), &params, &activation, vault)?;
-            for (address, mut account) in changes.clone() {
-                account.mark_cold();
-                for slot in account.storage.values_mut() {
-                    // EVM gas uses the state immediately after installation. Restore the
-                    // actual pre-migration originals in the final diff before commit.
-                    slot.original_value = slot.present_value;
-                    slot.mark_cold();
+        if let Some(step) = step {
+            if step != self.cgt_v2_next_step {
+                return Err(invalid_cgt_signal(
+                    "CGTv2 upgrade deposits are missing, repeated or reordered",
+                ));
+            }
+            if self.has_committed_user_tx {
+                return Err(BlockValidationError::other(
+                    OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
+                )
+                .into());
+            }
+            if step == 0 {
+                if self.inner.receipts.is_empty() {
+                    return Err(invalid_cgt_signal("CGTv2 activation requires L1-info first"));
                 }
-                self.inner.evm.cgt_v2_journal().state.insert(address, account);
-            }
-            let mut output = self.inner.execute_transaction_without_commit((tx_env, tx))?;
-            if !output.inner.result.result.is_success() {
-                return Err(invalid_cgt_signal("CGTv2 activation setter reverted or halted"));
-            }
-            for (address, change) in changes {
-                let account =
-                    output.inner.result.state.entry(address).or_insert_with(|| change.clone());
-                for (key, slot) in change.storage {
-                    account
-                        .storage
-                        .entry(key)
-                        .and_modify(|final_slot| final_slot.original_value = slot.original_value)
-                        .or_insert(slot);
+                let flag = self
+                    .inner
+                    .evm
+                    .db_mut()
+                    .storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0))
+                    .map_err(BlockExecutionError::other)?;
+                if !flag.is_zero() {
+                    return Err(invalid_cgt_signal("CGTv2 activation cannot repeat"));
                 }
             }
-            Ok(output)
-        })();
-        self.inner.evm.cgt_v2_journal().inner = journal;
-        outcome.map(|op| CeloTxResult { op, activates_cgt_v2: true })
+        } else if self.cgt_v2_next_step > 0 {
+            if self.cgt_v2_next_step < CGT_V2_STEPS {
+                return Err(invalid_cgt_signal("CGTv2 upgrade group cannot be interrupted"));
+            }
+            if tx.tx().is_deposit() {
+                return Err(invalid_cgt_signal("origin deposits must precede CGTv2 upgrades"));
+            }
+        }
+        let op = self.inner.execute_transaction_without_commit((tx_env, tx))?;
+        if step.is_some() && !op.inner.result.result.is_success() {
+            return Err(invalid_cgt_signal("required CGTv2 upgrade deposit reverted or halted"));
+        }
+        Ok(CeloTxResult { op, cgt_v2_step: step })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         self.has_committed_user_tx |= !output.op.is_deposit && !output.op.is_post_exec;
-        self.inner.ctx.no_user_tx_activation_block |= output.activates_cgt_v2;
-        let gas = self.inner.commit_transaction(output.op);
-        // An activation candidate restores the pre-execution journal until accepted.
-        // Its cached legacy accounts must not survive the accepted state transition.
-        self.inner.evm.cgt_v2_journal().inner.finalize();
-        gas
+        if let Some(step) = output.cgt_v2_step {
+            self.cgt_v2_next_step = step + 1;
+            self.inner.ctx.no_user_tx_activation_block = true;
+        }
+        self.inner.commit_transaction(output.op)
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        if self.cgt_v2_next_step > 0 {
+            if self.cgt_v2_next_step != CGT_V2_STEPS {
+                return Err(invalid_cgt_signal("incomplete CGTv2 upgrade group"));
+            }
+            let flag = self
+                .inner
+                .evm
+                .db_mut()
+                .storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0))
+                .map_err(BlockExecutionError::other)?;
+            if flag != U256::from(1) {
+                return Err(invalid_cgt_signal("CGTv2 completion flag is not set"));
+            }
+        }
         self.inner.finish()
     }
 
@@ -262,7 +234,7 @@ where
 }
 
 // The sequencing path (op-reth's payload builder) obtains its executor via
-// `ConfigurePostExecEvm`, which requires the post-exec extension — delegate it so the
+// `ConfigurePostExecEvm`, which requires the post-exec extension. Delegate it so the
 // wrapper is usable there too. Without this, sequencing would silently fall back to a
 // raw `OpBlockExecutor` and skip the Upgrade 18 transition.
 impl<E, R, Spec> PostExecExecutorExt for CeloBlockExecutor<E, R, Spec>

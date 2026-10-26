@@ -53,7 +53,7 @@ impl<R, Spec: Clone> Clone for CeloBlockExecutorFactory<R, Spec> {
 }
 
 impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
-    /// Creates a factory whose CGTv2 transition is determined by the canonical signal.
+    /// Creates a factory whose CGTv2 transition is performed by the required upgrade deposits.
     pub const fn new(spec: Spec, evm_factory: CeloEvmFactory) -> Self {
         Self { spec, evm_factory, _phantom: core::marker::PhantomData }
     }
@@ -71,7 +71,7 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
     /// Builds the [`CeloBlockExecutor`] for the given EVM and block context: binds a
     /// fresh receipt builder to the EVM's own [`Cip64Storage`], constructs the inner
     /// [`OpBlockExecutor`] against this factory's spec, and wraps it with the factory's
-    /// CGTv2 signal handling.
+    /// CGTv2 upgrade group validation.
     ///
     /// This is the only place executors are constructed: every execution path (import,
     /// sequencing, proof, post-exec) must come through it, directly or via

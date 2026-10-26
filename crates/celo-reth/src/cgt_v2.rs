@@ -1,6 +1,6 @@
 //! Deposits-only payload building for the CGTv2 activation block.
 
-use celo_alloy_consensus::cgt_v2::CgtV2Activation;
+use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, HeaderForPayload, MissingPayloadBehaviour, PayloadBuilder,
     PayloadConfig,
@@ -24,11 +24,11 @@ impl<B> CgtV2PayloadBuilder<B> {
 
 fn prepare_activation_payload(attrs: &mut OpPayloadAttrs) -> Result<(), PayloadBuilderError> {
     let Some(transactions) = attrs.transactions.as_ref() else { return Ok(()) };
-    if !transactions.iter().any(|tx| CgtV2Activation::is_activation_encoded(tx)) {
+    if !transactions.iter().any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx)) {
         return Ok(());
     }
     // noTxPool controls pool selection only. Forced user transactions must be rejected too,
-    // on either side of the signal. Match the executor's protocol post-exec exception.
+    // before or after the upgrade group. Match the executor's protocol post-exec exception.
     if transactions.iter().any(|tx| {
         !matches!(
             tx.first(),

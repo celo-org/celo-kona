@@ -756,13 +756,9 @@ mod tests {
     fn cgt_v2_payload_disables_pool_and_preserves_deposit_order() {
         use crate::cgt_v2::CgtV2PayloadBuilder;
         use alloy_eips::Encodable2718;
-        use celo_alloy_consensus::cgt_v2::CgtV2Activation;
+        use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
 
-        let signal = CgtV2Activation {
-            l1_origin_hash: B256::repeat_byte(0x11),
-            migrated_amount: U256::from(600),
-        }
-        .to_deposit();
+        let signal = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0);
         let mut deposit = signal.clone();
         deposit.source_hash = B256::repeat_byte(0x22);
         let transactions = vec![
@@ -797,14 +793,10 @@ mod tests {
         use alloy_consensus::{SignableTransaction, TxLegacy};
         use alloy_eips::Encodable2718;
         use alloy_primitives::Signature;
-        use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2::CgtV2Activation};
+        use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 
-        let signal = CgtV2Activation {
-            l1_origin_hash: B256::repeat_byte(0x11),
-            migrated_amount: U256::from(600),
-        }
-        .to_deposit()
-        .encoded_2718();
+        let signal =
+            CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0).encoded_2718();
         let user = CeloTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::new(
             U256::ZERO,
             U256::ZERO,

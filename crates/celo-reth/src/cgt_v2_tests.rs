@@ -1,7 +1,7 @@
 use super::*;
 use alloy_consensus::{Block, BlockBody, Sealable, SignableTransaction, TxLegacy};
-use alloy_primitives::{B256, Signature};
-use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2::CgtV2Activation};
+use alloy_primitives::Signature;
+use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 use reth_node_api::payload::PayloadTypes;
 use reth_optimism_payload_builder::OpPayloadTypes;
 
@@ -15,11 +15,7 @@ fn block(activation: bool, user_first: bool) -> SealedBlock<Block<CeloTxEnvelope
     );
     let mut transactions = vec![user];
     if activation {
-        let signal = CgtV2Activation {
-            l1_origin_hash: B256::repeat_byte(0x11),
-            migrated_amount: U256::from(600),
-        }
-        .to_deposit();
+        let signal = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0);
         transactions.insert(usize::from(user_first), CeloTxEnvelope::Deposit(signal.seal_slow()));
     }
     SealedBlock::seal_slow(Block {

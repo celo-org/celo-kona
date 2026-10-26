@@ -27,7 +27,7 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
-use celo_alloy_consensus::cgt_v2::CgtV2Activation;
+use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
 use core::any::Any;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
@@ -213,7 +213,7 @@ where
                 .body()
                 .transactions()
                 .iter()
-                .any(CgtV2Activation::is_activation_transaction),
+                .any(CgtV2UpgradeGroup::is_activation_transaction),
             parent_beacon_block_root: block.header().parent_beacon_block_root(),
             extra_data: block.header().extra_data().clone(),
             post_exec_mode: post_exec_mode.unwrap_or_default(),
@@ -597,7 +597,7 @@ where
                 .payload
                 .transactions()
                 .iter()
-                .any(|tx| CgtV2Activation::is_activation_encoded(tx)),
+                .any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx)),
             parent_beacon_block_root: payload.sidecar.parent_beacon_block_root(),
             extra_data: payload.payload.as_v1().extra_data.clone(),
             post_exec_mode: PostExecMode::default(),
