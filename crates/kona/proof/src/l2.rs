@@ -276,8 +276,25 @@ impl<T: CommsClient + Send + Sync> L2ChainProvider for CeloOracleL2ChainProvider
         // `CeloBlock` can be safely converted to `OpBlock` here with the lossy converter since
         // `to_system_config` reads only the block header and the L1-info deposit at
         // `transactions[0]`, which is never a CIP-64 tx.
-        to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
-            .map_err(OracleProviderError::OpBlockConversion)
+        let activation = block.header.number != rollup_config.genesis.l2.number &&
+            block.body.transactions.iter().any(
+                celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup::is_activation_transaction,
+            );
+        let mut config =
+            to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
+                .map_err(OracleProviderError::OpBlockConversion)?;
+        if activation {
+            config.gas_limit = config
+                .gas_limit
+                .checked_sub(celo_alloy_consensus::cgt_v2_group::CGT_V2_GROUP_GAS)
+                .ok_or(OracleProviderError::OpBlockConversion(
+                    kona_protocol::OpBlockConversionError::GasLimitBelowUpgradeGas {
+                        gas_limit: config.gas_limit,
+                        upgrade_gas: celo_alloy_consensus::cgt_v2_group::CGT_V2_GROUP_GAS,
+                    },
+                ))?;
+        }
+        Ok(config)
     }
 }
 

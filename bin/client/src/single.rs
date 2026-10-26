@@ -3,21 +3,24 @@
 use alloc::sync::Arc;
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_consensus::Sealed;
-use celo_derive::CeloEthereumDataSource;
-use celo_proof::{CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor};
+use celo_derive::{CeloEthereumDataSource, ReceiptCacheProvider};
+use celo_proof::{
+    CeloBootInfo, CeloOracleL2ChainProvider, executor::CeloExecutor, new_celo_oracle_pipeline,
+};
 use core::fmt::Debug;
 #[cfg(feature = "eigenda")]
 use hokulea_eigenda::{EigenDADataSource, EigenDAPreimageSource};
 #[cfg(feature = "eigenda")]
 use hokulea_proof::eigenda_provider::OracleEigenDAPreimageProvider;
 use kona_client::single::FaultProofProgramError;
+use kona_derive::StatefulAttributesBuilder;
 use kona_driver::Driver;
 use kona_executor::TrieDBProvider;
 use kona_preimage::{HintWriterClient, PreimageOracleClient};
 use kona_proof::{
     CachingOracle,
     errors::OracleProviderError,
-    l1::{OracleBlobProvider, OracleL1ChainProvider, OraclePipeline},
+    l1::{OracleBlobProvider, OracleL1ChainProvider},
     sync::{fetch_safe_head_hash, new_oracle_pipeline_cursor},
 };
 use tracing::{error, info};
@@ -113,15 +116,22 @@ where
     #[cfg(not(feature = "eigenda"))]
     let da_provider = eth_data_source;
 
-    let pipeline = OraclePipeline::new(
+    let cached_l1 = ReceiptCacheProvider::new(l1_provider.clone());
+    let attributes = StatefulAttributesBuilder::new(
         rollup_config.clone(),
         l1_config,
+        l2_provider.clone(),
+        cached_l1.clone(),
+        None,
+    );
+    let pipeline = new_celo_oracle_pipeline(
+        rollup_config.clone(),
         cursor.clone(),
         oracle.clone(),
         da_provider,
-        l1_provider.clone(),
+        cached_l1,
         l2_provider.clone(),
-        None,
+        attributes,
     )
     .await?;
     let executor = CeloExecutor::new(

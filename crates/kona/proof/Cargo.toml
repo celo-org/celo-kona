@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 # Workspace
 celo-executor.workspace = true
+celo-derive.workspace = true
 celo-alloy-consensus.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 celo-registry.workspace = true
