@@ -30,6 +30,7 @@ mod reth_compat;
 
 /// CGTv2 protocol activation deposit.
 pub mod cgt_v2;
+pub mod cgt_v2_group;
 
 /// Fixed CGTv2 network parameters.
 pub mod cgt_v2_params;
