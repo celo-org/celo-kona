@@ -2408,6 +2408,7 @@ dependencies = [
  "alloy-rlp",
  "async-trait",
  "celo-alloy-consensus",
+ "celo-derive",
  "celo-executor",
  "celo-genesis",
  "celo-protocol",
