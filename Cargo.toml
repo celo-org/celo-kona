@@ -212,16 +212,16 @@ reth-optimism-txpool = { git = "https://github.com/ethereum-optimism/optimism", 
 
 # Hokulea (Layr-Labs upstream, no Celo fork).
 #
-# Pinned to hokulea-client/v1.4.1, matching kona-client/v1.8.0 and the
-# reth 2.5 / revm 42 / alloy-evm 0.38 execution stack. Keep the optional
+# Pinned to hokulea-client/v1.4.2 (SP1 6.10.0), matching kona-client/v1.8.0
+# and the reth 2.5 / revm 42 / alloy-evm 0.38 execution stack. Keep the optional
 # canoe-verifier `chain-spec` feature disabled to exclude its older stack.
 #
 # hokulea-proof's KZG batch-verifier backend is selected via feature:
 # `sp1-bn` swaps the arkworks verifier for one built on the sp1 `bn` precompile,
 # cutting KZG batch verification ~74% on the zkVM proving path.
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.1", default-features = false }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.1", default-features = false, features = ["sp1-bn"] }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.1", default-features = false }
+hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.2", default-features = false }
+hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.2", default-features = false, features = ["sp1-bn"] }
+hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.4.2", default-features = false }
 
 # General
 url = { version = "2.5.8", default-features = false }
