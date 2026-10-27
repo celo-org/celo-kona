@@ -355,7 +355,7 @@ async fn fixture() -> (Preimages, B256) {
     let claimed = builder.compute_output_root().unwrap();
     assert_eq!(
         claimed,
-        alloy_primitives::b256!("b9adeeaa5acf052ed6ea9a9d09b219ceb7ea57dc133aaf525273f8ae9d85b4d9")
+        alloy_primitives::b256!("1abb58e433c95a3fba2fb4acf4bd90acd533de595de1699c7ee27a843ff6c688")
     );
     let tx_root = list(
         &mut images,
