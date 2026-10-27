@@ -261,3 +261,27 @@ async fn cgt_v2_real_span_buffer_keeps_prefix_and_discards_tail() {
     assert!(real_stream.prev.flushed);
     assert_eq!(parent.block_info.timestamp, 102, "accepted prefix is retained");
 }
+
+#[tokio::test]
+async fn cgt_v2_production_origin_requires_the_configured_emitter() {
+    for id in [42220, 11142220, 11162320] {
+        let (mut cfg, mut provider, parent, epoch) = setup();
+        Arc::make_mut(&mut cfg).l2_chain_id = id.into();
+        let mut detector = CgtV2Origin::new(cfg.clone(), provider.clone());
+        // A foreign emitter with identical topics cannot trigger activation or stop derivation.
+        assert_eq!(detector.amount(parent, epoch).await.unwrap(), None);
+        provider.receipts[0].1[0].logs[0].address = cgt_v2_params(id).unwrap().celo_gas_bridge_l1;
+        let mut detector = CgtV2Origin::new(cfg, provider);
+        assert_eq!(detector.amount(parent, epoch).await.unwrap(), Some(U256::from(600)));
+    }
+}
+
+#[tokio::test]
+async fn cgt_v2_deprecated_chains_skip_origin_queries() {
+    for id in [44787, 62320] {
+        let (mut cfg, _, parent, epoch) = setup();
+        Arc::make_mut(&mut cfg).l2_chain_id = id.into();
+        let mut detector = CgtV2Origin::new(cfg, TestChainProvider::default());
+        assert_eq!(detector.amount(parent, epoch).await.unwrap(), None);
+    }
+}

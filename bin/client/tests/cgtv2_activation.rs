@@ -1,5 +1,5 @@
 //! Synthetic receipt-to-output-root coverage through the real single-chain client.
-//! Production addresses, total supply and deployed legacy state remain release inputs.
+//! Production addresses and deployed legacy state remain release inputs.
 
 mod common;
 use alloy_consensus::{Eip658Value, Header, Receipt, TrieAccount};
@@ -292,6 +292,8 @@ async fn fixture() -> (Preimages, B256) {
         },
         espresso: Default::default(),
     };
+    // NUT-based CGTv2 activation must work before the later Karst upgrade.
+    assert!(cfg.op_rollup_config.hardforks.karst_time.is_none());
     let agreed_preimage = output(state_root, message_root, parent_hash);
     let agreed = put(&mut images, agreed_preimage);
     let oracle = Arc::new(MockOracle::from_preimages(images.clone()));

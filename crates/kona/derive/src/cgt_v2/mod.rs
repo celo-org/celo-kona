@@ -76,14 +76,12 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         parent: L2BlockInfo,
         epoch: BlockNumHash,
     ) -> PipelineResult<Option<U256>> {
-        if parent.l1_origin == epoch ||
-            !matches!(
-                self.cfg.l2_chain_id.id(),
-                1337 | 42220 | 44787 | 62320 | 11142220 | 11162320
-            )
-        {
+        if parent.l1_origin == epoch {
             return Ok(None);
         }
+        let Ok(params) = cgt_v2_params(self.cfg.l2_chain_id.id()) else {
+            return Ok(None);
+        };
         let header = self.provider.header_by_hash(epoch.hash).await.map_err(Into::into)?;
         if header.hash_slow() != epoch.hash || header.number != epoch.number {
             return Err(invalid("CGTv2 origin header hash or number mismatch"));
@@ -97,24 +95,7 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         // type-erased Receipt values. Re-encoding them would lose typed receipt envelopes.
         let receipts = self.provider.receipts_by_hash(epoch.hash).await.map_err(Into::into)?;
         let portal = self.cfg.deposit_contract_address;
-        let bridge = match cgt_v2_params(self.cfg.l2_chain_id.id()) {
-            Ok(params) => params.celo_gas_bridge_l1,
-            Err(_) => {
-                for receipt in &receipts {
-                    if receipt.status.as_eip658() != Some(true) {
-                        continue;
-                    }
-                    if receipt.logs.iter().any(|log| {
-                        log.topics().first() == Some(&ESCROW_SEEDED) &&
-                            log.topics().get(1) == Some(&portal.into_word())
-                    }) {
-                        return Err(invalid("CGTv2 L1 bridge address is unresolved"));
-                    }
-                }
-                return Ok(None);
-            }
-        };
-        escrow_amount(&receipts, bridge, portal).map_err(invalid)
+        escrow_amount(&receipts, params.celo_gas_bridge_l1, portal).map_err(invalid)
     }
 }
 
