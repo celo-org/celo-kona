@@ -28,8 +28,5 @@ pub use pre_gingerbread::pre_gingerbread_header_hash;
 #[cfg(feature = "reth")]
 mod reth_compat;
 
-/// CGTv2 protocol upgrade transaction group.
+/// CGTv2 network parameters and protocol upgrade transactions.
 pub mod cgt_v2_group;
-
-/// Fixed CGTv2 network parameters.
-pub mod cgt_v2_params;
