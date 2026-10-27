@@ -1,6 +1,8 @@
-//! Receipt-triggered CGTv2 upgrade deposits. Only the synthetic chain 1337 is configured.
+//! Receipt-triggered CGTv2 upgrade deposits. Only the synthetic bundle is configured.
 
-use crate::cgt_v2_params::{CgtV2ConfigError, cgt_v2_params};
+use crate::cgt_v2_params::{
+    CGT_V2_FIXTURE_CHAIN_ID, CgtV2ConfigError, CgtV2NetworkParams, cgt_v2_params,
+};
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, b256, keccak256};
 use op_alloy_consensus::{OpTransaction, OpTxEnvelope, TxDeposit, UpgradeDepositSource};
@@ -57,7 +59,7 @@ const STATIC: [&[u8]; CGT_V2_STATIC_STEPS] = [
 /// Invalid required transaction fields or unresolved network parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgtV2GroupError {
-    /// No production bundle or total supply has been approved for this network.
+    /// The network or its deployment-specific bundle has not been configured.
     Config(CgtV2ConfigError),
     /// The migrated amount or required transaction is invalid.
     Invalid,
@@ -121,12 +123,21 @@ impl CgtV2UpgradeGroup {
         })
     }
 
+    fn bundle_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2GroupError> {
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        // A network profile does not authorize running fixture contracts on that network.
+        if chain_id != CGT_V2_FIXTURE_CHAIN_ID {
+            return Err(CgtV2GroupError::Config(CgtV2ConfigError { chain_id }));
+        }
+        Ok(params)
+    }
+
     /// Constructs all required transactions from the authenticated event amount.
     pub fn deposits(
         chain_id: u64,
         migrated_amount: U256,
     ) -> Result<Vec<TxDeposit>, CgtV2GroupError> {
-        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        let params = Self::bundle_params(chain_id)?;
         let reserve = params.reserve_seed(migrated_amount).ok_or(CgtV2GroupError::Invalid)?;
         let mut txs: Vec<_> = (0..CGT_V2_STATIC_STEPS).map(Self::static_deposit).collect();
         txs.push(Self::funding(reserve)?);
@@ -137,7 +148,7 @@ impl CgtV2UpgradeGroup {
     /// Execution checks the funding shape/bounds; derivation authenticates its exact amount.
     pub fn validate(chain_id: u64, tx: &TxDeposit) -> Result<Option<usize>, CgtV2GroupError> {
         let Some(step) = Self::step(tx) else { return Ok(None) };
-        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        let params = Self::bundle_params(chain_id)?;
         let expected = if step < CGT_V2_STATIC_STEPS {
             Self::static_deposit(step)
         } else {
@@ -176,7 +187,12 @@ mod tests {
         }
         assert_eq!(txs.iter().map(|tx| tx.gas_limit).sum::<u64>(), CGT_V2_GROUP_GAS);
         assert!(CgtV2UpgradeGroup::deposits(1337, U256::from(1001)).is_err());
-        assert!(CgtV2UpgradeGroup::deposits(42220, U256::ZERO).is_err());
+        for id in [42220, 11142220, 11162320] {
+            assert!(CgtV2UpgradeGroup::deposits(id, U256::ZERO).is_err());
+            for tx in &txs {
+                assert!(CgtV2UpgradeGroup::validate(id, tx).is_err());
+            }
+        }
         assert_eq!(
             CgtV2UpgradeGroup::deposits(1337, U256::from(1000)).unwrap().last().unwrap().mint,
             0
