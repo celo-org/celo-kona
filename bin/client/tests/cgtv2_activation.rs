@@ -326,7 +326,7 @@ async fn fixture() -> (Preimages, B256) {
         .prepare_payload_attributes(parent_info, BlockNumHash::new(11, origin_hash))
         .await
         .unwrap();
-    assert_eq!(attrs.transactions.as_ref().unwrap().len(), 16);
+    assert_eq!(attrs.transactions.as_ref().unwrap().len(), 23);
     let shared: serde_json::Value =
         serde_json::from_str(include_str!("testdata/cgtv2-origin.json")).unwrap();
     let expected: Vec<Bytes> = serde_json::from_value(shared["transactions"].clone()).unwrap();
@@ -341,7 +341,7 @@ async fn fixture() -> (Preimages, B256) {
         parent.seal_slow(),
     );
     let result = builder.build_block(attrs).unwrap();
-    assert_eq!(result.execution_result.receipts.len(), 16);
+    assert_eq!(result.execution_result.receipts.len(), 23);
     assert!(
         !result.execution_result.receipts[2].status(),
         "post-event zero-mint call still sees the uninitialized controller"
@@ -355,7 +355,7 @@ async fn fixture() -> (Preimages, B256) {
     let claimed = builder.compute_output_root().unwrap();
     assert_eq!(
         claimed,
-        alloy_primitives::b256!("1abb58e433c95a3fba2fb4acf4bd90acd533de595de1699c7ee27a843ff6c688")
+        alloy_primitives::b256!("a01027c13f314e9f3e5ac4cb721f3aa0081b9c08432a15555e5542021867efe7")
     );
     let tx_root = list(
         &mut images,
