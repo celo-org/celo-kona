@@ -2110,7 +2110,7 @@ dependencies = [
 [[package]]
 name = "canoe-bindings"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-sol-types",
  "serde",
@@ -2119,7 +2119,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -2131,7 +2131,7 @@ dependencies = [
 [[package]]
 name = "canoe-verifier-address-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
@@ -3541,7 +3541,7 @@ dependencies = [
 [[package]]
 name = "eigenda-cert"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -4516,7 +4516,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -4538,7 +4538,7 @@ dependencies = [
 [[package]]
 name = "hokulea-client-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-evm",
  "alloy-op-evm",
@@ -4559,7 +4559,7 @@ dependencies = [
 [[package]]
 name = "hokulea-eigenda"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -4575,7 +4575,7 @@ dependencies = [
 [[package]]
 name = "hokulea-host-bin"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-op-evm",
  "alloy-primitives",
@@ -4603,7 +4603,7 @@ dependencies = [
 [[package]]
 name = "hokulea-proof"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -4622,13 +4622,13 @@ dependencies = [
 [[package]]
 name = "hokulea-sp1-bn-verifier"
 version = "0.1.0"
-source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.1#ab007dd050378364abb4baae5691c0c6271016ce"
+source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.4.2#e7ff01d67f255b0aff2da1293d47e95894a31bca"
 dependencies = [
  "alloy-primitives",
  "eigenda-cert",
  "sha2 0.10.9",
  "spin 0.10.1",
- "substrate-bn 0.6.0 (git+https://github.com/sp1-patches/bn?tag=patch-0.6.0-sp1-6.0.0-substrate-bn)",
+ "substrate-bn 0.6.0 (git+https://github.com/sp1-patches/bn?tag=patch-0.6.0-sp1-6.10.0-substrate-bn)",
  "thiserror 2.0.20",
 ]
 
@@ -12467,9 +12467,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slop-algebra"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "546efc4c8df95113752bce97387423a67ebe9ee5dd01170819dc1ca467d006d4"
+checksum = "6b44536b0d3267951634cd7f768c3ba73e0b64e05b2ca4783616d4e54cbf324d"
 dependencies = [
  "itertools 0.14.0",
  "p3-field",
@@ -12478,9 +12478,9 @@ dependencies = [
 
 [[package]]
 name = "slop-bn254"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44aed289b288c6f60d31b89124d97e0424cfee33a7ddcbc8c650df032594cf8a"
+checksum = "ae41b4d69a3cd4848f91f21e768cf4e623529dab91b0eb85d0fe80455c7a0d4e"
 dependencies = [
  "ff",
  "p3-bn254-fr",
@@ -12493,11 +12493,10 @@ dependencies = [
 
 [[package]]
 name = "slop-challenger"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a472bd4cf17c6fdd5090955290ee0de883f34c7707871ee099a4840d8736dc71"
+checksum = "aebbf4fde396e40eeb534981be75547ab89b4a348c4136961627c06d0cbcd51f"
 dependencies = [
- "futures",
  "p3-challenger",
  "serde",
  "slop-algebra",
@@ -12506,9 +12505,9 @@ dependencies = [
 
 [[package]]
 name = "slop-koala-bear"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cf01dc278c282f732ba67e8bb90a710d4779778f1a195cdae92baacae8f8d6a"
+checksum = "627eb3ed4c0918f2dd2e70d2a1d312049ec3d2aa57fa0f7dbe2c3d9cd94993e4"
 dependencies = [
  "lazy_static",
  "p3-koala-bear",
@@ -12521,27 +12520,24 @@ dependencies = [
 
 [[package]]
 name = "slop-poseidon2"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f27ec95c66d641b84741af6d8071b207625d191ae9026c7cedcfabf57f519a59"
+checksum = "51676e05a2891b15cd624b74c8aaa03cc10d5eb51542eeab5019294ad47c21fb"
 dependencies = [
  "p3-poseidon2",
 ]
 
 [[package]]
 name = "slop-primitives"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dd98992a3dd8b608fd94d1b8f96d392478f6fd613cbe5db1017f8c97d6d3e13"
-dependencies = [
- "slop-algebra",
-]
+checksum = "91992a8acf6a9a4c52dee00142840d30c8cc9bbb3ff30ca3d56dcde428a591dd"
 
 [[package]]
 name = "slop-symmetric"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ea707679a9bee285392aa505aa353f8f473502a4f0776eec944c0b3baf4929"
+checksum = "9cb116ad23028ab41fe5228905a17bbeaf7b5fb7ec6790163bb8e8fef7092ffc"
 dependencies = [
  "p3-symmetric",
 ]
@@ -12599,9 +12595,9 @@ dependencies = [
 
 [[package]]
 name = "sp1-lib"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27ac4a731d44d3588c59c320e9c4fa8cb6d1aca8be822f2d125f42887213e420"
+checksum = "e8a36aae1b35d6eae35b479d23c818bb32c22e7c0e34cc1e1bc7c68319c94368"
 dependencies = [
  "bincode 1.3.3",
  "elliptic-curve",
@@ -12611,9 +12607,9 @@ dependencies = [
 
 [[package]]
 name = "sp1-primitives"
-version = "6.4.0"
+version = "6.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab9b6b5cc2f53c2c96b3ef611781ea151c61d541a90c467041ce3aac476001fe"
+checksum = "f2ad891be0e48ab9ca110486f122cf799a707e5ca327a75669cfc2792b086882"
 dependencies = [
  "bincode 1.3.3",
  "blake3",
@@ -12734,7 +12730,7 @@ dependencies = [
 [[package]]
 name = "substrate-bn"
 version = "0.6.0"
-source = "git+https://github.com/sp1-patches/bn?tag=patch-0.6.0-sp1-6.0.0-substrate-bn#13747d255e00c158afbb6d4a4a94275edd804bbf"
+source = "git+https://github.com/sp1-patches/bn?tag=patch-0.6.0-sp1-6.10.0-substrate-bn#ab4d0085567695967cf34c23b3090f1ae02a03d1"
 dependencies = [
  "bytemuck",
  "byteorder",
