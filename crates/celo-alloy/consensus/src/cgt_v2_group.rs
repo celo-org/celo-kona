@@ -100,6 +100,8 @@ pub fn cgt_v2_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2ConfigErr
 pub const CGT_V2_STATIC_STEPS: usize = 12;
 /// Number of required transactions in the complete group.
 pub const CGT_V2_STEPS: usize = CGT_V2_STATIC_STEPS + 1;
+/// Gas limit for the dynamic reserve-funding deposit.
+pub const CGT_V2_FUNDING_GAS: u64 = 100_000;
 /// Reserved gas for the static group and the dynamic funding deposit.
 pub const CGT_V2_GROUP_GAS: u64 = 56_300_000;
 /// Fixed depositor authorized by the proxy admin and CGT setter.
@@ -205,7 +207,7 @@ impl CgtV2UpgradeGroup {
             to: TxKind::Call(CGT_V2_RESERVE),
             mint: reserve.try_into().map_err(|_| CgtV2GroupError::Invalid)?,
             value: reserve,
-            gas_limit: 100_000,
+            gas_limit: CGT_V2_FUNDING_GAS,
             is_system_transaction: false,
             input: Bytes::copy_from_slice(&keccak256(b"deposit()")[..4]),
         })
@@ -213,6 +215,8 @@ impl CgtV2UpgradeGroup {
 
     fn bundle_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2GroupError> {
         let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        // TODO(CGTv2): replace this fixture-only guard with per-network bundle selection
+        // once the production contracts and network configuration are finalized.
         // A network profile does not authorize running fixture contracts on that network.
         if chain_id != CGT_V2_FIXTURE_CHAIN_ID {
             return Err(CgtV2GroupError::Config(CgtV2ConfigError { chain_id }));
