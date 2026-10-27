@@ -17,6 +17,21 @@ ignore = [
     # the runtime binary. Unmaintained (not a vulnerability) and no safe upgrade exists; removing
     # it requires alloy-sol-macro to drop the dep upstream.
     "RUSTSEC-2026-0173",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0387 crypto-bigint timing variability.
+    # crypto-bigint 0.5 has no patched release; the fix (>=0.7.6) needs elliptic-curve 0.14, but
+    # k256/p256 0.13 and ecdsa 0.16 (via alloy and revm-precompile) and sp1-lib require
+    # elliptic-curve 0.13.
+    "RUSTSEC-2026-0387",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0391 zstd leaks abandoned-stream data on context reuse.
+    # The fix needs zstd >=0.14.3, but the workspace `zstd = "0.13"`, the celo-org/reth and
+    # celo-org/optimism forks, and reth-zstd-compressors (newest 0.8.2) all require zstd ^0.13.
+    "RUSTSEC-2026-0391",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0398 zstd-safe `Seekable::decompress` Vec length.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0403 zstd-safe uninitialized memory on legacy frames.
+    # The fix needs zstd-safe >=8.2.0, but zstd 0.13 requires zstd-safe ^7.1, and zstd is held at
+    # ^0.13 (see RUSTSEC-2026-0391).
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
 ]
 
 [licenses]
