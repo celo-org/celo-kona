@@ -19,12 +19,12 @@ def main():
     args = parser.parse_args()
     manifest = json.loads((FIXTURE / "cgtv2-provenance.json").read_text())
     assert manifest["fixtureOnly"] and manifest["chainId"] == 1337
-    assert manifest["staticGasLimit"] + manifest["fundingGasLimit"] == 56_300_000
+    assert manifest["staticGasLimit"] + manifest["fundingGasLimit"] == 48_100_000
     for name, digest in manifest["sha256"].items():
         assert Path(name).name == name, name
         assert hashlib.sha256((FIXTURE / name).read_bytes()).hexdigest() == digest, name
     bundle = json.loads((FIXTURE / "cgtv2-fixture-nut-bundle.json").read_text())
-    assert len(bundle["transactions"]) == 12
+    assert len(bundle["transactions"]) == 19
     assert sum(tx["gasLimit"] for tx in bundle["transactions"]) == manifest["staticGasLimit"]
     assert (ROOT / "crates/alloy-celo-evm/src/block/cgt_v2_prestate.json").read_bytes() == (FIXTURE / "cgtv2-fixture-prestate.json").read_bytes()
     if args.optimism:

@@ -97,13 +97,13 @@ pub fn cgt_v2_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2ConfigErr
 }
 
 /// Number of static NUT transactions, followed by one dynamic funding deposit.
-pub const CGT_V2_STATIC_STEPS: usize = 12;
+pub const CGT_V2_STATIC_STEPS: usize = 19;
 /// Number of required transactions in the complete group.
 pub const CGT_V2_STEPS: usize = CGT_V2_STATIC_STEPS + 1;
 /// Gas limit for the dynamic reserve-funding deposit.
 pub const CGT_V2_FUNDING_GAS: u64 = 100_000;
 /// Reserved gas for the static group and the dynamic funding deposit.
-pub const CGT_V2_GROUP_GAS: u64 = 56_300_000;
+pub const CGT_V2_GROUP_GAS: u64 = 48_100_000;
 /// Fixed depositor authorized by the proxy admin and CGT setter.
 pub const CGT_V2_DEPOSITOR: Address = address!("deaddeaddeaddeaddeaddeaddeaddeaddead0001");
 /// L1Block proxy.
@@ -118,17 +118,24 @@ pub const CGT_V2_FLAG_SLOT: B256 =
 
 const INTENTS: [&str; CGT_V2_STEPS] = [
     "Cgtv2 0: StorageSetter deployment",
-    "Cgtv2 1: L2ProxyAdmin deployment",
-    "Cgtv2 2: L2ProxyAdmin upgrade",
-    "Cgtv2 3: L1BlockCGT deployment",
-    "Cgtv2 4: L2ToL1MessagePasserCGT deployment",
-    "Cgtv2 5: NativeAssetLiquidity deployment",
-    "Cgtv2 6: LiquidityController deployment",
-    "Cgtv2 7: CeloGasBridgeL2 deployment",
-    "Cgtv2 8: CeloSequencerFeeVault deployment",
-    "Cgtv2 9: CeloCGTV2ContractsManager deployment",
-    "Cgtv2 10: CGTv2 predeploy upgrade",
-    "Cgtv2 11: CGTv2 flag enable",
+    "Cgtv2 1: L1BlockCGT deployment",
+    "Cgtv2 2: L2ToL1MessagePasserCGT deployment",
+    "Cgtv2 3: NativeAssetLiquidity deployment",
+    "Cgtv2 4: LiquidityController deployment",
+    "Cgtv2 5: CeloGasBridgeL2 deployment",
+    "Cgtv2 6: CeloSequencerFeeVault deployment",
+    "Cgtv2 7: L1BlockCGT upgrade",
+    "Cgtv2 8: L2ToL1MessagePasserCGT upgrade",
+    "Cgtv2 9: NativeAssetLiquidity upgrade",
+    "Cgtv2 10: LiquidityController initializer reset",
+    "Cgtv2 11: LiquidityController upgrade and initialize",
+    "Cgtv2 12: CeloGasBridgeL2 initializer reset",
+    "Cgtv2 13: CeloGasBridgeL2 upgrade and initialize",
+    "Cgtv2 14: CeloSequencerFeeVault initializer reset",
+    "Cgtv2 15: CeloSequencerFeeVault upgrade and initialize",
+    "Cgtv2 16: CeloGasBridgeL2 minter authorization",
+    "Cgtv2 17: LiquidityController ownership transfer",
+    "Cgtv2 18: CGTv2 flag enable",
     "Celo: CGTv2 Reserve Funding",
 ];
 const STATIC: [&[u8]; CGT_V2_STATIC_STEPS] = [
@@ -144,6 +151,13 @@ const STATIC: [&[u8]; CGT_V2_STATIC_STEPS] = [
     include_bytes!("../testdata/cgt_v2/cgtv2-09.rlp"),
     include_bytes!("../testdata/cgt_v2/cgtv2-10.rlp"),
     include_bytes!("../testdata/cgt_v2/cgtv2-11.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-12.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-13.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-14.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-15.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-16.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-17.rlp"),
+    include_bytes!("../testdata/cgt_v2/cgtv2-18.rlp"),
 ];
 
 /// Invalid required transaction fields or unresolved network parameters.

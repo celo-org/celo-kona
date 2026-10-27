@@ -10,7 +10,8 @@ use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, keccak256};
 use celo_alloy_consensus::{
     CeloTxEnvelope,
     cgt_v2_group::{
-        CGT_V2_DEPOSITOR, CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_RESERVE, CgtV2UpgradeGroup,
+        CGT_V2_DEPOSITOR, CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_RESERVE, CGT_V2_STATIC_STEPS,
+        CGT_V2_STEPS, CgtV2UpgradeGroup,
     },
 };
 use op_alloy_consensus::TxDeposit;
@@ -111,12 +112,21 @@ fn cgt_v2_real_group_executes_and_preserves_vault() {
     );
     assert_eq!(db.basic(VAULT).unwrap().unwrap().balance, U256::from(41));
     assert_eq!(db.storage(VAULT, U256::ZERO).unwrap(), U256::from(73));
-    assert_eq!(e.receipts().len(), 14);
+    assert_eq!(
+        db.storage(
+            address!("4200000000000000000000000000000000000018"),
+            "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc".parse().unwrap()
+        )
+        .unwrap(),
+        U256::from(0x1001),
+        "CGTv2 must retain the legacy ProxyAdmin implementation"
+    );
+    assert_eq!(e.receipts().len(), CGT_V2_STEPS + 1);
     assert!(e.finish().is_ok());
 }
 #[test]
 fn cgt_v2_truncated_group_rejects_block() {
-    for length in [1, 10, 11, 12] {
+    for length in 1..CGT_V2_STEPS {
         let f = factory();
         let mut db = State::builder().with_database(database()).build();
         let mut e = f.create_executor(
@@ -131,7 +141,7 @@ fn cgt_v2_truncated_group_rejects_block() {
         for tx in &group()[..length] {
             e.execute_transaction(tx).unwrap();
         }
-        assert!(e.finish().is_err(), "accepted {length} of 13 required steps");
+        assert!(e.finish().is_err(), "accepted {length} of {CGT_V2_STEPS} required steps");
     }
 }
 #[test]
@@ -284,42 +294,52 @@ fn cgt_v2_origin_deposit_must_precede_group() {
 }
 
 #[test]
-fn cgt_v2_setter_failure_rejects_required_group() {
+fn cgt_v2_initializer_or_setter_failure_rejects_required_group() {
     use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
     use revm::precompile::{PrecompileHalt, PrecompileOutput};
-    for revert in [false, true] {
-        let f = factory();
-        let mut db = State::builder().with_database(database()).build();
-        let mut e = f.create_executor(
-            f.evm_factory().create_evm(&mut db, env()),
-            OpBlockExecutionCtx {
-                parent_beacon_block_root: Some(B256::ZERO),
-                ..Default::default()
-            },
-        );
-        e.apply_pre_execution_changes().unwrap();
-        e.execute_transaction(&info()).unwrap();
-        let txs = group();
-        for tx in &txs[..11] {
-            e.execute_transaction(tx).unwrap();
+    struct FailureCase {
+        step: usize,
+        target: Address,
+    }
+    for FailureCase { step, target } in [
+        FailureCase { step: 11, target: address!("420000000000000000000000000000000000002a") },
+        FailureCase { step: 13, target: address!("42000000000000000000000000000000000007fe") },
+        FailureCase { step: 15, target: VAULT },
+        FailureCase { step: CGT_V2_STATIC_STEPS - 1, target: CGT_V2_L1_BLOCK },
+    ] {
+        for revert in [false, true] {
+            let f = factory();
+            let mut db = State::builder().with_database(database()).build();
+            let mut e = f.create_executor(
+                f.evm_factory().create_evm(&mut db, env()),
+                OpBlockExecutionCtx {
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+            );
+            e.apply_pre_execution_changes().unwrap();
+            e.execute_transaction(&info()).unwrap();
+            let txs = group();
+            for tx in &txs[..step] {
+                e.execute_transaction(tx).unwrap();
+            }
+            e.evm_mut().components_mut().2.extend_precompiles([(
+                target,
+                DynPrecompile::from(move |_input: PrecompileInput<'_>| {
+                    Ok(if revert {
+                        PrecompileOutput::revert(0, Bytes::new(), 0)
+                    } else {
+                        PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0)
+                    })
+                }),
+            )]);
+            let error = e.execute_transaction(&txs[step]).unwrap_err();
+            assert!(error.as_validation().is_some(), "{error}");
+            assert_eq!(e.receipts().len(), step + 1);
+            assert!(e.finish().is_err());
         }
-        e.evm_mut().components_mut().2.extend_precompiles([(
-            CGT_V2_L1_BLOCK,
-            DynPrecompile::from(move |_input: PrecompileInput<'_>| {
-                Ok(if revert {
-                    PrecompileOutput::revert(0, Bytes::new(), 0)
-                } else {
-                    PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0)
-                })
-            }),
-        )]);
-        let error = e.execute_transaction(&txs[11]).unwrap_err();
-        assert!(error.as_validation().is_some(), "{error}");
-        assert_eq!(e.receipts().len(), 12);
-        assert!(e.finish().is_err());
     }
 }
-
 #[test]
 fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
     let f = factory();
@@ -342,7 +362,7 @@ fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
 }
 
 #[test]
-fn cgt_v2_bad_legacy_vault_getter_rejects_group() {
+fn cgt_v2_pinned_vault_settings_do_not_call_legacy_getters() {
     for code in ["60006000fd", "fe", "00"] {
         let mut base = database();
         let code: Bytes = alloy_primitives::hex::decode(code).unwrap().into();
@@ -368,12 +388,11 @@ fn cgt_v2_bad_legacy_vault_getter_rejects_group() {
         );
         e.apply_pre_execution_changes().unwrap();
         e.execute_transaction(&info()).unwrap();
-        let txs = group();
-        for tx in &txs[..10] {
-            e.execute_transaction(tx).unwrap();
+        for tx in group() {
+            e.execute_transaction(&tx).unwrap();
         }
-        assert!(e.execute_transaction(&txs[10]).unwrap_err().as_validation().is_some());
-        assert!(e.finish().is_err());
+        assert_eq!(e.evm_mut().db_mut().storage(VAULT, U256::ZERO).unwrap(), U256::from(73));
+        assert!(e.finish().is_ok());
     }
 }
 
@@ -439,7 +458,7 @@ impl Database for FailingDatabase {
 }
 
 #[test]
-fn cgt_v2_manager_preserves_database_error() {
+fn cgt_v2_direct_upgrade_preserves_database_error() {
     let f = factory();
     let mut db = State::builder().with_database(FailingDatabase(database())).build();
     let mut e = f.create_executor(
@@ -449,13 +468,14 @@ fn cgt_v2_manager_preserves_database_error() {
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
     let txs = group();
-    for tx in &txs[..10] {
+    let vault_reset_step = 14;
+    for tx in &txs[..vault_reset_step] {
         e.execute_transaction(tx).unwrap();
     }
-    let error = e.execute_transaction(&txs[10]).unwrap_err();
+    let error = e.execute_transaction(&txs[vault_reset_step]).unwrap_err();
     assert!(error.as_internal().is_some(), "database error became transaction invalidity: {error}");
     assert!(error.to_string().contains("injected migration DB error"), "{error}");
-    assert_eq!(e.receipts().len(), 11);
+    assert_eq!(e.receipts().len(), vault_reset_step + 1);
 }
 
 #[test]
@@ -635,7 +655,7 @@ fn cgt_v2_failed_funding_discards_entire_block_candidate() {
         e.apply_pre_execution_changes().unwrap();
         e.execute_transaction(&info()).unwrap();
         let txs = group();
-        for tx in &txs[..12] {
+        for tx in &txs[..CGT_V2_STATIC_STEPS] {
             e.execute_transaction(tx).unwrap();
         }
         e.evm_mut().components_mut().2.extend_precompiles([(
@@ -644,7 +664,9 @@ fn cgt_v2_failed_funding_discards_entire_block_candidate() {
                 Ok(PrecompileOutput::revert(0, Bytes::new(), 0))
             }),
         )]);
-        assert!(e.execute_transaction(&txs[12]).unwrap_err().as_validation().is_some());
+        assert!(
+            e.execute_transaction(&txs[CGT_V2_STATIC_STEPS]).unwrap_err().as_validation().is_some()
+        );
         assert!(e.finish().is_err());
         // The block builder drops its candidate on this error instead of publishing its bundle.
     }
