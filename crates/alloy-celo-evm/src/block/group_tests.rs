@@ -84,6 +84,35 @@ fn group() -> Vec<Recovered<CeloTxEnvelope>> {
     CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().into_iter().map(recovered).collect()
 }
 #[test]
+fn cgt_v2_already_initialized_predeploy_rejects_group() {
+    let initializer_v5 = U256::from_be_bytes(
+        alloy_primitives::b256!("f0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00")
+            .0,
+    );
+    for (target, slot) in [
+        (address!("420000000000000000000000000000000000002a"), U256::ZERO),
+        (address!("42000000000000000000000000000000000007fe"), U256::ZERO),
+        (VAULT, initializer_v5),
+    ] {
+        let f = factory();
+        let mut base = database();
+        base.insert_account_storage(target, slot, U256::from(1)).unwrap();
+        let mut db = State::builder().with_database(base).build();
+        let mut executor = f.create_executor(
+            f.evm_factory().create_evm(&mut db, env()),
+            OpBlockExecutionCtx {
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+        );
+        executor.apply_pre_execution_changes().unwrap();
+        executor.execute_transaction(&info()).unwrap();
+        let result = group().iter().try_for_each(|tx| executor.execute_transaction(tx).map(|_| ()));
+        assert!(result.is_err(), "migration reset an existing initializer at {target}");
+    }
+}
+
+#[test]
 fn cgt_v2_real_group_executes_and_preserves_vault() {
     let f = factory();
     let mut db = State::builder().with_database(database()).with_bundle_update().build();
@@ -302,9 +331,9 @@ fn cgt_v2_initializer_or_setter_failure_rejects_required_group() {
         target: Address,
     }
     for FailureCase { step, target } in [
-        FailureCase { step: 11, target: address!("420000000000000000000000000000000000002a") },
-        FailureCase { step: 13, target: address!("42000000000000000000000000000000000007fe") },
-        FailureCase { step: 15, target: VAULT },
+        FailureCase { step: 9, target: address!("420000000000000000000000000000000000002a") },
+        FailureCase { step: 10, target: address!("42000000000000000000000000000000000007fe") },
+        FailureCase { step: 11, target: VAULT },
         FailureCase { step: CGT_V2_STATIC_STEPS - 1, target: CGT_V2_L1_BLOCK },
     ] {
         for revert in [false, true] {
@@ -468,14 +497,14 @@ fn cgt_v2_direct_upgrade_preserves_database_error() {
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
     let txs = group();
-    let vault_reset_step = 14;
-    for tx in &txs[..vault_reset_step] {
+    let vault_upgrade_step = 11;
+    for tx in &txs[..vault_upgrade_step] {
         e.execute_transaction(tx).unwrap();
     }
-    let error = e.execute_transaction(&txs[vault_reset_step]).unwrap_err();
+    let error = e.execute_transaction(&txs[vault_upgrade_step]).unwrap_err();
     assert!(error.as_internal().is_some(), "database error became transaction invalidity: {error}");
     assert!(error.to_string().contains("injected migration DB error"), "{error}");
-    assert_eq!(e.receipts().len(), vault_reset_step + 1);
+    assert_eq!(e.receipts().len(), vault_upgrade_step + 1);
 }
 
 #[test]

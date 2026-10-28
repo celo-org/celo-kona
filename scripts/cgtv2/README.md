@@ -8,4 +8,6 @@ The old `scripts/upgrade18_genesis_parity/` and `scripts/gen_upgrade18_predeploy
 
 These checks cover the synthetic chain 1337 fixture. Before release, supply and review the production reserved bridge address, L1 addresses, owner, legacy vault and gas-token settings, fixed total supply, deployer nonce/collision checks, populated chain state and gas limits. Regenerate the bundle in the contracts repository and rerun the same checks against the final artifacts. Production devnet parity is still required once those inputs are available.
 
-The direct-upgrade alternative contains 19 static deposits plus reserve funding. It preserves the v6 ProxyAdmin implementation and ownership and uses no Karst manager helpers. Verify pinned legacy getter settings before freezing a production bundle.
+The direct-upgrade alternative contains 15 static deposits plus reserve funding. It preserves the v6 ProxyAdmin implementation and ownership and uses no Karst manager helpers. Verify pinned legacy getter settings before freezing a production bundle.
+
+Initializer resets and StorageSetter are omitted. The controller and bridge proxy must be unused; the FeeVault OZ v5 initializer slot must be zero even though its legacy slot-zero totalProcessed is populated. Existing initializer guards reject an already-initialized target.
