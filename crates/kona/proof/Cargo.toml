@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 # Workspace
 celo-executor.workspace = true
+celo-derive.workspace = true
 celo-alloy-consensus.workspace = true
 celo-genesis = { workspace = true, features = ["serde"] }
 celo-registry.workspace = true
@@ -38,6 +39,7 @@ kona-registry.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+alloy-rlp.workspace = true
 
 # OP Alloy
 op-alloy-rpc-types-engine.workspace = true
@@ -60,7 +62,6 @@ tokio = { workspace = true, features = ["full"], optional = true }
 [dev-dependencies]
 celo-executor = { workspace = true, features = ["test-utils"] }
 kona-executor = { workspace = true, features = ["test-utils"] }
-alloy-rlp.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [features]
