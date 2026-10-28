@@ -159,10 +159,9 @@ impl<B: AttributesProvider + Stage + Send, P: ChainProvider + Send> AttributesPr
             self.last_in_span = self.inner.is_last_in_span();
         }
         let batch = self.pending.as_ref().expect("batch just loaded");
-        let user = batch.transactions.iter().any(|tx| {
-            !(self.origin.cfg.is_lagoon_active(batch.timestamp) && tx.first() == Some(&0x7f))
-        });
-        if user && self.origin.amount(parent, batch.epoch()).await?.is_some() {
+        if !batch.transactions.is_empty() &&
+            self.origin.amount(parent, batch.epoch()).await?.is_some()
+        {
             // Drop the invalid block and the rest of its channel/span. Already derived
             // prefix blocks remain accepted, matching Holocene's sequential validation.
             self.inner.flush_channel().await?;

@@ -190,6 +190,27 @@ async fn cgt_v2_batch_guard_retry_flush_and_reset() {
 }
 
 #[tokio::test]
+async fn cgt_v2_batch_rejects_post_exec() {
+    use kona_derive::{AttributesProvider, test_utils::new_test_attributes_provider};
+    let (cfg, provider, parent, epoch) = setup();
+    let mut cfg = (*cfg).clone();
+    // The CGTv2 batch rule is unconditional, even if a fixture enables Lagoon.
+    cfg.hardforks.lagoon_time = Some(0);
+    let batch = SingleBatch {
+        epoch_num: epoch.number,
+        epoch_hash: epoch.hash,
+        // PostExec(version=1, block=1, refunds=[(0, 1)]).
+        transactions: vec![Bytes::from_static(&[0x7f, 0xc6, 0x01, 0x01, 0xc3, 0xc2, 0x80, 0x01])],
+        ..Default::default()
+    };
+    let inner = new_test_attributes_provider(None, vec![Ok(batch)]);
+    let mut guard = CgtV2BatchProvider::new(Arc::new(cfg), inner, provider);
+    assert_eq!(guard.next_batch(parent).await.unwrap_err(), PipelineError::NotEnoughData.temp());
+    assert!(guard.inner.flushed);
+    assert!(guard.pending.is_none());
+}
+
+#[tokio::test]
 async fn cgt_v2_receipt_cache_is_hash_keyed_and_shared() {
     use kona_derive::ChainProvider;
     let (_, provider, _, epoch) = setup();
