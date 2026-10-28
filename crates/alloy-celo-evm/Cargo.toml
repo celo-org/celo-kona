@@ -40,6 +40,8 @@ metrics = { workspace = true, optional = true }
 revm = { workspace = true, features = ["optional_no_base_fee"] }
 # Test-only: a local recorder to assert the std-only skip metric is emitted.
 metrics-util = "0.20"
+# Test-only: load the populated pre-migration CGTv2 fixture.
+serde_json = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]

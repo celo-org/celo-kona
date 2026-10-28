@@ -705,3 +705,107 @@ fn payload_metrics_cover_the_whole_sequencing_path() {
         1,
     );
 }
+
+#[test]
+fn cgt_v2_witness_rejects_user_transactions_on_either_side_of_signal() {
+    use alloy_consensus::{Sealable, SignableTransaction, TxLegacy};
+    use alloy_eips::Encodable2718;
+    use celo_alloy_consensus::cgt_v2_group::{
+        CGT_V2_DEPOSITOR, CGT_V2_L1_BLOCK, CgtV2UpgradeGroup,
+    };
+    use reth_optimism_chainspec::OpChainSpecBuilder;
+    use reth_optimism_payload_builder::builder::OpBuilder;
+    use reth_primitives_traits::WithEncoded;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+
+    let mut info_data = alloy_primitives::keccak256(
+        b"setL1BlockValues(uint64,uint64,uint256,bytes32,uint64,bytes32,uint256,uint256)",
+    )[..4]
+        .to_vec();
+    info_data.extend_from_slice(&[0; 256]);
+    let signed = TxLegacy {
+        chain_id: Some(1337),
+        gas_limit: 21_000,
+        gas_price: 30_000_000_000,
+        to: TxKind::Call(Address::with_last_byte(0x88)),
+        ..Default::default()
+    }
+    .into_signed(Signature::test_signature());
+    let sender = signed.recover_signer().unwrap();
+    let user = CeloTxEnvelope::Legacy(signed);
+    let info: CeloTxEnvelope = op_alloy_consensus::TxDeposit {
+        from: CGT_V2_DEPOSITOR,
+        to: TxKind::Call(CGT_V2_L1_BLOCK),
+        gas_limit: 200_000,
+        source_hash: B256::repeat_byte(0x22),
+        input: info_data.into(),
+        ..Default::default()
+    }
+    .seal_slow()
+    .into();
+    let signal: CeloTxEnvelope =
+        CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0).seal_slow().into();
+    let provider = MockEthProvider::default();
+    provider.add_account(sender, ExtendedAccount::new(0, U256::MAX));
+    let prestate: serde_json::Value = serde_json::from_str(include_str!(
+        "../../celo-alloy/consensus/testdata/cgt_v2/cgtv2-fixture-prestate.json"
+    ))
+    .unwrap();
+    for (address, account) in prestate.as_object().unwrap() {
+        provider.add_account(
+            address.parse().unwrap(),
+            ExtendedAccount::new(0, account["balance"].as_str().unwrap().parse().unwrap())
+                .with_bytecode(account["code"].as_str().unwrap().parse().unwrap())
+                .extend_storage(account["storage"].as_object().unwrap().iter().map(
+                    |(slot, value)| {
+                        (
+                            slot.parse::<B256>().unwrap(),
+                            value.as_str().unwrap().parse::<U256>().unwrap(),
+                        )
+                    },
+                )),
+        );
+    }
+    let chain_spec = Arc::new(
+        OpChainSpecBuilder::default()
+            .chain(reth_chainspec::Chain::from_id(1337))
+            .genesis(Default::default())
+            .granite_activated()
+            .build(),
+    );
+    let witness = |transactions: Vec<CeloTxEnvelope>| {
+        let mut config = test_payload_config();
+        config.attributes.gas_limit = Some(70_000_000);
+        config.attributes.transactions = transactions
+            .into_iter()
+            .map(|tx| WithEncoded::new(tx.encoded_2718().into(), tx))
+            .collect();
+        let ctx = OpPayloadBuilderCtx {
+            evm_config: CeloEvmConfig::celo(chain_spec.clone()),
+            builder_config: OpBuilderConfig::default(),
+            chain_spec: chain_spec.clone(),
+            config,
+            cancel: Default::default(),
+            best_payload: None,
+        };
+        OpBuilder::new(|_| reth_payload_util::NoopPayloadTransactions::<CeloPoolTx>::default())
+            .witness(&provider, &provider, &ctx)
+    };
+    let mut complete = vec![info.clone()];
+    complete.extend(
+        CgtV2UpgradeGroup::deposits(1337, U256::from(600))
+            .unwrap()
+            .into_iter()
+            .map(|tx| CeloTxEnvelope::Deposit(tx.seal_slow())),
+    );
+    witness(complete.clone()).expect("complete deposit-only activation witness");
+    assert!(witness(vec![info, signal]).is_err(), "truncated activation witness must fail");
+    let mut user_before = complete.clone();
+    user_before.insert(1, user.clone());
+    let mut user_after = complete;
+    user_after.push(user);
+    for transactions in [user_before, user_after] {
+        let error = witness(transactions).expect_err("activation witness must reject user txs");
+        assert!(error.to_string().contains("unexpected non-deposit transactions"), "{error}");
+    }
+}

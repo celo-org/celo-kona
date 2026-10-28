@@ -27,10 +27,11 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
 use alloy_op_evm::block::receipt_builder::OpReceiptBuilder;
 use alloy_primitives::U256;
+use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
 use core::any::Any;
 use op_alloy_consensus::EIP1559ParamError;
 use op_revm::OpSpecId;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, Hardforks};
 use reth_evm::{
     BlockExecutorForEvm, CallerGasAllowanceError, ConfigureEvm, Database, EvmEnv, EvmEnvFor,
     EvmFor, InspectorFor, TxEnvFor,
@@ -39,7 +40,9 @@ use reth_evm::{
 };
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_forks::OpHardforks;
-use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader, SignedTransaction};
+use reth_primitives_traits::{
+    BlockBody as _, NodePrimitives, SealedBlock, SealedHeader, SignedTransaction,
+};
 use revm::context::Transaction;
 
 pub mod primitives;
@@ -56,12 +59,14 @@ pub mod pool;
 pub mod payload;
 
 #[cfg(feature = "std")]
+pub mod cgt_v2;
+
+#[cfg(feature = "std")]
 pub mod payload_metrics;
 
 #[cfg(feature = "std")]
 pub mod rpc;
 
-#[cfg(feature = "std")]
 pub mod chainspec;
 
 #[cfg(feature = "std")]
@@ -156,7 +161,7 @@ impl<ChainSpec, N: NodePrimitives, R> Clone for CeloEvmConfig<ChainSpec, N, R> {
     }
 }
 
-impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
+impl<ChainSpec: OpHardforks + Hardforks + EthChainSpec> CeloEvmConfig<ChainSpec> {
     /// Creates a new [`CeloEvmConfig`] with the given chain spec.
     pub fn celo(chain_spec: Arc<ChainSpec>) -> Self {
         Self::celo_with_blocklist(
@@ -166,6 +171,8 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
     }
 
     /// Creates a new [`CeloEvmConfig`] with the given chain spec and shared fee currency blocklist.
+    ///
+    /// CGTv2 uses the shared signal-driven executor in building and replay.
     pub fn celo_with_blocklist(
         chain_spec: Arc<ChainSpec>,
         blocklist: alloy_celo_evm::blocklist::FeeCurrencyBlocklist,
@@ -185,7 +192,7 @@ impl<ChainSpec: OpHardforks> CeloEvmConfig<ChainSpec> {
 impl<ChainSpec, N, R> CeloEvmConfig<ChainSpec, N, R>
 where
     ChainSpec: OpHardforks,
-    N: NodePrimitives,
+    N: NodePrimitives<SignedTx: op_alloy_consensus::OpTransaction>,
 {
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
@@ -200,9 +207,13 @@ where
     ) -> OpBlockExecutionCtx {
         OpBlockExecutionCtx {
             parent_hash: block.header().parent_hash(),
-            // No parent header on this path to detect fork-activation blocks, so the executor's
-            // check is skipped; the derivation layer enforces the rule instead.
-            no_user_tx_activation_block: false,
+            // Timestamp forks need a parent header, but the CGTv2 signal identifies its
+            // activation block directly, including user txs before the signal.
+            no_user_tx_activation_block: block
+                .body()
+                .transactions()
+                .iter()
+                .any(CgtV2UpgradeGroup::is_activation_transaction),
             parent_beacon_block_root: block.header().parent_beacon_block_root(),
             extra_data: block.header().extra_data().clone(),
             post_exec_mode: post_exec_mode.unwrap_or_default(),
@@ -487,10 +498,9 @@ where
         // storage as that path does. Dormant on Celo (SDM unscheduled).
         let evm = self.evm_for_block(db, block.header())?.with_cip64_store_enabled();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
-        // Bind a fresh receipt builder to this EVM's per-instance CIP-64 storage.
-        let builder = R::from(evm.cip64_storage().clone());
-
-        Ok(OpBlockExecutor::new(evm, ctx, self.executor_factory.spec(), builder))
+        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
+        // on this path.
+        Ok(self.executor_factory.create_wrapped_executor(evm, ctx))
     }
 
     fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
@@ -523,9 +533,12 @@ where
         };
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
-        let builder = R::from(evm.cip64_storage().clone());
-        let executor =
-            OpBlockExecutor::new(evm, ctx.clone(), self.executor_factory.spec(), builder);
+        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
+        // on the sequencing path — op-reth's payload builder obtains its block builder
+        // through this method, so an executor built outside the factory here would seal
+        // payloads *without* the transition while import/validation applies it
+        // (consensus split at the activation block).
+        let executor = self.executor_factory.create_wrapped_executor(evm, ctx.clone());
 
         let builder = BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {
             executor,
@@ -579,9 +592,12 @@ where
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(OpBlockExecutionCtx {
             parent_hash: payload.payload.parent_hash(),
-            // No parent header on this path to detect fork-activation blocks, so the executor's
-            // check is skipped; the derivation layer enforces the rule instead.
-            no_user_tx_activation_block: false,
+            // Unsafe payloads carry the same activation signal as derived/imported blocks.
+            no_user_tx_activation_block: payload
+                .payload
+                .transactions()
+                .iter()
+                .any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx)),
             parent_beacon_block_root: payload.sidecar.parent_beacon_block_root(),
             extra_data: payload.payload.as_v1().extra_data.clone(),
             post_exec_mode: PostExecMode::default(),
@@ -939,5 +955,104 @@ mod tests {
         };
         let result = celo_next_block_base_fee(&cs, &parent, 12).unwrap();
         assert_eq!(result, CELO_BASE_FEE_FLOOR, "Low base fee should be clamped to floor");
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod cgt_v2_tests {
+    use super::*;
+    use alloy_consensus::{Block, BlockBody, Sealable, SignableTransaction, TxLegacy};
+    use alloy_primitives::Signature;
+    use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
+    use reth_node_api::payload::PayloadTypes;
+    use reth_optimism_payload_builder::OpPayloadTypes;
+
+    fn block(activation: bool, user_first: bool) -> SealedBlock<Block<CeloTxEnvelope>> {
+        let user = CeloTxEnvelope::Legacy(
+            TxLegacy { gas_limit: 21_000, ..Default::default() }.into_signed(Signature::new(
+                U256::ZERO,
+                U256::ZERO,
+                false,
+            )),
+        );
+        let mut transactions = vec![user];
+        if activation {
+            let signal = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0);
+            transactions
+                .insert(usize::from(user_first), CeloTxEnvelope::Deposit(signal.seal_slow()));
+        }
+        SealedBlock::seal_slow(Block {
+            header: Header::default(),
+            body: BlockBody { transactions, ..Default::default() },
+        })
+    }
+
+    #[test]
+    fn cgt_v2_import_marks_activation_blocks_deposits_only() {
+        let config = CeloEvmConfig::celo(Arc::new(
+            reth_optimism_chainspec::OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .granite_activated()
+                .build(),
+        ));
+        for user_first in [false, true] {
+            let block = block(true, user_first);
+            assert!(
+                config.context_for_block(&block).unwrap().no_user_tx_activation_block,
+                "import must reject user txs on either side of the signal",
+            );
+        }
+        assert!(
+            !config.context_for_block(&block(false, false)).unwrap().no_user_tx_activation_block
+        );
+    }
+
+    #[test]
+    fn cgt_v2_engine_payload_marks_activation_blocks_deposits_only() {
+        let config = CeloEvmConfig::celo(Arc::new(
+            reth_optimism_chainspec::OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .granite_activated()
+                .build(),
+        ));
+        for activation in [false, true] {
+            let payload = <OpPayloadTypes<CeloPrimitives> as PayloadTypes>::block_to_payload(
+                block(activation, true),
+                None,
+            );
+            assert_eq!(
+                config.context_for_payload(&payload).unwrap().no_user_tx_activation_block,
+                activation,
+                "unsafe payload execution must enforce the same rule as block import",
+            );
+        }
+    }
+
+    #[test]
+    fn cgt_v2_import_rejects_user_execution_on_either_side_of_signal() {
+        use alloy_consensus::transaction::Recovered;
+        use alloy_primitives::Address;
+        use revm::database::{CacheDB, EmptyDB, State};
+
+        let chain_spec = Arc::new(
+            reth_optimism_chainspec::OpChainSpecBuilder::default()
+                .chain(reth_chainspec::Chain::from_id(42220))
+                .genesis(Default::default())
+                .granite_activated()
+                .build(),
+        );
+        let config = CeloEvmConfig::celo(chain_spec);
+        for user_first in [false, true] {
+            let block = block(true, user_first);
+            let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
+            let mut executor = config.executor_for_block(&mut db, &block).unwrap();
+            let user = &block.body().transactions[usize::from(!user_first)];
+            let error = executor
+                .execute_transaction(Recovered::new_unchecked(user, Address::ZERO))
+                .unwrap_err();
+            assert!(error.to_string().contains("unexpected non-deposit transactions"), "{error}");
+        }
     }
 }

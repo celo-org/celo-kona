@@ -6,21 +6,23 @@ mod metrics;
 
 use alloy_celo_evm::CeloEvmFactory;
 use alloy_network::Ethereum;
-use alloy_primitives::{B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_pubsub::Subscription;
-use alloy_rlp::Decodable;
 use alloy_rpc_types_eth::Header;
 use alloy_transport_ipc::IpcConnect;
 use anyhow::Result;
-use celo_executor::{CeloStatelessL2Builder, test_utils::fetch_block_replay_inputs};
+use celo_executor::{
+    CeloStatelessL2Builder,
+    test_utils::{fetch_block_replay_inputs, witness_trie_provider},
+};
 use celo_otel::{logger::init_tracing, metrics::build_meter_provider, resource::build_resource};
 use celo_registry::ROLLUP_CONFIGS;
 use clap::{ArgAction, Parser};
 use futures::stream::StreamExt;
 use kona_executor::TrieDBProvider;
-use kona_mpt::{NoopTrieHinter, TrieNode, TrieProvider};
+use kona_mpt::NoopTrieHinter;
 use metrics::Metrics;
+use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use opentelemetry::global;
 use parking_lot::Mutex;
 use std::{
@@ -28,7 +30,6 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 use tokio::{
-    runtime::Handle,
     sync::mpsc,
     task::JoinSet,
     time::{Duration, Instant, interval},
@@ -63,6 +64,11 @@ pub struct ExecutionVerifierCommand {
     /// socket.
     #[arg(long)]
     pub l2_rpc: String,
+    /// Path to a `rollup.json` holding the chain's rollup config (`CeloRollupConfig`, including
+    /// any Celo-only fields such as the Upgrade 18 settings). Takes precedence over the
+    /// registry lookup; required for chains the registry does not know (dev/e2e chains).
+    #[arg(long)]
+    pub rollup_config: Option<PathBuf>,
     /// L2 inclusive starting block number to execute.
     #[arg(long)]
     pub start_block: Option<u64>,
@@ -199,9 +205,32 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
         .get_chain_id()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get chain ID: {e}"))?;
-    let rollup_config = ROLLUP_CONFIGS
-        .get(&chain_id)
-        .ok_or_else(|| anyhow::anyhow!("Rollup config not found for chain ID {chain_id}"))?;
+    let rollup_config = match &cli.rollup_config {
+        Some(path) => {
+            let file = std::fs::File::open(path).map_err(|e| {
+                anyhow::anyhow!("Failed to open rollup config {}: {e}", path.display())
+            })?;
+            let config: celo_registry::CeloRollupConfig =
+                serde_json::from_reader(file).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse rollup config {}: {e}", path.display())
+                })?;
+            anyhow::ensure!(
+                config.l2_chain_id == chain_id,
+                "rollup config L2 chain ID {} does not match the RPC's chain ID {chain_id}",
+                config.l2_chain_id
+            );
+            config
+        }
+        None => ROLLUP_CONFIGS
+            .get(&chain_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Rollup config not found for chain ID {chain_id} \
+                     (pass --rollup-config for chains not in the registry)"
+                )
+            })?
+            .clone(),
+    };
 
     let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(start_block)));
 
@@ -426,38 +455,53 @@ async fn verify_block(
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<u64> {
     let start = Instant::now();
-    // Create trie for this task
-    let trie = Trie::new(provider);
 
     let (parent_header, executing_header, payload_attrs) =
         fetch_block_replay_inputs(provider, rollup_config, block_number)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-    let mut executor = CeloStatelessL2Builder::new(
-        rollup_config,
-        CeloEvmFactory::default(),
-        &trie,
-        NoopTrieHinter,
-        parent_header,
-    );
-    let outcome = executor
+    fn execute<P: TrieDBProvider + std::fmt::Debug>(
+        rollup_config: &celo_registry::CeloRollupConfig,
+        trie_provider: P,
+        parent_header: alloy_consensus::Sealed<alloy_consensus::Header>,
+        payload_attrs: OpPayloadAttributes,
+        block_number: u64,
+    ) -> Result<celo_executor::CeloBlockBuildingOutcome> {
+        CeloStatelessL2Builder::new(
+            rollup_config,
+            CeloEvmFactory::default(),
+            trie_provider,
+            NoopTrieHinter,
+            parent_header,
+        )
         .build_block(payload_attrs)
-        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))
+    }
+
+    // Preimages come from the node's execution witness, served by reth.
+    let witness_provider = witness_trie_provider(provider, block_number).await.map_err(|e| {
+        anyhow::anyhow!("block {block_number}: debug_executionWitness unavailable: {e}")
+    })?;
+    let outcome =
+        execute(rollup_config, witness_provider, parent_header, payload_attrs, block_number)?;
 
     // Verify the result
-    if outcome.header.inner() != &executing_header {
+    let verified = outcome.header.inner() == &executing_header;
+    if !verified {
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header,
             actual_header = ?outcome.header.inner(),
             "Block verification failed header mismatch"
         );
-        metrics.lock().block_verification_completed(false, start.elapsed());
-    } else {
-        metrics.lock().block_verification_completed(true, start.elapsed());
     }
+    metrics.lock().block_verification_completed(verified, start.elapsed());
     tracker.lock().add_verified_block(block_number);
+    anyhow::ensure!(
+        verified,
+        "block {block_number}: locally executed header does not match the canonical header"
+    );
     Ok(block_number)
 }
 
@@ -497,14 +541,23 @@ async fn verify_block_range(
         }
     }
 
-    // Process results and spawn new tasks continuously
+    // Process results and spawn new tasks continuously. Failures don't stop the range — every
+    // block gets verified and reported — but they must not vanish into the JoinSet either:
+    // range-mode callers rely on the returned error for a non-zero exit code.
+    let mut failures = 0u64;
     while let Some(joined) = handles.join_next().await {
         match joined {
             Ok(Ok(_)) => {}
             // A failed fetch/execution would otherwise vanish silently while the
             // persisted watermark stalls; surface it and keep verifying.
-            Ok(Err(e)) => tracing::error!("Block verification task failed: {e:#}"),
-            Err(e) => tracing::error!("Block verification task panicked: {e}"),
+            Ok(Err(e)) => {
+                tracing::error!("Block verification task failed: {e:#}");
+                failures += 1;
+            }
+            Err(e) => {
+                tracing::error!("Block verification task panicked: {e}");
+                failures += 1;
+            }
         }
         // Spawn next task if available
         if next_block <= end_block && !cancel_token.is_cancelled() {
@@ -513,6 +566,10 @@ async fn verify_block_range(
         }
     }
 
+    anyhow::ensure!(
+        failures == 0,
+        "{failures} block(s) in range [{start_block}, {end_block}] failed verification"
+    );
     Ok(())
 }
 
@@ -555,111 +612,6 @@ async fn persist_verified_block<P: AsRef<Path>>(
 fn read_verified_block<P: AsRef<Path>>(file_path: P) -> Option<u64> {
     let content = std::fs::read_to_string(file_path).ok()?;
     content.trim().parse().ok()
-}
-
-/// A trie provider for the L2 execution layer.
-#[derive(Debug)]
-pub struct Trie<'a> {
-    /// The RPC provider for the L2 execution layer.
-    pub provider: &'a RootProvider<Ethereum>,
-}
-
-impl<'a> Trie<'a> {
-    /// Create a new [`Trie`] instance.
-    pub const fn new(provider: &'a RootProvider) -> Self {
-        Self { provider }
-    }
-}
-
-impl TrieProvider for &Trie<'_> {
-    type Error = TrieError;
-
-    fn trie_node_by_hash(&self, key: B256) -> Result<TrieNode, Self::Error> {
-        // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_dbGet", &[key])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
-            })
-        })?;
-
-        // Decode the preimage into a trie node.
-        TrieNode::decode(&mut preimage.as_ref()).map_err(TrieError::Rlp)
-    }
-}
-
-impl TrieDBProvider for &Trie<'_> {
-    fn bytecode_by_hash(&self, hash: B256) -> Result<Bytes, Self::Error> {
-        // geth hashdb scheme code hash key prefix
-        const CODE_PREFIX: u8 = b'c';
-
-        // Fetch the preimage from the L2 chain provider.
-        let preimage: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                // Attempt to fetch the code from the L2 chain provider.
-                let code_hash = [&[CODE_PREFIX], hash.as_slice()].concat();
-                let code = self
-                    .provider
-                    .client()
-                    .request::<&[Bytes; 1], Bytes>("debug_dbGet", &[code_hash.into()])
-                    .await;
-
-                // Check if the first attempt to fetch the code failed. If it did, try fetching the
-                // code hash preimage without the geth hashdb scheme prefix.
-                let code = match code {
-                    Ok(code) => code,
-                    Err(_) => self
-                        .provider
-                        .client()
-                        .request::<&[B256; 1], Bytes>("debug_dbGet", &[hash])
-                        .await
-                        .map_err(|_| TrieError::PreimageNotFound)?,
-                };
-
-                Ok(code)
-            })
-        })?;
-
-        Ok(preimage)
-    }
-
-    fn header_by_hash(&self, hash: B256) -> Result<alloy_consensus::Header, Self::Error> {
-        let encoded_header: Bytes = tokio::task::block_in_place(move || {
-            Handle::current().block_on(async {
-                let preimage: Bytes = self
-                    .provider
-                    .client()
-                    .request("debug_getRawHeader", &[hash])
-                    .await
-                    .map_err(|_| TrieError::PreimageNotFound)?;
-
-                Ok(preimage)
-            })
-        })?;
-
-        // Decode the Header.
-        alloy_consensus::Header::decode(&mut encoded_header.as_ref()).map_err(TrieError::Rlp)
-    }
-}
-
-/// An error type for the [`TrieProvider`] and [`TrieDBProvider`].
-#[derive(Debug, thiserror::Error)]
-pub enum TrieError {
-    /// The preimage was not found in the key-value store.
-    #[error("Preimage not found")]
-    PreimageNotFound,
-    /// Failed to decode the RLP-encoded data.
-    #[error("Failed to decode RLP: {0}")]
-    Rlp(alloy_rlp::Error),
-    /// Failed to write back to the key-value store.
-    #[error("Failed to write back to key value store")]
-    KVStore,
 }
 
 #[cfg(test)]

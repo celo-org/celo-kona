@@ -1,0 +1,42 @@
+# Preserve the existing job identity while replacing the retired state-override gate.
+# Runtime migration/parity tests run in the regular Rust CI `test` job on every PR.
+name: CGTv2 upgrade fixture integrity
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - crates/celo-alloy/consensus/testdata/cgt_v2/**
+      - crates/celo-alloy/consensus/upgrades/cgtv2/**
+      - crates/celo-alloy/consensus/src/cgt_v2*.rs
+      - crates/alloy-celo-evm/src/block/**
+      - scripts/cgtv2/**
+      - .github/workflows/upgrade18_genesis_parity.yml
+  pull_request:
+    paths:
+      - crates/celo-alloy/consensus/testdata/cgt_v2/**
+      - crates/celo-alloy/consensus/upgrades/cgtv2/**
+      - crates/celo-alloy/consensus/src/cgt_v2*.rs
+      - crates/alloy-celo-evm/src/block/**
+      - scripts/cgtv2/**
+      - .github/workflows/upgrade18_genesis_parity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  genesis-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+      - name: Install Foundry for bundle encoding
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.3
+      - name: Test production bundle importer
+        run: python3 -m unittest discover -s scripts/cgtv2 -p test_import_bundle.py -v
+      - name: Verify frozen NUT, gas and prestate provenance
+        run: python3 scripts/cgtv2/verify_fixture.py

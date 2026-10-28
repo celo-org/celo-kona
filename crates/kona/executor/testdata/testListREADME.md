@@ -112,3 +112,12 @@ Transaction accepted because celo-revm never enforced EIP-1559's max-fee afforda
 * Network: Celo Sepolia
 * File: `sepolia-post-jovian-basefee-change_block-20465049.tar.gz`
 * Explorer: https://celo-sepolia.blockscout.com/block/20465049
+
+## Legacy timestamp CGTv2 fixtures
+
+The fixtures in `legacy-timestamp-cgtv2/` were generated from chain 1337 at revision `827d31d34f32d17aed6da1807fc1e90d4fe6ce2d`. Their embedded `rollup.json` uses timestamp activation and operator-supplied reserve parameters, which the current configuration rejects. The config rejection test retains these files as negative coverage; they do not validate ordered signal activation.
+
+- `legacy-timestamp-cgtv2/devnet-upgrade18-boundary_block-2.tar.gz`: legacy activation block.
+- `legacy-timestamp-cgtv2/devnet-upgrade18-post-boundary_block-3.tar.gz`: block after legacy activation.
+
+The archived generator is `e2e_test/generate_legacy_timestamp_upgrade18_fixtures.sh`. New positive signal fixtures must be generated after the matching derivation implementation is available. Actual ordered migration and vault behavior are currently covered by the shared executor's CGTv2 tests.

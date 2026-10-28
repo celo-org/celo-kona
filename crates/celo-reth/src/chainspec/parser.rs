@@ -73,8 +73,15 @@ fn chain_value_parser(s: &str) -> eyre::Result<Arc<OpChainSpec>> {
             .wrap_err("merging celo TOML hardforks into genesis")?;
     }
 
-    let gingerbread_block = read_u64(&genesis, "gingerbreadBlock");
-    let cel2_time = read_u64(&genesis, "cel2Time");
+    let gingerbread_block = read_u64(&genesis, "gingerbreadBlock")?;
+    let cel2_time = read_u64(&genesis, "cel2Time")?;
+    if let Some((key, _)) =
+        genesis.config.extra_fields.iter().find(|(key, _)| key.starts_with("upgrade18"))
+    {
+        eyre::bail!(
+            "obsolete CGTv2 config `{key}`: activation uses the L1-origin signal and fixed network rules"
+        );
+    }
     let mut spec: OpChainSpec = genesis.into();
     patch_celo_hardforks(&mut spec.inner.hardforks, gingerbread_block, cel2_time);
     reseal_pre_gingerbread_genesis(&mut spec, gingerbread_block);
@@ -163,15 +170,15 @@ fn decompress_genesis(compressed: &[u8]) -> eyre::Result<Genesis> {
     Ok(serde_json::from_slice(&buf)?)
 }
 
-/// Inserts `Gingerbread` and `Cel2` into the chain hardfork list at the given
-/// activation values. `ChainHardforks::insert` orders by [`ForkCondition`]'s
-/// `Ord` impl, so positions are derived from the values themselves —
-/// block-based forks slot among the other block forks, timestamp-based forks
-/// among the time forks.
+/// Inserts `Gingerbread` and `Cel2` into the chain hardfork list
+/// at the given activation values. `ChainHardforks::insert` orders by
+/// [`ForkCondition`]'s `Ord` impl, so positions are derived from the values
+/// themselves — block-based forks slot among the other block forks,
+/// timestamp-based forks among the time forks.
 ///
-/// Both values are optional. If the genesis omits one, the corresponding fork
+/// All values are optional. If the genesis omits one, the corresponding fork
 /// is left out entirely (matches op-geth's behaviour for chains that never had
-/// that fork — e.g. a hand-rolled celo dev genesis without `cel2Time`).
+/// that historical fork).
 fn patch_celo_hardforks(
     forks: &mut ChainHardforks,
     gingerbread_block: Option<u64>,
@@ -185,8 +192,21 @@ fn patch_celo_hardforks(
     }
 }
 
-fn read_u64(genesis: &Genesis, key: &str) -> Option<u64> {
-    genesis.config.extra_fields.get(key).and_then(serde_json::Value::as_u64)
+/// Reads an optional u64 fork-activation value from the genesis `config` extra fields.
+///
+/// A key that is present but not a u64 is an error, not `None`: treating it as absent
+/// would silently leave the corresponding fork unscheduled.
+fn read_u64(genesis: &Genesis, key: &str) -> eyre::Result<Option<u64>> {
+    genesis
+        .config
+        .extra_fields
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| eyre::eyre!("genesis config `{key}` must be a u64, got: {value}"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -228,6 +248,33 @@ mod tests {
             fork_condition(&spec, OpHardfork::Jovian),
             ForkCondition::Timestamp(1_774_958_788),
         );
+    }
+
+    #[test]
+    fn cgt_v2_rejects_obsolete_genesis_overrides() {
+        for key in [
+            "upgrade18Time",
+            "upgrade18LiquidityControllerOwner",
+            "upgrade18CeloTokenL1",
+            "upgrade18CeloGasBridgeL1",
+            "upgrade18NativeAssetLiquidityAmount",
+        ] {
+            let mut genesis = Genesis::default();
+            genesis.config.extra_fields.insert(key.to_string(), serde_json::Value::Null);
+            let err =
+                CeloChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap()).unwrap_err();
+            assert!(err.to_string().contains("CGTv2"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn malformed_fork_time_is_an_error() {
+        let mut genesis = Genesis::default();
+        genesis.config.extra_fields.insert("cel2Time".to_string(), serde_json::Value::from("soon"));
+        let err = read_u64(&genesis, "cel2Time").unwrap_err();
+        assert!(err.to_string().contains("cel2Time"), "got: {err}");
+        // Absent keys are still fine.
+        assert_eq!(read_u64(&genesis, "gingerbreadBlock").unwrap(), None);
     }
 
     /// op-geth peers on celo mainnet send this genesis hash in their `eth/Status`
