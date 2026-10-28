@@ -7,6 +7,7 @@ on:
     branches: [ main ]
     paths:
       - crates/celo-alloy/consensus/testdata/cgt_v2/**
+      - crates/celo-alloy/consensus/upgrades/cgtv2/**
       - crates/celo-alloy/consensus/src/cgt_v2*.rs
       - crates/alloy-celo-evm/src/block/**
       - scripts/cgtv2/**
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - crates/celo-alloy/consensus/testdata/cgt_v2/**
+      - crates/celo-alloy/consensus/upgrades/cgtv2/**
       - crates/celo-alloy/consensus/src/cgt_v2*.rs
       - crates/alloy-celo-evm/src/block/**
       - scripts/cgtv2/**
@@ -30,5 +32,11 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
+      - name: Install Foundry for bundle encoding
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.3
+      - name: Test production bundle importer
+        run: python3 -m unittest discover -s scripts/cgtv2 -p test_import_bundle.py -v
       - name: Verify frozen NUT, gas and prestate provenance
         run: python3 scripts/cgtv2/verify_fixture.py
