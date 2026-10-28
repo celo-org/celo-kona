@@ -151,7 +151,8 @@ where
     PB: PayloadBuilderBuilder<Node, Pool, EvmConfig>,
     PB::PayloadBuilder: PayloadBuilder<Attributes = OpPayloadAttrs>,
 {
-    type PayloadBuilder = PayloadMetricsBuilder<PB::PayloadBuilder>;
+    type PayloadBuilder =
+        crate::cgt_v2::CgtV2PayloadBuilder<PayloadMetricsBuilder<PB::PayloadBuilder>>;
 
     async fn build_payload_builder(
         self,
@@ -159,9 +160,10 @@ where
         pool: Pool,
         evm_config: EvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
-        Ok(PayloadMetricsBuilder::new(
+        // Apply the protocol build mode before metrics and local pool policies see the attempt.
+        Ok(crate::cgt_v2::CgtV2PayloadBuilder::new(PayloadMetricsBuilder::new(
             self.inner.build_payload_builder(ctx, pool, evm_config).await?,
-        ))
+        )))
     }
 }
 
@@ -662,6 +664,7 @@ mod tests {
         missing_called: Arc<AtomicBool>,
         /// What each `try_build` call saw in `args.cancel.is_cancelled()`, in call order.
         saw_cancelled: Arc<Mutex<Vec<bool>>>,
+        saw_attributes: Arc<Mutex<Vec<OpPayloadAttrs>>>,
     }
 
     impl FakePayloadBuilder {
@@ -670,6 +673,7 @@ mod tests {
                 outcome,
                 missing_called: Arc::new(AtomicBool::new(false)),
                 saw_cancelled: Arc::default(),
+                saw_attributes: Arc::default(),
             }
         }
     }
@@ -683,6 +687,7 @@ mod tests {
             args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
         ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
             self.saw_cancelled.lock().unwrap().push(args.cancel.is_cancelled());
+            self.saw_attributes.lock().unwrap().push(args.config.attributes.clone());
             let payload = test_payload(args.config.payload_id());
             match self.outcome {
                 FakeOutcome::Better => {
@@ -709,6 +714,7 @@ mod tests {
             &self,
             config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
         ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
+            self.saw_attributes.lock().unwrap().push(config.attributes.clone());
             Ok(test_payload(config.payload_id()))
         }
     }
@@ -744,6 +750,85 @@ mod tests {
             Default::default(),
             has_best_payload.then(|| test_payload(payload_id)),
         )
+    }
+
+    #[test]
+    fn cgt_v2_payload_disables_pool_and_preserves_deposit_order() {
+        use crate::cgt_v2::CgtV2PayloadBuilder;
+        use alloy_eips::Encodable2718;
+        use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
+
+        let signal = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0);
+        let mut deposit = signal.clone();
+        deposit.source_hash = B256::repeat_byte(0x22);
+        let transactions = vec![
+            deposit.encoded_2718().into(),
+            signal.encoded_2718().into(),
+            deposit.encoded_2718().into(),
+        ];
+        for no_tx_pool in [None, Some(false), Some(true)] {
+            let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
+            let seen = inner.saw_attributes.clone();
+            let builder = CgtV2PayloadBuilder::new(PayloadMetricsBuilder::new(inner));
+            let mut args = test_args(false);
+            args.config.attributes.0.no_tx_pool = no_tx_pool;
+            args.config.attributes.0.transactions = Some(transactions.clone());
+            let config = args.config.clone();
+            builder.try_build(args).unwrap();
+            builder.build_empty_payload(config).unwrap();
+            // A later job has no signal and must resume ordinary pool selection.
+            builder.try_build(test_args(false)).unwrap();
+            let seen = seen.lock().unwrap();
+            for attrs in &seen[..2] {
+                assert_eq!(attrs.no_tx_pool, Some(true));
+                assert_eq!(attrs.transactions.as_ref(), Some(&transactions));
+            }
+            assert_eq!(seen[2].no_tx_pool, Some(false));
+        }
+    }
+
+    #[test]
+    fn cgt_v2_payload_rejects_forced_non_deposit_transactions_on_either_side() {
+        use crate::cgt_v2::CgtV2PayloadBuilder;
+        use alloy_consensus::{SignableTransaction, TxLegacy};
+        use alloy_eips::Encodable2718;
+        use alloy_primitives::Signature;
+        use celo_alloy_consensus::{CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
+
+        let signal =
+            CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0).encoded_2718();
+        let user = CeloTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::new(
+            U256::ZERO,
+            U256::ZERO,
+            false,
+        )))
+        .encoded_2718();
+        let post_exec = op_alloy_consensus::TxPostExec::new(Default::default()).encoded_2718();
+        for non_deposit in [user, post_exec] {
+            for user_first in [false, true] {
+                let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
+                let seen = inner.saw_attributes.clone();
+                let builder = CgtV2PayloadBuilder::new(inner);
+                let mut args = test_args(false);
+                let mut transactions = vec![non_deposit.clone().into()];
+                transactions.insert(usize::from(user_first), signal.clone().into());
+                args.config.attributes.0.transactions = Some(transactions);
+                let config = args.config.clone();
+                for error in [
+                    builder.try_build(args).unwrap_err(),
+                    builder.build_empty_payload(config).unwrap_err(),
+                ] {
+                    assert!(
+                        error.to_string().contains("unexpected non-deposit transactions"),
+                        "{error}"
+                    );
+                }
+                assert!(
+                    seen.lock().unwrap().is_empty(),
+                    "invalid forced lists must not reach the builder"
+                );
+            }
+        }
     }
 
     /// One drained snapshot. `Snapshotter::snapshot` empties the recorded histogram samples, so
