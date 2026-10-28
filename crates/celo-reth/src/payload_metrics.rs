@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn cgt_v2_payload_rejects_forced_user_transactions_on_either_side() {
+    fn cgt_v2_payload_rejects_forced_non_deposit_transactions_on_either_side() {
         use crate::cgt_v2::CgtV2PayloadBuilder;
         use alloy_consensus::{SignableTransaction, TxLegacy};
         use alloy_eips::Encodable2718;
@@ -803,28 +803,31 @@ mod tests {
             false,
         )))
         .encoded_2718();
-        for user_first in [false, true] {
-            let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
-            let seen = inner.saw_attributes.clone();
-            let builder = CgtV2PayloadBuilder::new(inner);
-            let mut args = test_args(false);
-            let mut transactions = vec![user.clone().into()];
-            transactions.insert(usize::from(user_first), signal.clone().into());
-            args.config.attributes.0.transactions = Some(transactions);
-            let config = args.config.clone();
-            for error in [
-                builder.try_build(args).unwrap_err(),
-                builder.build_empty_payload(config).unwrap_err(),
-            ] {
+        let post_exec = op_alloy_consensus::TxPostExec::new(Default::default()).encoded_2718();
+        for non_deposit in [user, post_exec] {
+            for user_first in [false, true] {
+                let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
+                let seen = inner.saw_attributes.clone();
+                let builder = CgtV2PayloadBuilder::new(inner);
+                let mut args = test_args(false);
+                let mut transactions = vec![non_deposit.clone().into()];
+                transactions.insert(usize::from(user_first), signal.clone().into());
+                args.config.attributes.0.transactions = Some(transactions);
+                let config = args.config.clone();
+                for error in [
+                    builder.try_build(args).unwrap_err(),
+                    builder.build_empty_payload(config).unwrap_err(),
+                ] {
+                    assert!(
+                        error.to_string().contains("unexpected non-deposit transactions"),
+                        "{error}"
+                    );
+                }
                 assert!(
-                    error.to_string().contains("unexpected non-deposit transactions"),
-                    "{error}"
+                    seen.lock().unwrap().is_empty(),
+                    "invalid forced lists must not reach the builder"
                 );
             }
-            assert!(
-                seen.lock().unwrap().is_empty(),
-                "invalid forced lists must not reach the builder"
-            );
         }
     }
 

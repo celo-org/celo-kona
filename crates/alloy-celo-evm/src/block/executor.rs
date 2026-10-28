@@ -67,7 +67,7 @@ pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     /// The wrapped OP Stack block executor.
     inner: OpBlockExecutor<E, R, Spec>,
     /// Incremental builders may not know the signal until it is executed.
-    has_committed_user_tx: bool,
+    has_committed_non_deposit_tx: bool,
     /// Only committed required deposits advance the group.
     cgt_v2_next_step: usize,
 }
@@ -81,7 +81,7 @@ impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
     pub const fn new(inner: OpBlockExecutor<E, R, Spec>) -> Self {
-        Self { inner, has_committed_user_tx: false, cgt_v2_next_step: 0 }
+        Self { inner, has_committed_non_deposit_tx: false, cgt_v2_next_step: 0 }
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -156,7 +156,7 @@ where
                     "CGTv2 upgrade deposits are missing, repeated or reordered",
                 ));
             }
-            if self.has_committed_user_tx {
+            if self.has_committed_non_deposit_tx {
                 return Err(BlockValidationError::other(
                     OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
                 )
@@ -183,6 +183,10 @@ where
             if tx.tx().is_deposit() {
                 return Err(invalid_cgt_signal("origin deposits must precede CGTv2 upgrades"));
             }
+            return Err(BlockValidationError::other(
+                OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
+            )
+            .into());
         }
         let op = self.inner.execute_transaction_without_commit((tx_env, tx))?;
         if step.is_some() && !op.inner.result.result.is_success() {
@@ -192,7 +196,7 @@ where
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
-        self.has_committed_user_tx |= !output.op.is_deposit && !output.op.is_post_exec;
+        self.has_committed_non_deposit_tx |= !output.op.is_deposit;
         if let Some(step) = output.cgt_v2_step {
             self.cgt_v2_next_step = step + 1;
             self.inner.ctx.no_user_tx_activation_block = true;

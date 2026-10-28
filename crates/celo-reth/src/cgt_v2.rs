@@ -27,15 +27,9 @@ fn prepare_activation_payload(attrs: &mut OpPayloadAttrs) -> Result<(), PayloadB
     if !transactions.iter().any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx)) {
         return Ok(());
     }
-    // noTxPool controls pool selection only. Forced user transactions must be rejected too,
-    // before or after the upgrade group. Match the executor's protocol post-exec exception.
-    if transactions.iter().any(|tx| {
-        !matches!(
-            tx.first(),
-            Some(&op_alloy_consensus::DEPOSIT_TX_TYPE_ID) |
-                Some(&op_alloy_consensus::post_exec::POST_EXEC_TX_TYPE_ID)
-        )
-    }) {
+    // noTxPool controls pool selection only. CGTv2 activates without SDM, so the
+    // forced transaction list must contain deposits only, before and after the group.
+    if transactions.iter().any(|tx| tx.first() != Some(&op_alloy_consensus::DEPOSIT_TX_TYPE_ID)) {
         return Err(PayloadBuilderError::other(
             alloy_op_evm::block::OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
         ));
