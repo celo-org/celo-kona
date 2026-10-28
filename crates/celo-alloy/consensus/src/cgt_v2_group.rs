@@ -1,4 +1,4 @@
-//! Receipt-triggered CGTv2 upgrade deposits. Only the synthetic bundle is configured.
+//! Receipt-triggered CGTv2 upgrade deposits selected from frozen network artifacts.
 
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, b256, keccak256, uint};
@@ -28,6 +28,7 @@ pub struct CgtV2NetworkParams {
     /// Fixed L1 bridge proxy that emits the authenticated migration event.
     pub celo_gas_bridge_l1: Address,
     total_supply: U256,
+    bundle: &'static [u8],
 }
 
 impl CgtV2NetworkParams {
@@ -48,6 +49,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
             total_supply: CGT_V2_TOTAL_SUPPLY,
+            bundle: include_bytes!("../upgrades/cgtv2/mainnet.rlp"),
         },
     },
     CgtV2NetworkEntry {
@@ -55,6 +57,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
             total_supply: CGT_V2_TOTAL_SUPPLY,
+            bundle: include_bytes!("../upgrades/cgtv2/sepolia.rlp"),
         },
     },
     CgtV2NetworkEntry {
@@ -62,6 +65,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
             total_supply: CGT_V2_TOTAL_SUPPLY,
+            bundle: include_bytes!("../upgrades/cgtv2/chaos.rlp"),
         },
     },
 ];
@@ -70,6 +74,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
 const FIXTURE_PARAMS: CgtV2NetworkParams = CgtV2NetworkParams {
     celo_gas_bridge_l1: Address::with_last_byte(0xcc),
     total_supply: uint!(1000_U256),
+    bundle: include_bytes!("../upgrades/cgtv2/fixture.rlp"),
 };
 
 /// The network or its deployment-specific upgrade bundle has not been configured.
@@ -102,7 +107,7 @@ pub const CGT_V2_STATIC_STEPS: usize = 15;
 pub const CGT_V2_STEPS: usize = CGT_V2_STATIC_STEPS + 1;
 /// Gas limit for the dynamic reserve-funding deposit.
 pub const CGT_V2_FUNDING_GAS: u64 = 100_000;
-/// Reserved gas for the static group and the dynamic funding deposit.
+/// Synthetic fixture allowance. Runtime gas is derived from the selected bundle.
 pub const CGT_V2_GROUP_GAS: u64 = 40_600_000;
 /// Fixed depositor authorized by the proxy admin and CGT setter.
 pub const CGT_V2_DEPOSITOR: Address = address!("deaddeaddeaddeaddeaddeaddeaddeaddead0001");
@@ -133,23 +138,6 @@ const INTENTS: [&str; CGT_V2_STEPS] = [
     "Cgtv2 13: LiquidityController ownership transfer",
     "Cgtv2 14: CGTv2 flag enable",
     "Celo: CGTv2 Reserve Funding",
-];
-const STATIC: [&[u8]; CGT_V2_STATIC_STEPS] = [
-    include_bytes!("../testdata/cgt_v2/cgtv2-00.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-01.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-02.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-03.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-04.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-05.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-06.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-07.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-08.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-09.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-10.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-11.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-12.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-13.rlp"),
-    include_bytes!("../testdata/cgt_v2/cgtv2-14.rlp"),
 ];
 
 /// Invalid required transaction fields or unresolved network parameters.
@@ -196,14 +184,48 @@ impl CgtV2UpgradeGroup {
                 .is_ok_and(|tx| Self::is_activation_transaction(&tx))
     }
 
-    fn static_deposit(step: usize) -> TxDeposit {
-        // These frozen bytes are decoded and checked against NUT/source-hash vectors in tests.
-        OpTxEnvelope::decode_2718_exact(STATIC[step])
-            .expect("valid frozen CGTv2 NUT deposit")
-            .as_deposit()
-            .expect("deposit")
-            .clone()
-            .into_inner()
+    fn static_deposits(chain_id: u64) -> Result<Vec<TxDeposit>, CgtV2GroupError> {
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        Self::decode_bundle(chain_id, params.bundle)
+    }
+
+    fn decode_bundle(chain_id: u64, bytes: &[u8]) -> Result<Vec<TxDeposit>, CgtV2GroupError> {
+        let raw =
+            alloy_rlp::decode_exact::<Vec<Bytes>>(bytes).map_err(|_| CgtV2GroupError::Invalid)?;
+        if raw.is_empty() {
+            return Err(CgtV2GroupError::Config(CgtV2ConfigError { chain_id }));
+        }
+        if raw.len() != CGT_V2_STATIC_STEPS {
+            return Err(CgtV2GroupError::Invalid);
+        }
+        raw.iter()
+            .enumerate()
+            .map(|(step, bytes)| {
+                let envelope =
+                    OpTxEnvelope::decode_2718_exact(bytes).map_err(|_| CgtV2GroupError::Invalid)?;
+                let tx = envelope.as_deposit().ok_or(CgtV2GroupError::Invalid)?.inner().clone();
+                if tx.source_hash != Self::source_hash(step)
+                    || tx.mint != 0
+                    || tx.value != U256::ZERO
+                    || tx.is_system_transaction
+                    || tx.gas_limit == 0
+                {
+                    return Err(CgtV2GroupError::Invalid);
+                }
+                Ok(tx)
+            })
+            .collect()
+    }
+
+    /// Checked allowance for this network's static deposits and dynamic funding.
+    pub fn gas_limit(chain_id: u64) -> Result<u64, CgtV2GroupError> {
+        Self::group_gas(&Self::static_deposits(chain_id)?)
+    }
+
+    fn group_gas(txs: &[TxDeposit]) -> Result<u64, CgtV2GroupError> {
+        txs.iter().try_fold(CGT_V2_FUNDING_GAS, |gas, tx| {
+            gas.checked_add(tx.gas_limit).ok_or(CgtV2GroupError::Invalid)
+        })
     }
 
     fn funding(reserve: U256) -> Result<TxDeposit, CgtV2GroupError> {
@@ -219,25 +241,24 @@ impl CgtV2UpgradeGroup {
         })
     }
 
-    fn bundle_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2GroupError> {
-        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
-        // TODO(CGTv2): replace this fixture-only guard with per-network bundle selection
-        // once the production contracts and network configuration are finalized.
-        // A network profile does not authorize running fixture contracts on that network.
-        if chain_id != CGT_V2_FIXTURE_CHAIN_ID {
-            return Err(CgtV2GroupError::Config(CgtV2ConfigError { chain_id }));
-        }
-        Ok(params)
-    }
-
     /// Constructs all required transactions from the authenticated event amount.
     pub fn deposits(
         chain_id: u64,
         migrated_amount: U256,
     ) -> Result<Vec<TxDeposit>, CgtV2GroupError> {
-        let params = Self::bundle_params(chain_id)?;
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        Self::deposits_from_bundle(chain_id, params.bundle, migrated_amount)
+    }
+
+    fn deposits_from_bundle(
+        chain_id: u64,
+        bytes: &[u8],
+        migrated_amount: U256,
+    ) -> Result<Vec<TxDeposit>, CgtV2GroupError> {
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        let mut txs = Self::decode_bundle(chain_id, bytes)?;
+        Self::group_gas(&txs)?;
         let reserve = params.reserve_seed(migrated_amount).ok_or(CgtV2GroupError::Invalid)?;
-        let mut txs: Vec<_> = (0..CGT_V2_STATIC_STEPS).map(Self::static_deposit).collect();
         txs.push(Self::funding(reserve)?);
         Ok(txs)
     }
@@ -246,9 +267,11 @@ impl CgtV2UpgradeGroup {
     /// Execution checks the funding shape/bounds; derivation authenticates its exact amount.
     pub fn validate(chain_id: u64, tx: &TxDeposit) -> Result<Option<usize>, CgtV2GroupError> {
         let Some(step) = Self::step(tx) else { return Ok(None) };
-        let params = Self::bundle_params(chain_id)?;
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        let txs = Self::static_deposits(chain_id)?;
+        Self::group_gas(&txs)?;
         let expected = if step < CGT_V2_STATIC_STEPS {
-            Self::static_deposit(step)
+            txs[step].clone()
         } else {
             params.reserve_seed(tx.value).ok_or(CgtV2GroupError::Invalid)?;
             Self::funding(tx.value)?
@@ -296,6 +319,46 @@ mod tests {
             0
         );
     }
+    #[test]
+    fn cgt_v2_network_artifacts_and_mock_gas() {
+        for id in [CELO_MAINNET_CHAIN_ID, CELO_SEPOLIA_CHAIN_ID, CELO_CHAOS_CHAIN_ID] {
+            // Exercise the production profile with a mock artifact; checked-in placeholders stay
+            // disabled.
+            let txs =
+                CgtV2UpgradeGroup::deposits_from_bundle(id, FIXTURE_PARAMS.bundle, U256::from(600))
+                    .unwrap();
+            assert_eq!(txs.last().unwrap().value, CGT_V2_TOTAL_SUPPLY - U256::from(600));
+            assert!(CgtV2UpgradeGroup::gas_limit(id).is_err());
+        }
+        let mut raw = alloy_rlp::decode_exact::<Vec<Bytes>>(FIXTURE_PARAMS.bundle).unwrap();
+        let mut tx =
+            OpTxEnvelope::decode_2718_exact(&raw[0]).unwrap().as_deposit().unwrap().inner().clone();
+        tx.gas_limit += 111;
+        raw[0] = tx.encoded_2718().into();
+        let encoded = alloy_rlp::encode(&raw);
+        let decoded = CgtV2UpgradeGroup::decode_bundle(1337, &encoded).unwrap();
+        assert_eq!(CgtV2UpgradeGroup::group_gas(&decoded).unwrap(), 40_600_111);
+        assert_eq!(CgtV2UpgradeGroup::gas_limit(1337).unwrap(), 40_600_000);
+        tx.gas_limit = u64::MAX;
+        raw[0] = tx.encoded_2718().into();
+        assert!(
+            CgtV2UpgradeGroup::deposits_from_bundle(
+                1337,
+                &alloy_rlp::encode(&raw),
+                U256::from(600)
+            )
+            .is_err()
+        );
+        tx.gas_limit = 6_000_000;
+        tx.source_hash = B256::ZERO;
+        raw[0] = tx.encoded_2718().into();
+        assert!(CgtV2UpgradeGroup::decode_bundle(1337, &alloy_rlp::encode(&raw)).is_err());
+        assert!(
+            CgtV2UpgradeGroup::decode_bundle(1337, &alloy_rlp::encode(raw[..14].to_vec())).is_err()
+        );
+        assert!(CgtV2UpgradeGroup::decode_bundle(1337, &[0xc0, 0x00]).is_err());
+    }
+
     #[test]
     fn cgt_v2_reserve_checks_amount() {
         let p = cgt_v2_params(1337).unwrap();

@@ -9,6 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from import_bundle import rlp
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "crates/celo-alloy/consensus/testdata/cgt_v2"
 
@@ -25,6 +27,8 @@ def main():
         assert hashlib.sha256((FIXTURE / name).read_bytes()).hexdigest() == digest, name
     bundle = json.loads((FIXTURE / "cgtv2-fixture-nut-bundle.json").read_text())
     assert len(bundle["transactions"]) == 15
+    static = [(FIXTURE / f"cgtv2-{i:02}.rlp").read_bytes() for i in range(15)]
+    assert (ROOT / "crates/celo-alloy/consensus/upgrades/cgtv2/fixture.rlp").read_bytes() == rlp(static)
     assert sum(tx["gasLimit"] for tx in bundle["transactions"]) == manifest["staticGasLimit"]
     assert (ROOT / "crates/alloy-celo-evm/src/block/cgt_v2_prestate.json").read_bytes() == (FIXTURE / "cgtv2-fixture-prestate.json").read_bytes()
     if args.optimism:
