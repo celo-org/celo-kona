@@ -5,7 +5,7 @@ use alloy_consensus::{BlockBody, Header};
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
-use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope};
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 use celo_protocol::{convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked};
 use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
@@ -277,22 +277,25 @@ impl<T: CommsClient + Send + Sync> L2ChainProvider for CeloOracleL2ChainProvider
         // `to_system_config` reads only the block header and the L1-info deposit at
         // `transactions[0]`, which is never a CIP-64 tx.
         let activation = block.header.number != rollup_config.genesis.l2.number &&
-            block.body.transactions.iter().any(
-                celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup::is_activation_transaction,
-            );
+            block.body.transactions.iter().any(CgtV2UpgradeGroup::is_activation_transaction);
         let mut config =
             to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
                 .map_err(OracleProviderError::OpBlockConversion)?;
         if activation {
-            config.gas_limit = config
-                .gas_limit
-                .checked_sub(celo_alloy_consensus::cgt_v2_group::CGT_V2_GROUP_GAS)
-                .ok_or(OracleProviderError::OpBlockConversion(
+            let upgrade_gas = CgtV2UpgradeGroup::gas_limit(rollup_config.l2_chain_id.id())
+                .map_err(|_| {
+                    OracleProviderError::Rlp(alloy_rlp::Error::Custom(
+                        "CGTv2 upgrade bundle is invalid or unconfigured",
+                    ))
+                })?;
+            config.gas_limit = config.gas_limit.checked_sub(upgrade_gas).ok_or(
+                OracleProviderError::OpBlockConversion(
                     kona_protocol::OpBlockConversionError::GasLimitBelowUpgradeGas {
                         gas_limit: config.gas_limit,
-                        upgrade_gas: celo_alloy_consensus::cgt_v2_group::CGT_V2_GROUP_GAS,
+                        upgrade_gas,
                     },
-                ))?;
+                ),
+            )?;
         }
         Ok(config)
     }

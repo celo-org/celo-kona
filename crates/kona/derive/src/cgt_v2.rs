@@ -5,7 +5,7 @@ use alloy_consensus::{Header, Receipt, TxEnvelope};
 use alloy_eips::{BlockNumHash, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use async_trait::async_trait;
-use celo_alloy_consensus::cgt_v2_group::{CGT_V2_GROUP_GAS, CgtV2UpgradeGroup, cgt_v2_params};
+use celo_alloy_consensus::cgt_v2_group::{CgtV2UpgradeGroup, cgt_v2_params};
 use kona_derive::{
     AttributesBuilder, AttributesProvider, BuilderError, ChainProvider, OriginAdvancer,
     OriginProvider, PipelineError, PipelineErrorKind, PipelineResult, Stage,
@@ -116,7 +116,8 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
         let amount = self.origin.amount(parent, epoch).await?;
         let mut attrs = self.inner.prepare_payload_attributes(parent, epoch).await?;
         if let Some(amount) = amount {
-            let group = CgtV2UpgradeGroup::deposits(self.origin.cfg.l2_chain_id.id(), amount)
+            let chain_id = self.origin.cfg.l2_chain_id.id();
+            let group = CgtV2UpgradeGroup::deposits(chain_id, amount)
                 .map_err(|e| invalid(alloc::format!("{e}")))?;
             attrs
                 .transactions
@@ -124,9 +125,10 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
                 .extend(group.iter().map(|tx| Bytes::from(tx.encoded_2718())));
             let gas =
                 attrs.gas_limit.ok_or_else(|| invalid("CGTv2 attributes missing gas limit"))?;
+            let upgrade_gas = CgtV2UpgradeGroup::gas_limit(chain_id)
+                .map_err(|e| invalid(alloc::format!("{e}")))?;
             attrs.gas_limit = Some(
-                gas.checked_add(CGT_V2_GROUP_GAS)
-                    .ok_or_else(|| invalid("CGTv2 gas limit overflow"))?,
+                gas.checked_add(upgrade_gas).ok_or_else(|| invalid("CGTv2 gas limit overflow"))?,
             );
             attrs.no_tx_pool = Some(true);
         }
