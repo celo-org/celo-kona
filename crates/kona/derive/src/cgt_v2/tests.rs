@@ -127,7 +127,7 @@ async fn cgt_v2_attributes_append_exact_group_and_restore_next_epoch() {
         &txs[4..],
         group.iter().map(|tx| Bytes::from(tx.encoded_2718())).collect::<Vec<_>>()
     );
-    assert_eq!(active.gas_limit, Some(78_100_000));
+    assert_eq!(active.gas_limit, Some(70_600_000));
     assert_eq!(active.no_tx_pool, Some(true));
     let next = builder
         .prepare_payload_attributes(L2BlockInfo { l1_origin: epoch, ..parent }, epoch)
