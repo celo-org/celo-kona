@@ -7,7 +7,7 @@ use celo_alloy_consensus::CeloTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 mod request;
-pub use request::CeloTransactionRequest;
+pub use request::{CeloTransactionRequest, Cip64Conflict, check_cip64_compatibility};
 
 /// Celo Transaction type
 #[derive(
