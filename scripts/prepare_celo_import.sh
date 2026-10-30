@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CELO_RETH="${CELO_RETH:-$REPO_ROOT/target/release/celo-reth}"
-DUMP_URL="https://storage.googleapis.com/cel2-rollup-files/celo/l1-final-state.json.zst"
+DUMP_URL="https://celo.fsn1.your-objectstorage.com/l1-final-state.json.zst"
 
 if [ ! -x "$CELO_RETH" ]; then
     echo "celo-reth binary not found at $CELO_RETH" >&2
