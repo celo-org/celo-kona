@@ -19,10 +19,10 @@ The `celo-reth import-celo-state` subcommand handles all the chain-specific setu
 ## Step 1: Download and Decompress the L1 State Dump
 
 The compressed state dump (~15 GB zstd) is available at:
-<https://storage.googleapis.com/cel2-rollup-files/celo/l1-final-state.json.zst>
+<https://celo.fsn1.your-objectstorage.com/l1-final-state.json.zst>
 
 ```bash
-curl -O https://storage.googleapis.com/cel2-rollup-files/celo/l1-final-state.json.zst
+curl -O https://celo.fsn1.your-objectstorage.com/l1-final-state.json.zst
 zstd -d l1-final-state.json.zst    # ~56 GB JSONL
 ```
 
