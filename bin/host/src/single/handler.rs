@@ -241,15 +241,12 @@ impl CeloSingleChainHintHandler {
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
-            HintType::L1Blob => {
-                // Celo uses EigenDA (or calldata) for data availability, not EIP-4844
-                // blob transactions, so this hint type should never be sent.
-                anyhow::bail!("Celo does not use EIP-4844 blob transactions");
-            }
-            HintType::L1Precompile => {
-                // celo-client runs precompiles in-VM via `CeloEvmFactory`, so this hint type
-                // should never be sent.
-                anyhow::bail!("celo-client does not request host-accelerated precompiles");
+            HintType::L1Blob | HintType::L1Precompile => {
+                // Celo uses EigenDA (or calldata), not EIP-4844 blobs, and celo-client runs
+                // precompiles in-VM via `CeloEvmFactory`, so neither hint is ever sent.
+                // Panic instead of returning an error: kona-host retries failed hints forever,
+                // so an error would hang the host. The panic fails the preimage server task.
+                panic!("unsupported hint type: {}", hint.ty);
             }
             HintType::L2BlockHeader => {
                 ensure!(hint.data.len() == 32, "Invalid hint data length");
