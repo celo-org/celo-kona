@@ -46,9 +46,6 @@ alloy-transport.workspace = true
 # OP Alloy
 op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 
-# Revm
-revm = { workspace = true, features = ["std", "c-kzg", "secp256k1", "portable", "blst"] }
-
 # Hokulea (optional – gated behind the `eigenda` feature)
 hokulea-proof = { workspace = true, optional = true }
 hokulea-host-bin = { workspace = true, optional = true }
