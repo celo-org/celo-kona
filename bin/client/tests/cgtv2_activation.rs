@@ -329,6 +329,10 @@ async fn fixture() -> (Preimages, B256) {
     assert_eq!(attrs.transactions.as_ref().unwrap().len(), 19);
     let shared: serde_json::Value =
         serde_json::from_str(include_str!("testdata/cgtv2-origin.json")).unwrap();
+    assert_eq!(
+        parent_hash,
+        serde_json::from_value::<B256>(shared["parentL2Hash"].clone()).unwrap()
+    );
     let expected: Vec<Bytes> = serde_json::from_value(shared["transactions"].clone()).unwrap();
     assert_eq!(attrs.transactions.as_ref().unwrap(), &expected);
     assert_eq!(attrs.gas_limit.unwrap(), shared["gasLimit"].as_u64().unwrap());
@@ -355,7 +359,7 @@ async fn fixture() -> (Preimages, B256) {
     let claimed = builder.compute_output_root().unwrap();
     assert_eq!(
         claimed,
-        alloy_primitives::b256!("279a286f038e38fd17a3e684ed83596ebaef50270019a64c5b583404381907e2")
+        alloy_primitives::b256!("3e251959544c45b137b613951d899c309f1177fdf363f43dc1741a98446cf7d0")
     );
     let tx_root = list(
         &mut images,
