@@ -3,7 +3,5 @@
 
 mod backend;
 
-pub mod eth;
-
 #[cfg(feature = "single")]
 pub mod single;

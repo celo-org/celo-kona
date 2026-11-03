@@ -2366,7 +2366,6 @@ dependencies = [
  "kona-std-fpvm",
  "op-alloy-rpc-types-engine",
  "reqwest 0.13.4",
- "revm",
  "serde",
  "serde_json",
  "tokio",

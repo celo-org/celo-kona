@@ -16,7 +16,7 @@ use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
 use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
-use kona_preimage::{PreimageKey, PreimageKeyType};
+use kona_preimage::PreimageKey;
 use kona_proof::{Hint, HintType};
 use kona_protocol::{OutputRoot, Predeploys};
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
@@ -241,35 +241,12 @@ impl CeloSingleChainHintHandler {
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
-            HintType::L1Blob => {
-                // Celo uses EigenDA (or calldata) for data availability, not EIP-4844
-                // blob transactions, so this hint type should never be sent.
-                anyhow::bail!("Celo does not use EIP-4844 blob transactions");
-            }
-            HintType::L1Precompile => {
-                ensure!(hint.data.len() >= 28, "Invalid hint data length");
-
-                let address = Address::from_slice(&hint.data.as_ref()[..20]);
-                let gas = u64::from_be_bytes(hint.data.as_ref()[20..28].try_into()?);
-                let input = hint.data[28..].to_vec();
-                let input_hash = keccak256(hint.data.as_ref());
-
-                let result = crate::eth::execute(address, input, gas).map_or_else(
-                    |_| vec![0u8; 1],
-                    |raw_res| {
-                        let mut res = Vec::with_capacity(1 + raw_res.len());
-                        res.push(0x01);
-                        res.extend_from_slice(&raw_res);
-                        res
-                    },
-                );
-
-                let mut kv_lock = kv.write().await;
-                kv_lock.set(PreimageKey::new_keccak256(*input_hash).into(), hint.data.into())?;
-                kv_lock.set(
-                    PreimageKey::new(*input_hash, PreimageKeyType::Precompile).into(),
-                    result,
-                )?;
+            HintType::L1Blob | HintType::L1Precompile => {
+                // Celo uses EigenDA (or calldata), not EIP-4844 blobs, and celo-client runs
+                // precompiles in-VM via `CeloEvmFactory`, so neither hint is ever sent.
+                // Panic instead of returning an error: kona-host retries failed hints forever,
+                // so an error would hang the host. The panic fails the preimage server task.
+                panic!("unsupported hint type: {}", hint.ty);
             }
             HintType::L2BlockHeader => {
                 ensure!(hint.data.len() == 32, "Invalid hint data length");
