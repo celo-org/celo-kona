@@ -2,6 +2,7 @@
 //!
 //! This binary provides execution verification functionality for the Celo Kona project.
 
+mod block_range;
 mod metrics;
 
 use alloy_celo_evm::CeloEvmFactory;
@@ -280,7 +281,12 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 // Restore full concurrency for verify_new_heads after verify_block_range completes.
                 concurrency_handle.store(cli.concurrency, std::sync::atomic::Ordering::Relaxed);
 
-                result
+                // Follow mode keeps running past failed blocks, as verify_new_heads does for
+                // failed heads, so a failed backfill block must not cancel head verification.
+                if let Err(e) = result {
+                    tracing::warn!("Backfill verification failed: {e}");
+                }
+                Ok(())
             }
         });
     } else {
@@ -424,7 +430,7 @@ async fn verify_block(
     rollup_config: &celo_registry::CeloRollupConfig,
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
-) -> Result<u64> {
+) -> Result<()> {
     let start = Instant::now();
     // Create trie for this task
     let trie = Trie::new(provider);
@@ -446,7 +452,8 @@ async fn verify_block(
         .map_err(|e| anyhow::anyhow!("Failed to execute block {block_number}: {e}"))?;
 
     // Verify the result
-    if outcome.header.inner() != &executing_header {
+    let header_matches = outcome.header.inner() == &executing_header;
+    if !header_matches {
         tracing::warn!(
             block_number = block_number,
             expected_header = ?executing_header,
@@ -458,7 +465,9 @@ async fn verify_block(
         metrics.lock().block_verification_completed(true, start.elapsed());
     }
     tracker.lock().add_verified_block(block_number);
-    Ok(block_number)
+    // The watermark moves past a mismatched block, but the range must still count it as failed.
+    anyhow::ensure!(header_matches, "Block {block_number} header mismatch");
+    Ok(())
 }
 
 /// Verifies execution for a range of blocks concurrently
@@ -473,47 +482,16 @@ async fn verify_block_range(
     metrics: Arc<Mutex<Metrics>>,
     tracker: Arc<Mutex<VerifiedBlockTracker>>,
 ) -> Result<()> {
-    let mut handles = JoinSet::new();
-    let mut next_block = start_block;
-
-    let spawn_verify = |handles: &mut JoinSet<Result<u64>>, block_number: u64| {
+    block_range::verify_range(start_block, end_block, concurrency, cancel_token, |block_number| {
         let rollup_config = rollup_config.clone();
         let provider = provider.clone();
         let metrics = metrics.clone();
         let tracker = tracker.clone();
-        handles.spawn(async move {
+        async move {
             verify_block(block_number, provider.as_ref(), &rollup_config, metrics, tracker).await
-        });
-    };
-
-    // Spawn initial batch
-    for _ in 0..concurrency {
-        if cancel_token.is_cancelled() {
-            break;
         }
-        if next_block <= end_block {
-            spawn_verify(&mut handles, next_block);
-            next_block += 1;
-        }
-    }
-
-    // Process results and spawn new tasks continuously
-    while let Some(joined) = handles.join_next().await {
-        match joined {
-            Ok(Ok(_)) => {}
-            // A failed fetch/execution would otherwise vanish silently while the
-            // persisted watermark stalls; surface it and keep verifying.
-            Ok(Err(e)) => tracing::error!("Block verification task failed: {e:#}"),
-            Err(e) => tracing::error!("Block verification task panicked: {e}"),
-        }
-        // Spawn next task if available
-        if next_block <= end_block && !cancel_token.is_cancelled() {
-            spawn_verify(&mut handles, next_block);
-            next_block += 1;
-        }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 async fn persist_verified_block<P: AsRef<Path>>(
