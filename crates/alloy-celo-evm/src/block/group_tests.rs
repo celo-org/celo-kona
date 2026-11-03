@@ -91,7 +91,7 @@ fn cgt_v2_already_initialized_predeploy_rejects_group() {
     );
     for (target, slot) in [
         (address!("420000000000000000000000000000000000002a"), U256::ZERO),
-        (address!("42000000000000000000000000000000000007fe"), U256::ZERO),
+        (address!("42000000000000000000000000000000000007ef"), U256::ZERO),
         (VAULT, initializer_v5),
     ] {
         let f = factory();
@@ -332,7 +332,7 @@ fn cgt_v2_initializer_or_setter_failure_rejects_required_group() {
     }
     for FailureCase { step, target } in [
         FailureCase { step: 9, target: address!("420000000000000000000000000000000000002a") },
-        FailureCase { step: 10, target: address!("42000000000000000000000000000000000007fe") },
+        FailureCase { step: 10, target: address!("42000000000000000000000000000000000007ef") },
         FailureCase { step: 11, target: VAULT },
         FailureCase { step: CGT_V2_STATIC_STEPS - 1, target: CGT_V2_L1_BLOCK },
     ] {
