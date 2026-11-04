@@ -64,9 +64,8 @@ pub struct ExecutionVerifierCommand {
     /// socket.
     #[arg(long)]
     pub l2_rpc: String,
-    /// Path to a `rollup.json` holding the chain's rollup config (`CeloRollupConfig`, including
-    /// any Celo-only fields such as the Upgrade 18 settings). Takes precedence over the
-    /// registry lookup; required for chains the registry does not know (dev/e2e chains).
+    /// Path to a Celo `rollup.json`, including Espresso settings. Takes precedence over the
+    /// registry lookup and supports chains absent from the registry, such as dev/e2e chains.
     #[arg(long)]
     pub rollup_config: Option<PathBuf>,
     /// L2 inclusive starting block number to execute.
@@ -306,10 +305,7 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
                 )
                 .await;
 
-                // Restore full concurrency for verify_new_heads after verify_block_range completes.
-                concurrency_handle.store(cli.concurrency, std::sync::atomic::Ordering::Relaxed);
-
-                result
+                finish_backfill(result, &concurrency_handle, cli.concurrency)
             }
         });
     } else {
@@ -372,6 +368,18 @@ async fn run(cli: ExecutionVerifierCommand, cancel_token: CancellationToken) -> 
             highest_verified_block,
             "Verification finished"
         ),
+    }
+    Ok(())
+}
+
+fn finish_backfill(
+    result: Result<()>,
+    head_concurrency: &AtomicUsize,
+    full_concurrency: usize,
+) -> Result<()> {
+    head_concurrency.store(full_concurrency, std::sync::atomic::Ordering::Relaxed);
+    if let Err(error) = result {
+        tracing::error!("Backfill verification failed; continuing to follow heads: {error:#}");
     }
     Ok(())
 }
@@ -630,6 +638,35 @@ mod tests {
 
     fn parse(extra: &[&str]) -> Result<ExecutionVerifierCommand, clap::Error> {
         ExecutionVerifierCommand::try_parse_from(args(extra))
+    }
+
+    #[tokio::test]
+    async fn failed_backfill_does_not_fail_head_following_task_group() {
+        let responses = alloy_transport::mock::Asserter::new();
+        responses.push_failure_msg("block RPC unavailable");
+        let provider = ProviderBuilder::new().connect_mocked_client(responses).root().clone();
+        let cancel = CancellationToken::new();
+        let tracker = Arc::new(Mutex::new(VerifiedBlockTracker::new(Some(1))));
+        let result = verify_block_range(
+            1,
+            1,
+            Arc::new(provider),
+            ROLLUP_CONFIGS.get(&42220).unwrap().clone(),
+            1,
+            cancel.clone(),
+            Arc::new(Mutex::new(Metrics::new(None))),
+            tracker.clone(),
+        )
+        .await;
+
+        // Bounded range mode must still fail when its block cannot be verified.
+        assert!(result.is_err());
+        let head_concurrency = AtomicUsize::new(1);
+        finish_backfill(result, &head_concurrency, 25)
+            .expect("background backfill must not fail the head-following task group");
+        assert_eq!(head_concurrency.load(std::sync::atomic::Ordering::Relaxed), 25);
+        assert!(!cancel.is_cancelled());
+        assert_eq!(tracker.lock().highest_verified_block(), None);
     }
 
     #[test]
