@@ -74,11 +74,10 @@ impl<R, Spec> CeloBlockExecutorFactory<R, Spec> {
     /// [`OpBlockExecutor`] against this factory's spec, and wraps it with the factory's
     /// CGTv2 upgrade group validation.
     ///
-    /// This is the only place executors are constructed: every execution path (import,
-    /// sequencing, proof, post-exec) must come through it, directly or via
-    /// [`BlockExecutorFactory::create_executor`]; an [`OpBlockExecutor`] built anywhere
-    /// else would skip the Upgrade 18 transition on that path and split consensus at the
-    /// activation block.
+    /// Every execution path (import, sequencing, proof and post-exec) uses this factory,
+    /// directly or via [`BlockExecutorFactory::create_executor`], to apply the same CGTv2
+    /// upgrade-group validation. A raw [`OpBlockExecutor`] would execute the deposits without
+    /// checking their required fields, order, success or group completeness.
     pub fn create_wrapped_executor<DB, I>(
         &self,
         evm: <CeloEvmFactory as EvmFactory>::Evm<DB, I>,

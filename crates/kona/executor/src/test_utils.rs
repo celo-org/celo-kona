@@ -25,8 +25,8 @@ use tokio::fs;
 
 /// The test fixture format for the [`CeloStatelessL2Builder`].
 ///
-/// Celo config preserves Espresso settings when fixtures round-trip. CGTv2 is
-/// driven by its deposit signal, without fixture timestamp or reserve overrides.
+/// The Celo config preserves Espresso settings when fixtures round-trip.
+/// CGTv2 upgrades are carried by the fixture's deposit transactions.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CeloExecutorTestFixture {
     /// The rollup configuration for the executing chain.
@@ -311,9 +311,8 @@ impl TrieDBProvider for WitnessTrieNodeProvider {
 /// Creates a static test fixture for the [`CeloStatelessL2Builder`] with the configuration
 /// provided.
 ///
-/// `rollup_config` overrides the [`static@ROLLUP_CONFIGS`] registry lookup, which only knows the
-/// production Celo chains — a dev chain has to supply its own `rollup.json`. That path is also
-/// how the Upgrade 18 activation-artifact param overrides reach the executor.
+/// An explicit `rollup_config` supports chains absent from the [`static@ROLLUP_CONFIGS`]
+/// registry, such as devnets. CGTv2 network parameters are selected from the chain ID.
 pub async fn create_static_fixture(
     provider_url: &str,
     block_number: u64,
@@ -419,9 +418,8 @@ async fn fetch_execution_witness(
 /// The execution witness alone is not sufficient for [`CeloStatelessL2Builder`]. To seal an
 /// Isthmus block the builder reads that predeploy's account out of the parent's account trie
 /// (its storage root becomes the header's `withdrawals_root`), but the node derives the same
-/// root from hashed-state cursors rather than by walking the trie, so the path never enters the
-/// witness — unless the block happens to write to the account, as the Upgrade 18 transition
-/// does. The account proof supplies exactly those nodes.
+/// root from hashed-state cursors rather than by walking the trie. If execution does not touch
+/// the predeploy, the witness can omit its account path. The account proof supplies those nodes.
 ///
 /// Requires the node to serve historical proofs (`--rpc.eth-proof-window`). Returns an empty map
 /// on failure: for blocks that do touch the predeploy the witness already covers it, and if it

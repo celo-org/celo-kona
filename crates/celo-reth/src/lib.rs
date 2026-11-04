@@ -499,8 +499,7 @@ where
         // storage as that path does. Dormant on Celo (SDM unscheduled).
         let evm = self.evm_for_block(db, block.header())?.with_cip64_store_enabled();
         let ctx = self.context_for_block_with_post_exec_mode(block, Some(post_exec_mode));
-        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
-        // on this path.
+        // Apply CGTv2 upgrade-group validation on the post-exec import path.
         Ok(self.executor_factory.create_wrapped_executor(evm, ctx))
     }
 
@@ -534,11 +533,7 @@ where
         };
         let ctx =
             self.context_for_next_block_with_post_exec_mode(parent, attributes, post_exec_mode);
-        // Construct through the factory so the Upgrade 18 (CGT v2) transition also runs
-        // on the sequencing path — op-reth's payload builder obtains its block builder
-        // through this method, so an executor built outside the factory here would seal
-        // payloads *without* the transition while import/validation applies it
-        // (consensus split at the activation block).
+        // Use the same CGTv2 upgrade-group validation for sequencing and block import.
         let executor = self.executor_factory.create_wrapped_executor(evm, ctx.clone());
 
         let builder = BasicBlockBuilder::<'a, CeloBlockExecutorFactory<R, Arc<ChainSpec>>, _, _, N> {

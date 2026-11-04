@@ -1,4 +1,3 @@
-# Preserve the existing job identity while replacing the retired state-override gate.
 # Runtime migration/parity tests run in the regular Rust CI `test` job on every PR.
 name: CGTv2 upgrade fixture integrity
 
@@ -11,7 +10,7 @@ on:
       - crates/celo-alloy/consensus/src/cgt_v2*.rs
       - crates/alloy-celo-evm/src/block/**
       - scripts/cgtv2/**
-      - .github/workflows/upgrade18_genesis_parity.yml
+      - .github/workflows/cgtv2_fixture_integrity.yml
   pull_request:
     paths:
       - crates/celo-alloy/consensus/testdata/cgt_v2/**
@@ -19,14 +18,14 @@ on:
       - crates/celo-alloy/consensus/src/cgt_v2*.rs
       - crates/alloy-celo-evm/src/block/**
       - scripts/cgtv2/**
-      - .github/workflows/upgrade18_genesis_parity.yml
+      - .github/workflows/cgtv2_fixture_integrity.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  genesis-parity:
+  fixture-integrity:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

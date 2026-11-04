@@ -237,10 +237,8 @@ where
     }
 }
 
-// The sequencing path (op-reth's payload builder) obtains its executor via
-// `ConfigurePostExecEvm`, which requires the post-exec extension. Delegate it so the
-// wrapper is usable there too. Without this, sequencing would silently fall back to a
-// raw `OpBlockExecutor` and skip the Upgrade 18 transition.
+// Forward the extension required by `ConfigurePostExecEvm` so sequencing uses
+// the same CGTv2 upgrade-group validation as block import and proving.
 impl<E, R, Spec> PostExecExecutorExt for CeloBlockExecutor<E, R, Spec>
 where
     E: PostExecEvm,
