@@ -1291,10 +1291,12 @@ where
         // The debit's refunds are not counted (the intrinsic surcharge pays for its gas), so
         // that take-back can leave the counter negative, which `set_final_refund` would read as
         // a huge `u64` and cap to the maximum refund. Without a debit the counter never goes
-        // negative.
-        let gas = exec_result.gas_mut();
-        if gas.refunded() < 0 {
-            gas.set_refund(0);
+        // negative. Blocks before Karst keep the wrapped refund.
+        if evm.ctx().cfg().spec().is_enabled_in(OpSpecId::KARST) {
+            let gas = exec_result.gas_mut();
+            if gas.refunded() < 0 {
+                gas.set_refund(0);
+            }
         }
         self.op.refund(evm, exec_result, eip7702_refund)
     }
@@ -3819,14 +3821,21 @@ mod tests {
     /// The debit takes the payer's fee-currency balance to exactly zero (`totalSupply` stays
     /// non-zero, so that is the only slot it clears). Then the main call, to the fee currency:
     /// - refills the slot (`transferFrom(donor, sender, 1)`): its -4800 takes back a refund
-    ///   that is not counted, so the clamped counter yields no refund rather than the cap.
+    ///   that is not counted. From Karst the clamped counter yields no refund; before Karst
+    ///   it wraps to the cap.
     /// - leaves it alone (`balanceOf`): the debit's refund is not counted either.
     ///
     /// Pricing as in [`cip64_gas_survives_a_negative_credit_refund`].
     #[rstest]
-    #[case::refilled(alloy_primitives::hex!("23b872dd").to_vec())]
-    #[case::untouched(alloy_primitives::hex!("70a08231").to_vec())]
-    fn cip64_main_call_gets_no_refund_for_a_slot_the_debit_cleared(#[case] selector: Vec<u8>) {
+    #[case::refilled(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::KARST, false)]
+    #[case::refilled_pre_karst(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::JOVIAN, true)]
+    #[case::untouched(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::KARST, false)]
+    #[case::untouched_pre_karst(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::JOVIAN, false)]
+    fn cip64_main_call_refund_for_a_slot_the_debit_cleared(
+        #[case] selector: Vec<u8>,
+        #[case] spec: OpSpecId,
+        #[case] capped: bool,
+    ) {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let donor = address!("0xcccccccccccccccccccccccccccccccccccccccc");
@@ -3878,12 +3887,15 @@ mod tests {
             1,
         )
         .modify_tx_chained(|tx| tx.op_tx.base.data = data.into())
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
         .build_celo();
         let mut handler =
             CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
         let result = handler.run(&mut evm).expect("the tx must be accepted");
 
         assert!(result.is_success(), "{result:?}");
-        assert_eq!(result.gas().inner_refunded(), 0);
+        let gas = result.gas();
+        let expected = if capped { gas.total_gas_spent() / 5 } else { 0 };
+        assert_eq!(gas.inner_refunded(), expected);
     }
 }
