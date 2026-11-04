@@ -9,29 +9,32 @@ use async_trait::async_trait;
 use celo_derive::{CgtV2AttributesBuilder, CgtV2BatchProvider, ReceiptCacheProvider};
 use core::fmt::Debug;
 use kona_derive::{
-    AttributesBuilder, AttributesQueue, BatchProvider, BatchProviderStage, BatchStream,
-    ChainProvider, ChannelProvider, ChannelReader, DataAvailabilityProvider, DerivationPipeline,
-    FrameQueue, L1Retrieval, L2ChainProvider, OriginProvider, Pipeline, PipelineResult,
-    PollingTraversal, ResetSignal, Signal, SignalReceiver, StepResult,
+    AttributesQueue, BatchProvider, BatchProviderStage, BatchStream, ChainProvider,
+    ChannelProvider, ChannelReader, DataAvailabilityProvider, DerivationPipeline, FrameQueue,
+    L1Retrieval, L2ChainProvider, OriginProvider, Pipeline, PipelineResult, PollingTraversal,
+    ResetSignal, Signal, SignalReceiver, StatefulAttributesBuilder, StepResult,
 };
 use kona_driver::{DriverPipeline, PipelineCursor};
-use kona_genesis::{RollupConfig, SystemConfig};
+use kona_genesis::{DependencySet, L1ChainConfig, RollupConfig, SystemConfig};
 use kona_preimage::CommsClient;
 use kona_proof::FlushableCache;
 use kona_protocol::{BlockInfo, L2BlockInfo, OpAttributesWithParent};
 use spin::RwLock;
 
 /// Standard polled stages with a guard after span decomposition.
-pub type CeloAttributesStage<DA, L1, L2, B> = AttributesQueue<
+pub type CeloAttributesStage<DA, L1, L2> = AttributesQueue<
     CgtV2BatchProvider<
         BatchProviderStage<DA, PollingTraversal<ReceiptCacheProvider<L1>>, L2>,
         ReceiptCacheProvider<L1>,
     >,
-    CgtV2AttributesBuilder<B, ReceiptCacheProvider<L1>>,
+    CgtV2AttributesBuilder<
+        StatefulAttributesBuilder<ReceiptCacheProvider<L1>, L2>,
+        ReceiptCacheProvider<L1>,
+    >,
 >;
 /// The concrete derivation pipeline used by the client.
-pub type CeloDerivationPipeline<DA, L1, L2, B> =
-    DerivationPipeline<CeloAttributesStage<DA, L1, L2, B>, L2>;
+pub type CeloDerivationPipeline<DA, L1, L2> =
+    DerivationPipeline<CeloAttributesStage<DA, L1, L2>, L2>;
 
 /// Oracle-backed pipeline with Celo's receipt-triggered upgrade construction.
 #[derive(Debug)]
@@ -48,24 +51,32 @@ impl<O, P> CeloOraclePipeline<O, P> {
 }
 
 /// Compose the pinned upstream stages, inserting the Celo guard before AttributesQueue.
-/// The builder and stages share authenticated receipt data through the supplied cache.
+/// Creates the attributes builder and a shared authenticated receipt cache internally.
 #[allow(clippy::too_many_arguments)]
-pub async fn new_celo_oracle_pipeline<O, L1, L2, DA, B>(
+pub async fn new_celo_oracle_pipeline<O, L1, L2, DA>(
     cfg: Arc<RollupConfig>,
+    l1_cfg: Arc<L1ChainConfig>,
     sync_start: Arc<RwLock<PipelineCursor>>,
     oracle: Arc<O>,
     da: DA,
-    provider: ReceiptCacheProvider<L1>,
+    provider: L1,
     l2: L2,
-    builder: B,
-) -> PipelineResult<CeloOraclePipeline<O, CeloDerivationPipeline<DA, L1, L2, B>>>
+    dependency_set: Option<Arc<DependencySet>>,
+) -> PipelineResult<CeloOraclePipeline<O, CeloDerivationPipeline<DA, L1, L2>>>
 where
     O: CommsClient + FlushableCache + Send + Sync + Debug,
     L1: ChainProvider + Clone + Send + Sync + Debug,
     L2: L2ChainProvider + Clone + Send + Sync + Debug,
     DA: DataAvailabilityProvider + Send + Sync + Debug,
-    B: AttributesBuilder + Debug + Sync,
 {
+    let provider = ReceiptCacheProvider::new(provider);
+    let builder = StatefulAttributesBuilder::new(
+        cfg.clone(),
+        l1_cfg,
+        l2.clone(),
+        provider.clone(),
+        dependency_set,
+    );
     let attrs = CgtV2AttributesBuilder::new(cfg.clone(), builder, provider.clone());
     let mut traversal = PollingTraversal::new(provider.clone(), cfg.clone());
     traversal.block = Some(sync_start.read().origin());
