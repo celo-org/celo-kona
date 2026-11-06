@@ -854,8 +854,8 @@ impl CeloFeeApi {
     /// Query the exchange rate for `fee_currency` from the FeeCurrencyDirectory.
     ///
     /// When `block_id` is `None` the rate is read from the latest state; pass
-    /// a specific `BlockId` (used by `eth_feeHistory`) to get the rate that
-    /// was in force at that block — rates for `eth_gasPrice` /
+    /// a specific `BlockId` (used by `eth_feeHistory`) to read it from that
+    /// block's post-state — rates for `eth_gasPrice` /
     /// `eth_maxPriorityFeePerGas` are always latest.
     async fn exchange_rate(
         &self,
@@ -1025,7 +1025,7 @@ fn rate_overflow_error(method: &'static str) -> jsonrpsee_types::ErrorObjectOwne
 }
 
 /// Error for an `eth_feeHistory` call that cannot read the exchange rate of a fee currency
-/// used in block `block_num`, for example because this node has pruned that block's state.
+/// used in block `block_num`, for example because this node has pruned its parent's state.
 /// op-geth fails the call the same way (`eth/gasprice/feehistory.go`, `processBlock`).
 fn fee_history_exchange_rate_error(
     block_num: u64,
@@ -1234,8 +1234,10 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
             // Fee currency exchange rates can change over time (governance
             // updates, oracle refreshes), so a per-block-range cache of the
             // *latest* rate would misattribute tips for historical blocks.
-            // Instead, query the rate at the same block whose transactions we
-            // are normalizing — this yields correct per-block reward
+            // Instead, query the rate at the parent of the block whose transactions
+            // we are normalizing, since execution charges them the block-start rate.
+            // Read by hash, so a reorg cannot pair them with another fork's rate.
+            // This yields correct per-block reward
             // percentiles even when rates changed mid-range. The cache still
             // dedupes lookups for multiple CIP-64 txs within the same block.
             let mut rate_cache: std::collections::HashMap<(u64, Address), RateU256> =
@@ -1295,7 +1297,9 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                                     let r = ctx
                                         .exchange_rate(
                                             fc,
-                                            Some(alloy_eips::BlockId::Number(block_tag)),
+                                            Some(alloy_eips::BlockId::hash(
+                                                block.header.parent_hash,
+                                            )),
                                         )
                                         .await
                                         .map_err(|e| {
@@ -2899,8 +2903,8 @@ mod tests {
     #[tokio::test]
     async fn exchange_rate_passes_block_id_to_eth_call() {
         // The fee-history normalization path queries the exchange rate at the
-        // *historical* block whose tips it is converting (rates can change
-        // over time, so using a single latest-state rate for the whole range
+        // parent of the *historical* block whose tips it is converting (rates can
+        // change over time, so using a single latest-state rate for the whole range
         // misattributes tips). Verify that `exchange_rate(fc, Some(block_id))`
         // actually threads the block id through to the underlying `eth_call`,
         // and that the `None` case still picks up the latest state.
@@ -3068,10 +3072,10 @@ mod tests {
             gas_price: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
             priority_fee: Box::new(|| Box::pin(async { Ok(U256::ZERO) })),
             eth_call: Box::new(move |_, block_id| {
-                let Some(alloy_eips::BlockId::Number(tag)) = block_id else {
-                    panic!("the rate must be read at a block number, got {block_id:?}");
+                let Some(alloy_eips::BlockId::Hash(hash)) = block_id else {
+                    panic!("the rate must be read at a block hash, got {block_id:?}");
                 };
-                let result = rate_lookup(tag.as_number().expect("a numbered block"));
+                let result = rate_lookup(U256::from_be_slice(hash.block_hash.as_slice()).to());
                 Box::pin(async move { result })
             }),
             fee_history: Box::new(move |_, _, _| {
@@ -3088,6 +3092,8 @@ mod tests {
                     header: alloy_rpc_types_eth::Header {
                         inner: alloy_consensus::Header {
                             number: tag.as_number().unwrap(),
+                            // Stubs encode a block's hash as its number.
+                            parent_hash: U256::from(tag.as_number().unwrap() - 1).into(),
                             base_fee_per_gas: Some(FEE_HISTORY_BASE_FEE),
                             ..Default::default()
                         },
@@ -3155,8 +3161,8 @@ mod tests {
         assert_eq!(history.reward, Some(vec![vec![5]]));
         assert_eq!(
             *lookups.lock().unwrap(),
-            vec![FEE_HISTORY_BLOCK],
-            "the rate must be read once, at the block being normalized"
+            vec![FEE_HISTORY_BLOCK - 1],
+            "the rate must be read once, at the parent of the block being normalized"
         );
     }
 
@@ -3171,7 +3177,7 @@ mod tests {
             move |block_num| {
                 lookups.lock().unwrap().push(block_num);
                 // The currency's rate changes between the two blocks.
-                if block_num == FEE_HISTORY_BLOCK {
+                if block_num == FEE_HISTORY_BLOCK - 1 {
                     Ok(encode_exchange_rate(2, 1))
                 } else {
                     Ok(encode_exchange_rate(1, 1))
@@ -3184,7 +3190,7 @@ mod tests {
         // Block 100 at rate 2/1 gives 5 (see above). Block 101 at rate 1/1:
         // base_fee_fc = 100, tip_fc = min(500 - 100, 10) = 10, native tip = 10.
         assert_eq!(history.reward, Some(vec![vec![5], vec![10]]));
-        assert_eq!(*lookups.lock().unwrap(), vec![FEE_HISTORY_BLOCK, FEE_HISTORY_BLOCK + 1]);
+        assert_eq!(*lookups.lock().unwrap(), vec![FEE_HISTORY_BLOCK - 1, FEE_HISTORY_BLOCK]);
     }
 
     #[tokio::test]
@@ -3239,7 +3245,7 @@ mod tests {
         let api = make_fee_history_api(
             vec![vec![cip64_rpc_tx(fc)], vec![cip64_rpc_tx(fc)]],
             |block_num| {
-                if block_num == FEE_HISTORY_BLOCK {
+                if block_num == FEE_HISTORY_BLOCK - 1 {
                     Ok(encode_exchange_rate(2, 1))
                 } else {
                     Err(jsonrpsee_types::ErrorObject::owned(
