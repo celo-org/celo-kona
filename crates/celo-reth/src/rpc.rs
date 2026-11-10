@@ -1245,10 +1245,15 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 let block_num = oldest_block + i as u64;
                 let block_tag = alloy_rpc_types_eth::BlockNumberOrTag::Number(block_num);
 
-                let block = match (ctx.block_by_number)(block_tag).await? {
-                    Some(b) => b,
-                    None => continue,
-                };
+                // Upstream just read this block, so it can only be missing after a reorg.
+                // Skipping it would keep upstream's unconverted CIP-64 tips.
+                let block = (ctx.block_by_number)(block_tag).await?.ok_or_else(|| {
+                    jsonrpsee_types::ErrorObject::owned(
+                        RPC_SERVER_ERROR,
+                        format!("block {block_num} not found"),
+                        None::<()>,
+                    )
+                })?;
 
                 let base_fee = block.header.base_fee_per_gas.unwrap_or(0);
 
@@ -1273,15 +1278,18 @@ pub fn celo_fee_history_module(api: Arc<CeloFeeApi>) -> jsonrpsee::RpcModule<Arc
                 let receipts = (ctx.block_receipts)(alloy_eips::BlockId::hash(block.header.hash))
                     .await?
                     .unwrap_or_default();
+                // Without receipts the CIP-64 tips cannot be converted, and upstream's
+                // reward would report them unconverted.
                 if receipts.len() != txs.len() {
-                    tracing::error!(
-                        target: "celo::rpc",
-                        block_num,
-                        tx_count = txs.len(),
-                        receipt_count = receipts.len(),
-                        "eth_feeHistory: block or receipts missing while reward percentiles are requested"
-                    );
-                    continue;
+                    return Err(jsonrpsee_types::ErrorObject::owned(
+                        RPC_SERVER_ERROR,
+                        format!(
+                            "block {block_num}: {} receipts for {} transactions",
+                            receipts.len(),
+                            txs.len()
+                        ),
+                        None::<()>,
+                    ));
                 }
 
                 // Collect (tip, gas_used) pairs, converting CIP-64 tips to native.
@@ -3129,6 +3137,34 @@ mod tests {
         assert!(charged_rate(&receipt, 0).is_none(), "a zero header base fee gives no rate");
         assert!(charged_rate(&fee_history_receipt(None), 100).is_none());
         assert!(charged_rate(&fee_history_receipt(Some(0)), 100).is_none());
+    }
+
+    #[tokio::test]
+    async fn fee_history_fails_when_receipts_are_missing() {
+        let mut api = Arc::into_inner(make_fee_history_api(vec![(
+            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))],
+            Some(200),
+        )]))
+        .unwrap();
+        api.block_receipts = Box::new(|_| Box::pin(async { Ok(None) }));
+
+        let err = call_fee_history(Arc::new(api), 1)
+            .await
+            .expect_err("missing receipts must fail the call");
+
+        assert!(err.to_string().contains("block 100: 0 receipts for 1 transactions"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn fee_history_fails_when_the_block_is_missing() {
+        let mut api = Arc::into_inner(make_fee_history_api(vec![(vec![], None)])).unwrap();
+        api.block_by_number = Box::new(|_| Box::pin(async { Ok(None) }));
+
+        let err = call_fee_history(Arc::new(api), 1)
+            .await
+            .expect_err("a missing block must fail the call");
+
+        assert!(err.to_string().contains("block 100 not found"), "got: {err}");
     }
 
     #[tokio::test]
