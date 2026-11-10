@@ -37,10 +37,10 @@
 #    as pending. That is a race: `LocalMiner::advance` ends in `new_payload`
 #    without an FCU, and the pool only drops mined transactions on a separate
 #    maintenance task after the next one. Usually that is one empty block,
-#    but nothing below may depend on the count: Phase 6 pins no height and no
-#    base fee. It does wait for the pool to drain and the chain to settle
-#    first, since an empty block built between its transactions would split
-#    the window its fee history covers.
+#    but nothing below may depend on the count: Phases 6 and 7 pin no height
+#    and no base fee. They do wait for the pool to drain and the chain to
+#    settle first, since an empty block built between Phase 6's transactions
+#    would split the window its fee history covers.
 #  * Transactions are signed offline with every field pinned, so their hashes
 #    are stable and can be committed in the goldens.
 #  * The block traces additionally pin the index-0 L1-attributes deposit, whose
@@ -148,7 +148,7 @@ fi
 
 # `trace` and `ots` are enabled because their replay paths share the machinery
 # the CIP-64 scenarios below exercise; the shared runner node does not enable
-# them. `txpool` is only for Phase 6's barrier. The fee cap is pinned to 1 CELO
+# them. `txpool` is only for the settle barrier. The fee cap is pinned to 1 CELO
 # so Phase 5's over-cap transaction does not depend on the node's default.
 "$CELO_RETH" node --dev \
     --chain "$GENESIS_JSON" \
@@ -686,18 +686,16 @@ rpc_expect_error send_cip64_unregistered_currency eth_sendRawTransaction \
 # Phase 6 — eth_feeHistory across an exchange-rate change
 #
 # The Celo `eth_feeHistory` override converts each CIP-64 tip from fee-currency
-# units back to native before computing percentiles, and it looks the rate up at
-# the block whose transactions it is normalizing rather than at the head. That
-# distinction is deliberate — the rate cache is keyed by `(block_number,
-# fee_currency)` for exactly this reason — but the unit tests stub the rate
-# read, so they cannot show that a real rate change lands on the right blocks.
+# units back to native before computing percentiles, at the rate the receipt's
+# `baseFee` records rather than at the head's. The unit tests stub receipts, so
+# they cannot show that a real rate change lands on the right blocks.
 #
 # So: one CIP-64 transaction at the current rate, then a rate change, then an
 # identical CIP-64 transaction, then one fee history spanning all three blocks.
 # Normalizing against the head rate would price the first block's tip at the new
 # rate and both rewards would come out equal.
 #
-# This phase must stay last: it leaves the fee currency's rate changed.
+# Only Phase 7 may follow: this phase leaves the fee currency's rate changed.
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -789,6 +787,73 @@ if [[ -n "$before_block" && -n "$after_block" &&
 else
     _rpc_fail rate_change_sequence \
         "the rate-change sequence did not mine into three consecutive blocks (${before_block:-?}..${after_block:-?})"
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 7 — eth_feeHistory for a block that changes the rate it charges at
+#
+# Every transaction in a block settles at the block-start rate, so a CIP-64
+# transaction behind a rate change in its own block still pays the old rate.
+# Only the receipt's `baseFee` records that rate; the block's own state already
+# holds the new one. Phase 6 cannot show this: its rate change sits alone in a
+# block.
+#
+# This phase must stay last: it leaves the fee currency's rate changed.
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "Phase 7: eth_feeHistory for a block that changes the rate it charges at"
+
+settle_chain || _rpc_fail chain_settled_before_same_block_rate_change \
+    "the pool did not drain or the chain kept growing"
+
+# 4:1 from Phase 6 -> 8:1 here.
+RATE_CHANGE_DATA=$(cast calldata 'setExchangeRate(address,uint256,uint256)' \
+    "$FEE_CURRENCY" 8000000000000000000 1000000000000000000)
+
+# Sent first, so it stays queued behind the nonce gap until the rate change
+# promotes both into one block (see Phase 4).
+RATE_NONCE=$(( $(rpc_call eth_getTransactionCount "[\"$ACC_ADDR\", \"latest\"]" | jq -r '.result') ))
+cip64_same_block=$(sign_tx --nonce $((RATE_NONCE + 1)) --to "$DEAD" --value 1 \
+    --fee-currency "$FEE_CURRENCY" --gas 100000 \
+    --max-fee 100000000000 --max-priority-fee 2000000000)
+rate_change=$(sign_tx --nonce "$RATE_NONCE" --to "$FEE_CURRENCY_ORACLE" \
+    --data "$RATE_CHANGE_DATA" --gas 200000)
+sent=1
+for tx in "$cip64_same_block" "$rate_change"; do
+    hash=$(jq -r '.hash' <<<"$tx")
+    send_raw same_block_sequence "$(jq -r '.raw' <<<"$tx")" || { sent=; break; }
+    if [[ "$SENT_HASH" != "$hash" ]]; then
+        _rpc_fail send_same_block_sequence "node returned $SENT_HASH, signed hash is $hash"
+        sent=
+        break
+    fi
+done
+
+# A failed send has reported itself; waiting for its receipt would only time out.
+rate_block= ; rate_receipt=
+if [[ -n "$sent" ]]; then
+    cip64_receipt=$(wait_receipt "$(jq -r '.hash' <<<"$cip64_same_block")")
+    rate_receipt=$(wait_receipt "$(jq -r '.hash' <<<"$rate_change")")
+    rate_block=$(jq -r '.blockNumber' <<<"$cip64_receipt")
+fi
+
+if [[ -n "$rate_block" && "$(jq -r '.blockNumber' <<<"$rate_receipt")" == "$rate_block" ]]; then
+    rpc_expect_eq same_block_rate_change_applied \
+        "$(cast call "$FEE_CURRENCY_DIRECTORY_ADDR" \
+            'getExchangeRate(address)(uint256,uint256)' "$FEE_CURRENCY" \
+            --rpc-url "$RPC_URL" | head -1 | cut -d' ' -f1)" \
+        "8000000000000000000"
+
+    # 2 gwei fee-currency tip / 4, not / 8. The deposit's and rate change's tips are
+    # lower, so the top percentile is the CIP-64 tip.
+    rpc_expect_eq feeHistory_converts_at_start_rate \
+        "$(( $(rpc_call eth_feeHistory "[\"0x1\", \"$rate_block\", [100]]" |
+            jq -r '.result.reward[0][0]') ))" \
+        "500000000"
+elif [[ -n "$sent" ]]; then
+    _rpc_fail same_block_rate_change \
+        "the rate change and its CIP-64 transaction did not mine into one block"
 fi
 
 # ---------------------------------------------------------------------------
