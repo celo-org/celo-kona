@@ -25,7 +25,7 @@ permissions:
 
 env:
   OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.5-celo-patches-v1
-  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v2.5-celo-patches-v2
+  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v2.5-celo-patches-v3
 
 jobs:
   scoped-tests:
@@ -140,4 +140,7 @@ jobs:
             -p reth-rpc-eth-api \
             -p reth-provider \
             -p reth-trie \
+            -p reth-trie-common \
+            -p reth-trie-parallel \
+            -p reth-execution-cache \
             -p reth-transaction-pool
