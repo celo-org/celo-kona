@@ -50,6 +50,9 @@ op-alloy-rpc-types-engine = { workspace = true, features = ["serde"] }
 hokulea-proof = { workspace = true, optional = true }
 hokulea-host-bin = { workspace = true, optional = true }
 
+# Cryptography
+ark-ff.workspace = true
+
 # General
 anyhow.workspace = true
 backon = "1"
@@ -61,6 +64,9 @@ serde = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 reqwest.workspace = true
+
+[dev-dependencies]
+kona-derive.workspace = true
 
 [features]
 default = ["single", "eigenda"]

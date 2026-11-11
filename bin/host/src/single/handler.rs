@@ -2,23 +2,25 @@
 
 use crate::{backend::util::store_ordered_trie, single::CeloSingleChainHost};
 use alloy_consensus::Header;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::{eip2718::Encodable2718, eip4844::FIELD_ELEMENTS_PER_BLOB};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::Block;
 use alloy_transport::{RpcError, TransportErrorKind};
 use anyhow::{Context, Result, anyhow, ensure};
+use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
-use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
-use kona_preimage::PreimageKey;
-use kona_proof::{Hint, HintType};
-use kona_protocol::{OutputRoot, Predeploys};
+use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, single::parse_blob_hint};
+use kona_preimage::{PreimageKey, PreimageKeyType};
+use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
+use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
+use kona_providers_alloy::BlobWithCommitmentAndProof;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::time::Duration;
 use tracing::warn;
@@ -279,11 +281,71 @@ impl CeloSingleChainHintHandler {
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
-            HintType::L1Blob | HintType::L1Precompile => {
-                // Celo uses EigenDA (or calldata), not EIP-4844 blobs, and celo-client runs
-                // precompiles in-VM via `CeloEvmFactory`, so neither hint is ever sent.
-                // Panic instead of returning an error: kona-host retries failed hints forever,
-                // so an error would hang the host. The panic fails the preimage server task.
+            HintType::L1Blob => {
+                let (hash, timestamp) = parse_blob_hint(&hint.data)?;
+
+                let partial_block_ref = BlockInfo { timestamp, ..Default::default() };
+
+                // Fetch the blobs from the blob provider.
+                let mut blobs = providers
+                    .blobs
+                    .fetch_blobs_with_proofs(&partial_block_ref, &[hash])
+                    .await
+                    .map_err(|e| anyhow!("Failed to fetch blobs with proofs: {e}"))?;
+                if blobs.len() != 1 {
+                    anyhow::bail!("Expected 1 blob, got {}", blobs.len());
+                }
+                let BlobWithCommitmentAndProof {
+                    blob,
+                    kzg_proof: proof,
+                    kzg_commitment: commitment,
+                } = blobs.pop().expect("Expected 1 blob");
+
+                // Acquire a lock on the key-value store and set the preimages.
+                let mut kv_lock = kv.write().await;
+
+                // Set the preimage for the blob commitment.
+                kv_lock.set(
+                    PreimageKey::new(*hash, PreimageKeyType::Sha256).into(),
+                    commitment.to_vec(),
+                )?;
+
+                // Write all the field elements to the key-value store. There should be 4096.
+                // The preimage oracle key for each field element is the keccak256 hash of
+                // `abi.encodePacked(sidecar.KZGCommitment, bytes32(ROOTS_OF_UNITY[i]))`.
+                let mut blob_key = [0u8; 80];
+                blob_key[..48].copy_from_slice(commitment.as_ref());
+                for i in 0..FIELD_ELEMENTS_PER_BLOB {
+                    blob_key[48..].copy_from_slice(
+                        ROOTS_OF_UNITY[i as usize].into_bigint().to_bytes_be().as_ref(),
+                    );
+                    let blob_key_hash = keccak256(blob_key.as_ref());
+
+                    kv_lock
+                        .set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
+                    kv_lock.set(
+                        PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
+                        blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
+                    )?;
+                }
+
+                // Write the KZG Proof as the 4096th element.
+                // Note: This is not associated with a root of unity, as to be backwards compatible
+                // with ZK users of kona that use this proof for the overall blob.
+                blob_key[72..].copy_from_slice(FIELD_ELEMENTS_PER_BLOB.to_be_bytes().as_ref());
+                let blob_key_hash = keccak256(blob_key.as_ref());
+
+                kv_lock.set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
+                kv_lock.set(
+                    PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
+                    proof.to_vec(),
+                )?;
+            }
+            HintType::L1Precompile => {
+                // celo-client runs precompiles in-VM via `CeloEvmFactory`, so this hint is never
+                // sent. Panic instead of returning an error: kona-host retries failed hints
+                // forever, so an error would hang the host. The panic fails the preimage server
+                // task.
                 panic!("unsupported hint type: {}", hint.ty);
             }
             HintType::L2BlockHeader => {
@@ -522,7 +584,27 @@ impl CeloSingleChainHintHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::single::{CeloSingleChainHost, CeloSingleChainProviders};
+    use alloy_eips::eip4844::{
+        BYTES_PER_BLOB, Blob, BlobTransactionSidecar, env_settings::EnvKzgSettings,
+    };
+    use alloy_provider::RootProvider;
     use backon::BackoffBuilder;
+    use celo_alloy_network::Celo;
+    use kona_derive::BlobProvider;
+    use kona_host::MemoryKeyValueStore;
+    use kona_preimage::{
+        HintWriterClient, PreimageOracleClient,
+        errors::{PreimageOracleError, PreimageOracleResult},
+    };
+    use kona_proof::l1::OracleBlobProvider;
+    use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
+    use std::sync::Arc;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::RwLock,
+    };
 
     #[test]
     fn payload_witness_limits_inner_backoff_to_one_short_retry() {
@@ -530,5 +612,110 @@ mod tests {
 
         assert_eq!(backoff.next(), Some(Duration::from_millis(100)));
         assert_eq!(backoff.next(), None);
+    }
+
+    /// Client-side oracle that serves preimages straight from the host's key-value store.
+    #[derive(Clone)]
+    struct KvOracle(SharedKeyValueStore);
+
+    #[async_trait]
+    impl PreimageOracleClient for KvOracle {
+        async fn get(&self, key: PreimageKey) -> PreimageOracleResult<Vec<u8>> {
+            self.0.read().await.get(key.into()).ok_or(PreimageOracleError::KeyNotFound)
+        }
+
+        async fn get_exact(&self, key: PreimageKey, buf: &mut [u8]) -> PreimageOracleResult<()> {
+            let value = self.get(key).await?;
+            if value.len() != buf.len() {
+                return Err(PreimageOracleError::BufferLengthMismatch(buf.len(), value.len()));
+            }
+            buf.copy_from_slice(&value);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl HintWriterClient for KvOracle {
+        async fn write(&self, _hint: &str) -> PreimageOracleResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Serves `body` as the JSON response to every request, standing in for a beacon node.
+    async fn mock_beacon(body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The preimages the host stores for an `L1Blob` hint reconstruct the blob through kona's
+    /// client-side `OracleBlobProvider`.
+    #[tokio::test]
+    async fn l1_blob_hint_round_trips_through_oracle_blob_provider() {
+        // Canonical field elements: the top byte of each 32-byte element stays zero.
+        let mut blob = Blob::default();
+        for (i, byte) in blob.iter_mut().enumerate() {
+            if i % 32 != 0 {
+                *byte = (i * 7 % 251) as u8;
+            }
+        }
+        assert_eq!(blob.len(), BYTES_PER_BLOB);
+        let sidecar = BlobTransactionSidecar::try_from_blobs_with_settings(
+            vec![blob],
+            EnvKzgSettings::Default.get(),
+        )
+        .unwrap();
+        let blob_hash = sidecar.versioned_hashes().next().unwrap();
+
+        let beacon_url = mock_beacon(serde_json::json!({ "data": [blob] }).to_string()).await;
+        let unused_rpc = "http://127.0.0.1:1".parse().unwrap();
+        let providers = CeloSingleChainProviders {
+            l1: RootProvider::new_http(unused_rpc),
+            blobs: OnlineBlobProvider {
+                beacon_client: OnlineBeaconClient::new_http(beacon_url),
+                genesis_time: 0,
+                slot_interval: 12,
+            },
+            l2: RootProvider::<Celo>::new_http("http://127.0.0.1:1".parse().unwrap()),
+            #[cfg(feature = "eigenda")]
+            eigenda_preimage_provider: None,
+        };
+        let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
+
+        let block_ref = BlockInfo { timestamp: 24, ..Default::default() };
+        let mut hint_data = [0u8; 40];
+        hint_data[..32].copy_from_slice(blob_hash.as_ref());
+        hint_data[32..].copy_from_slice(&block_ref.timestamp.to_be_bytes());
+        CeloSingleChainHintHandler::fetch_original_hint(
+            Hint { ty: HintType::L1Blob, data: hint_data.to_vec().into() },
+            &CeloSingleChainHost::default(),
+            &providers,
+            kv.clone(),
+        )
+        .await
+        .unwrap();
+
+        let commitment = kv
+            .read()
+            .await
+            .get(PreimageKey::new(*blob_hash, PreimageKeyType::Sha256).into())
+            .unwrap();
+        assert_eq!(commitment, sidecar.commitments[0].to_vec());
+
+        let mut oracle_blobs = OracleBlobProvider::new(Arc::new(KvOracle(kv)));
+        let blobs = oracle_blobs.get_and_validate_blobs(&block_ref, &[blob_hash]).await.unwrap();
+        assert_eq!(*blobs[0], blob);
     }
 }
