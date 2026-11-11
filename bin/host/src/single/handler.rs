@@ -713,6 +713,21 @@ mod tests {
             .unwrap();
         assert_eq!(commitment, sidecar.commitments[0].to_vec());
 
+        // The blob's KZG proof is stored under the last field element's key with its final 8
+        // bytes replaced by the big-endian element count, as upstream kona-host does.
+        let mut proof_key = [0u8; 80];
+        proof_key[..48].copy_from_slice(&commitment);
+        proof_key[48..].copy_from_slice(
+            &ROOTS_OF_UNITY[FIELD_ELEMENTS_PER_BLOB as usize - 1].into_bigint().to_bytes_be(),
+        );
+        proof_key[72..].copy_from_slice(&FIELD_ELEMENTS_PER_BLOB.to_be_bytes());
+        let proof = kv
+            .read()
+            .await
+            .get(PreimageKey::new(*keccak256(proof_key), PreimageKeyType::Blob).into())
+            .unwrap();
+        assert_eq!(proof, sidecar.proofs[0].to_vec());
+
         let mut oracle_blobs = OracleBlobProvider::new(Arc::new(KvOracle(kv)));
         let blobs = oracle_blobs.get_and_validate_blobs(&block_ref, &[blob_hash]).await.unwrap();
         assert_eq!(*blobs[0], blob);
