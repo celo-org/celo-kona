@@ -5,8 +5,7 @@
 //! behaviour is byte-identical to upstream; post-Espresso, batches are authorized by
 //! `BatchInfoAuthenticated` events instead of by transaction sender, and batch data is
 //! calldata-only: blob batch transactions are dropped regardless of authentication
-//! (DEC-op-026), so deriving an L1 block at or after `espresso_time` never requires blob
-//! preimages, which the Celo fault-proof host cannot supply.
+//! (DEC-op-026).
 
 use crate::{
     batch_auth::{
@@ -86,8 +85,7 @@ where
     ///
     /// From Espresso activation onward (including the auth-enforcement grace window), blob
     /// batch transactions are dropped entirely, authenticated or not: batch data is
-    /// calldata-only (DEC-op-026) because the Celo fault-proof host does not implement the
-    /// `L1Blob` preimage hint.
+    /// calldata-only (DEC-op-026).
     ///
     /// The guarantee is per-L1-block: deriving a block at or after `espresso_time` never
     /// requests blob preimages. It does not extend to the pre-fork blocks a proof walks back
@@ -127,9 +125,7 @@ where
             }
 
             // Post-Espresso, blob DA is unsupported (calldata-only, DEC-op-026): drop blob
-            // batch transactions before any authorization check so deriving this block never
-            // requires blob preimages, which the Celo fault-proof host cannot supply
-            // (no `L1Blob` hint).
+            // batch transactions before any authorization check.
             if blob_hashes.is_some() &&
                 self.batch_auth_config.is_some_and(|c| c.is_active(l1_origin_time))
             {
@@ -751,9 +747,9 @@ mod tests {
 
     /// Auth enforced: a 4844 blob tx is dropped even when its blob batch commitment was
     /// authenticated by an event emitted by the batch tx's own sender — post-Espresso batch
-    /// data is calldata-only (DEC-op-026), because the Celo fault-proof host cannot supply
-    /// blob preimages. No blob versioned hashes may be requested. Direct analogue of the Go
-    /// "authenticated blob tx rejected: blob DA unsupported post-fork" sub-test.
+    /// data is calldata-only (DEC-op-026). No blob versioned hashes may be requested. Direct
+    /// analogue of the Go "authenticated blob tx rejected: blob DA unsupported post-fork"
+    /// sub-test.
     #[tokio::test]
     async fn test_auth_enforced_4844_blob_dropped_despite_auth() {
         let auth_addr = address!("00000000000000000000000000000000000000aa");
