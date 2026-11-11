@@ -28,10 +28,9 @@ use tracing::warn;
 /// Backoff schedule for retrying a hint fetch when its underlying RPC call fails transiently.
 ///
 /// kona's preimage server (`OnlineHostBackend::get_preimage`) retries a failed `fetch_hint`
-/// immediately with no delay, so a flaky RPC endpoint makes it busy-spin on the endpoint and
-/// flood the logs with `Failed to prefetch hint`. Retrying here with exponential backoff turns
-/// that into a bounded, quiet retry that recovers on its own: 100 ms, doubling each attempt,
-/// capped at 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
+/// forever, at most 5 s apart, logging `Failed to prefetch hint` each time. Retrying transient
+/// failures here first keeps a flaky endpoint quiet: 100 ms, doubling each attempt, capped at
+/// 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
 fn hint_retry_policy() -> ExponentialBuilder {
     ExponentialBuilder::default()
         .with_min_delay(Duration::from_millis(100))
@@ -151,7 +150,7 @@ impl HintHandler for CeloSingleChainHintHandler {
                     .as_ref()
                     .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
                 // Back off transient EigenDA proxy-request failures (see is_retryable_eigenda_err)
-                // rather than falling through to kona's immediate spin loop; deterministic errors
+                // rather than falling through to kona's retry loop; deterministic errors
                 // surface immediately.
                 (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
                     .retry(hint_retry_policy())
@@ -435,7 +434,7 @@ impl CeloSingleChainHintHandler {
                     Ok(code) => code,
                     // A transient failure on the primary lookup must back off — propagate it
                     // (still downcastable) instead of masking it with the fallback, whose
-                    // deterministic miss would otherwise surface as terminal and spin in kona. A
+                    // deterministic miss would otherwise surface as terminal and loop in kona. A
                     // normal "wrong hashdb scheme" miss is a non-retryable `ErrorResp`, so it still
                     // falls through to the fallback.
                     Err(e) if is_retryable_rpc(&e) => return Err(anyhow::Error::new(e)),
