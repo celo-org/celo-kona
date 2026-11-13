@@ -1286,6 +1286,18 @@ where
         exec_result: &mut FrameResult,
         eip7702_refund: i64,
     ) -> Result<(), Self::Error> {
+        // The main call prices its SSTOREs against the slot values from before the CIP-64
+        // debit, so refilling a slot the debit cleared takes back the debit's clearing refund.
+        // The debit's refunds are not counted (the intrinsic surcharge pays for its gas), so
+        // that take-back can leave the counter negative, which `set_final_refund` would read as
+        // a huge `u64` and cap to the maximum refund. Without a debit the counter never goes
+        // negative. Blocks before Karst keep the wrapped refund.
+        if evm.ctx().cfg().spec().is_enabled_in(OpSpecId::KARST) {
+            let gas = exec_result.gas_mut();
+            if gas.refunded() < 0 {
+                gas.set_refund(0);
+            }
+        }
         self.op.refund(evm, exec_result, eip7702_refund)
     }
 
@@ -3804,5 +3816,86 @@ mod tests {
         // under `overflow-checks = false`.
         assert!(debit_gas_spent > 0 && credit_gas_spent > 0);
         assert!(debit_gas_spent <= 150_000 && credit_gas_spent <= 150_000);
+    }
+
+    /// The debit takes the payer's fee-currency balance to exactly zero (`totalSupply` stays
+    /// non-zero, so that is the only slot it clears). Then the main call, to the fee currency:
+    /// - refills the slot (`transferFrom(donor, sender, 1)`): its -4800 takes back a refund
+    ///   that is not counted. From Karst the clamped counter yields no refund; before Karst
+    ///   it wraps to the cap.
+    /// - leaves it alone (`balanceOf`): the debit's refund is not counted either.
+    ///
+    /// Pricing as in [`cip64_gas_survives_a_negative_credit_refund`].
+    #[rstest]
+    #[case::refilled(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::KARST, false)]
+    #[case::refilled_pre_karst(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::JOVIAN, true)]
+    #[case::untouched(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::KARST, false)]
+    #[case::untouched_pre_karst(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::JOVIAN, false)]
+    fn cip64_main_call_refund_for_a_slot_the_debit_cleared(
+        #[case] selector: Vec<u8>,
+        #[case] spec: OpSpecId,
+        #[case] capped: bool,
+    ) {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let donor = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let gas_limit = 100_000u64;
+        let debit = U256::from(gas_limit as u128 * 12);
+
+        let mut db = make_celo_test_db_with_fee_currency(sender, debit);
+        let donor_balance = U256::from(1000);
+        db.insert_account_storage(
+            TEST_FEE_CURRENCY,
+            fee_currency_balance_slot(donor),
+            donor_balance,
+        )
+        .unwrap();
+        // `_totalSupply` (slot 2) covers the donor too, so the debit leaves it non-zero.
+        db.insert_account_storage(TEST_FEE_CURRENCY, U256::from(2), debit + donor_balance)
+            .unwrap();
+        // `_allowances[donor][sender] = max` (mapping in slot 1), so `transferFrom` skips the
+        // allowance write.
+        let allowance_slot = {
+            let mut buf = [0u8; 64];
+            buf[12..32].copy_from_slice(donor.as_slice());
+            buf[63] = 1;
+            let inner = keccak256(buf);
+            buf[..32].fill(0);
+            buf[12..32].copy_from_slice(sender.as_slice());
+            buf[32..].copy_from_slice(inner.as_slice());
+            U256::from_be_bytes(keccak256(buf).0)
+        };
+        db.insert_account_storage(TEST_FEE_CURRENCY, allowance_slot, U256::MAX)
+            .unwrap();
+
+        // `transferFrom(donor, sender, 1)` and `balanceOf(donor)` both start with `donor`;
+        // `balanceOf` ignores the extra words.
+        let mut data = selector;
+        data.extend_from_slice(donor.into_word().as_slice());
+        data.extend_from_slice(sender.into_word().as_slice());
+        data.extend_from_slice(&U256::from(1).to_be_bytes::<32>());
+
+        let mut evm = build_cip64_ctx(
+            db,
+            sender,
+            beneficiary,
+            0,
+            TxKind::Call(TEST_FEE_CURRENCY),
+            gas_limit,
+            12,
+            10,
+            1,
+        )
+        .modify_tx_chained(|tx| tx.op_tx.base.data = data.into())
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
+        .build_celo();
+        let mut handler =
+            CeloHandler::<_, EVMError<_, OpTransactionError>, EthFrame<EthInterpreter>>::new();
+        let result = handler.run(&mut evm).expect("the tx must be accepted");
+
+        assert!(result.is_success(), "{result:?}");
+        let gas = result.gas();
+        let expected = if capped { gas.total_gas_spent() / 5 } else { 0 };
+        assert_eq!(gas.inner_refunded(), expected);
     }
 }
