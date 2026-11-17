@@ -2901,6 +2901,11 @@ mod tests {
     /// `max_priority_fee_per_gas = 10`. Both are in `fee_currency` units, or in native
     /// CELO when `fee_currency` is `None`.
     fn cip64_rpc_tx(fee_currency: Option<Address>) -> CeloRpcTransaction {
+        cip64_rpc_tx_with_tip(fee_currency, 10)
+    }
+
+    /// [`cip64_rpc_tx`] with `max_priority_fee_per_gas = tip`.
+    fn cip64_rpc_tx_with_tip(fee_currency: Option<Address>, tip: u128) -> CeloRpcTransaction {
         use alloy_consensus::SignableTransaction;
         use celo_alloy_consensus::TxCip64;
 
@@ -2909,7 +2914,7 @@ mod tests {
             nonce: 0,
             gas_limit: 21_000,
             max_fee_per_gas: 500,
-            max_priority_fee_per_gas: 10,
+            max_priority_fee_per_gas: tip,
             to: alloy_primitives::TxKind::Call(Address::ZERO),
             value: U256::ZERO,
             access_list: Default::default(),
@@ -2995,9 +3000,9 @@ mod tests {
 
     /// Build a [`CeloFeeApi`] whose upstream `eth_feeHistory` covers one block per entry of
     /// `blocks`, numbered upwards from [`FEE_HISTORY_BLOCK`]. Each entry holds the block's
-    /// transactions and the fee-currency base fee its receipts carry.
+    /// transactions, each with the fee-currency base fee its receipt carries.
     fn make_fee_history_api(
-        blocks: Vec<(Vec<CeloRpcTransaction>, Option<u128>)>,
+        blocks: Vec<Vec<(CeloRpcTransaction, Option<u128>)>>,
     ) -> Arc<CeloFeeApi> {
         // Stubs encode a block's hash as its number.
         fn block_index(number: u64) -> usize {
@@ -3033,7 +3038,7 @@ mod tests {
                         ..Default::default()
                     },
                     transactions: alloy_rpc_types_eth::BlockTransactions::Full(
-                        blocks[block_index(number)].0.clone(),
+                        blocks[block_index(number)].iter().map(|(tx, _)| tx.clone()).collect(),
                     ),
                     ..Default::default()
                 };
@@ -3043,9 +3048,11 @@ mod tests {
                 let alloy_eips::BlockId::Hash(hash) = block_id else {
                     panic!("receipts must be fetched by block hash, got {block_id:?}");
                 };
-                let (txs, base_fee_fc) =
-                    &receipt_blocks[block_index(U256::from_be_bytes(hash.block_hash.0).to())];
-                let receipts = txs.iter().map(|_| fee_history_receipt(*base_fee_fc)).collect();
+                let receipts = receipt_blocks
+                    [block_index(U256::from_be_bytes(hash.block_hash.0).to())]
+                .iter()
+                .map(|&(_, base_fee_fc)| fee_history_receipt(base_fee_fc))
+                .collect();
                 Box::pin(async move { Ok(Some(receipts)) })
             }),
             send_transaction: Box::new(|_| Box::pin(async { unimplemented!() })),
@@ -3077,10 +3084,10 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_converts_cip64_tip_at_the_charged_rate() {
-        let api = make_fee_history_api(vec![(
-            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))],
+        let api = make_fee_history_api(vec![vec![(
+            cip64_rpc_tx(Some(Address::with_last_byte(0xAA))),
             Some(200),
-        )]);
+        )]]);
 
         let history = call_fee_history(api, 1).await.unwrap();
 
@@ -3091,10 +3098,10 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_rounds_an_uneven_rate_up() {
-        let api = make_fee_history_api(vec![(
-            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))],
+        let api = make_fee_history_api(vec![vec![(
+            cip64_rpc_tx(Some(Address::with_last_byte(0xAA))),
             Some(33),
-        )]);
+        )]]);
 
         let history = call_fee_history(api, 1).await.unwrap();
 
@@ -3107,10 +3114,10 @@ mod tests {
     async fn fee_history_fails_when_receipt_lacks_base_fee() {
         // Without the charged base fee the tip has no native value. The call must fail
         // rather than report it as 0.
-        let api = make_fee_history_api(vec![(
-            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))],
+        let api = make_fee_history_api(vec![vec![(
+            cip64_rpc_tx(Some(Address::with_last_byte(0xAA))),
             None,
-        )]);
+        )]]);
 
         let err = call_fee_history(api, 1)
             .await
@@ -3129,6 +3136,25 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fee_history_pairs_each_tx_with_its_own_receipt() {
+        let fc_a = Address::with_last_byte(0xAA);
+        let fc_b = Address::with_last_byte(0xBB);
+        let api = make_fee_history_api(vec![
+            vec![(cip64_rpc_tx(Some(fc_a)), Some(50))],
+            vec![
+                (cip64_rpc_tx(Some(fc_a)), Some(200)),
+                (cip64_rpc_tx_with_tip(Some(fc_b), 40), Some(50)),
+            ],
+        ]);
+
+        let history = call_fee_history(api, 2).await.unwrap();
+
+        // Block 100: 10 * 100 / 50 = 20. Block 101: 10 * 100 / 200 = 5 and
+        // 40 * 100 / 50 = 80, median 5. Swapped receipts would give 20 and 20.
+        assert_eq!(history.reward, Some(vec![vec![20], vec![5]]));
+    }
+
     #[test]
     fn charged_rate_needs_both_base_fees() {
         let receipt = fee_history_receipt(Some(200));
@@ -3141,10 +3167,10 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_fails_when_receipts_are_missing() {
-        let mut api = Arc::into_inner(make_fee_history_api(vec![(
-            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA)))],
+        let mut api = Arc::into_inner(make_fee_history_api(vec![vec![(
+            cip64_rpc_tx(Some(Address::with_last_byte(0xAA))),
             Some(200),
-        )]))
+        )]]))
         .unwrap();
         api.block_receipts = Box::new(|_| Box::pin(async { Ok(None) }));
 
@@ -3157,7 +3183,7 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_fails_when_the_block_is_missing() {
-        let mut api = Arc::into_inner(make_fee_history_api(vec![(vec![], None)])).unwrap();
+        let mut api = Arc::into_inner(make_fee_history_api(vec![vec![]])).unwrap();
         api.block_by_number = Box::new(|_| Box::pin(async { Ok(None) }));
 
         let err = call_fee_history(Arc::new(api), 1)
@@ -3169,7 +3195,7 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_without_cip64_txs_keeps_upstream_reward() {
-        let api = make_fee_history_api(vec![(vec![native_rpc_tx()], None)]);
+        let api = make_fee_history_api(vec![vec![(native_rpc_tx(), None)]]);
 
         let history = call_fee_history(api, 1).await.unwrap();
 
@@ -3181,7 +3207,7 @@ mod tests {
         // A CIP-64 tx without a fee currency pays in native CELO, so it needs no
         // fee-currency base fee, even though its type makes the override recompute the
         // block's rewards.
-        let api = make_fee_history_api(vec![(vec![cip64_rpc_tx(None)], None)]);
+        let api = make_fee_history_api(vec![vec![(cip64_rpc_tx(None), None)]]);
 
         let history = call_fee_history(api, 1).await.unwrap();
 
@@ -3193,10 +3219,10 @@ mod tests {
 
     #[tokio::test]
     async fn fee_history_keeps_native_tips_in_a_block_with_cip64_txs() {
-        let api = make_fee_history_api(vec![(
-            vec![cip64_rpc_tx(Some(Address::with_last_byte(0xAA))), native_rpc_tx()],
-            Some(200),
-        )]);
+        let api = make_fee_history_api(vec![vec![
+            (cip64_rpc_tx(Some(Address::with_last_byte(0xAA))), Some(200)),
+            (native_rpc_tx(), None),
+        ]]);
 
         let history = call_fee_history(api, 1).await.unwrap();
 
