@@ -32,6 +32,11 @@ ignore = [
     # ^0.13 (see RUSTSEC-2026-0391).
     "RUSTSEC-2026-0398",
     "RUSTSEC-2026-0403",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained.
+    # The only dependent is wasmtimer (newest release 0.4.3), which alloy-provider pulls in only
+    # for wasm targets. No patched release exists and this is not a vulnerability; removing it
+    # requires wasmtimer or alloy to drop the dep upstream.
+    "RUSTSEC-2026-0441",
 ]
 
 [licenses]
