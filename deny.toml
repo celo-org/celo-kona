@@ -37,6 +37,14 @@ ignore = [
     # for wasm targets. No patched release exists and this is not a vulnerability; removing it
     # requires wasmtimer or alloy to drop the dep upstream.
     "RUSTSEC-2026-0441",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0542 humantime is unmaintained.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0543 chrono is unmaintained.
+    # Neither is a vulnerability and neither has a patched release. reth depends on both directly
+    # (humantime in reth-config, reth-node-core and reth-node-events; chrono in
+    # reth-node-ethstats and, through rolling-file, reth-tracing), so removing them requires
+    # reth to migrate upstream.
+    "RUSTSEC-2026-0542",
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
