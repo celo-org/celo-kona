@@ -276,9 +276,8 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
     /// context and emits nothing.
     ///
     /// `OpPayloadBuilder::on_missing_payload` is hardcoded to `AwaitInProgress`, which makes
-    /// reth's `RaceEmptyPayload` branch unreachable on an OP Stack chain. A CGTv2 fallback
-    /// calls this with a complete forced transaction list so it can rebuild from a fresh state.
-    /// Ordinary empty-payload requests are counted separately by reth.
+    /// reth's `RaceEmptyPayload` branch unreachable on an OP Stack chain.
+    /// Empty-payload requests are counted separately by reth.
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
@@ -693,7 +692,10 @@ mod tests {
             args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
         ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
             self.saw_cancelled.lock().unwrap().push(args.cancel.is_cancelled());
-            self.saw_attributes.lock().unwrap().push(args.config.attributes.clone());
+            let mut seen = self.saw_attributes.lock().unwrap();
+            let first_attempt = seen.is_empty();
+            seen.push(args.config.attributes.clone());
+            drop(seen);
             let payload = test_payload(args.config.payload_id());
             match self.outcome {
                 FakeOutcome::Better => {
@@ -705,10 +707,13 @@ mod tests {
                 FakeOutcome::Cancelled => Ok(BuildOutcome::Cancelled),
                 FakeOutcome::Freeze => Ok(BuildOutcome::Freeze(payload)),
                 FakeOutcome::Error => Err(PayloadBuilderError::MissingPayload),
-                FakeOutcome::CgtV2Failure(failure) => Err(BlockExecutionError::from(
-                    alloy_evm::block::BlockValidationError::other(failure),
-                )
-                .into()),
+                FakeOutcome::CgtV2Failure(failure) if first_attempt => {
+                    Err(BlockExecutionError::from(alloy_evm::block::BlockValidationError::other(
+                        failure,
+                    ))
+                    .into())
+                }
+                FakeOutcome::CgtV2Failure(_) => Ok(BuildOutcome::Freeze(payload)),
             }
         }
 
@@ -786,17 +791,14 @@ mod tests {
             args.config.attributes.0.transactions = Some(transactions.clone());
             args.config.attributes.0.gas_limit =
                 Some(30_000_000 + CgtV2UpgradeGroup::gas_limit(1337).unwrap());
-            let config = args.config.clone();
             builder.try_build(args).unwrap();
-            builder.build_empty_payload(config).unwrap();
             // A later job has no signal and must resume ordinary pool selection.
             builder.try_build(test_args(false)).unwrap();
             let seen = seen.lock().unwrap();
-            for attrs in &seen[..2] {
-                assert_eq!(attrs.no_tx_pool, Some(true));
-                assert_eq!(attrs.transactions.as_ref(), Some(&transactions));
-            }
-            assert_eq!(seen[2].no_tx_pool, Some(false));
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[0].no_tx_pool, Some(true));
+            assert_eq!(seen[0].transactions.as_ref(), Some(&transactions));
+            assert_eq!(seen[1].no_tx_pool, Some(false));
         }
     }
 
@@ -830,16 +832,11 @@ mod tests {
                 let mut transactions = vec![non_deposit.clone().into()];
                 transactions.insert(usize::from(user_first), signal.clone().into());
                 args.config.attributes.0.transactions = Some(transactions);
-                let config = args.config.clone();
-                for error in [
-                    builder.try_build(args).unwrap_err(),
-                    builder.build_empty_payload(config).unwrap_err(),
-                ] {
-                    assert!(
-                        error.to_string().contains("unexpected non-deposit transactions"),
-                        "{error}"
-                    );
-                }
+                let error = builder.try_build(args).unwrap_err();
+                assert!(
+                    error.to_string().contains("unexpected non-deposit transactions"),
+                    "{error}"
+                );
                 assert!(
                     seen.lock().unwrap().is_empty(),
                     "invalid forced lists must not reach the builder"
@@ -877,6 +874,7 @@ mod tests {
         ] {
             let inner = FakePayloadBuilder::new(outcome);
             let seen = inner.saw_attributes.clone();
+            let cancelled = inner.saw_cancelled.clone();
             let builder = CgtV2PayloadBuilder::new(
                 inner,
                 NoopProvider::<reth_chainspec::ChainSpec>::default(),
@@ -896,6 +894,7 @@ mod tests {
                 let built = result.unwrap().into_payload().unwrap();
                 assert_eq!(built.id(), id);
                 assert_eq!(seen.len(), 2);
+                assert_eq!(*cancelled.lock().unwrap(), [false, false]);
                 assert_eq!(seen[1].transactions.as_ref(), Some(&prefix));
                 assert_eq!(seen[1].gas_limit, Some(31_000_000));
                 assert_eq!(seen[1].no_tx_pool, Some(true));
@@ -933,21 +932,18 @@ mod tests {
         args.config.attributes.0.transactions = Some(transactions);
         args.config.attributes.0.gas_limit = Some(30_000_000 + CGT_V2_GROUP_GAS);
 
-        let config = args.config.clone();
-        let mut incomplete = config.clone();
-        incomplete.attributes.0.transactions.as_mut().unwrap().pop();
-        assert!(builder.build_empty_payload(incomplete).is_err());
+        let mut incomplete = test_args(false);
+        incomplete.config = args.config.clone();
+        incomplete.config.attributes.0.transactions.as_mut().unwrap().pop();
+        assert!(builder.try_build(incomplete).is_err());
         assert!(seen.lock().unwrap().is_empty());
 
         builder.try_build(args).unwrap();
-        builder.build_empty_payload(config).unwrap();
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 2);
-        for attrs in seen.iter() {
-            assert_eq!(attrs.transactions.as_ref(), Some(&prefix));
-            assert_eq!(attrs.gas_limit, Some(30_000_000));
-            assert_eq!(attrs.no_tx_pool, Some(true));
-        }
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].transactions.as_ref(), Some(&prefix));
+        assert_eq!(seen[0].gas_limit, Some(30_000_000));
+        assert_eq!(seen[0].no_tx_pool, Some(true));
     }
 
     /// One drained snapshot. `Snapshotter::snapshot` empties the recorded histogram samples, so

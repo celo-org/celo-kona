@@ -118,7 +118,15 @@ where
                 tracing::warn!(%error, parent = %fallback_config.parent_header.hash(), "Building CGTv2 fallback payload");
                 // The forced list contains all L1 deposits. Build it from the same parent with
                 // fresh execution state and retain the original payload job ID.
-                self.inner.build_empty_payload(fallback_config).map(BuildOutcome::Freeze)
+                self.inner.try_build(BuildArguments {
+                    config: fallback_config,
+                    cached_reads: Default::default(),
+                    execution_cache: None,
+                    state_root_handle: None,
+                    // The failed build drops its cancellation token.
+                    cancel: Default::default(),
+                    best_payload: None,
+                })
             }
             result => result,
         }
@@ -133,22 +141,8 @@ where
 
     fn build_empty_payload(
         &self,
-        mut config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
+        config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
-        let Some(fallback) = prepare_activation_payload(&mut config.attributes, self.chain_id)?
-        else {
-            return self.inner.build_empty_payload(config);
-        };
-        if self.is_active_at(config.parent_header.hash())? {
-            config.attributes = fallback;
-            return self.inner.build_empty_payload(config);
-        }
-        match self.inner.build_empty_payload(config.clone()) {
-            Err(error) if upgrade_failed(&error).is_some() => {
-                config.attributes = fallback;
-                self.inner.build_empty_payload(config)
-            }
-            result => result,
-        }
+        self.inner.build_empty_payload(config)
     }
 }
