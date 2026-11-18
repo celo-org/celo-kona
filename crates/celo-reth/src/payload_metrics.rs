@@ -6,6 +6,7 @@ use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, HeaderForPayload, MissingPayloadBehaviour, PayloadBuilder,
     PayloadConfig,
 };
+use reth_chainspec::EthChainSpec;
 use reth_evm::execute::{
     BlockBuilder, BlockBuilderOutcome, BlockExecutionError, BlockExecutor, ExecutorTx, GasOutput,
 };
@@ -151,8 +152,10 @@ where
     PB: PayloadBuilderBuilder<Node, Pool, EvmConfig>,
     PB::PayloadBuilder: PayloadBuilder<Attributes = OpPayloadAttrs>,
 {
-    type PayloadBuilder =
-        crate::cgt_v2::CgtV2PayloadBuilder<PayloadMetricsBuilder<PB::PayloadBuilder>>;
+    type PayloadBuilder = crate::cgt_v2::CgtV2PayloadBuilder<
+        PayloadMetricsBuilder<PB::PayloadBuilder>,
+        Node::Provider,
+    >;
 
     async fn build_payload_builder(
         self,
@@ -161,9 +164,13 @@ where
         evm_config: EvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
         // Apply the protocol build mode before metrics and local pool policies see the attempt.
-        Ok(crate::cgt_v2::CgtV2PayloadBuilder::new(PayloadMetricsBuilder::new(
-            self.inner.build_payload_builder(ctx, pool, evm_config).await?,
-        )))
+        Ok(crate::cgt_v2::CgtV2PayloadBuilder::new(
+            PayloadMetricsBuilder::new(
+                self.inner.build_payload_builder(ctx, pool, evm_config).await?,
+            ),
+            ctx.provider().clone(),
+            ctx.chain_spec().chain().id(),
+        ))
     }
 }
 
@@ -269,12 +276,9 @@ impl<B: PayloadBuilder<Attributes = OpPayloadAttrs>> PayloadBuilder for PayloadM
     /// context and emits nothing.
     ///
     /// `OpPayloadBuilder::on_missing_payload` is hardcoded to `AwaitInProgress`, which makes
-    /// reth's `RaceEmptyPayload` branch unreachable on an OP Stack chain. The only remaining
-    /// caller is `PayloadJob::best_payload`, and op-reth documents this method as test-only
-    /// because the payload it produces has no L1 system transactions: if it ever fires in
-    /// production that is a correctness problem, not a latency budget item, and reth already
-    /// counts it via `inc_requested_empty_payload`. Timing a near-zero-work build into the
-    /// sequencing histograms would only make those distributions bimodal.
+    /// reth's `RaceEmptyPayload` branch unreachable on an OP Stack chain. A CGTv2 fallback
+    /// calls this with a complete forced transaction list so it can rebuild from a fresh state.
+    /// Ordinary empty-payload requests are counted separately by reth.
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
@@ -629,6 +633,7 @@ fn trie_updates_size(updates: &TrieUpdates) -> usize {
 mod tests {
     use super::*;
     use crate::{CeloBlock, primitives::CeloPrimitives};
+    use alloy_celo_evm::block::executor::CgtV2UpgradeFailed;
     use alloy_primitives::{B256, U256};
     use alloy_rpc_types_engine::PayloadId;
     use metrics::{SharedString, Unit};
@@ -656,6 +661,7 @@ mod tests {
         Cancelled,
         Freeze,
         Error,
+        CgtV2Failure(CgtV2UpgradeFailed),
     }
 
     #[derive(Clone)]
@@ -699,6 +705,10 @@ mod tests {
                 FakeOutcome::Cancelled => Ok(BuildOutcome::Cancelled),
                 FakeOutcome::Freeze => Ok(BuildOutcome::Freeze(payload)),
                 FakeOutcome::Error => Err(PayloadBuilderError::MissingPayload),
+                FakeOutcome::CgtV2Failure(failure) => Err(BlockExecutionError::from(
+                    alloy_evm::block::BlockValidationError::other(failure),
+                )
+                .into()),
             }
         }
 
@@ -758,21 +768,24 @@ mod tests {
         use alloy_eips::Encodable2718;
         use celo_alloy_consensus::cgt_v2_group::CgtV2UpgradeGroup;
 
-        let signal = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap().remove(0);
-        let mut deposit = signal.clone();
+        let group = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap();
+        let mut deposit = group[0].clone();
         deposit.source_hash = B256::repeat_byte(0x22);
-        let transactions = vec![
-            deposit.encoded_2718().into(),
-            signal.encoded_2718().into(),
-            deposit.encoded_2718().into(),
-        ];
+        let mut transactions = vec![deposit.encoded_2718().into()];
+        transactions.extend(group.iter().map(|tx| tx.encoded_2718().into()));
         for no_tx_pool in [None, Some(false), Some(true)] {
             let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
             let seen = inner.saw_attributes.clone();
-            let builder = CgtV2PayloadBuilder::new(PayloadMetricsBuilder::new(inner));
+            let builder = CgtV2PayloadBuilder::new(
+                PayloadMetricsBuilder::new(inner),
+                NoopProvider::<reth_chainspec::ChainSpec>::default(),
+                1337,
+            );
             let mut args = test_args(false);
             args.config.attributes.0.no_tx_pool = no_tx_pool;
             args.config.attributes.0.transactions = Some(transactions.clone());
+            args.config.attributes.0.gas_limit =
+                Some(30_000_000 + CgtV2UpgradeGroup::gas_limit(1337).unwrap());
             let config = args.config.clone();
             builder.try_build(args).unwrap();
             builder.build_empty_payload(config).unwrap();
@@ -808,7 +821,11 @@ mod tests {
             for user_first in [false, true] {
                 let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
                 let seen = inner.saw_attributes.clone();
-                let builder = CgtV2PayloadBuilder::new(inner);
+                let builder = CgtV2PayloadBuilder::new(
+                    inner,
+                    NoopProvider::<reth_chainspec::ChainSpec>::default(),
+                    1337,
+                );
                 let mut args = test_args(false);
                 let mut transactions = vec![non_deposit.clone().into()];
                 transactions.insert(usize::from(user_first), signal.clone().into());
@@ -828,6 +845,108 @@ mod tests {
                     "invalid forced lists must not reach the builder"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cgt_v2_payload_rebuilds_after_failed_upgrade() {
+        use crate::cgt_v2::CgtV2PayloadBuilder;
+        use alloy_eips::Encodable2718;
+        use celo_alloy_consensus::cgt_v2_group::{CGT_V2_GROUP_GAS, CgtV2UpgradeGroup};
+
+        let mut args = test_args(false);
+        let group = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap();
+        let mut earlier = group[0].clone();
+        earlier.source_hash = B256::repeat_byte(0x22);
+        let prefix = vec![earlier.encoded_2718().into()];
+        let mut transactions = prefix.clone();
+        transactions.extend(group.iter().map(|tx| tx.encoded_2718().into()));
+        args.config.attributes.0.transactions = Some(transactions.clone());
+        args.config.attributes.0.gas_limit = Some(30_000_000 + 1_000_000 + CGT_V2_GROUP_GAS);
+        let id = args.config.payload_id();
+        let config = args.config;
+        for (outcome, fail_upgrade) in [
+            (FakeOutcome::CgtV2Failure(CgtV2UpgradeFailed::StepFailed { step: 9 }), true),
+            (
+                FakeOutcome::CgtV2Failure(CgtV2UpgradeFailed::CompletionFlagMismatch {
+                    actual: U256::ZERO,
+                }),
+                true,
+            ),
+            (FakeOutcome::Error, false),
+        ] {
+            let inner = FakePayloadBuilder::new(outcome);
+            let seen = inner.saw_attributes.clone();
+            let builder = CgtV2PayloadBuilder::new(
+                inner,
+                NoopProvider::<reth_chainspec::ChainSpec>::default(),
+                1337,
+            );
+            let result = builder.try_build(BuildArguments::new(
+                Default::default(),
+                None,
+                None,
+                config.clone(),
+                Default::default(),
+                None,
+            ));
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0].transactions.as_ref(), Some(&transactions));
+            if fail_upgrade {
+                let built = result.unwrap().into_payload().unwrap();
+                assert_eq!(built.id(), id);
+                assert_eq!(seen.len(), 2);
+                assert_eq!(seen[1].transactions.as_ref(), Some(&prefix));
+                assert_eq!(seen[1].gas_limit, Some(31_000_000));
+                assert_eq!(seen[1].no_tx_pool, Some(true));
+            } else {
+                assert!(matches!(result, Err(PayloadBuilderError::MissingPayload)));
+                assert_eq!(seen.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn cgt_v2_payload_skips_upgrade_when_parent_is_active() {
+        use crate::cgt_v2::CgtV2PayloadBuilder;
+        use alloy_eips::Encodable2718;
+        use celo_alloy_consensus::cgt_v2_group::{
+            CGT_V2_FLAG_SLOT, CGT_V2_GROUP_GAS, CGT_V2_L1_BLOCK, CgtV2UpgradeGroup,
+        };
+        use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+
+        let provider = MockEthProvider::default();
+        provider.add_account(
+            CGT_V2_L1_BLOCK,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(CGT_V2_FLAG_SLOT, U256::from(1))]),
+        );
+        let inner = FakePayloadBuilder::new(FakeOutcome::Freeze);
+        let seen = inner.saw_attributes.clone();
+        let builder = CgtV2PayloadBuilder::new(inner, provider, 1337);
+        let group = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap();
+        let mut earlier = group[0].clone();
+        earlier.source_hash = B256::repeat_byte(0x22);
+        let prefix = vec![earlier.encoded_2718().into()];
+        let mut transactions = prefix.clone();
+        transactions.extend(group.iter().map(|tx| tx.encoded_2718().into()));
+        let mut args = test_args(false);
+        args.config.attributes.0.transactions = Some(transactions);
+        args.config.attributes.0.gas_limit = Some(30_000_000 + CGT_V2_GROUP_GAS);
+
+        let config = args.config.clone();
+        let mut incomplete = config.clone();
+        incomplete.attributes.0.transactions.as_mut().unwrap().pop();
+        assert!(builder.build_empty_payload(incomplete).is_err());
+        assert!(seen.lock().unwrap().is_empty());
+
+        builder.try_build(args).unwrap();
+        builder.build_empty_payload(config).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        for attrs in seen.iter() {
+            assert_eq!(attrs.transactions.as_ref(), Some(&prefix));
+            assert_eq!(attrs.gas_limit, Some(30_000_000));
+            assert_eq!(attrs.no_tx_pool, Some(true));
         }
     }
 
