@@ -232,20 +232,28 @@ impl CeloTransactionRequest {
         // Rejecting the conflicting shapes rather than dropping their fields matches
         // [`Cip64Conflict`], which the node applies to this same type.
         match tx {
-            TypedTransaction::Eip1559(tx) => Ok(CeloTypedTransaction::Cip64(TxCip64 {
-                chain_id: tx.chain_id,
-                nonce: tx.nonce,
-                gas_limit: tx.gas_limit,
-                max_fee_per_gas: tx.max_fee_per_gas,
-                max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
-                to: tx.to,
-                value: tx.value,
-                access_list: tx.access_list,
-                fee_currency: self.fee_currency,
-                input: tx.input,
-            })),
+            TypedTransaction::Eip1559(tx) => {
+                Ok(CeloTypedTransaction::Cip64(cip64_from_eip1559(tx, self.fee_currency)))
+            }
             _ => Err(self),
         }
+    }
+}
+
+/// The CIP-64 transaction with the fields of `tx` and the given fee currency. CIP-64 is
+/// EIP-1559 plus `fee_currency`, so every field carries over unchanged.
+pub(crate) fn cip64_from_eip1559(tx: TxEip1559, fee_currency: Option<Address>) -> TxCip64 {
+    TxCip64 {
+        chain_id: tx.chain_id,
+        nonce: tx.nonce,
+        gas_limit: tx.gas_limit,
+        max_fee_per_gas: tx.max_fee_per_gas,
+        max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
+        to: tx.to,
+        value: tx.value,
+        access_list: tx.access_list,
+        fee_currency,
+        input: tx.input,
     }
 }
 
