@@ -27,6 +27,47 @@ fn invalid_cgt_signal(message: &'static str) -> BlockExecutionError {
     BlockValidationError::msg(message).into()
 }
 
+/// A CGTv2 migration attempt failed and may be replaced with a deposits-only block.
+///
+/// Post-Regolith, OP represents both EVM halts and deposit transaction validity errors as
+/// `FailedDeposit`. Database and other EVM errors still propagate separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CgtV2UpgradeFailed {
+    /// A required upgrade deposit returned an unsuccessful OP execution result.
+    StepFailed {
+        /// Zero-based position of the failed deposit in the group.
+        step: usize,
+    },
+    /// The complete group executed successfully with an unexpected completion flag.
+    CompletionFlagMismatch {
+        /// The flag value read after the last upgrade deposit.
+        actual: U256,
+    },
+}
+
+impl CgtV2UpgradeFailed {
+    /// Matches recoverable CGTv2 failures, keeping provider and other validation errors distinct.
+    pub fn from_block_error(error: &BlockExecutionError) -> Option<&Self> {
+        let BlockValidationError::Other(source) = error.as_validation()? else { return None };
+        source.downcast_ref()
+    }
+}
+
+impl core::fmt::Display for CgtV2UpgradeFailed {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::StepFailed { step } => {
+                write!(f, "required CGTv2 upgrade deposit {step} reverted or halted")
+            }
+            Self::CompletionFlagMismatch { actual } => {
+                write!(f, "CGTv2 completion flag is {actual}, expected 1")
+            }
+        }
+    }
+}
+
+impl core::error::Error for CgtV2UpgradeFailed {}
+
 /// OP execution result with the CGTv2 activation status of this candidate.
 /// Keeping the marker in the result makes it take effect only when the candidate is committed.
 #[derive(Debug)]
@@ -189,8 +230,10 @@ where
             .into());
         }
         let op = self.inner.execute_transaction_without_commit((tx_env, tx))?;
-        if step.is_some() && !op.inner.result.result.is_success() {
-            return Err(invalid_cgt_signal("required CGTv2 upgrade deposit reverted or halted"));
+        if let Some(step) = step
+            && !op.inner.result.result.is_success()
+        {
+            return Err(BlockValidationError::other(CgtV2UpgradeFailed::StepFailed { step }).into());
         }
         Ok(CeloTxResult { op, cgt_v2_step: step })
     }
@@ -218,7 +261,10 @@ where
                 .storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0))
                 .map_err(BlockExecutionError::other)?;
             if flag != U256::from(1) {
-                return Err(invalid_cgt_signal("CGTv2 completion flag is not set"));
+                return Err(BlockValidationError::other(
+                    CgtV2UpgradeFailed::CompletionFlagMismatch { actual: flag },
+                )
+                .into());
             }
         }
         self.inner.finish()

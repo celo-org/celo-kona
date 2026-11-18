@@ -1,4 +1,4 @@
-use super::*;
+use super::{executor::CgtV2UpgradeFailed, *};
 use alloy_consensus::{Sealable, transaction::Recovered};
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
@@ -363,12 +363,45 @@ fn cgt_v2_initializer_or_setter_failure_rejects_required_group() {
                 }),
             )]);
             let error = e.execute_transaction(&txs[step]).unwrap_err();
-            assert!(error.as_validation().is_some(), "{error}");
+            assert_eq!(
+                CgtV2UpgradeFailed::from_block_error(&error),
+                Some(&CgtV2UpgradeFailed::StepFailed { step }),
+                "{error}"
+            );
             assert_eq!(e.receipts().len(), step + 1);
             assert!(e.finish().is_err());
         }
     }
 }
+
+#[test]
+fn cgt_v2_completion_flag_mismatch_is_recoverable() {
+    let txs = group();
+    let mut base = database();
+    // Deploy L1BlockCGT at a different CREATE address from the one the bundle expects.
+    base.insert_account_info(txs[0].signer(), AccountInfo { nonce: 1, ..Default::default() });
+    let mut db = State::builder().with_database(base).build();
+    let f = factory();
+    let mut e = f.create_executor(
+        f.evm_factory().create_evm(&mut db, env()),
+        OpBlockExecutionCtx { parent_beacon_block_root: Some(B256::ZERO), ..Default::default() },
+    );
+    e.apply_pre_execution_changes().unwrap();
+    e.execute_transaction(&info()).unwrap();
+    for (step, tx) in txs.iter().enumerate() {
+        e.execute_transaction(tx).unwrap_or_else(|err| panic!("group step {step}: {err}"));
+        assert!(e.receipts().last().unwrap().status(), "failed group step {step}");
+    }
+    let Err(error) = e.finish() else {
+        panic!("migration with an unset completion flag must fail");
+    };
+    assert_eq!(
+        CgtV2UpgradeFailed::from_block_error(&error),
+        Some(&CgtV2UpgradeFailed::CompletionFlagMismatch { actual: U256::ZERO }),
+        "{error}"
+    );
+}
+
 #[test]
 fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
     let f = factory();
@@ -670,19 +703,28 @@ fn cgt_v2_installed_vault_preserves_and_withdraws_tokens() {
 fn cgt_v2_failed_funding_discards_entire_block_candidate() {
     use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
     use revm::precompile::PrecompileOutput;
+    let f = factory();
     let mut base = database();
+    let recipient = Address::repeat_byte(0x77);
+    let origin_deposit = recovered(TxDeposit {
+        source_hash: B256::repeat_byte(0x33),
+        from: recipient,
+        to: TxKind::Call(recipient),
+        mint: 5,
+        gas_limit: 100_000,
+        ..Default::default()
+    });
+    let context = || OpBlockExecutionCtx {
+        parent_beacon_block_root: Some(B256::ZERO),
+        no_user_tx_activation_block: true,
+        ..Default::default()
+    };
     {
-        let f = factory();
         let mut candidate = State::builder().with_database(&mut base).build();
-        let mut e = f.create_executor(
-            f.evm_factory().create_evm(&mut candidate, env()),
-            OpBlockExecutionCtx {
-                parent_beacon_block_root: Some(B256::ZERO),
-                ..Default::default()
-            },
-        );
+        let mut e = f.create_executor(f.evm_factory().create_evm(&mut candidate, env()), context());
         e.apply_pre_execution_changes().unwrap();
         e.execute_transaction(&info()).unwrap();
+        e.execute_transaction(&origin_deposit).unwrap();
         let txs = group();
         for tx in &txs[..CGT_V2_STATIC_STEPS] {
             e.execute_transaction(tx).unwrap();
@@ -705,4 +747,20 @@ fn cgt_v2_failed_funding_discards_entire_block_candidate() {
     );
     assert_eq!(base.basic(CGT_V2_RESERVE).unwrap().unwrap().balance, U256::ZERO);
     assert_eq!(base.basic(VAULT).unwrap().unwrap().balance, U256::from(41));
+    assert!(base.basic(recipient).unwrap().is_none());
+
+    let mut candidate = State::builder().with_database(&mut base).build();
+    let mut e = f.create_executor(f.evm_factory().create_evm(&mut candidate, env()), context());
+    e.apply_pre_execution_changes().unwrap();
+    e.execute_transaction(&info()).unwrap();
+    e.execute_transaction(&origin_deposit).unwrap();
+    let db = e.evm_mut().db_mut();
+    assert_eq!(db.basic(recipient).unwrap().unwrap().balance, U256::from(5));
+    assert_eq!(db.basic(CGT_V2_RESERVE).unwrap().unwrap().balance, U256::ZERO);
+    assert_eq!(db.basic(VAULT).unwrap().unwrap().balance, U256::from(41));
+    assert_eq!(
+        db.storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0)).unwrap(),
+        U256::ZERO
+    );
+    assert_eq!(e.finish().unwrap().1.receipts.len(), 2);
 }

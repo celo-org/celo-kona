@@ -7,6 +7,7 @@ use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData, Sealable, U256, keccak256};
 use alloy_rlp::Encodable;
 use alloy_trie::{HashBuilder, Nibbles, proof::ProofRetainer};
+use celo_alloy_consensus::cgt_v2_group::{CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CgtV2UpgradeGroup};
 use celo_derive::{CgtV2AttributesBuilder, ReceiptCacheProvider};
 use celo_executor::CeloStatelessL2Builder;
 use celo_genesis::CeloRollupConfig;
@@ -49,7 +50,11 @@ fn list(preimages: &mut Preimages, values: Vec<Vec<u8>>) -> B256 {
             .collect(),
     )
 }
-fn legacy_state(preimages: &mut Preimages) -> (B256, B256) {
+fn legacy_state(
+    preimages: &mut Preimages,
+    initialized_controller: bool,
+    cgt_active: bool,
+) -> (B256, B256) {
     let accounts: serde_json::Value = serde_json::from_str(include_str!(
         "../../../crates/celo-alloy/consensus/testdata/cgt_v2/cgtv2-fixture-prestate.json"
     ))
@@ -60,7 +65,7 @@ fn legacy_state(preimages: &mut Preimages) -> (B256, B256) {
         let address: Address = address.parse().unwrap();
         let code: Bytes = account["code"].as_str().unwrap().parse().unwrap();
         let code_hash = put(preimages, code.to_vec());
-        let slots = account["storage"]
+        let mut slots: Vec<_> = account["storage"]
             .as_object()
             .unwrap()
             .iter()
@@ -70,6 +75,17 @@ fn legacy_state(preimages: &mut Preimages) -> (B256, B256) {
                 (Nibbles::unpack(keccak256(key)), alloy_rlp::encode(value))
             })
             .collect();
+        if initialized_controller &&
+            address == celo_alloy_consensus::cgt_v2_group::CGT_V2_CONTROLLER
+        {
+            slots.push((Nibbles::unpack(keccak256(B256::ZERO)), alloy_rlp::encode(U256::from(1))));
+        }
+        if cgt_active && address == CGT_V2_L1_BLOCK {
+            slots.push((
+                Nibbles::unpack(keccak256(CGT_V2_FLAG_SLOT)),
+                alloy_rlp::encode(U256::from(1)),
+            ));
+        }
         let storage_root = trie(preimages, slots);
         if address == alloy_primitives::address!("4200000000000000000000000000000000000016") {
             message_root = storage_root;
@@ -214,9 +230,9 @@ fn reference_execution(
     (trie(&mut images, accounts), result.receipts)
 }
 
-async fn fixture() -> (Preimages, B256) {
+async fn fixture(initialized_controller: bool, cgt_active: bool) -> (Preimages, B256) {
     let mut images = HashMap::new();
-    let (state_root, message_root) = legacy_state(&mut images);
+    let (state_root, message_root) = legacy_state(&mut images, initialized_controller, cgt_active);
     let parent = Header {
         number: 0,
         timestamp: 100,
@@ -231,16 +247,23 @@ async fn fixture() -> (Preimages, B256) {
     let l1_parent_hash = put(&mut images, alloy_rlp::encode(&l1_parent));
     let portal = Address::with_last_byte(0x44);
     let bridge = Address::with_last_byte(0xcc);
-    let seeded = Log {
+    let trigger = Log {
         address: bridge,
         data: LogData::new_unchecked(
-            vec![keccak256(b"EscrowSeeded(address,uint256)"), portal.into_word()],
+            if cgt_active {
+                vec![
+                    keccak256(b"CgtV2RetryRequested(bytes32,uint256)"),
+                    CgtV2UpgradeGroup::bundle_hash(1337).unwrap(),
+                ]
+            } else {
+                vec![keccak256(b"EscrowSeeded(address,uint256)"), portal.into_word()]
+            },
             U256::from(600).to_be_bytes::<32>().to_vec().into(),
         ),
     };
     let receipt = Receipt {
         status: Eip658Value::Eip658(true),
-        logs: vec![portal_deposit(portal, 5, false), seeded, portal_deposit(portal, 0, true)],
+        logs: vec![portal_deposit(portal, 5, false), trigger, portal_deposit(portal, 0, true)],
         ..Default::default()
     };
     let mut receipt_bytes = Vec::new();
@@ -322,20 +345,42 @@ async fn fixture() -> (Preimages, B256) {
         l1_origin: BlockNumHash::new(10, l1_parent_hash),
         ..Default::default()
     };
-    let attrs = attributes
+    let mut attrs = attributes
         .prepare_payload_attributes(parent_info, BlockNumHash::new(11, origin_hash))
         .await
         .unwrap();
     assert_eq!(attrs.transactions.as_ref().unwrap().len(), 19);
+    if initialized_controller {
+        let mut builder = CeloStatelessL2Builder::new(
+            &cfg,
+            Default::default(),
+            l2.clone(),
+            NoopTrieHinter,
+            parent.clone().seal_slow(),
+        );
+        let Err(kona_executor::ExecutorError::ExecutionError(error)) =
+            builder.build_block(attrs.clone())
+        else {
+            panic!("initialized controller should fail the upgrade");
+        };
+        assert!(error.to_string().contains("reverted or halted"));
+    }
+    let fallback = initialized_controller || cgt_active;
+    if fallback {
+        attrs.transactions.as_mut().unwrap().truncate(3);
+        attrs.gas_limit = Some(30_000_000);
+    }
     let shared: serde_json::Value =
         serde_json::from_str(include_str!("testdata/cgtv2-origin.json")).unwrap();
-    assert_eq!(
-        parent_hash,
-        serde_json::from_value::<B256>(shared["parentL2Hash"].clone()).unwrap()
-    );
-    let expected: Vec<Bytes> = serde_json::from_value(shared["transactions"].clone()).unwrap();
-    assert_eq!(attrs.transactions.as_ref().unwrap(), &expected);
-    assert_eq!(attrs.gas_limit.unwrap(), shared["gasLimit"].as_u64().unwrap());
+    if !fallback {
+        assert_eq!(
+            parent_hash,
+            serde_json::from_value::<B256>(shared["parentL2Hash"].clone()).unwrap()
+        );
+        let expected: Vec<Bytes> = serde_json::from_value(shared["transactions"].clone()).unwrap();
+        assert_eq!(attrs.transactions.as_ref().unwrap(), &expected);
+        assert_eq!(attrs.gas_limit.unwrap(), shared["gasLimit"].as_u64().unwrap());
+    }
     let reference_attrs = attrs.clone();
     let mut builder = CeloStatelessL2Builder::new(
         &cfg,
@@ -345,22 +390,23 @@ async fn fixture() -> (Preimages, B256) {
         parent.seal_slow(),
     );
     let result = builder.build_block(attrs).unwrap();
-    assert_eq!(result.execution_result.receipts.len(), 19);
+    assert_eq!(result.execution_result.receipts.len(), if fallback { 3 } else { 19 });
     assert!(
         !result.execution_result.receipts[2].status(),
         "post-event zero-mint call still sees the uninitialized controller"
     );
-    let (reference_root, reference_receipts) = reference_execution(&cfg, &reference_attrs);
-    assert_eq!(
-        result.header.state_root, reference_root,
-        "stateful executor and trie-backed prover agree"
-    );
-    assert_eq!(result.execution_result.receipts, reference_receipts);
     let claimed = builder.compute_output_root().unwrap();
-    assert_eq!(
-        claimed,
-        alloy_primitives::b256!("3e251959544c45b137b613951d899c309f1177fdf363f43dc1741a98446cf7d0")
-    );
+    if !fallback {
+        let (reference_root, reference_receipts) = reference_execution(&cfg, &reference_attrs);
+        assert_eq!(result.header.state_root, reference_root);
+        assert_eq!(result.execution_result.receipts, reference_receipts);
+        assert_eq!(
+            claimed,
+            alloy_primitives::b256!(
+                "3e251959544c45b137b613951d899c309f1177fdf363f43dc1741a98446cf7d0"
+            )
+        );
+    }
     let tx_root = list(
         &mut images,
         reference_attrs.transactions.unwrap().iter().map(|tx| tx.to_vec()).collect(),
@@ -396,7 +442,7 @@ async fn fixture() -> (Preimages, B256) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cgt_v2_real_client_proves_activation_and_rejects_wrong_claim() {
-    let (images, claimed) = fixture().await;
+    let (images, claimed) = fixture(false, false).await;
     let oracle = MockOracle::from_preimages(images.clone());
     celo_client::single::run(oracle.clone(), oracle).await.unwrap();
     let mut missing_receipt = images.clone();
@@ -424,4 +470,18 @@ async fn cgt_v2_real_client_proves_activation_and_rejects_wrong_claim() {
     let oracle = MockOracle::from_preimages(wrong);
     assert!(celo_client::single::run(oracle.clone(), oracle).await.is_err());
     assert_ne!(claimed, B256::ZERO);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cgt_v2_real_client_proves_fallback_after_failed_upgrade() {
+    let (images, _) = fixture(true, false).await;
+    let oracle = MockOracle::from_preimages(images);
+    celo_client::single::run(oracle.clone(), oracle).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cgt_v2_real_client_proves_deposits_only_retry_when_already_active() {
+    let (images, _) = fixture(false, true).await;
+    let oracle = MockOracle::from_preimages(images);
+    celo_client::single::run(oracle.clone(), oracle).await.unwrap();
 }

@@ -27,6 +27,8 @@ const TEMPORARY_L1_BRIDGE: Address = address!("00000000000000000000000000000000c
 pub struct CgtV2NetworkParams {
     /// Fixed L1 bridge proxy that emits the authenticated migration event.
     pub celo_gas_bridge_l1: Address,
+    /// Protocol hash of the retry bundle, pinned independently of the embedded artifact.
+    pub retry_bundle_hash: Option<B256>,
     total_supply: U256,
     bundle: &'static [u8],
 }
@@ -48,6 +50,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         chain_id: CELO_MAINNET_CHAIN_ID,
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
+            retry_bundle_hash: None,
             total_supply: CGT_V2_TOTAL_SUPPLY,
             bundle: include_bytes!("../upgrades/cgtv2/mainnet.rlp"),
         },
@@ -56,6 +59,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         chain_id: CELO_SEPOLIA_CHAIN_ID,
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
+            retry_bundle_hash: None,
             total_supply: CGT_V2_TOTAL_SUPPLY,
             bundle: include_bytes!("../upgrades/cgtv2/sepolia.rlp"),
         },
@@ -64,6 +68,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
         chain_id: CELO_CHAOS_CHAIN_ID,
         params: CgtV2NetworkParams {
             celo_gas_bridge_l1: TEMPORARY_L1_BRIDGE,
+            retry_bundle_hash: None,
             total_supply: CGT_V2_TOTAL_SUPPLY,
             bundle: include_bytes!("../upgrades/cgtv2/chaos.rlp"),
         },
@@ -73,6 +78,9 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
 // Fixture inputs must never become production defaults or select production bundles.
 const FIXTURE_PARAMS: CgtV2NetworkParams = CgtV2NetworkParams {
     celo_gas_bridge_l1: Address::with_last_byte(0xcc),
+    retry_bundle_hash: Some(b256!(
+        "437fabe614e74fd20231c33accdacbad38631aaefc16abdb3c38c3bc5be10f14"
+    )),
     total_supply: uint!(1000_U256),
     bundle: include_bytes!("../upgrades/cgtv2/fixture.rlp"),
 };
@@ -161,7 +169,15 @@ impl core::error::Error for CgtV2GroupError {}
 /// Shared group construction, recognition and canonical transaction checks.
 #[derive(Debug)]
 pub struct CgtV2UpgradeGroup;
+
 impl CgtV2UpgradeGroup {
+    /// Hash of the canonical RLP list of static upgrade deposits.
+    pub fn bundle_hash(chain_id: u64) -> Result<B256, CgtV2GroupError> {
+        let params = cgt_v2_params(chain_id).map_err(CgtV2GroupError::Config)?;
+        Self::decode_bundle(chain_id, params.bundle)?;
+        Ok(keccak256(params.bundle))
+    }
+
     /// Uses the existing upgrade domain and NUT intent qualification.
     fn source_hash(step: usize) -> B256 {
         UpgradeDepositSource { intent: INTENTS[step].into() }.source_hash()
@@ -287,6 +303,15 @@ impl CgtV2UpgradeGroup {
 mod tests {
     use super::*;
     use alloy_eips::Encodable2718;
+
+    #[test]
+    fn cgt_v2_bundle_hash_matches_go() {
+        assert_eq!(
+            CgtV2UpgradeGroup::bundle_hash(CGT_V2_FIXTURE_CHAIN_ID).unwrap(),
+            b256!("437fabe614e74fd20231c33accdacbad38631aaefc16abdb3c38c3bc5be10f14")
+        );
+    }
+
     #[test]
     fn cgt_group_matches_shared_vectors() {
         let txs = CgtV2UpgradeGroup::deposits(1337, U256::from(600)).unwrap();

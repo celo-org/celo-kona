@@ -6,7 +6,9 @@
 use alloc::{boxed::Box, sync::Arc};
 use alloy_primitives::B256;
 use async_trait::async_trait;
-use celo_derive::{CgtV2AttributesBuilder, CgtV2BatchProvider, ReceiptCacheProvider};
+use celo_derive::{
+    CgtV2AttributesBuilder, CgtV2BatchProvider, CgtV2RecoveryState, ReceiptCacheProvider,
+};
 use core::fmt::Debug;
 use kona_derive::{
     AttributesQueue, BatchProvider, BatchProviderStage, BatchStream, ChainProvider,
@@ -66,7 +68,7 @@ pub async fn new_celo_oracle_pipeline<O, L1, L2, DA>(
 where
     O: CommsClient + FlushableCache + Send + Sync + Debug,
     L1: ChainProvider + Clone + Send + Sync + Debug,
-    L2: L2ChainProvider + Clone + Send + Sync + Debug,
+    L2: L2ChainProvider + CgtV2RecoveryState + Clone + 'static,
     DA: DataAvailabilityProvider + Send + Sync + Debug,
 {
     let provider = ReceiptCacheProvider::new(provider);
@@ -77,7 +79,8 @@ where
         provider.clone(),
         dependency_set,
     );
-    let attrs = CgtV2AttributesBuilder::new(cfg.clone(), builder, provider.clone());
+    let attrs = CgtV2AttributesBuilder::new(cfg.clone(), builder, provider.clone())
+        .with_recovery(Arc::new(l2.clone()));
     let mut traversal = PollingTraversal::new(provider.clone(), cfg.clone());
     traversal.block = Some(sync_start.read().origin());
     let retrieval = L1Retrieval::new(traversal, da);
