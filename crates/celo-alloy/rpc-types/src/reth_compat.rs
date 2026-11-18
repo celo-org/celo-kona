@@ -265,4 +265,171 @@ mod request_tests {
             other => panic!("Expected CIP-64 (0x7b), got type 0x{:02x}", other.ty()),
         }
     }
+
+    /// A request carrying every field `try_build_and_sign` needs, plus the optional ones,
+    /// all non-default so a dropped field shows up.
+    fn complete_request(fee_currency: Option<Address>) -> CeloTransactionRequest {
+        use alloy_eips::eip2930::{AccessList, AccessListItem};
+        use alloy_network::TransactionBuilder;
+        use alloy_primitives::{B256, Bytes};
+
+        CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::with_last_byte(0xAA))
+                .value(U256::from(7))
+                .max_fee_per_gas(1_000_000_000)
+                .max_priority_fee_per_gas(100)
+                .gas_limit(21_000)
+                .with_nonce(5)
+                .with_chain_id(42220)
+                .with_input(Bytes::from_static(&[0xde, 0xad]))
+                .with_access_list(AccessList(vec![AccessListItem {
+                    address: Address::with_last_byte(0xBB),
+                    storage_keys: vec![B256::with_last_byte(1)],
+                }])),
+            fee_currency,
+        }
+    }
+
+    #[tokio::test]
+    async fn try_build_and_sign_fee_currency_signs_cip64() {
+        use alloy_primitives::TxKind;
+        use alloy_signer_local::PrivateKeySigner;
+        use reth_rpc_traits::SignableTxRequest;
+
+        let signer = PrivateKeySigner::random();
+        let sender = signer.address();
+        let fc = Address::with_last_byte(0xDD);
+        let req = complete_request(Some(fc));
+        let expected = req.inner.as_ref().clone();
+
+        let envelope: CeloTxEnvelope =
+            req.try_build_and_sign(signer).await.expect("complete CIP-64 request should sign");
+
+        let CeloTxEnvelope::Cip64(signed) = &envelope else {
+            panic!("expected CIP-64 envelope, got {envelope:?}");
+        };
+        let tx = signed.tx();
+        assert_eq!(tx.chain_id, 42220);
+        assert_eq!(tx.nonce, 5);
+        assert_eq!(tx.gas_limit, 21_000);
+        assert_eq!(tx.max_fee_per_gas, 1_000_000_000);
+        assert_eq!(tx.max_priority_fee_per_gas, 100);
+        assert_eq!(tx.to, TxKind::Call(Address::with_last_byte(0xAA)));
+        assert_eq!(tx.value, U256::from(7));
+        assert_eq!(Some(&tx.access_list), expected.access_list.as_ref());
+        assert_eq!(Some(tx.input.clone()), expected.input.into_input());
+        assert_eq!(tx.fee_currency, Some(fc));
+        assert_eq!(signed.recover_signer().expect("valid signature"), sender);
+    }
+
+    #[tokio::test]
+    async fn try_build_and_sign_without_fee_currency_signs_eip1559() {
+        use alloy_signer_local::PrivateKeySigner;
+        use reth_rpc_traits::SignableTxRequest;
+
+        let signer = PrivateKeySigner::random();
+        let sender = signer.address();
+
+        let envelope: CeloTxEnvelope = complete_request(None)
+            .try_build_and_sign(signer)
+            .await
+            .expect("complete native-fee request should sign");
+
+        let CeloTxEnvelope::Eip1559(signed) = &envelope else {
+            panic!("expected EIP-1559 envelope, got {envelope:?}");
+        };
+        assert_eq!(signed.tx().nonce, 5);
+        assert_eq!(signed.recover_signer().expect("valid signature"), sender);
+    }
+
+    /// Simulation, signing and the client's builder each construct the CIP-64 tx on their
+    /// own, so they must agree on every field for the same request.
+    #[tokio::test]
+    async fn cip64_request_paths_build_the_same_tx() {
+        use alloy_signer_local::PrivateKeySigner;
+        use celo_alloy_consensus::CeloTypedTransaction;
+        use reth_rpc_traits::SignableTxRequest;
+
+        let req = complete_request(Some(Address::with_last_byte(0xDD)));
+
+        let CeloTxEnvelope::Cip64(simulated) = req.clone().try_into_sim_tx().unwrap() else {
+            panic!("simulation should build CIP-64");
+        };
+        let signed: CeloTxEnvelope =
+            req.clone().try_build_and_sign(PrivateKeySigner::random()).await.unwrap();
+        let CeloTxEnvelope::Cip64(signed) = signed else {
+            panic!("signing should build CIP-64");
+        };
+        let CeloTypedTransaction::Cip64(built) = req.build_typed_tx().unwrap() else {
+            panic!("the builder should build CIP-64");
+        };
+
+        assert_eq!(simulated.tx(), signed.tx());
+        assert_eq!(&built, signed.tx());
+    }
+
+    /// A fee-currency request without `to` signs as a contract creation. The native-fee
+    /// path differs: alloy's builder rejects a request without `to`.
+    #[tokio::test]
+    async fn try_build_and_sign_fee_currency_without_to_is_a_contract_creation() {
+        use alloy_primitives::TxKind;
+        use alloy_signer_local::PrivateKeySigner;
+        use reth_rpc_traits::SignableTxRequest;
+
+        let mut req = complete_request(Some(Address::with_last_byte(0xDD)));
+        req.inner.as_mut().to = None;
+
+        let envelope: CeloTxEnvelope =
+            req.try_build_and_sign(PrivateKeySigner::random()).await.unwrap();
+        let CeloTxEnvelope::Cip64(signed) = &envelope else {
+            panic!("expected CIP-64 envelope, got {envelope:?}");
+        };
+        assert_eq!(signed.tx().to, TxKind::Create);
+    }
+
+    /// Signing never defaults a required field of a CIP-64 tx: a missing one, or a field
+    /// CIP-64 cannot carry, fails the request.
+    #[tokio::test]
+    async fn try_build_and_sign_rejects_invalid_fee_currency_requests() {
+        use alloy_network::TransactionBuilder;
+        use alloy_rpc_types_eth::TransactionRequest;
+        use alloy_signer_local::PrivateKeySigner;
+        use reth_rpc_traits::{SignTxRequestError, SignableTxRequest};
+
+        let fc = Address::with_last_byte(0xDD);
+        let without = |clear: fn(&mut TransactionRequest)| {
+            let mut req = complete_request(Some(fc));
+            clear(req.inner.as_mut());
+            req
+        };
+        let mut with_gas_price = complete_request(Some(fc));
+        with_gas_price.inner = with_gas_price.inner.with_gas_price(1_000_000_000);
+        // Otherwise complete, so only the authorization list can fail it.
+        let mut with_auth_list = complete_request(Some(fc));
+        with_auth_list.inner.as_mut().authorization_list =
+            auth_list_request_with_fee_currency().inner.as_ref().authorization_list.clone();
+
+        let cases = [
+            ("missing chain_id", without(|req| req.chain_id = None)),
+            ("missing nonce", without(|req| req.nonce = None)),
+            ("missing gas", without(|req| req.gas = None)),
+            ("missing max_fee_per_gas", without(|req| req.max_fee_per_gas = None)),
+            (
+                "missing max_priority_fee_per_gas",
+                without(|req| req.max_priority_fee_per_gas = None),
+            ),
+            ("gas_price", with_gas_price),
+            ("authorization list", with_auth_list),
+        ];
+
+        for (case, req) in cases {
+            let result: Result<CeloTxEnvelope, _> =
+                req.try_build_and_sign(PrivateKeySigner::random()).await;
+            assert!(
+                matches!(result, Err(SignTxRequestError::InvalidTransactionRequest)),
+                "{case}: expected InvalidTransactionRequest, got {result:?}"
+            );
+        }
+    }
 }
