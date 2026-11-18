@@ -50,7 +50,11 @@ arbitrary = { workspace = true, features = ["derive"] }
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 alloy-primitives = { workspace = true, features = ["arbitrary"] }
 alloy-rpc-types-eth = { workspace = true, features = ["arbitrary"] }
+alloy-signer-local.workspace = true
+# `k256` recovers the signer of a signed request in the `reth` signing tests.
+celo-alloy-consensus = { workspace = true, features = ["k256"] }
 similar-asserts.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = ["std"]
