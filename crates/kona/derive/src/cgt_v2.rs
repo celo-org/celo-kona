@@ -22,6 +22,23 @@ fn invalid(message: impl Into<String>) -> PipelineErrorKind {
 // keccak256("EscrowSeeded(address,uint256)").
 const ESCROW_SEEDED: B256 =
     alloy_primitives::b256!("72912711e0dfcb1e457e32744afaae70f87ec629dbcd99f031d2f993c3a875fe");
+// keccak256("CgtV2RetryRequested(bytes32,uint256)").
+const RETRY_REQUESTED: B256 =
+    alloy_primitives::b256!("6d93e9ece09f410b7248e3842e125e8a651ee10ed28ccb2d1c866d2e9616497c");
+
+/// Resolves a CGTv2 attempt against the exact L2 parent state.
+pub trait CgtV2RecoveryState: core::fmt::Debug + Send + Sync {
+    /// Reads the CGT flag from the state committed to by this parent.
+    fn is_cgt_v2_active(&self, parent: L2BlockInfo) -> Result<bool, String>;
+
+    /// Replays the candidate from authenticated parent state and identifies upgrade reverts or
+    /// halts.
+    fn cgt_v2_attempt_failed(
+        &self,
+        parent: L2BlockInfo,
+        attrs: &OpPayloadAttributes,
+    ) -> Result<bool, String>;
+}
 
 fn escrow_amount(
     receipts: &[Receipt],
@@ -29,7 +46,7 @@ fn escrow_amount(
     portal: Address,
 ) -> Result<Option<U256>, &'static str> {
     for receipt in receipts {
-        let Some(success) = receipt.status.as_eip658() else {
+        let alloy_consensus::Eip658Value::Eip658(success) = receipt.status else {
             return Err("CGTv2 origin receipt has noncanonical poststate");
         };
         if !success {
@@ -45,6 +62,38 @@ fn escrow_amount(
             if log.topics()[1] == portal.into_word() {
                 return Ok(Some(U256::from_be_slice(&log.data.data)));
             }
+        }
+    }
+    Ok(None)
+}
+
+fn retry_amount(
+    receipts: &[Receipt],
+    bridge: Address,
+    expected_bundle_hash: Option<B256>,
+    l1_block_hash: B256,
+) -> Result<Option<U256>, &'static str> {
+    // The initial activation scan has already checked receipt statuses.
+    for receipt in receipts.iter().filter(|r| r.status.as_eip658() == Some(true)) {
+        for log in &receipt.logs {
+            if log.address != bridge || log.topics().first() != Some(&RETRY_REQUESTED) {
+                continue;
+            }
+            if log.topics().len() != 2 || log.data.data.len() != 32 {
+                return Err("malformed CGTv2 retry event");
+            }
+            let requested_bundle_hash = log.topics()[1];
+            if expected_bundle_hash != Some(requested_bundle_hash) {
+                tracing::warn!(
+                    target: "cgt_v2",
+                    ?l1_block_hash,
+                    ?requested_bundle_hash,
+                    ?expected_bundle_hash,
+                    "Skipping CGTv2 retry request with an unrecognized bundle hash"
+                );
+                continue;
+            }
+            return Ok(Some(U256::from_be_slice(&log.data.data)));
         }
     }
     Ok(None)
@@ -88,7 +137,26 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         // type-erased Receipt values. Re-encoding them would lose typed receipt envelopes.
         let receipts = self.provider.receipts_by_hash(epoch.hash).await.map_err(Into::into)?;
         let portal = self.cfg.deposit_contract_address;
-        escrow_amount(&receipts, params.celo_gas_bridge_l1, portal).map_err(invalid)
+        let amount =
+            escrow_amount(&receipts, params.celo_gas_bridge_l1, portal).map_err(invalid)?;
+        if amount.is_some() {
+            return Ok(amount);
+        }
+        let amount = retry_amount(
+            &receipts,
+            params.celo_gas_bridge_l1,
+            params.retry_bundle_hash,
+            epoch.hash,
+        )
+        .map_err(invalid)?;
+        if amount.is_some() {
+            let local_bundle_hash = CgtV2UpgradeGroup::bundle_hash(self.cfg.l2_chain_id.id())
+                .map_err(|e| invalid(alloc::format!("{e}")))?;
+            if Some(local_bundle_hash) != params.retry_bundle_hash {
+                return Err(invalid("local CGTv2 retry artifact does not match protocol hash"));
+            }
+        }
+        Ok(amount)
     }
 }
 
@@ -97,11 +165,18 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
 pub struct CgtV2AttributesBuilder<B, P> {
     inner: B,
     origin: CgtV2Origin<P>,
+    recovery: Option<Arc<dyn CgtV2RecoveryState>>,
 }
 impl<B, P> CgtV2AttributesBuilder<B, P> {
     /// Wrap the pinned upstream builder without changing its deposit or hardfork logic.
     pub const fn new(cfg: Arc<RollupConfig>, inner: B, provider: P) -> Self {
-        Self { inner, origin: CgtV2Origin::new(cfg, provider) }
+        Self { inner, origin: CgtV2Origin::new(cfg, provider), recovery: None }
+    }
+
+    /// Supplies the parent-state reader and executor used to resolve each candidate.
+    pub fn with_recovery(mut self, recovery: Arc<dyn CgtV2RecoveryState>) -> Self {
+        self.recovery = Some(recovery);
+        self
     }
 }
 #[async_trait]
@@ -119,10 +194,9 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
             let chain_id = self.origin.cfg.l2_chain_id.id();
             let group = CgtV2UpgradeGroup::deposits(chain_id, amount)
                 .map_err(|e| invalid(alloc::format!("{e}")))?;
-            attrs
-                .transactions
-                .get_or_insert_default()
-                .extend(group.iter().map(|tx| Bytes::from(tx.encoded_2718())));
+            let txs = attrs.transactions.get_or_insert_default();
+            let prefix_len = txs.len();
+            txs.extend(group.iter().map(|tx| Bytes::from(tx.encoded_2718())));
             let gas =
                 attrs.gas_limit.ok_or_else(|| invalid("CGTv2 attributes missing gas limit"))?;
             let upgrade_gas = CgtV2UpgradeGroup::gas_limit(chain_id)
@@ -131,6 +205,22 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
                 gas.checked_add(upgrade_gas).ok_or_else(|| invalid("CGTv2 gas limit overflow"))?,
             );
             attrs.no_tx_pool = Some(true);
+            if let Some(recovery) = &self.recovery {
+                let active = recovery
+                    .is_cgt_v2_active(parent)
+                    .map_err(|err| PipelineError::Provider(err).crit())?;
+                if active ||
+                    recovery
+                        .cgt_v2_attempt_failed(parent, &attrs)
+                        .map_err(|err| PipelineError::Provider(err).crit())?
+                {
+                    // Hand the final transaction list to the proof driver for sealing and replay.
+                    if let Some(txs) = &mut attrs.transactions {
+                        txs.truncate(prefix_len);
+                    }
+                    attrs.gas_limit = Some(gas);
+                }
+            }
         }
         Ok(attrs)
     }
@@ -357,6 +447,29 @@ mod tests {
         let parent =
             L2BlockInfo { l1_origin: BlockNumHash::new(10, parent_hash), ..Default::default() };
         (cfg, provider, parent, epoch)
+    }
+
+    #[tokio::test]
+    async fn cgt_v2_retry_uses_event_amount_and_allowed_hash() {
+        let (cfg, mut provider, parent, epoch) = setup();
+        let bridge = cgt_v2_params(1337).unwrap().celo_gas_bridge_l1;
+        let amount = U256::from(987);
+        let known_hash = CgtV2UpgradeGroup::bundle_hash(1337).unwrap();
+        for (bundle_hash, expected) in [(known_hash, Some(amount)), (B256::ZERO, None)] {
+            provider.receipts[0].1 = vec![Receipt {
+                status: Eip658Value::Eip658(true),
+                logs: vec![Log {
+                    address: bridge,
+                    data: LogData::new_unchecked(
+                        vec![RETRY_REQUESTED, bundle_hash],
+                        amount.to_be_bytes::<32>().to_vec().into(),
+                    ),
+                }],
+                ..Default::default()
+            }];
+            let mut detector = CgtV2Origin::new(cfg.clone(), provider.clone());
+            assert_eq!(detector.amount(parent, epoch).await.unwrap(), expected);
+        }
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 use alloc::{string::ToString, vec::Vec};
 use alloy_celo_evm::{
     CeloEvmFactory,
-    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory},
+    block::{CeloAlloyReceiptBuilder, CeloBlockExecutorFactory, executor::CgtV2UpgradeFailed},
     cip64_storage::Cip64Storage,
 };
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
@@ -14,6 +14,7 @@ use alloy_evm::{
 };
 use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use alloy_op_hardforks::OpHardforks;
+use alloy_primitives::B256;
 use celo_alloy_consensus::{CeloReceiptEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 use celo_alloy_rpc_types_engine::CeloPayloadAttributesExt;
 use celo_genesis::CeloRollupConfig;
@@ -22,7 +23,10 @@ use kona_executor::{ExecutorError, ExecutorResult, TrieDB, TrieDBError, TrieDBPr
 use kona_mpt::TrieHinter;
 use op_alloy_consensus::parse_post_exec_payload_from_transactions;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
-use revm::database::{State, states::bundle_state::BundleRetention};
+use revm::{
+    context::BlockEnv,
+    database::{BundleState, State, states::bundle_state::BundleRetention},
+};
 
 /// The [`CeloStatelessL2Builder`] is a Celo block builder that traverses a merkle patricia trie
 /// via the [`TrieDB`] during execution.
@@ -41,6 +45,15 @@ where
     /// building routines. Each `create_executor` call constructs a fresh
     /// [`CeloAlloyReceiptBuilder`] bound to that EVM's own [`Cip64Storage`].
     pub(crate) factory: CeloBlockExecutorFactory<CeloAlloyReceiptBuilder, CeloRollupConfig>,
+}
+
+struct ExecutedBlock {
+    parent_hash: B256,
+    block_env: BlockEnv,
+    execution_result: BlockExecutionResult<CeloReceiptEnvelope>,
+    receipt_builder: CeloAlloyReceiptBuilder,
+    cip64_storage: Cip64Storage,
+    bundle: BundleState,
 }
 
 impl<'a, P, H> CeloStatelessL2Builder<'a, P, H>
@@ -66,6 +79,56 @@ where
         &mut self,
         attrs: OpPayloadAttributes,
     ) -> ExecutorResult<CeloBlockBuildingOutcome> {
+        let ExecutedBlock {
+            parent_hash,
+            block_env,
+            execution_result,
+            receipt_builder,
+            cip64_storage,
+            bundle,
+        } = self.execute_block(&attrs, true)?;
+        let header = self.seal_block(
+            &attrs,
+            parent_hash,
+            &block_env,
+            &execution_result,
+            &receipt_builder,
+            bundle,
+        )?;
+
+        info!(
+            target: "block_builder",
+            number = header.number,
+            hash = ?header.seal(),
+            state_root = ?header.state_root,
+            transactions_root = ?header.transactions_root,
+            receipts_root = ?header.receipts_root,
+            "Sealed new block",
+        );
+
+        // Use the sealed header as the parent for the next block.
+        self.trie_db.set_parent_block_header(header.clone());
+        Ok(CeloBlockBuildingOutcome { header, execution_result, cip64_storage })
+    }
+
+    /// Probes the migration candidate without sealing a block or advancing the parent.
+    pub fn cgt_v2_attempt_failed(&mut self, attrs: &OpPayloadAttributes) -> ExecutorResult<bool> {
+        match self.execute_block(attrs, false) {
+            Ok(_) => Ok(false),
+            Err(ExecutorError::ExecutionError(ref error))
+                if CgtV2UpgradeFailed::from_block_error(error).is_some() =>
+            {
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn execute_block(
+        &mut self,
+        attrs: &OpPayloadAttributes,
+        request_payload_witness: bool,
+    ) -> ExecutorResult<ExecutedBlock> {
         // Step 1. Set up the execution environment.
         let (base_fee_params, min_base_fee) = Self::active_base_fee_params(
             self.config,
@@ -74,7 +137,7 @@ where
         )?;
         let evm_env = self.evm_env(
             self.trie_db.parent_block_header(),
-            &attrs,
+            attrs,
             &base_fee_params,
             min_base_fee,
         )?;
@@ -90,14 +153,14 @@ where
             .flatten()
             .any(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx));
 
-        // Attempt to send a payload witness hint to the host. This hint instructs the host to
-        // populate its preimage store with the preimages required to statelessly execute
-        // this payload. This feature is experimental, so if the hint fails, we continue
-        // without it and fall back on on-demand preimage fetching for execution.
-        self.trie_db
-            .hinter
-            .hint_execution_witness(parent_hash, &attrs)
-            .map_err(|e| TrieDBError::Provider(e.to_string()))?;
+        // A failed migration can have no payload witness. Probe with individual account
+        // and storage hints rooted at the parent, so the prover can reproduce the revert.
+        if request_payload_witness {
+            self.trie_db
+                .hinter
+                .hint_execution_witness(parent_hash, attrs)
+                .map_err(|e| TrieDBError::Provider(e.to_string()))?;
+        }
 
         info!(
             target: "block_builder",
@@ -147,34 +210,26 @@ where
         };
         let executor = self.factory.create_executor(evm, ctx);
 
-        let ex_result = executor.execute_block(transactions.iter())?;
+        let execution_result = executor.execute_block(transactions.iter())?;
 
         info!(
             target: "block_builder",
-            gas_used = ex_result.gas_used,
+            gas_used = execution_result.gas_used,
             gas_limit = block_env.gas_limit,
-            "Finished block building. Beginning sealing job."
+            "Finished block execution."
         );
 
-        // Step 4. Merge state transitions and seal the block.
+        // Step 4. Merge state transitions for block sealing.
         state.merge_transitions(BundleRetention::Reverts);
         let bundle = state.take_bundle();
-        let header =
-            self.seal_block(&attrs, parent_hash, &block_env, &ex_result, &receipt_builder, bundle)?;
-
-        info!(
-            target: "block_builder",
-            number = header.number,
-            hash = ?header.seal(),
-            state_root = ?header.state_root,
-            transactions_root = ?header.transactions_root,
-            receipts_root = ?header.receipts_root,
-            "Sealed new block",
-        );
-
-        // Update the parent block hash in the state database, preparing for the next block.
-        self.trie_db.set_parent_block_header(header.clone());
-        Ok(CeloBlockBuildingOutcome { header, execution_result: ex_result, cip64_storage })
+        Ok(ExecutedBlock {
+            parent_hash,
+            block_env,
+            execution_result,
+            receipt_builder,
+            cip64_storage,
+            bundle,
+        })
     }
 }
 
