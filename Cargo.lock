@@ -2208,6 +2208,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "alloy-signer-local",
  "arbitrary",
  "celo-alloy-consensus",
  "derive_more",
@@ -2217,6 +2218,8 @@ dependencies = [
  "serde",
  "serde_json",
  "similar-asserts",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

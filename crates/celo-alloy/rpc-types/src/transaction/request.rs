@@ -229,24 +229,75 @@ impl CeloTransactionRequest {
             });
         }
 
-        // Rejecting the conflicting shapes rather than dropping their fields mirrors
-        // celo-reth's `Cip64Conflict` handling.
+        // Rejecting the conflicting shapes rather than dropping their fields matches
+        // [`Cip64Conflict`], which the node applies to this same type.
         match tx {
-            TypedTransaction::Eip1559(tx) => Ok(CeloTypedTransaction::Cip64(TxCip64 {
-                chain_id: tx.chain_id,
-                nonce: tx.nonce,
-                gas_limit: tx.gas_limit,
-                max_fee_per_gas: tx.max_fee_per_gas,
-                max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
-                to: tx.to,
-                value: tx.value,
-                access_list: tx.access_list,
-                fee_currency: self.fee_currency,
-                input: tx.input,
-            })),
+            TypedTransaction::Eip1559(tx) => {
+                Ok(CeloTypedTransaction::Cip64(cip64_from_eip1559(tx, self.fee_currency)))
+            }
             _ => Err(self),
         }
     }
+}
+
+/// The CIP-64 transaction with the fields of `tx` and the given fee currency. CIP-64 is
+/// EIP-1559 plus `fee_currency`, so every field carries over unchanged.
+pub(crate) fn cip64_from_eip1559(tx: TxEip1559, fee_currency: Option<Address>) -> TxCip64 {
+    TxCip64 {
+        chain_id: tx.chain_id,
+        nonce: tx.nonce,
+        gas_limit: tx.gas_limit,
+        max_fee_per_gas: tx.max_fee_per_gas,
+        max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
+        to: tx.to,
+        value: tx.value,
+        access_list: tx.access_list,
+        fee_currency,
+        input: tx.input,
+    }
+}
+
+/// CIP-64 is EIP-1559-based with no `authorizationList`. Pairing `feeCurrency` with
+/// `gasPrice` or with an EIP-7702 authorization list would silently drop the conflicting
+/// fields during conversion — the resulting tx wouldn't match caller intent. Each
+/// `feeCurrency`-aware request entry point uses this to reject the conflict explicitly
+/// rather than silently dropping (intentional divergence from op-geth, which silently
+/// drops on both paths).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cip64Conflict {
+    /// `feeCurrency` combined with legacy `gasPrice`.
+    GasPrice,
+    /// `feeCurrency` combined with an EIP-7702 `authorizationList`.
+    AuthorizationList,
+}
+
+impl Cip64Conflict {
+    /// The rejection message for this conflict.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::GasPrice => "CIP-64 is not compatible with legacy gasPrice",
+            Self::AuthorizationList => {
+                "CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList"
+            }
+        }
+    }
+}
+
+/// Checks a request for field combinations that conflict with CIP-64. `fee_currency =
+/// None` (a native-fee request) never conflicts.
+pub const fn check_cip64_compatibility(
+    req: &TransactionRequest,
+    fee_currency: Option<Address>,
+) -> Result<(), Cip64Conflict> {
+    if fee_currency.is_some() {
+        if req.gas_price.is_some() {
+            return Err(Cip64Conflict::GasPrice);
+        }
+        if req.authorization_list.is_some() {
+            return Err(Cip64Conflict::AuthorizationList);
+        }
+    }
+    Ok(())
 }
 
 impl From<TransactionRequest> for CeloTransactionRequest {
@@ -524,7 +575,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Serde: same wire contract as celo-reth's server-side request type.
+    // Serde: the wire contract celo-reth's RPC server parses requests with.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -602,6 +653,24 @@ mod tests {
                 .unwrap_or_else(|e| panic!("key {key:?} should deserialize: {e}"));
             assert_eq!(deser.fee_currency, Some(sample_fc()), "key {key:?} did not bind");
         }
+    }
+
+    #[test]
+    fn serde_inner_op_fields_survive_roundtrip() {
+        let req = CeloTransactionRequest {
+            inner: OpTransactionRequest::default()
+                .to(Address::ZERO)
+                .nonce(42)
+                .max_fee_per_gas(1_000_000_000)
+                .max_priority_fee_per_gas(100),
+            fee_currency: Some(sample_fc()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let deser: CeloTransactionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.fee_currency, Some(sample_fc()));
+        assert_eq!(deser.inner.as_ref().nonce, Some(42));
+        assert_eq!(deser.inner.as_ref().max_fee_per_gas, Some(1_000_000_000));
+        assert_eq!(deser.inner.as_ref().max_priority_fee_per_gas, Some(100));
     }
 
     #[test]

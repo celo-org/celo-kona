@@ -7,7 +7,9 @@ use celo_alloy_consensus::CeloTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 mod request;
-pub use request::CeloTransactionRequest;
+#[cfg(feature = "reth")]
+pub(crate) use request::cip64_from_eip1559;
+pub use request::{CeloTransactionRequest, Cip64Conflict, check_cip64_compatibility};
 
 /// Celo Transaction type
 #[derive(

@@ -9,7 +9,7 @@ pub use fillers::{CeloGasFillable, CeloGasFiller};
 
 use alloy_consensus::TxType;
 use celo_alloy_consensus::{CeloTxType, CeloTypedTransaction};
-use celo_alloy_rpc_types::CeloTransactionRequest;
+use celo_alloy_rpc_types::{CeloTransactionRequest, Cip64Conflict};
 
 /// Types for Celo network.
 #[derive(Clone, Copy, Debug)]
@@ -41,14 +41,15 @@ impl Network for Celo {
 }
 
 /// Fields that cannot coexist with CIP-64, which is EIP-1559-based. Reporting them rather
-/// than dropping the offending field mirrors celo-reth's `Cip64Conflict` handling.
+/// than dropping the offending field matches
+/// [`Cip64Conflict`], which the node applies to the same request type.
 pub(crate) fn cip64_conflicts(request: &CeloTransactionRequest) -> Vec<&'static str> {
     let mut errors = Vec::new();
     if request.as_ref().gas_price.is_some() {
-        errors.push("CIP-64 is not compatible with legacy gasPrice");
+        errors.push(Cip64Conflict::GasPrice.message());
     }
     if request.as_ref().authorization_list.is_some() {
-        errors.push("CIP-64 feeCurrency is not compatible with EIP-7702 authorizationList");
+        errors.push(Cip64Conflict::AuthorizationList.message());
     }
     errors
 }
