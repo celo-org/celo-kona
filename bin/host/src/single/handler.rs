@@ -149,7 +149,7 @@ impl HintHandler for CeloSingleChainHintHandler {
                     .as_ref()
                     .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
                 // Back off transient EigenDA proxy-request failures (see is_retryable_eigenda_err)
-                // rather than falling through to kona's spin loop; deterministic errors
+                // rather than falling through to kona's unbounded retry loop; deterministic errors
                 // surface immediately.
                 (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
                     .retry(hint_retry_policy())
@@ -433,9 +433,9 @@ impl CeloSingleChainHintHandler {
                     Ok(code) => code,
                     // A transient failure on the primary lookup must back off — propagate it
                     // (still downcastable) instead of masking it with the fallback, whose
-                    // deterministic miss would otherwise surface as terminal and spin in kona. A
-                    // normal "wrong hashdb scheme" miss is a non-retryable `ErrorResp`, so it still
-                    // falls through to the fallback.
+                    // deterministic miss would otherwise surface as terminal and hit kona's
+                    // unbounded retry loop. A normal "wrong hashdb scheme" miss is a non-retryable
+                    // `ErrorResp`, so it still falls through to the fallback.
                     Err(e) if is_retryable_rpc(&e) => return Err(anyhow::Error::new(e)),
                     // Preserve the fallback's transport error (via `context`, not a stringified
                     // `anyhow!`) so a transient failure there stays downcastable and is retried.
