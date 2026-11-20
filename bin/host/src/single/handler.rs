@@ -633,6 +633,42 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// Providers with only the beacon reachable: genesis at 0, 12 s slots.
+    fn blob_providers(beacon_url: String) -> CeloSingleChainProviders {
+        let unused_rpc = "http://127.0.0.1:1".parse().unwrap();
+        CeloSingleChainProviders {
+            l1: RootProvider::new_http(unused_rpc),
+            blobs: OnlineBlobProvider {
+                beacon_client: OnlineBeaconClient::new_http(beacon_url),
+                genesis_time: 0,
+                slot_interval: 12,
+            },
+            l2: RootProvider::<Celo>::new_http("http://127.0.0.1:1".parse().unwrap()),
+            #[cfg(feature = "eigenda")]
+            eigenda_preimage_provider: None,
+        }
+    }
+
+    /// A blob the beacon node doesn't serve fails the hint.
+    #[tokio::test]
+    async fn l1_blob_hint_fails_when_beacon_has_no_blob() {
+        let providers = blob_providers(mock_beacon("/eth/v1/beacon/blobs/2", String::new()).await);
+        let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
+
+        // Timestamp 36 is slot 3, which the beacon answers with 404.
+        let mut hint_data = [0u8; 40];
+        hint_data[32..].copy_from_slice(&36u64.to_be_bytes());
+        let result = CeloSingleChainHintHandler::fetch_original_hint(
+            Hint { ty: HintType::L1Blob, data: hint_data.to_vec().into() },
+            &CeloSingleChainHost::default(),
+            &providers,
+            kv,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Blob not found at slot 3"), "{err}");
+    }
+
     /// Kona's client-side `OracleBlobProvider` gets the blob from the host's preimage server, wired
     /// as in [`CeloSingleChainHost::start_server`].
     #[tokio::test]
@@ -657,18 +693,7 @@ mod tests {
             serde_json::json!({ "data": [blob] }).to_string(),
         )
         .await;
-        let unused_rpc = "http://127.0.0.1:1".parse().unwrap();
-        let providers = CeloSingleChainProviders {
-            l1: RootProvider::new_http(unused_rpc),
-            blobs: OnlineBlobProvider {
-                beacon_client: OnlineBeaconClient::new_http(beacon_url),
-                genesis_time: 0,
-                slot_interval: 12,
-            },
-            l2: RootProvider::<Celo>::new_http("http://127.0.0.1:1".parse().unwrap()),
-            #[cfg(feature = "eigenda")]
-            eigenda_preimage_provider: None,
-        };
+        let providers = blob_providers(beacon_url);
         let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
 
         let backend = CeloVerifyingPreimageFetcher::new(OnlineHostBackend::new(
