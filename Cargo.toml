@@ -299,6 +299,24 @@ op-alloy-network = { git = "https://github.com/celo-org/optimism", rev = "b08a8d
 alloy-op-hardforks = { git = "https://github.com/celo-org/optimism", rev = "b08a8d0abda93536b105b0f013753d2f35c0d19e" }
 alloy-op-evm = { git = "https://github.com/celo-org/optimism", rev = "b08a8d0abda93536b105b0f013753d2f35c0d19e" }
 op-revm = { git = "https://github.com/celo-org/optimism", rev = "b08a8d0abda93536b105b0f013753d2f35c0d19e" }
+# celo-org/revm tag celo-kona/revm-v38-selfdestruct-trace-v1: revm v107 (38.0.0)
+# plus bluealloy/revm#3805, the SELFDESTRUCT inspector fix: tracers never get a
+# stale journal entry, such as the tx's own value transfer, for a post-Cancun
+# SELFDESTRUCT to self, which appends none. Every revm crate comes from the fork
+# so the graph keeps one copy of each; op-revm above depends on them.
+# Drop when the base moves to revm 42.0.1 or later.
+revm = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-bytecode = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-context = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-context-interface = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-database = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-database-interface = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-handler = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-inspector = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-interpreter = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-precompile = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-primitives = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
+revm-state = { git = "https://github.com/celo-org/revm", rev = "bd28f9420c250df2a5c4a6d8103b51ae06b5c222" }
 
 # This fork is the exact op-reth/v2.3.1 production pin plus six focused
 # commits: wire the engine's sparse-trie handle into the OP payload builder;

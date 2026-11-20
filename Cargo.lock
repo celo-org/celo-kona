@@ -11245,8 +11245,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "38.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91202d39dbe8e8d10e9e8f2b76c30da68ecd1d25be69ba6d853ad0d03a3a398a"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "revm-bytecode",
  "revm-context",
@@ -11264,8 +11263,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "10.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdbb3a3d735efa94c91f2ef6bf20a35f99a77bc78f3e25bd758336901bdf9661"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "bitvec",
  "phf",
@@ -11276,8 +11274,7 @@ dependencies = [
 [[package]]
 name = "revm-context"
 version = "16.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5f68d928d8b228e0faeb1c6ed75c4fde7d124f1ddf9119b67e7a0ad4041237d"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "bitvec",
  "cfg-if",
@@ -11293,8 +11290,7 @@ dependencies = [
 [[package]]
 name = "revm-context-interface"
 version = "17.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3758e6167c4ba7a59a689c519a047edaefcd4c37d74f279b93ed87bc8aece4"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",
@@ -11309,8 +11305,7 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "13.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c281a1f11d3bcb8c0bba1199ed6bcb001d1aeb3d4fb366819e14f88723989a4e"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "alloy-eips 1.8.3",
  "revm-bytecode",
@@ -11323,8 +11318,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "11.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89efb9832a4e3742bb4ded5f7fe5bf905e8860e69427d4dfec153484fc6d304"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "auto_impl",
  "either",
@@ -11337,8 +11331,7 @@ dependencies = [
 [[package]]
 name = "revm-handler"
 version = "18.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "783e903d6922b7f5f9a940d1bb229530502d2924b1aed9d5ca5a94ebf065d460"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "auto_impl",
  "derive-where",
@@ -11356,8 +11349,7 @@ dependencies = [
 [[package]]
 name = "revm-inspector"
 version = "19.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8216ad58422090d0daa9eb430e0a081f7ad07e7fd30681dee71f8420c99624e0"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "auto_impl",
  "either",
@@ -11392,8 +11384,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "35.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ece9f41b69658c15d748288a4dbdfc06a63f3ce93d983af440de3f1631dce6a"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "revm-bytecode",
  "revm-context-interface",
@@ -11405,8 +11396,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "34.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a346a8cc6c8c39bd65306641c692191299c0a7b63d38810e39e8fe9b92378660"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -11431,8 +11421,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "23.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c99bda77d9661521ba0b4bc04558c6692074f01e65dd420fa3b893033d9b8a2"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "alloy-primitives",
  "num_enum",
@@ -11443,8 +11432,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "11.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c32490ed687dba31c3c882beb8c20408bdd30ef96690d8f145b0ee9a87040bfe"
+source = "git+https://github.com/celo-org/revm?rev=bd28f9420c250df2a5c4a6d8103b51ae06b5c222#bd28f9420c250df2a5c4a6d8103b51ae06b5c222"
 dependencies = [
  "alloy-eip7928",
  "bitflags",

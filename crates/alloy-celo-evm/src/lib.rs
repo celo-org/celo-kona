@@ -2092,4 +2092,117 @@ mod tests {
             );
         }
     }
+
+    /// Records every [`Inspector::selfdestruct`] callback, which reth's call and parity tracers
+    /// use to fill a SELFDESTRUCT frame's contract, beneficiary and value.
+    #[derive(Debug, Default)]
+    struct SelfdestructRecorder {
+        calls: Vec<(Address, Address, U256)>,
+    }
+
+    impl<CTX> Inspector<CTX> for SelfdestructRecorder {
+        fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+            self.calls.push((contract, target, value));
+        }
+    }
+
+    const SELFDESTRUCT_TEST_CALLER: Address = Address::repeat_byte(0xEE);
+
+    /// Sends one native-fee EIP-1559 tx carrying `value` from a funded EOA to `contract`, which
+    /// already exists in state with `code` and `contract_balance`. The tx runs on the inspecting
+    /// EVM that reth's `debug_trace*` and parity `trace_*` handlers build, under Jovian (Cancun
+    /// SELFDESTRUCT rules), and the recorded `selfdestruct` callbacks are returned.
+    fn selfdestruct_callbacks(
+        contract: Address,
+        code: Bytes,
+        contract_balance: U256,
+        value: U256,
+    ) -> Vec<(Address, Address, U256)> {
+        use revm::state::{AccountInfo, Bytecode};
+
+        let mut db = revm::database::InMemoryDB::default();
+        db.insert_account_info(
+            SELFDESTRUCT_TEST_CALLER,
+            AccountInfo { balance: U256::from(10u128.pow(20)), ..Default::default() },
+        );
+        let code = Bytecode::new_raw(code);
+        db.insert_account_info(
+            contract,
+            AccountInfo {
+                balance: contract_balance,
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+
+        let mut env = EvmEnv::<OpSpecId>::default();
+        env.cfg_env.chain_id = 42220;
+        env.cfg_env.spec = OpSpecId::JOVIAN;
+        let mut evm = CeloEvmFactory::default().create_evm_with_inspector(
+            db,
+            env,
+            SelfdestructRecorder::default(),
+        );
+
+        let tx = CeloTransaction {
+            op_tx: OpTransaction {
+                base: TxEnv {
+                    caller: SELFDESTRUCT_TEST_CALLER,
+                    kind: TxKind::Call(contract),
+                    value,
+                    gas_limit: 100_000,
+                    gas_price: 1_000_000_000,
+                    gas_priority_fee: Some(0),
+                    chain_id: Some(42220),
+                    tx_type: CeloTxType::Eip1559 as u8,
+                    ..Default::default()
+                },
+                enveloped_tx: Some(Bytes::default()),
+                deposit: Default::default(),
+            },
+            fee_currency: None,
+            cip64_tx_info: None,
+            effective_gas_price: None,
+        };
+        let result = evm.transact(tx).expect("tx should execute");
+        assert!(result.result.is_success(), "tx should succeed: {:?}", result.result);
+
+        core::mem::take(&mut evm.inspector_mut().calls)
+    }
+
+    /// Under Cancun rules, a SELFDESTRUCT to itself by a contract that existed before the tx
+    /// changes no state and appends no journal entry. The inspector must not report the journal's
+    /// last entry instead: here that is the tx's own value transfer, which tracers would show as
+    /// the caller self-destructing with the tx value (bluealloy/revm#3805).
+    #[test]
+    fn selfdestruct_to_self_reports_no_stale_journal_entry() {
+        let contract = Address::repeat_byte(0x5D);
+        let value = U256::from(459);
+        // ADDRESS; SELFDESTRUCT
+        let calls =
+            selfdestruct_callbacks(contract, Bytes::from_static(&[0x30, 0xff]), U256::ZERO, value);
+
+        assert!(
+            calls.is_empty(),
+            "SELFDESTRUCT-to-self of an existing contract must not reach the inspector, got \
+             {calls:?} (caller {SELFDESTRUCT_TEST_CALLER}, tx value {value})"
+        );
+    }
+
+    /// Positive control for the test above: a SELFDESTRUCT to another account moves the balance,
+    /// and the inspector reports exactly that contract, beneficiary and balance.
+    #[test]
+    fn selfdestruct_to_beneficiary_reports_contract_beneficiary_and_balance() {
+        let contract = Address::repeat_byte(0x5D);
+        let beneficiary = Address::repeat_byte(0xBE);
+        let balance = U256::from(1_000_000_007u64);
+        // PUSH20 <beneficiary>; SELFDESTRUCT
+        let mut code = alloc::vec![0x73];
+        code.extend_from_slice(beneficiary.as_slice());
+        code.push(0xff);
+        let calls = selfdestruct_callbacks(contract, code.into(), balance, U256::ZERO);
+
+        assert_eq!(calls, alloc::vec![(contract, beneficiary, balance)]);
+    }
 }
