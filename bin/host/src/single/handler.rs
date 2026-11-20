@@ -582,18 +582,17 @@ impl CeloSingleChainHintHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::single::{CeloSingleChainHost, CeloSingleChainProviders};
+    use crate::single::{
+        CeloSingleChainHost, CeloSingleChainProviders, CeloVerifyingPreimageFetcher,
+    };
     use alloy_eips::eip4844::{Blob, BlobTransactionSidecar, env_settings::EnvKzgSettings};
     use alloy_provider::RootProvider;
     use backon::BackoffBuilder;
     use celo_alloy_network::Celo;
     use kona_derive::BlobProvider;
-    use kona_host::MemoryKeyValueStore;
-    use kona_preimage::{
-        HintWriterClient, PreimageOracleClient,
-        errors::{PreimageOracleError, PreimageOracleResult},
-    };
-    use kona_proof::l1::OracleBlobProvider;
+    use kona_host::{MemoryKeyValueStore, OnlineHostBackend, PreimageServer};
+    use kona_preimage::{BidirectionalChannel, HintReader, HintWriter, OracleReader, OracleServer};
+    use kona_proof::{CachingOracle, l1::OracleBlobProvider};
     use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
     use std::sync::Arc;
     use tokio::{
@@ -608,33 +607,6 @@ mod tests {
 
         assert_eq!(backoff.next(), Some(Duration::from_millis(100)));
         assert_eq!(backoff.next(), None);
-    }
-
-    /// Client-side oracle that serves preimages straight from the host's key-value store.
-    #[derive(Clone)]
-    struct KvOracle(SharedKeyValueStore);
-
-    #[async_trait]
-    impl PreimageOracleClient for KvOracle {
-        async fn get(&self, key: PreimageKey) -> PreimageOracleResult<Vec<u8>> {
-            self.0.read().await.get(key.into()).ok_or(PreimageOracleError::KeyNotFound)
-        }
-
-        async fn get_exact(&self, key: PreimageKey, buf: &mut [u8]) -> PreimageOracleResult<()> {
-            let value = self.get(key).await?;
-            if value.len() != buf.len() {
-                return Err(PreimageOracleError::BufferLengthMismatch(buf.len(), value.len()));
-            }
-            buf.copy_from_slice(&value);
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl HintWriterClient for KvOracle {
-        async fn write(&self, _hint: &str) -> PreimageOracleResult<()> {
-            Ok(())
-        }
     }
 
     /// Serves `body` for `GET {path}?…` and 404 for anything else.
@@ -661,8 +633,8 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// The preimages the host stores for an `L1Blob` hint reconstruct the blob through kona's
-    /// client-side `OracleBlobProvider`.
+    /// Kona's client-side `OracleBlobProvider` gets the blob from the host's preimage server, wired
+    /// as in [`CeloSingleChainHost::start_server`].
     #[tokio::test]
     async fn l1_blob_hint_round_trips_through_oracle_blob_provider() {
         // Canonical field elements: the top byte of each 32-byte element stays zero.
@@ -699,18 +671,39 @@ mod tests {
         };
         let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
 
-        let block_ref = BlockInfo { timestamp: 24, ..Default::default() };
-        let mut hint_data = [0u8; 40];
-        hint_data[..32].copy_from_slice(blob_hash.as_ref());
-        hint_data[32..].copy_from_slice(&block_ref.timestamp.to_be_bytes());
-        CeloSingleChainHintHandler::fetch_original_hint(
-            Hint { ty: HintType::L1Blob, data: hint_data.to_vec().into() },
-            &CeloSingleChainHost::default(),
-            &providers,
+        let backend = CeloVerifyingPreimageFetcher::new(OnlineHostBackend::new(
+            CeloSingleChainHost::default(),
             kv.clone(),
+            providers,
+            CeloSingleChainHintHandler,
+        ));
+        let hint = BidirectionalChannel::new().unwrap();
+        let preimage = BidirectionalChannel::new().unwrap();
+        tokio::spawn(
+            PreimageServer::new(
+                OracleServer::new(preimage.host),
+                HintReader::new(hint.host),
+                Arc::new(backend),
+            )
+            .start(),
+        );
+        let oracle = CachingOracle::new(
+            1024,
+            OracleReader::new(preimage.client),
+            HintWriter::new(hint.client),
+        );
+
+        let block_ref = BlockInfo { timestamp: 24, ..Default::default() };
+        let mut oracle_blobs = OracleBlobProvider::new(Arc::new(oracle));
+        // kona-host retries a failing hint forever, so bound the wait.
+        let blobs = tokio::time::timeout(
+            Duration::from_secs(30),
+            oracle_blobs.get_and_validate_blobs(&block_ref, &[blob_hash]),
         )
         .await
+        .expect("blob fetch timed out")
         .unwrap();
+        assert_eq!(*blobs[0], blob);
 
         let commitment = kv
             .read()
@@ -733,9 +726,5 @@ mod tests {
             .get(PreimageKey::new(*keccak256(proof_key), PreimageKeyType::Blob).into())
             .unwrap();
         assert_eq!(proof, sidecar.proofs[0].to_vec());
-
-        let mut oracle_blobs = OracleBlobProvider::new(Arc::new(KvOracle(kv)));
-        let blobs = oracle_blobs.get_and_validate_blobs(&block_ref, &[blob_hash]).await.unwrap();
-        assert_eq!(*blobs[0], blob);
     }
 }
