@@ -84,6 +84,8 @@ allow-git = [
     # celo-org fork at seolaoh/v2.3.1-on-upstream while a compatible hokulea release is in flight.
     "https://github.com/celo-org/hokulea",
     "https://github.com/celo-org/alloy",
+    # revm v107 plus the SELFDESTRUCT inspector fix (bluealloy/revm#3805).
+    "https://github.com/celo-org/revm",
     # Keep the upstream source ready to restore when Optimism packages move back.
     # "https://github.com/ethereum-optimism/optimism",
     # Optimism packages currently resolve from the Celo fork carrying the sparse-trie
