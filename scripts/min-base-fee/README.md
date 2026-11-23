@@ -30,8 +30,8 @@ Locally:
 
 ```bash
 cd keeper && npm ci && npm run build
-ROLES=<roles> node dist/cli.js --dry-run
-ROLES=<roles> KEEPER_PRIVATE_KEY=<key> node dist/cli.js
+ROLES=<roles> node dist/index.js --dry-run
+ROLES=<roles> KEEPER_PRIVATE_KEY=<key> node dist/index.js
 ```
 
 It fails (exit code 1 locally, HTTP 500 and an `ERROR` log entry as a function) when a human

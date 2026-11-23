@@ -43,7 +43,7 @@ done < <(jq -r '.transactions[] | "\(.to) \(.data)"' <<<"$batch")
 pass "executed Safe batch ($(jq '.transactions | length' <<<"$batch") txs)"
 
 (cd "$dir/keeper" && npm ci --silent && npm run -s build)
-keeper() { ROLES=$roles KEEPER_PRIVATE_KEY=$keeper_key node "$dir/keeper/dist/cli.js" "$@"; }
+keeper() { ROLES=$roles KEEPER_PRIVATE_KEY=$keeper_key node "$dir/keeper/dist/index.js" "$@"; }
 keeper >/dev/null
 expected=$(keeper --dry-run | tail -1 | jq -r .floor)
 actual=$(cast call --rpc-url "$L1_RPC_URL" "$SYSTEM_CONFIG" 'minBaseFee()(uint64)' | awk '{print $1}')

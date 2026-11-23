@@ -12,7 +12,7 @@
     "gcp-build": "npm run build",
     "test": "tsc && node --test dist/*.test.js",
     "start": "functions-framework --target=keeper",
-    "keeper": "node dist/cli.js"
+    "keeper": "node dist/index.js"
   },
   "dependencies": {
     "@google-cloud/functions-framework": "^5.0.5",
