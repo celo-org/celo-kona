@@ -1296,10 +1296,17 @@ where
         // The clamp fixes only the wrap. The main call's writes to slots the debit wrote stay
         // dirty-priced, and restoring a debited value still earns the EIP-2200 restore refund,
         // so the main call can be over- or undercharged by up to ~2800 gas per such slot.
-        if evm.ctx().cfg().spec().is_enabled_in(OpSpecId::KARST) {
-            let gas = exec_result.gas_mut();
-            if gas.refunded() < 0 {
-                gas.set_refund(0);
+        if exec_result.gas().refunded() < 0 {
+            debug_assert!(
+                evm.ctx()
+                    .tx()
+                    .cip64_tx_info
+                    .as_ref()
+                    .is_some_and(|info| info.debit_gas_spent > 0),
+                "negative refund counter without a CIP-64 debit"
+            );
+            if evm.ctx().cfg().spec().is_enabled_in(OpSpecId::KARST) {
+                exec_result.gas_mut().set_refund(0);
             }
         }
         self.op.refund(evm, exec_result, eip7702_refund)
