@@ -220,7 +220,7 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
       args: [systemConfig, 0n, data, 0, ROLE_KEY, true],
     })
     .catch((e: unknown) => {
-      throw rolesRejection(e, floor) ?? e;
+      throw revertError(e, floor) ?? e;
     });
   log(`sent ${txHash}`, { txHash });
   const receipt = await l1.waitForTransactionReceipt({ hash: txHash });
@@ -229,12 +229,13 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   return { status: 'sent', ...prices, txHash };
 }
 
-function rolesRejection(e: unknown, floor: bigint): KeeperError | undefined {
+function revertError(e: unknown, floor: bigint): KeeperError | undefined {
   const revert = e instanceof BaseError ? e.walk((c) => c instanceof ContractFunctionRevertedError) : null;
   if (!(revert instanceof ContractFunctionRevertedError) || !revert.data) return undefined;
   const { errorName, args } = revert.data;
-  const reason = errorName === 'ConditionViolation' ? (ROLES_STATUS[Number(args?.[0])] ?? `status ${args?.[0]}`) : errorName;
-  return new KeeperError(`Roles rejected floor ${floor} wei: ${reason}`);
+  const reason =
+    errorName === 'ConditionViolation' ? (ROLES_STATUS[Number(args?.[0])] ?? `status ${args?.[0]}`) : (revert.reason ?? errorName);
+  return new KeeperError(`setting floor ${floor} wei reverted: ${reason}`);
 }
 
 async function fetchCoinbase(url: string): Promise<string> {

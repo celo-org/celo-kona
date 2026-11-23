@@ -85,6 +85,8 @@ pass "disabling another module rejected"
 ROLES=$roles bash "$dir/disable.sh" >/dev/null
 [[ $(cast call --rpc-url "$L1_RPC_URL" "$SAFE" 'isModuleEnabled(address)(bool)' "$roles") == false ]] ||
 	fail "module still enabled"
-exec_role "$keeper_key" "$SYSTEM_CONFIG" "$(set_fee "$MIN_FLOOR")" && fail "keeper works after disable"
+# minBaseFee is MAX_FLOOR from the bounds checks, so the keeper tries to lower it.
+out=$(keeper 2>&1) && fail "keeper works after disable"
+grep -q 'reverted: GS104' <<<"$out" || fail "unexpected keeper error: $out"
 pass "keeper disabled the module"
 echo "all checks passed"
