@@ -1,4 +1,4 @@
-use super::*;
+use super::{executor::CgtV2UpgradeFailed, *};
 use alloy_consensus::{Sealable, transaction::Recovered};
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
@@ -363,12 +363,45 @@ fn cgt_v2_initializer_or_setter_failure_rejects_required_group() {
                 }),
             )]);
             let error = e.execute_transaction(&txs[step]).unwrap_err();
-            assert!(error.as_validation().is_some(), "{error}");
+            assert_eq!(
+                CgtV2UpgradeFailed::from_block_error(&error),
+                Some(&CgtV2UpgradeFailed::StepFailed { step }),
+                "{error}"
+            );
             assert_eq!(e.receipts().len(), step + 1);
             assert!(e.finish().is_err());
         }
     }
 }
+
+#[test]
+fn cgt_v2_completion_flag_mismatch_is_recoverable() {
+    let txs = group();
+    let mut base = database();
+    // Deploy L1BlockCGT at a different CREATE address from the one the bundle expects.
+    base.insert_account_info(txs[0].signer(), AccountInfo { nonce: 1, ..Default::default() });
+    let mut db = State::builder().with_database(base).build();
+    let f = factory();
+    let mut e = f.create_executor(
+        f.evm_factory().create_evm(&mut db, env()),
+        OpBlockExecutionCtx { parent_beacon_block_root: Some(B256::ZERO), ..Default::default() },
+    );
+    e.apply_pre_execution_changes().unwrap();
+    e.execute_transaction(&info()).unwrap();
+    for (step, tx) in txs.iter().enumerate() {
+        e.execute_transaction(tx).unwrap_or_else(|err| panic!("group step {step}: {err}"));
+        assert!(e.receipts().last().unwrap().status(), "failed group step {step}");
+    }
+    let Err(error) = e.finish() else {
+        panic!("migration with an unset completion flag must fail");
+    };
+    assert_eq!(
+        CgtV2UpgradeFailed::from_block_error(&error),
+        Some(&CgtV2UpgradeFailed::CompletionFlagMismatch { actual: U256::ZERO }),
+        "{error}"
+    );
+}
+
 #[test]
 fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
     let f = factory();
@@ -385,7 +418,12 @@ fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
     let mut e = f.create_executor(f.evm_factory().create_evm(&mut db, env()), ctx());
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
-    assert!(e.execute_transaction(&group()[0]).unwrap_err().to_string().contains("cannot repeat"));
+    let error = e.execute_transaction(&group()[0]).unwrap_err();
+    assert_eq!(
+        CgtV2UpgradeFailed::from_block_error(&error),
+        Some(&CgtV2UpgradeFailed::AlreadyActive),
+        "{error}"
+    );
     e.execute_transaction(&user_transaction()).unwrap();
     assert!(e.finish().is_ok());
 }
@@ -462,34 +500,51 @@ impl core::fmt::Display for MigrationDbError {
 impl core::error::Error for MigrationDbError {}
 impl revm::database_interface::DBErrorMarker for MigrationDbError {}
 #[derive(Debug)]
-struct FailingDatabase(CacheDB<EmptyDB>);
+struct FailingDatabase {
+    inner: CacheDB<EmptyDB>,
+    address: Address,
+    slot: U256,
+}
 impl Database for FailingDatabase {
     type Error = MigrationDbError;
     fn basic(&mut self, a: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.0.basic(a).map_err(|_| MigrationDbError)
+        self.inner.basic(a).map_err(|_| MigrationDbError)
     }
     fn code_by_hash(&mut self, h: B256) -> Result<Bytecode, Self::Error> {
-        self.0.code_by_hash(h).map_err(|_| MigrationDbError)
+        self.inner.code_by_hash(h).map_err(|_| MigrationDbError)
     }
     fn storage(&mut self, a: Address, s: U256) -> Result<U256, Self::Error> {
-        if a == VAULT
-            && s == "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-                .parse::<U256>()
-                .unwrap()
-        {
+        if a == self.address && s == self.slot {
             return Err(MigrationDbError);
         }
-        self.0.storage(a, s).map_err(|_| MigrationDbError)
+        self.inner.storage(a, s).map_err(|_| MigrationDbError)
     }
     fn block_hash(&mut self, n: u64) -> Result<B256, Self::Error> {
-        self.0.block_hash(n).map_err(|_| MigrationDbError)
+        self.inner.block_hash(n).map_err(|_| MigrationDbError)
     }
 }
 
 #[test]
 fn cgt_v2_direct_upgrade_preserves_database_error() {
+    assert_migration_database_error(
+        VAULT,
+        "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            .parse::<U256>()
+            .unwrap(),
+        11,
+    );
+}
+
+#[test]
+fn cgt_v2_activation_flag_read_preserves_database_error() {
+    assert_migration_database_error(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0), 0);
+}
+
+fn assert_migration_database_error(address: Address, slot: U256, failing_step: usize) {
     let f = factory();
-    let mut db = State::builder().with_database(FailingDatabase(database())).build();
+    let mut db = State::builder()
+        .with_database(FailingDatabase { inner: database(), address, slot })
+        .build();
     let mut e = f.create_executor(
         f.evm_factory().create_evm(&mut db, env()),
         OpBlockExecutionCtx { parent_beacon_block_root: Some(B256::ZERO), ..Default::default() },
@@ -497,14 +552,14 @@ fn cgt_v2_direct_upgrade_preserves_database_error() {
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
     let txs = group();
-    let vault_upgrade_step = 11;
-    for tx in &txs[..vault_upgrade_step] {
+    for tx in &txs[..failing_step] {
         e.execute_transaction(tx).unwrap();
     }
-    let error = e.execute_transaction(&txs[vault_upgrade_step]).unwrap_err();
+    let error = e.execute_transaction(&txs[failing_step]).unwrap_err();
     assert!(error.as_internal().is_some(), "database error became transaction invalidity: {error}");
     assert!(error.to_string().contains("injected migration DB error"), "{error}");
-    assert_eq!(e.receipts().len(), vault_upgrade_step + 1);
+    assert!(CgtV2UpgradeFailed::from_block_error(&error).is_none());
+    assert_eq!(e.receipts().len(), failing_step + 1);
 }
 
 #[test]
@@ -670,19 +725,28 @@ fn cgt_v2_installed_vault_preserves_and_withdraws_tokens() {
 fn cgt_v2_failed_funding_discards_entire_block_candidate() {
     use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
     use revm::precompile::PrecompileOutput;
+    let f = factory();
     let mut base = database();
+    let recipient = Address::repeat_byte(0x77);
+    let origin_deposit = recovered(TxDeposit {
+        source_hash: B256::repeat_byte(0x33),
+        from: recipient,
+        to: TxKind::Call(recipient),
+        mint: 5,
+        gas_limit: 100_000,
+        ..Default::default()
+    });
+    let context = || OpBlockExecutionCtx {
+        parent_beacon_block_root: Some(B256::ZERO),
+        no_user_tx_activation_block: true,
+        ..Default::default()
+    };
     {
-        let f = factory();
         let mut candidate = State::builder().with_database(&mut base).build();
-        let mut e = f.create_executor(
-            f.evm_factory().create_evm(&mut candidate, env()),
-            OpBlockExecutionCtx {
-                parent_beacon_block_root: Some(B256::ZERO),
-                ..Default::default()
-            },
-        );
+        let mut e = f.create_executor(f.evm_factory().create_evm(&mut candidate, env()), context());
         e.apply_pre_execution_changes().unwrap();
         e.execute_transaction(&info()).unwrap();
+        e.execute_transaction(&origin_deposit).unwrap();
         let txs = group();
         for tx in &txs[..CGT_V2_STATIC_STEPS] {
             e.execute_transaction(tx).unwrap();
@@ -705,4 +769,20 @@ fn cgt_v2_failed_funding_discards_entire_block_candidate() {
     );
     assert_eq!(base.basic(CGT_V2_RESERVE).unwrap().unwrap().balance, U256::ZERO);
     assert_eq!(base.basic(VAULT).unwrap().unwrap().balance, U256::from(41));
+    assert!(base.basic(recipient).unwrap().is_none());
+
+    let mut candidate = State::builder().with_database(&mut base).build();
+    let mut e = f.create_executor(f.evm_factory().create_evm(&mut candidate, env()), context());
+    e.apply_pre_execution_changes().unwrap();
+    e.execute_transaction(&info()).unwrap();
+    e.execute_transaction(&origin_deposit).unwrap();
+    let db = e.evm_mut().db_mut();
+    assert_eq!(db.basic(recipient).unwrap().unwrap().balance, U256::from(5));
+    assert_eq!(db.basic(CGT_V2_RESERVE).unwrap().unwrap().balance, U256::ZERO);
+    assert_eq!(db.basic(VAULT).unwrap().unwrap().balance, U256::from(41));
+    assert_eq!(
+        db.storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0)).unwrap(),
+        U256::ZERO
+    );
+    assert_eq!(e.finish().unwrap().1.receipts.len(), 2);
 }

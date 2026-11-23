@@ -1,11 +1,20 @@
 //! Contains the concrete implementation of the [CeloOracleL2ChainProvider] trait for the client
 //! program.
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
-use alloy_consensus::{BlockBody, Header};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use alloy_consensus::{BlockBody, Header, Sealed};
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
 use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
+use celo_derive::CgtV2RecoveryState;
+use celo_executor::CeloStatelessL2Builder;
+use celo_genesis::CeloRollupConfig;
 use celo_protocol::{convert_celo_block_to_op_block, convert_celo_block_to_op_block_checked};
 use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
@@ -349,6 +358,43 @@ impl<T: CommsClient> TrieHinter for CeloOracleL2ChainProvider<T> {
     }
 }
 
+impl<T: CommsClient + Send + Sync + core::fmt::Debug> CgtV2RecoveryState
+    for CeloOracleL2ChainProvider<T>
+{
+    fn cgt_v2_attempt_failed(
+        &self,
+        parent: L2BlockInfo,
+        attrs: &OpPayloadAttributes,
+    ) -> Result<bool, String> {
+        let header = self.cgt_v2_parent_header(parent).map_err(|err| err.to_string())?;
+        let config = CeloRollupConfig::new(self.rollup_config.as_ref().clone());
+        let mut probe = CeloStatelessL2Builder::new(
+            &config,
+            Default::default(),
+            self.clone(),
+            self.clone(),
+            Sealed::new_unchecked(header, parent.hash()),
+        );
+        probe.cgt_v2_attempt_failed(attrs).map_err(|err| err.to_string())
+    }
+}
+
+impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
+    fn cgt_v2_parent_header(&self, parent: L2BlockInfo) -> Result<Header, OracleProviderError> {
+        let parent_hash = parent.hash();
+        let header = self.header_by_hash(parent_hash)?;
+        if header.hash_slow() != parent_hash ||
+            header.number != parent.block_info.number ||
+            header.timestamp != parent.block_info.timestamp
+        {
+            return Err(OracleProviderError::Rlp(alloy_rlp::Error::Custom(
+                "invalid CGTv2 parent header",
+            )));
+        }
+        Ok(header)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,7 +406,7 @@ mod tests {
     };
 
     /// A minimal in-memory [`CommsClient`] used to drive [`CeloOracleL2ChainProvider`] in tests.
-    #[derive(Clone, Default)]
+    #[derive(Debug, Clone, Default)]
     struct MockOracle {
         preimages: Arc<BTreeMap<PreimageKey, Vec<u8>>>,
         get_calls: Arc<AtomicUsize>,
@@ -488,5 +534,23 @@ mod tests {
 
         let err = p.header_by_number(99).await.unwrap_err();
         assert!(matches!(err, OracleProviderError::BlockNumberPastHead(99, 4)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cgt_v2_attempt_rejects_inconsistent_parent() {
+        let (headers, preimages) = build_chain(2);
+        let (p, _) = provider(&headers, preimages);
+        let header = &headers[1];
+        let parent = L2BlockInfo {
+            block_info: kona_protocol::BlockInfo::new(
+                header.hash_slow(),
+                header.number,
+                header.parent_hash,
+                header.timestamp + 1,
+            ),
+            ..Default::default()
+        };
+        let error = p.cgt_v2_attempt_failed(parent, &OpPayloadAttributes::default()).unwrap_err();
+        assert!(error.contains("invalid CGTv2 parent header"), "{error}");
     }
 }
