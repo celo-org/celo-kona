@@ -16,7 +16,7 @@ import {
   parseUnits,
   stringToHex,
 } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { type PrivateKeyAccount, privateKeyToAccount } from 'viem/accounts';
 import { celo, mainnet, sepolia } from 'viem/chains';
 
 const NETWORKS = {
@@ -80,7 +80,8 @@ export interface Config {
   l2RpcUrl: string;
   coinbaseUrl: string;
   roles: Address;
-  privateKey?: Hex;
+  // Parsed at load, so a bad key fails every run, not only the first one that sends.
+  account?: PrivateKeyAccount;
   dryRun: boolean;
   // USD with 18 decimals, like wei, so the floor comes out in wei per gas.
   targetUsdPerTx: bigint;
@@ -120,7 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     l2RpcUrl: env.L2_RPC_URL ?? 'https://forno.celo.org',
     coinbaseUrl: env.COINBASE_URL ?? 'https://api.coinbase.com/v2/prices/CELO-USD/spot',
     roles: getAddress(required('ROLES')),
-    privateKey,
+    account: privateKey ? privateKeyToAccount(privateKey) : undefined,
     dryRun,
     targetUsdPerTx: usd('TARGET_USD_PER_TX', '0.002'),
     referenceGas: int('REFERENCE_GAS', 115_501n),
@@ -207,8 +208,7 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
     return { status: 'dry-run', ...prices };
   }
 
-  const account = privateKeyToAccount(cfg.privateKey!);
-  const wallet = createWalletClient({ account, chain, transport: http(cfg.l1RpcUrl) });
+  const wallet = createWalletClient({ account: cfg.account!, chain, transport: http(cfg.l1RpcUrl) });
   const data = encodeFunctionData({ abi: systemConfigAbi, functionName: 'setMinBaseFee', args: [floor] });
   // The Roles module enforces the bounds. If it rejects the call, gas estimation fails and
   // nothing is sent.

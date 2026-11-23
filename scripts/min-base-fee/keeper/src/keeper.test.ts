@@ -27,6 +27,7 @@ test('loadConfig requires a key unless dry run', () => {
   const env = { L1_RPC_URL: 'http://l1', ROLES: '0x0000000000000000000000000000000000000001' };
   assert.throws(() => loadConfig(env), KeeperError);
   assert.equal(loadConfig({ ...env, DRY_RUN: 'true' }).dryRun, true);
+  assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', KEEPER_PRIVATE_KEY: 'ab'.repeat(32) }));
   assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', NETWORK: 'alfajores' }), KeeperError);
   assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', NETWORK: 'constructor' }), KeeperError);
   assert.throws(() => loadConfig({ ...env, DRY_RUN: '1', KEEPER_PRIVATE_KEY: '0x01' }), KeeperError);
