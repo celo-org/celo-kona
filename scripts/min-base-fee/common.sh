@@ -30,8 +30,7 @@ SET_MIN_BASE_FEE_SELECTOR=0x7616f0e8 # setMinBaseFee(uint64)
 DISABLE_MODULE_SELECTOR=0xe009cfde   # disableModule(address,address)
 SENTINEL=0x0000000000000000000000000000000000000001
 
-# Bounds enforced on-chain by the Roles condition (wei per gas, inclusive). The keeper
-# (keeper/src/keeper.ts) has the same defaults.
+# Bounds enforced on-chain by the Roles condition (wei per gas, inclusive).
 MIN_FLOOR=${MIN_FLOOR:-25000000000}   # 25 Gwei
 MAX_FLOOR=${MAX_FLOOR:-2000000000000} # 2000 Gwei
 

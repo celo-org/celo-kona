@@ -2,7 +2,9 @@
 // targetAttoUsdPerTx. Throws KeeperError on anything that needs a human.
 import {
   type Address,
+  BaseError,
   type Chain,
+  ContractFunctionRevertedError,
   type Hex,
   createPublicClient,
   createWalletClient,
@@ -42,7 +44,33 @@ const systemConfigAbi = parseAbi([
 ]);
 const rolesAbi = parseAbi([
   'function execTransactionWithRole(address to, uint256 value, bytes data, uint8 operation, bytes32 roleKey, bool shouldRevert) returns (bool)',
+  'error ConditionViolation(uint8 status, bytes32 info)',
+  'error NoMembership()',
+  'error ModuleTransactionFailed()',
 ]);
+// Status in Roles v2.1.1 PermissionChecker.sol.
+const ROLES_STATUS = [
+  'Ok',
+  'DelegateCallNotAllowed',
+  'TargetAddressNotAllowed',
+  'FunctionNotAllowed',
+  'SendNotAllowed',
+  'OrViolation',
+  'NorViolation',
+  'ParameterNotAllowed',
+  'ParameterLessThanAllowed',
+  'ParameterGreaterThanAllowed',
+  'ParameterNotAMatch',
+  'NotEveryArrayElementPasses',
+  'NoArrayElementPasses',
+  'ParameterNotSubsetOfAllowed',
+  'BitmaskOverflow',
+  'BitmaskNotAllowed',
+  'CustomConditionViolation',
+  'AllowanceExceeded',
+  'CallAllowanceExceeded',
+  'EtherAllowanceExceeded',
+];
 
 export class KeeperError extends Error {}
 
@@ -56,9 +84,6 @@ export interface Config {
   dryRun: boolean;
   targetAttoUsdPerTx: bigint;
   referenceGas: bigint;
-  // Bounds enforced on-chain by the Roles condition (wei per gas, inclusive).
-  minFloor: bigint;
-  maxFloor: bigint;
   maxPriceAgeSeconds: bigint;
   maxPriceDeviationBps: bigint;
   minChangeBps: bigint;
@@ -88,8 +113,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dryRun,
     targetAttoUsdPerTx: int('TARGET_ATTO_USD_PER_TX', 2_000_000_000_000_000n), // $0.002
     referenceGas: int('REFERENCE_GAS', 115_501n),
-    minFloor: int('MIN_FLOOR', 25_000_000_000n), // 25 Gwei
-    maxFloor: int('MAX_FLOOR', 2_000_000_000_000n), // 2000 Gwei
     maxPriceAgeSeconds: int('MAX_PRICE_AGE', 90_000n),
     maxPriceDeviationBps: int('MAX_PRICE_DEVIATION_BPS', 1000n), // 10%
     minChangeBps: int('MIN_CHANGE_BPS', 100n), // skip updates below 1%
@@ -141,9 +164,6 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   }
 
   const floor = computeFloor(cfg.targetAttoUsdPerTx, cfg.referenceGas, answer, decimals);
-  if (floor < cfg.minFloor || floor > cfg.maxFloor) {
-    throw new KeeperError(`floor ${floor} outside [${cfg.minFloor}, ${cfg.maxFloor}]`);
-  }
 
   const current = await l1.readContract({ address: systemConfig, abi: systemConfigAbi, functionName: 'minBaseFee' });
   const changeBps = current === 0n ? 10_000n : diffBps(floor, current);
@@ -169,20 +189,32 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   const account = privateKeyToAccount(cfg.privateKey!);
   const wallet = createWalletClient({ account, chain, transport: http(cfg.l1RpcUrl) });
   const data = encodeFunctionData({ abi: systemConfigAbi, functionName: 'setMinBaseFee', args: [floor] });
-  // Simulate first so a rejected call costs no gas.
-  const { request } = await l1.simulateContract({
-    account,
-    address: cfg.roles,
-    abi: rolesAbi,
-    functionName: 'execTransactionWithRole',
-    args: [systemConfig, 0n, data, 0, ROLE_KEY, true],
-  });
+  // Simulate first so a rejected call costs no gas. The Roles module enforces the bounds.
+  const { request } = await l1
+    .simulateContract({
+      account,
+      address: cfg.roles,
+      abi: rolesAbi,
+      functionName: 'execTransactionWithRole',
+      args: [systemConfig, 0n, data, 0, ROLE_KEY, true],
+    })
+    .catch((e: unknown) => {
+      throw rolesRejection(e, floor) ?? e;
+    });
   const txHash = await wallet.writeContract(request);
   log(`sent ${txHash}`, { txHash });
   const receipt = await l1.waitForTransactionReceipt({ hash: txHash });
   if (receipt.status !== 'success') throw new KeeperError(`tx ${txHash} reverted`);
   log(`floor set to ${floor} wei in block ${receipt.blockNumber}`);
   return { ...result, status: 'sent', txHash };
+}
+
+function rolesRejection(e: unknown, floor: bigint): KeeperError | undefined {
+  const revert = e instanceof BaseError ? e.walk((c) => c instanceof ContractFunctionRevertedError) : null;
+  if (!(revert instanceof ContractFunctionRevertedError) || !revert.data) return undefined;
+  const { errorName, args } = revert.data;
+  const reason = errorName === 'ConditionViolation' ? (ROLES_STATUS[Number(args?.[0])] ?? `status ${args?.[0]}`) : errorName;
+  return new KeeperError(`Roles rejected floor ${floor} wei: ${reason}`);
 }
 
 async function fetchCoinbase(url: string): Promise<string> {

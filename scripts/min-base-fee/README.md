@@ -56,8 +56,8 @@ Alert on `ERROR` entries from the function and on days without a run.
 - `TARGET_ATTO_USD_PER_TX` and `REFERENCE_GAS` are keeper settings (function env). Changing
   them needs no Safe tx.
 - The bounds are part of the Roles permission. To change them, the Safe re-runs the
-  `scopeFunction` tx from `safe-batch.sh` with new `MIN_FLOOR`/`MAX_FLOOR`. Set the same
-  values in the function env, or the keeper refuses floors the Roles module allows.
+  `scopeFunction` tx from `safe-batch.sh` with new `MIN_FLOOR`/`MAX_FLOOR`. The keeper
+  needs no change: it simulates each call and fails when the Roles module rejects it.
 - To revoke the keeper, the Safe calls `assignRoles(keeper, [role], [false])` or
   `disableModule`.
 

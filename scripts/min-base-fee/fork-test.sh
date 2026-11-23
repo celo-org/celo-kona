@@ -49,6 +49,10 @@ expected=$(keeper --dry-run | tail -1 | jq -r .floor)
 actual=$(cast call --rpc-url "$L1_RPC_URL" "$SYSTEM_CONFIG" 'minBaseFee()(uint64)' | awk '{print $1}')
 [[ $actual == "$expected" ]] || fail "minBaseFee $actual, expected $expected"
 pass "keeper set minBaseFee to $actual"
+# 1000× the target puts the floor far above MAX_FLOOR.
+out=$(TARGET_ATTO_USD_PER_TX=2000000000000000000 keeper 2>&1) && fail "keeper sent a floor above MAX_FLOOR"
+grep -q ParameterGreaterThanAllowed <<<"$out" || fail "unexpected keeper error: $out"
+pass "keeper reports floors above MAX_FLOOR as rejected by Roles"
 
 # Calls that must revert.
 exec_role() { # <key> <to> <data>
