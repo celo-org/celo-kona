@@ -6,9 +6,9 @@ USD target: a USDT transfer paid in USDT (115,501 gas) costs $0.002 at the floor
 The SystemConfig owner Safe enables a Zodiac Roles v2 module. It lets one keeper call
 `setMinBaseFee` with a value in [25, 2000] Gwei, and disable the module. Nothing else.
 
-The keeper runs daily. It reads CELO/USD from Chainlink on Celo Mainnet and cross-checks
-it against Coinbase. It sends nothing when the two prices differ by more than 10% or the
-change is below 1%.
+The keeper (`keeper/`, TypeScript) runs daily as a Google Cloud Function. It reads CELO/USD
+from Chainlink on Celo Mainnet and cross-checks it against Coinbase. It sends nothing when
+the two prices differ by more than 10% or the change is below 1%.
 
 ## Setup
 
@@ -22,19 +22,42 @@ Import `batch.json` into the Safe Transaction Builder and execute it with the Sa
 
 ## Run
 
+The keeper reads its settings from env: `NETWORK`, `L1_RPC_URL`, `ROLES` and
+`KEEPER_PRIVATE_KEY` (not needed with `DRY_RUN=true`). Optional overrides and their
+defaults are in `loadConfig` in `keeper/src/keeper.ts`.
+
+Locally:
+
 ```bash
-ROLES=<roles> ./keeper.sh --dry-run
-ROLES=<roles> ./keeper.sh
+cd keeper && npm ci && npm run build
+ROLES=<roles> node dist/cli.js --dry-run
+ROLES=<roles> KEEPER_PRIVATE_KEY=<key> node dist/cli.js
 ```
 
-`keeper.sh` exits non-zero when a human should look: stale or disagreeing prices, a floor
-outside the bounds, or a failed tx.
+It fails (exit code 1 locally, HTTP 500 and an `ERROR` log entry as a function) when a human
+should look: stale or disagreeing prices, a floor outside the bounds, or a failed tx.
+
+As a Cloud Function, with the key and RPC URL in Secret Manager:
+
+```bash
+gcloud functions deploy min-base-fee-keeper --gen2 --runtime=nodejs22 --region=<region> \
+  --source=keeper --entry-point=keeper --trigger-http --no-allow-unauthenticated --timeout=300s \
+  --set-env-vars=NETWORK=mainnet,ROLES=<roles> \
+  --set-secrets=L1_RPC_URL=<rpc-secret>:latest,KEEPER_PRIVATE_KEY=<key-secret>:latest
+gcloud scheduler jobs create http min-base-fee-keeper --location=<region> \
+  --schedule='0 12 * * *' --uri=<function-url> --http-method=POST --attempt-deadline=320s \
+  --oidc-service-account-email=<invoker-service-account>
+```
+
+Alert on `ERROR` entries from the function and on days without a run.
 
 ## Change the target or bounds
 
-- `TARGET_ATTO_USD_PER_TX` and `REFERENCE_GAS` are keeper settings (env or `common.sh`).
+- `TARGET_ATTO_USD_PER_TX` and `REFERENCE_GAS` are keeper settings (function env). Changing
+  them needs no Safe tx.
 - The bounds are part of the Roles permission. To change them, the Safe re-runs the
-  `scopeFunction` tx from `safe-batch.sh` with new `MIN_FLOOR`/`MAX_FLOOR`.
+  `scopeFunction` tx from `safe-batch.sh` with new `MIN_FLOOR`/`MAX_FLOOR`. Set the same
+  values in the function env, or the keeper refuses floors the Roles module allows.
 - To revoke the keeper, the Safe calls `assignRoles(keeper, [role], [false])` or
   `disableModule`.
 

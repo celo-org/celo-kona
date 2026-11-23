@@ -42,8 +42,10 @@ done < <(jq -r '.transactions[] | "\(.to) \(.data)"' <<<"$batch")
 	fail "module not enabled"
 pass "executed Safe batch ($(jq '.transactions | length' <<<"$batch") txs)"
 
-ROLES=$roles bash "$dir/keeper.sh"
-expected=$(ROLES=$roles bash "$dir/keeper.sh" --dry-run | sed -E 's/.* -> ([0-9]+) wei.*/\1/' | head -1)
+(cd "$dir/keeper" && npm ci --silent && npm run -s build)
+keeper() { ROLES=$roles KEEPER_PRIVATE_KEY=$keeper_key node "$dir/keeper/dist/cli.js" "$@"; }
+keeper >/dev/null
+expected=$(keeper --dry-run | tail -1 | jq -r .floor)
 actual=$(cast call --rpc-url "$L1_RPC_URL" "$SYSTEM_CONFIG" 'minBaseFee()(uint64)' | awk '{print $1}')
 [[ $actual == "$expected" ]] || fail "minBaseFee $actual, expected $expected"
 pass "keeper set minBaseFee to $actual"

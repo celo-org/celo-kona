@@ -30,21 +30,10 @@ SET_MIN_BASE_FEE_SELECTOR=0x7616f0e8 # setMinBaseFee(uint64)
 DISABLE_MODULE_SELECTOR=0xe009cfde   # disableModule(address,address)
 SENTINEL=0x0000000000000000000000000000000000000001
 
-# Bounds enforced on-chain by the Roles condition (wei per gas, inclusive).
+# Bounds enforced on-chain by the Roles condition (wei per gas, inclusive). The keeper
+# (keeper/src/keeper.ts) has the same defaults.
 MIN_FLOOR=${MIN_FLOOR:-25000000000}   # 25 Gwei
 MAX_FLOOR=${MAX_FLOOR:-2000000000000} # 2000 Gwei
-
-# Policy: a USDT transfer paid in USDT costs TARGET_ATTO_USD_PER_TX at the floor.
-TARGET_ATTO_USD_PER_TX=${TARGET_ATTO_USD_PER_TX:-2000000000000000} # $0.002
-REFERENCE_GAS=${REFERENCE_GAS:-115501}
-
-# Price sources. Always Celo Mainnet prices, also when updating Sepolia.
-L2_RPC_URL=${L2_RPC_URL:-https://forno.celo.org}
-CHAINLINK_CELO_USD=0x0568fd19986748ceff3301e55c0eb1e729e0ab7e
-COINBASE_URL=https://api.coinbase.com/v2/prices/CELO-USD/spot
-MAX_PRICE_AGE=${MAX_PRICE_AGE:-90000}           # seconds
-MAX_PRICE_DEVIATION_BPS=${MAX_PRICE_DEVIATION_BPS:-1000} # 10%
-MIN_CHANGE_BPS=${MIN_CHANGE_BPS:-100}           # skip updates below 1%
 
 # Signer for txs, passed to `cast send`, e.g. "--account keeper" or "--ledger".
 read -r -a cast_wallet <<<"${CAST_WALLET_ARGS:-}"
