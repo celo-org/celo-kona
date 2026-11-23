@@ -28,6 +28,8 @@ test('loadConfig requires a key unless dry run', () => {
   assert.throws(() => loadConfig(env), KeeperError);
   assert.equal(loadConfig({ ...env, DRY_RUN: 'true' }).dryRun, true);
   assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', NETWORK: 'alfajores' }), KeeperError);
+  assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', NETWORK: 'constructor' }), KeeperError);
+  assert.throws(() => loadConfig({ ...env, DRY_RUN: '1', KEEPER_PRIVATE_KEY: '0x01' }), KeeperError);
 });
 
 test('TARGET_USD_PER_TX is in USD, 18 decimals internally', () => {

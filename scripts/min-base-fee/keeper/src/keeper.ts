@@ -106,7 +106,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const network = env.NETWORK ?? 'mainnet';
-  if (!(network in NETWORKS)) throw new KeeperError(`unknown NETWORK=${network}`);
+  if (!Object.hasOwn(NETWORKS, network)) throw new KeeperError(`unknown NETWORK=${network}`);
+  if (![undefined, 'true', 'false'].includes(env.DRY_RUN)) {
+    throw new KeeperError(`DRY_RUN=${env.DRY_RUN} is not true or false`);
+  }
   const dryRun = env.DRY_RUN === 'true';
   const privateKey = env.KEEPER_PRIVATE_KEY?.trim() as Hex | undefined;
   if (!dryRun && !privateKey) throw new KeeperError('set KEEPER_PRIVATE_KEY');
