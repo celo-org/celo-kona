@@ -47,7 +47,4 @@ if [[ $dry_run == --dry-run ]]; then
 	exit 0
 fi
 
-data=$(cast calldata 'setMinBaseFee(uint64)' "$floor")
-cast send --rpc-url "$L1_RPC_URL" "${cast_wallet[@]}" "$ROLES" \
-	'execTransactionWithRole(address,uint256,bytes,uint8,bytes32,bool)' \
-	"$SYSTEM_CONFIG" 0 "$data" 0 "$ROLE_KEY" true
+exec_with_role "$SYSTEM_CONFIG" "$(cast calldata 'setMinBaseFee(uint64)' "$floor")"

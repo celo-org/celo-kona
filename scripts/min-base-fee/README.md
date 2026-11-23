@@ -3,8 +3,8 @@
 Keeps Celo's base fee floor (`SystemConfig.minBaseFee` on L1, applied from Jovian) at a
 USD target: a USDT transfer paid in USDT (115,501 gas) costs $0.002 at the floor.
 
-The SystemConfig owner Safe enables a Zodiac Roles v2 module. Its only permission lets
-one keeper call `setMinBaseFee` with a value in [25, 2000] Gwei.
+The SystemConfig owner Safe enables a Zodiac Roles v2 module. It lets one keeper call
+`setMinBaseFee` with a value in [25, 2000] Gwei, and disable the module. Nothing else.
 
 The keeper runs daily. It reads CELO/USD from Chainlink on Celo Mainnet and cross-checks
 it against Coinbase. It sends nothing when the two prices differ by more than 10% or the
@@ -38,6 +38,15 @@ outside the bounds, or a failed tx.
 - To revoke the keeper, the Safe calls `assignRoles(keeper, [role], [false])` or
   `disableModule`.
 
+## Stop
+
+```bash
+ROLES=<roles> ./disable.sh
+```
+
+Signed with the keeper key, it disables the Roles module on the Safe. Only the Safe can
+re-enable it.
+
 ## Test
 
 ```bash
@@ -46,4 +55,5 @@ FORK_URL=<l1 rpc> NETWORK=mainnet ./fork-test.sh
 
 Forks L1 with anvil and impersonates the Safe. It deploys the module, executes the batch
 and runs the keeper. It checks that the bounds are inclusive and that out-of-bounds
-values, other functions, other targets and non-members are rejected.
+values, other functions, other targets and non-members are rejected. Then it checks that the
+keeper can disable the Roles module but no other module.

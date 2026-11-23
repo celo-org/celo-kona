@@ -67,4 +67,18 @@ exec_role "$keeper_key" "$SAFE" "$(cast calldata 'enableModule(address)' "$keepe
 pass "other functions and targets rejected"
 exec_role "$outsider_key" "$SYSTEM_CONFIG" "$(set_fee "$MIN_FLOOR")" && fail "non-member accepted"
 pass "non-member rejected"
+
+# Kill switch: the keeper may disable the Roles module, and no other module.
+other_module=$(cast wallet address "$outsider_key")
+cast send --rpc-url "$L1_RPC_URL" --unlocked --from "$SAFE" "$SAFE" \
+	"$(cast calldata 'enableModule(address)' "$other_module")" >/dev/null
+exec_role "$keeper_key" "$SAFE" "$(cast calldata 'disableModule(address,address)' "$SENTINEL" "$other_module")" &&
+	fail "disabling another module accepted"
+pass "disabling another module rejected"
+# Roles is no longer the list head, so disable.sh has to find its predecessor.
+ROLES=$roles bash "$dir/disable.sh" >/dev/null
+[[ $(cast call --rpc-url "$L1_RPC_URL" "$SAFE" 'isModuleEnabled(address)(bool)' "$roles") == false ]] ||
+	fail "module still enabled"
+exec_role "$keeper_key" "$SYSTEM_CONFIG" "$(set_fee "$MIN_FLOOR")" && fail "keeper works after disable"
+pass "keeper disabled the module"
 echo "all checks passed"

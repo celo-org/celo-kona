@@ -27,6 +27,8 @@ ROLES_MASTERCOPY=0xf2964ce6161ce0e75964fe7927ce114cb0b283d5
 MODULE_PROXY_FACTORY=0x000000000000aDdB49795b0f9bA5BC298cDda236
 ROLE_KEY=$(cast format-bytes32-string MIN_BASE_FEE_KEEPER)
 SET_MIN_BASE_FEE_SELECTOR=0x7616f0e8 # setMinBaseFee(uint64)
+DISABLE_MODULE_SELECTOR=0xe009cfde   # disableModule(address,address)
+SENTINEL=0x0000000000000000000000000000000000000001
 
 # Bounds enforced on-chain by the Roles condition (wei per gas, inclusive).
 MIN_FLOOR=${MIN_FLOOR:-25000000000}   # 25 Gwei
@@ -48,3 +50,10 @@ MIN_CHANGE_BPS=${MIN_CHANGE_BPS:-100}           # skip updates below 1%
 read -r -a cast_wallet <<<"${CAST_WALLET_ARGS:-}"
 
 : "${L1_RPC_URL:?set L1_RPC_URL}"
+
+# Sends <to> <data> from the Safe through the keeper role on the Roles proxy ROLES.
+exec_with_role() {
+	cast send --rpc-url "$L1_RPC_URL" "${cast_wallet[@]}" "$ROLES" \
+		'execTransactionWithRole(address,uint256,bytes,uint8,bytes32,bool)' \
+		"$1" 0 "$2" 0 "$ROLE_KEY" true
+}
