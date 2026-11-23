@@ -29,3 +29,12 @@ test('loadConfig requires a key unless dry run', () => {
   assert.equal(loadConfig({ ...env, DRY_RUN: 'true' }).dryRun, true);
   assert.throws(() => loadConfig({ ...env, DRY_RUN: 'true', NETWORK: 'alfajores' }), KeeperError);
 });
+
+test('TARGET_USD_PER_TX is in USD, 18 decimals internally', () => {
+  const env = { L1_RPC_URL: 'http://l1', ROLES: '0x0000000000000000000000000000000000000001', DRY_RUN: 'true' };
+  assert.equal(loadConfig(env).targetUsdPerTx, 2_000_000_000_000_000n);
+  assert.equal(loadConfig({ ...env, TARGET_USD_PER_TX: '0.0015' }).targetUsdPerTx, 1_500_000_000_000_000n);
+  for (const bad of ['0', '-0.002', '$0.002', '2e-3', '']) {
+    assert.throws(() => loadConfig({ ...env, TARGET_USD_PER_TX: bad }), KeeperError, bad);
+  }
+});

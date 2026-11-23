@@ -54,7 +54,7 @@ Alert on `ERROR` entries from the function and on days without a run.
 
 ## Change the target or bounds
 
-- `TARGET_ATTO_USD_PER_TX` and `REFERENCE_GAS` are keeper settings (function env). Changing
+- `TARGET_USD_PER_TX` (default `0.002`) and `REFERENCE_GAS` are keeper settings (function env). Changing
   them needs no Safe tx.
 - The bounds are part of the Roles permission. To change them, the Safe re-runs the
   `scopeFunction` tx from `safe-batch.sh` with new `MIN_FLOOR`/`MAX_FLOOR`. The keeper

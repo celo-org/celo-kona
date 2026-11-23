@@ -1,5 +1,5 @@
 // Sets SystemConfig.minBaseFee so that a reference tx (USDT transfer paid in USDT) costs
-// targetAttoUsdPerTx. Throws KeeperError on anything that needs a human.
+// TARGET_USD_PER_TX. Throws KeeperError on anything that needs a human.
 import {
   type Address,
   BaseError,
@@ -82,7 +82,8 @@ export interface Config {
   roles: Address;
   privateKey?: Hex;
   dryRun: boolean;
-  targetAttoUsdPerTx: bigint;
+  // USD with 18 decimals, like wei, so the floor comes out in wei per gas.
+  targetUsdPerTx: bigint;
   referenceGas: bigint;
   maxPriceAgeSeconds: bigint;
   maxPriceDeviationBps: bigint;
@@ -96,6 +97,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return value;
   };
   const int = (name: string, fallback: bigint): bigint => (env[name] ? BigInt(env[name]) : fallback);
+  const usd = (name: string, fallback: string): bigint => {
+    const value = env[name] ?? fallback;
+    if (!/^\d+(\.\d+)?$/.test(value) || parseUnits(value, 18) === 0n) {
+      throw new KeeperError(`${name}=${value} is not a positive USD amount`);
+    }
+    return parseUnits(value, 18);
+  };
 
   const network = env.NETWORK ?? 'mainnet';
   if (!(network in NETWORKS)) throw new KeeperError(`unknown NETWORK=${network}`);
@@ -111,7 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     roles: getAddress(required('ROLES')),
     privateKey,
     dryRun,
-    targetAttoUsdPerTx: int('TARGET_ATTO_USD_PER_TX', 2_000_000_000_000_000n), // $0.002
+    targetUsdPerTx: usd('TARGET_USD_PER_TX', '0.002'),
     referenceGas: int('REFERENCE_GAS', 115_501n),
     maxPriceAgeSeconds: int('MAX_PRICE_AGE', 3600n), // Chainlink updates CELO/USD about every 4.5 min
     maxPriceDeviationBps: int('MAX_PRICE_DEVIATION_BPS', 300n), // 3%
@@ -119,9 +127,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
-// floor [wei/gas] = target [attoUSD/tx] / gas [gas/tx] / price [USD/CELO], price = answer / 10^decimals.
-export function computeFloor(targetAttoUsdPerTx: bigint, referenceGas: bigint, answer: bigint, decimals: number): bigint {
-  return (targetAttoUsdPerTx * 10n ** BigInt(decimals)) / (referenceGas * answer);
+// floor [wei/gas] = target [USD/tx] / gas [gas/tx] / price [USD/CELO], with the target in 18 decimals
+// and price = answer / 10^decimals.
+export function computeFloor(targetUsdPerTx: bigint, referenceGas: bigint, answer: bigint, decimals: number): bigint {
+  return (targetUsdPerTx * 10n ** BigInt(decimals)) / (referenceGas * answer);
 }
 
 // |a - b| relative to b, in basis points, rounded down.
@@ -165,7 +174,7 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
     throw new KeeperError(`prices disagree by ${deviationBps} bps: Chainlink ${chainlink}, Coinbase ${coinbase}`);
   }
 
-  const floor = computeFloor(cfg.targetAttoUsdPerTx, cfg.referenceGas, answer, decimals);
+  const floor = computeFloor(cfg.targetUsdPerTx, cfg.referenceGas, answer, decimals);
 
   const current = await l1.readContract({ address: systemConfig, abi: systemConfigAbi, functionName: 'minBaseFee' });
   const changeBps = current === 0n ? 10_000n : diffBps(floor, current);
