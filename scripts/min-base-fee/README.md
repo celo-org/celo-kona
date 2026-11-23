@@ -8,7 +8,8 @@ The SystemConfig owner Safe enables a Zodiac Roles v2 module. It lets one keeper
 
 The keeper (`keeper/`, TypeScript) runs daily as a Google Cloud Function. It reads CELO/USD
 from Chainlink on Celo Mainnet and cross-checks it against Coinbase. It sends nothing when
-the two prices differ by more than 10% or the change is below 1%.
+the Chainlink price is over an hour old, the two prices differ by more than 3%, or the
+change is below 1%.
 
 ## Setup
 

@@ -113,8 +113,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dryRun,
     targetAttoUsdPerTx: int('TARGET_ATTO_USD_PER_TX', 2_000_000_000_000_000n), // $0.002
     referenceGas: int('REFERENCE_GAS', 115_501n),
-    maxPriceAgeSeconds: int('MAX_PRICE_AGE', 90_000n),
-    maxPriceDeviationBps: int('MAX_PRICE_DEVIATION_BPS', 1000n), // 10%
+    maxPriceAgeSeconds: int('MAX_PRICE_AGE', 3600n), // Chainlink updates CELO/USD about every 4.5 min
+    maxPriceDeviationBps: int('MAX_PRICE_DEVIATION_BPS', 300n), // 3%
     minChangeBps: int('MIN_CHANGE_BPS', 100n), // skip updates below 1%
   };
 }
@@ -132,7 +132,9 @@ export function diffBps(a: bigint, b: bigint): bigint {
 export type Result = {
   status: 'skipped' | 'dry-run' | 'sent';
   chainlink: string;
+  priceAgeSeconds: string;
   coinbase: string;
+  deviationBps: string;
   current: string;
   floor: string;
   changeBps: string;
@@ -169,12 +171,18 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   const changeBps = current === 0n ? 10_000n : diffBps(floor, current);
   const prices = {
     chainlink,
+    priceAgeSeconds: age.toString(),
     coinbase,
+    deviationBps: deviationBps.toString(),
     current: current.toString(),
     floor: floor.toString(),
     changeBps: changeBps.toString(),
   };
-  log(`CELO/USD ${chainlink} (Coinbase ${coinbase}), floor ${current} -> ${floor} wei (${changeBps} bps)`, prices);
+  log(
+    `CELO/USD ${chainlink} (${age}s old; Coinbase ${coinbase}, ${deviationBps} bps apart), ` +
+      `floor ${current} -> ${floor} wei (${changeBps} bps)`,
+    prices,
+  );
   const result: Result = { status: 'skipped', ...prices };
 
   if (changeBps < cfg.minChangeBps) {
