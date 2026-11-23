@@ -172,7 +172,9 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
 
   // Cross-check: Coinbase spot.
   const coinbase = await fetchCoinbase(cfg.coinbaseUrl);
-  const deviationBps = diffBps(answer, parseUnits(coinbase, decimals));
+  const coinbaseAnswer = parseUnits(coinbase, decimals);
+  if (coinbaseAnswer === 0n) throw new KeeperError(`Coinbase price ${coinbase}`);
+  const deviationBps = diffBps(answer, coinbaseAnswer);
   if (deviationBps > cfg.maxPriceDeviationBps) {
     throw new KeeperError(`prices disagree by ${deviationBps} bps: Chainlink ${chainlink}, Coinbase ${coinbase}`);
   }
