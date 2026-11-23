@@ -3829,27 +3829,45 @@ mod tests {
         assert!(debit_gas_spent <= 150_000 && credit_gas_spent <= 150_000);
     }
 
+    /// The main call in [`cip64_main_call_refund_for_a_slot_the_debit_cleared`].
+    enum MainCall {
+        /// `transferFrom(donor, sender, 1)`
+        RefillSender,
+        /// `transferFrom(donor, recipient, donor_balance)`
+        ClearDonor,
+        /// `balanceOf(donor)`
+        ReadDonor,
+    }
+
+    enum Refund {
+        Zero,
+        Capped,
+        Exact(u64),
+    }
+
     /// The debit takes the payer's fee-currency balance to exactly zero (`totalSupply` stays
     /// non-zero, so that is the only slot it clears). Then the main call, to the fee currency:
-    /// - refills the slot (`transferFrom(donor, sender, 1)`): its -4800 takes back a refund
-    ///   that is not counted. From Karst the clamped counter yields no refund; before Karst
-    ///   it wraps to the cap.
-    /// - leaves it alone (`balanceOf`): the debit's refund is not counted either.
+    /// - refills the slot: its -4800 takes back a refund that is not counted. From Karst the
+    ///   clamped counter yields no refund; before Karst it wraps to the cap.
+    /// - clears the donor's slot instead: the clamp passes the +4800 through.
+    /// - leaves both alone (`balanceOf`): the debit's refund is not counted either.
     ///
     /// Pricing as in [`cip64_gas_survives_a_negative_credit_refund`].
     #[rstest]
-    #[case::refilled(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::KARST, false)]
-    #[case::refilled_pre_karst(alloy_primitives::hex!("23b872dd").to_vec(), OpSpecId::JOVIAN, true)]
-    #[case::untouched(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::KARST, false)]
-    #[case::untouched_pre_karst(alloy_primitives::hex!("70a08231").to_vec(), OpSpecId::JOVIAN, false)]
+    #[case::refilled(MainCall::RefillSender, OpSpecId::KARST, Refund::Zero)]
+    #[case::refilled_pre_karst(MainCall::RefillSender, OpSpecId::JOVIAN, Refund::Capped)]
+    #[case::donor_cleared(MainCall::ClearDonor, OpSpecId::KARST, Refund::Exact(4800))]
+    #[case::untouched(MainCall::ReadDonor, OpSpecId::KARST, Refund::Zero)]
+    #[case::untouched_pre_karst(MainCall::ReadDonor, OpSpecId::JOVIAN, Refund::Zero)]
     fn cip64_main_call_refund_for_a_slot_the_debit_cleared(
-        #[case] selector: Vec<u8>,
+        #[case] main_call: MainCall,
         #[case] spec: OpSpecId,
-        #[case] capped: bool,
+        #[case] expected: Refund,
     ) {
         let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let beneficiary = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let donor = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let recipient = address!("0xdddddddddddddddddddddddddddddddddddddddd");
         let gas_limit = 100_000u64;
         let debit = U256::from(gas_limit as u128 * 12);
 
@@ -3861,9 +3879,22 @@ mod tests {
             donor_balance,
         )
         .unwrap();
-        // `_totalSupply` (slot 2) covers the donor too, so the debit leaves it non-zero.
-        db.insert_account_storage(TEST_FEE_CURRENCY, U256::from(2), debit + donor_balance)
-            .unwrap();
+        // Non-zero, so `ClearDonor` does not pay 20k to create the recipient's slot.
+        let recipient_balance = U256::from(1);
+        db.insert_account_storage(
+            TEST_FEE_CURRENCY,
+            fee_currency_balance_slot(recipient),
+            recipient_balance,
+        )
+        .unwrap();
+        // `_totalSupply` (slot 2) covers the donor and recipient too, so the debit leaves it
+        // non-zero.
+        db.insert_account_storage(
+            TEST_FEE_CURRENCY,
+            U256::from(2),
+            debit + donor_balance + recipient_balance,
+        )
+        .unwrap();
         // `_allowances[donor][sender] = max` (mapping in slot 1), so `transferFrom` skips the
         // allowance write.
         let allowance_slot = {
@@ -3879,12 +3910,17 @@ mod tests {
         db.insert_account_storage(TEST_FEE_CURRENCY, allowance_slot, U256::MAX)
             .unwrap();
 
-        // `transferFrom(donor, sender, 1)` and `balanceOf(donor)` both start with `donor`;
-        // `balanceOf` ignores the extra words.
-        let mut data = selector;
+        // `balanceOf` ignores the words after `donor`.
+        let transfer_from = alloy_primitives::hex!("23b872dd");
+        let (selector, to, amount) = match main_call {
+            MainCall::RefillSender => (transfer_from, sender, U256::from(1)),
+            MainCall::ClearDonor => (transfer_from, recipient, donor_balance),
+            MainCall::ReadDonor => (alloy_primitives::hex!("70a08231"), sender, U256::from(1)),
+        };
+        let mut data = selector.to_vec();
         data.extend_from_slice(donor.into_word().as_slice());
-        data.extend_from_slice(sender.into_word().as_slice());
-        data.extend_from_slice(&U256::from(1).to_be_bytes::<32>());
+        data.extend_from_slice(to.into_word().as_slice());
+        data.extend_from_slice(&amount.to_be_bytes::<32>());
 
         let mut evm = build_cip64_ctx(
             db,
@@ -3906,7 +3942,11 @@ mod tests {
 
         assert!(result.is_success(), "{result:?}");
         let gas = result.gas();
-        let expected = if capped { gas.total_gas_spent() / 5 } else { 0 };
+        let expected = match expected {
+            Refund::Zero => 0,
+            Refund::Capped => gas.total_gas_spent() / 5,
+            Refund::Exact(refund) => refund,
+        };
         assert_eq!(gas.inner_refunded(), expected);
     }
 }
