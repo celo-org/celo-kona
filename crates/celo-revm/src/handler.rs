@@ -1292,6 +1292,10 @@ where
         // that take-back can leave the counter negative, which `set_final_refund` would read as
         // a huge `u64` and cap to the maximum refund. Without a debit the counter never goes
         // negative. Blocks before Karst keep the wrapped refund.
+        //
+        // The clamp fixes only the wrap. The main call's writes to slots the debit wrote stay
+        // dirty-priced, and restoring a debited value still earns the EIP-2200 restore refund,
+        // so the main call can be over- or undercharged by up to ~2800 gas per such slot.
         if evm.ctx().cfg().spec().is_enabled_in(OpSpecId::KARST) {
             let gas = exec_result.gas_mut();
             if gas.refunded() < 0 {
