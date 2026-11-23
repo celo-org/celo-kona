@@ -6,7 +6,8 @@ use alloy_genesis::GenesisAccount;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
 use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
 use celo_alloy_consensus::cgt_v2_group::{
-    CGT_V2_CONTROLLER, CGT_V2_DEPOSITOR, CGT_V2_GROUP_GAS, CGT_V2_L1_BLOCK, CgtV2UpgradeGroup,
+    CGT_V2_CONTROLLER, CGT_V2_DEPOSITOR, CGT_V2_FLAG_SLOT, CGT_V2_GROUP_GAS, CGT_V2_L1_BLOCK,
+    CgtV2UpgradeGroup,
 };
 use celo_reth::{
     CeloEvmConfig, cgt_v2::CgtV2PayloadBuilder, pool::CeloPoolTx, primitives::CeloPrimitives,
@@ -25,6 +26,15 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn cgt_v2_fallback_block_preserves_l1_info_and_origin_deposits() {
+    assert_deposits_only_payload(false);
+}
+
+#[test]
+fn cgt_v2_already_active_retry_preserves_l1_info_and_origin_deposits() {
+    assert_deposits_only_payload(true);
+}
+
+fn assert_deposits_only_payload(already_active: bool) {
     let chain_spec = Arc::new(
         OpChainSpecBuilder::default()
             .chain(Chain::from_id(1337))
@@ -38,13 +48,22 @@ fn cgt_v2_fallback_block_preserves_l1_info_and_origin_deposits() {
         "../../celo-alloy/consensus/testdata/cgt_v2/cgtv2-fixture-prestate.json"
     ))
     .unwrap();
-    // An initialized controller makes the real upgrade initializer revert.
-    accounts
-        .get_mut(&CGT_V2_CONTROLLER)
-        .unwrap()
-        .storage
-        .get_or_insert_default()
-        .insert(B256::ZERO, B256::with_last_byte(1));
+    if already_active {
+        accounts
+            .get_mut(&CGT_V2_L1_BLOCK)
+            .unwrap()
+            .storage
+            .get_or_insert_default()
+            .insert(CGT_V2_FLAG_SLOT, B256::with_last_byte(1));
+    } else {
+        // An initialized controller makes the real upgrade initializer revert.
+        accounts
+            .get_mut(&CGT_V2_CONTROLLER)
+            .unwrap()
+            .storage
+            .get_or_insert_default()
+            .insert(B256::ZERO, B256::with_last_byte(1));
+    }
     for (address, account) in accounts {
         provider.add_account(
             address,
@@ -61,10 +80,10 @@ fn cgt_v2_fallback_block_preserves_l1_info_and_origin_deposits() {
     }
     let inner = OpPayloadBuilder::new(
         NoopTransactionPool::<CeloPoolTx>::new(),
-        provider.clone(),
+        provider,
         CeloEvmConfig::celo(chain_spec),
     );
-    let builder = CgtV2PayloadBuilder::new(inner, provider, 1337);
+    let builder = CgtV2PayloadBuilder::new(inner, 1337);
 
     let mut l1_info_data = keccak256(
         b"setL1BlockValues(uint64,uint64,uint256,bytes32,uint64,bytes32,uint256,uint256)",
@@ -122,6 +141,22 @@ fn cgt_v2_fallback_block_preserves_l1_info_and_origin_deposits() {
     });
     let config = PayloadConfig::new(Arc::new(parent_header), attrs, id);
 
+    let mut incomplete = config.clone();
+    incomplete.attributes.0.transactions.as_mut().unwrap().pop();
+    assert!(
+        builder
+            .try_build(BuildArguments::new(
+                Default::default(),
+                None,
+                None,
+                incomplete,
+                Default::default(),
+                None,
+            ))
+            .is_err(),
+        "an incomplete group must not be accepted as a fallback, even when already active"
+    );
+
     let BuildOutcome::Freeze(payload) = builder
         .try_build(BuildArguments::new(
             Default::default(),
@@ -145,4 +180,9 @@ fn cgt_v2_fallback_block_preserves_l1_info_and_origin_deposits() {
     let receipts = &executed.execution_output.result.receipts;
     assert_eq!(receipts.len(), prefix.len());
     assert!(receipts.iter().all(TxReceipt::status));
+    for (index, amount) in [(2, 5), (3, 7)] {
+        let recipient = Address::with_last_byte(0x70 + index);
+        let account = executed.execution_output.account(&recipient).unwrap().unwrap();
+        assert_eq!(account.balance, U256::from(amount));
+    }
 }

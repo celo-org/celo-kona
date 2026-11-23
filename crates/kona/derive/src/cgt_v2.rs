@@ -28,11 +28,8 @@ const RETRY_REQUESTED: B256 =
 
 /// Resolves a CGTv2 attempt against the exact L2 parent state.
 pub trait CgtV2RecoveryState: core::fmt::Debug + Send + Sync {
-    /// Reads the CGT flag from the state committed to by this parent.
-    fn is_cgt_v2_active(&self, parent: L2BlockInfo) -> Result<bool, String>;
-
-    /// Replays the candidate from authenticated parent state and identifies upgrade reverts or
-    /// halts.
+    /// Replays the candidate from authenticated parent state and identifies an already-active
+    /// migration, upgrade reverts or halts, or a completion flag mismatch.
     fn cgt_v2_attempt_failed(
         &self,
         parent: L2BlockInfo,
@@ -173,7 +170,7 @@ impl<B, P> CgtV2AttributesBuilder<B, P> {
         Self { inner, origin: CgtV2Origin::new(cfg, provider), recovery: None }
     }
 
-    /// Supplies the parent-state reader and executor used to resolve each candidate.
+    /// Supplies the executor used to resolve each candidate from parent state.
     pub fn with_recovery(mut self, recovery: Arc<dyn CgtV2RecoveryState>) -> Self {
         self.recovery = Some(recovery);
         self
@@ -205,21 +202,16 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
                 gas.checked_add(upgrade_gas).ok_or_else(|| invalid("CGTv2 gas limit overflow"))?,
             );
             attrs.no_tx_pool = Some(true);
-            if let Some(recovery) = &self.recovery {
-                let active = recovery
-                    .is_cgt_v2_active(parent)
-                    .map_err(|err| PipelineError::Provider(err).crit())?;
-                if active ||
-                    recovery
-                        .cgt_v2_attempt_failed(parent, &attrs)
-                        .map_err(|err| PipelineError::Provider(err).crit())?
-                {
-                    // Hand the final transaction list to the proof driver for sealing and replay.
-                    if let Some(txs) = &mut attrs.transactions {
-                        txs.truncate(prefix_len);
-                    }
-                    attrs.gas_limit = Some(gas);
+            if let Some(recovery) = &self.recovery &&
+                recovery
+                    .cgt_v2_attempt_failed(parent, &attrs)
+                    .map_err(|err| PipelineError::Provider(err).crit())?
+            {
+                // Hand the final transaction list to the proof driver for sealing and replay.
+                if let Some(txs) = &mut attrs.transactions {
+                    txs.truncate(prefix_len);
                 }
+                attrs.gas_limit = Some(gas);
             }
         }
         Ok(attrs)

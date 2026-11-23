@@ -7,14 +7,11 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use alloy_consensus::{BlockBody, Header, Sealed, TrieAccount};
+use alloy_consensus::{BlockBody, Header, Sealed};
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes};
 use async_trait::async_trait;
-use celo_alloy_consensus::{
-    CeloBlock, CeloTxEnvelope,
-    cgt_v2_group::{CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CgtV2UpgradeGroup},
-};
+use celo_alloy_consensus::{CeloBlock, CeloTxEnvelope, cgt_v2_group::CgtV2UpgradeGroup};
 use celo_derive::CgtV2RecoveryState;
 use celo_executor::CeloStatelessL2Builder;
 use celo_genesis::CeloRollupConfig;
@@ -23,8 +20,8 @@ use kona_derive::L2ChainProvider;
 use kona_driver::PipelineCursor;
 use kona_executor::TrieDBProvider;
 use kona_genesis::{RollupConfig, SystemConfig};
-use kona_mpt::{Nibbles, OrderedListWalker, TrieHinter, TrieNode, TrieProvider};
-use kona_preimage::{CommsClient, PreimageKey};
+use kona_mpt::{OrderedListWalker, TrieHinter, TrieNode, TrieProvider};
+use kona_preimage::CommsClient;
 use kona_proof::{
     HintType, eip_2935_history_lookup, errors::OracleProviderError, l2::OracleL2ChainProvider,
 };
@@ -361,30 +358,9 @@ impl<T: CommsClient> TrieHinter for CeloOracleL2ChainProvider<T> {
     }
 }
 
-// Recovery reads proof nodes directly from the oracle and verifies their commitments before use.
-struct CgtV2Trie<'a, T>(&'a T);
-
-impl<T: CommsClient> TrieProvider for CgtV2Trie<'_, T> {
-    type Error = OracleProviderError;
-
-    fn trie_node_by_hash(&self, hash: B256) -> Result<TrieNode, Self::Error> {
-        let raw = kona_proof::block_on(self.0.get(PreimageKey::new_keccak256(*hash)))?;
-        if keccak256(&raw) != hash {
-            return Err(OracleProviderError::Rlp(alloy_rlp::Error::Custom(
-                "CGTv2 proof node does not match its hash",
-            )));
-        }
-        alloy_rlp::decode_exact(&raw).map_err(OracleProviderError::Rlp)
-    }
-}
-
 impl<T: CommsClient + Send + Sync + core::fmt::Debug> CgtV2RecoveryState
     for CeloOracleL2ChainProvider<T>
 {
-    fn is_cgt_v2_active(&self, parent: L2BlockInfo) -> Result<bool, String> {
-        self.read_cgt_v2_flag(parent).map_err(|err| err.to_string())
-    }
-
     fn cgt_v2_attempt_failed(
         &self,
         parent: L2BlockInfo,
@@ -416,31 +392,6 @@ impl<T: CommsClient> CeloOracleL2ChainProvider<T> {
             )));
         }
         Ok(header)
-    }
-
-    fn read_cgt_v2_flag(&self, parent: L2BlockInfo) -> Result<bool, OracleProviderError> {
-        let parent_hash = parent.hash();
-        let header = self.cgt_v2_parent_header(parent)?;
-        let trie = CgtV2Trie(self.oracle.as_ref());
-        self.hint_account_proof(CGT_V2_L1_BLOCK, parent_hash)?;
-        let account_key = Nibbles::unpack(keccak256(CGT_V2_L1_BLOCK));
-        let mut state = TrieNode::new_blinded(header.state_root);
-        let Some(value) = state.open(&account_key, &trie)? else { return Ok(false) };
-        let account: TrieAccount =
-            alloy_rlp::decode_exact(value).map_err(OracleProviderError::Rlp)?;
-        if account.storage_root == alloy_consensus::EMPTY_ROOT_HASH {
-            return Ok(false);
-        }
-        self.hint_storage_proof(
-            CGT_V2_L1_BLOCK,
-            U256::from_be_bytes(CGT_V2_FLAG_SLOT.0),
-            parent_hash,
-        )?;
-        let slot_key = Nibbles::unpack(keccak256(CGT_V2_FLAG_SLOT));
-        let mut storage = TrieNode::new_blinded(account.storage_root);
-        let Some(value) = storage.open(&slot_key, &trie)? else { return Ok(false) };
-        let flag: U256 = alloy_rlp::decode_exact(value).map_err(OracleProviderError::Rlp)?;
-        Ok(!flag.is_zero())
     }
 }
 
@@ -586,83 +537,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn cgt_v2_retry_authenticates_parent_state() {
-        use kona_mpt::NoopTrieProvider;
-
-        fn save(node: &TrieNode, preimages: &mut BTreeMap<PreimageKey, Vec<u8>>) -> B256 {
-            match node {
-                TrieNode::Branch { stack } => {
-                    for child in stack {
-                        save(child, preimages);
-                    }
-                }
-                TrieNode::Extension { node, .. } => {
-                    save(node, preimages);
-                }
-                _ => {}
-            }
-            let bytes = alloy_rlp::encode(node);
-            let hash = keccak256(&bytes);
-            preimages.insert(PreimageKey::new_keccak256(*hash), bytes);
-            hash
-        }
-        for active in [false, true] {
-            let mut preimages = BTreeMap::new();
-            let mut storage = TrieNode::Empty;
-            // Keep a storage trie even in the inactive case, so an absent flag must be proven.
-            let slot = if active { CGT_V2_FLAG_SLOT } else { B256::ZERO };
-            storage
-                .insert(
-                    &Nibbles::unpack(keccak256(slot)),
-                    alloy_rlp::encode(U256::from(1)).into(),
-                    &NoopTrieProvider,
-                )
-                .unwrap();
-            let storage_root = save(&storage, &mut preimages);
-            let account = TrieAccount { storage_root, ..Default::default() };
-            let mut state = TrieNode::Empty;
-            state
-                .insert(
-                    &Nibbles::unpack(keccak256(CGT_V2_L1_BLOCK)),
-                    alloy_rlp::encode(account).into(),
-                    &NoopTrieProvider,
-                )
-                .unwrap();
-            let state_root = save(&state, &mut preimages);
-            let header = Header {
-                number: 1_000_000,
-                timestamp: 1_000_000,
-                state_root,
-                ..Default::default()
-            };
-            let hash = header.hash_slow();
-            preimages.insert(PreimageKey::new_keccak256(*hash), alloy_rlp::encode(&header));
-            let parent = L2BlockInfo {
-                block_info: kona_protocol::BlockInfo::new(
-                    hash,
-                    header.number,
-                    header.parent_hash,
-                    header.timestamp,
-                ),
-                ..Default::default()
-            };
-            let (p, _) = provider(core::slice::from_ref(&header), preimages.clone());
-            assert_eq!(p.is_cgt_v2_active(parent).unwrap(), active);
-            let wrong_parent = L2BlockInfo {
-                block_info: kona_protocol::BlockInfo::new(
-                    hash,
-                    header.number,
-                    header.parent_hash,
-                    header.timestamp + 1,
-                ),
-                ..Default::default()
-            };
-            assert!(p.is_cgt_v2_active(wrong_parent).is_err());
-
-            // A valid RLP node under the wrong preimage key must fail.
-            preimages.insert(PreimageKey::new_keccak256(*storage_root), alloc::vec![0x80]);
-            let (p, _) = provider(&[header], preimages);
-            assert!(p.is_cgt_v2_active(parent).is_err());
-        }
+    async fn cgt_v2_attempt_rejects_inconsistent_parent() {
+        let (headers, preimages) = build_chain(2);
+        let (p, _) = provider(&headers, preimages);
+        let header = &headers[1];
+        let parent = L2BlockInfo {
+            block_info: kona_protocol::BlockInfo::new(
+                header.hash_slow(),
+                header.number,
+                header.parent_hash,
+                header.timestamp + 1,
+            ),
+            ..Default::default()
+        };
+        let error = p.cgt_v2_attempt_failed(parent, &OpPayloadAttributes::default()).unwrap_err();
+        assert!(error.contains("invalid CGTv2 parent header"), "{error}");
     }
 }

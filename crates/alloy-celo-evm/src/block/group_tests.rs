@@ -418,7 +418,12 @@ fn cgt_v2_next_block_resumes_users_and_rejects_reactivation() {
     let mut e = f.create_executor(f.evm_factory().create_evm(&mut db, env()), ctx());
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
-    assert!(e.execute_transaction(&group()[0]).unwrap_err().to_string().contains("cannot repeat"));
+    let error = e.execute_transaction(&group()[0]).unwrap_err();
+    assert_eq!(
+        CgtV2UpgradeFailed::from_block_error(&error),
+        Some(&CgtV2UpgradeFailed::AlreadyActive),
+        "{error}"
+    );
     e.execute_transaction(&user_transaction()).unwrap();
     assert!(e.finish().is_ok());
 }
@@ -495,34 +500,51 @@ impl core::fmt::Display for MigrationDbError {
 impl core::error::Error for MigrationDbError {}
 impl revm::database_interface::DBErrorMarker for MigrationDbError {}
 #[derive(Debug)]
-struct FailingDatabase(CacheDB<EmptyDB>);
+struct FailingDatabase {
+    inner: CacheDB<EmptyDB>,
+    address: Address,
+    slot: U256,
+}
 impl Database for FailingDatabase {
     type Error = MigrationDbError;
     fn basic(&mut self, a: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.0.basic(a).map_err(|_| MigrationDbError)
+        self.inner.basic(a).map_err(|_| MigrationDbError)
     }
     fn code_by_hash(&mut self, h: B256) -> Result<Bytecode, Self::Error> {
-        self.0.code_by_hash(h).map_err(|_| MigrationDbError)
+        self.inner.code_by_hash(h).map_err(|_| MigrationDbError)
     }
     fn storage(&mut self, a: Address, s: U256) -> Result<U256, Self::Error> {
-        if a == VAULT
-            && s == "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-                .parse::<U256>()
-                .unwrap()
-        {
+        if a == self.address && s == self.slot {
             return Err(MigrationDbError);
         }
-        self.0.storage(a, s).map_err(|_| MigrationDbError)
+        self.inner.storage(a, s).map_err(|_| MigrationDbError)
     }
     fn block_hash(&mut self, n: u64) -> Result<B256, Self::Error> {
-        self.0.block_hash(n).map_err(|_| MigrationDbError)
+        self.inner.block_hash(n).map_err(|_| MigrationDbError)
     }
 }
 
 #[test]
 fn cgt_v2_direct_upgrade_preserves_database_error() {
+    assert_migration_database_error(
+        VAULT,
+        "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            .parse::<U256>()
+            .unwrap(),
+        11,
+    );
+}
+
+#[test]
+fn cgt_v2_activation_flag_read_preserves_database_error() {
+    assert_migration_database_error(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0), 0);
+}
+
+fn assert_migration_database_error(address: Address, slot: U256, failing_step: usize) {
     let f = factory();
-    let mut db = State::builder().with_database(FailingDatabase(database())).build();
+    let mut db = State::builder()
+        .with_database(FailingDatabase { inner: database(), address, slot })
+        .build();
     let mut e = f.create_executor(
         f.evm_factory().create_evm(&mut db, env()),
         OpBlockExecutionCtx { parent_beacon_block_root: Some(B256::ZERO), ..Default::default() },
@@ -530,14 +552,14 @@ fn cgt_v2_direct_upgrade_preserves_database_error() {
     e.apply_pre_execution_changes().unwrap();
     e.execute_transaction(&info()).unwrap();
     let txs = group();
-    let vault_upgrade_step = 11;
-    for tx in &txs[..vault_upgrade_step] {
+    for tx in &txs[..failing_step] {
         e.execute_transaction(tx).unwrap();
     }
-    let error = e.execute_transaction(&txs[vault_upgrade_step]).unwrap_err();
+    let error = e.execute_transaction(&txs[failing_step]).unwrap_err();
     assert!(error.as_internal().is_some(), "database error became transaction invalidity: {error}");
     assert!(error.to_string().contains("injected migration DB error"), "{error}");
-    assert_eq!(e.receipts().len(), vault_upgrade_step + 1);
+    assert!(CgtV2UpgradeFailed::from_block_error(&error).is_none());
+    assert_eq!(e.receipts().len(), failing_step + 1);
 }
 
 #[test]

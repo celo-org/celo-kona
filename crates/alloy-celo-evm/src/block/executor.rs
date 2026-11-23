@@ -27,12 +27,14 @@ fn invalid_cgt_signal(message: &'static str) -> BlockExecutionError {
     BlockValidationError::msg(message).into()
 }
 
-/// A CGTv2 migration attempt failed and may be replaced with a deposits-only block.
+/// A CGTv2 migration attempt may be replaced with a deposits-only block.
 ///
 /// Post-Regolith, OP represents both EVM halts and deposit transaction validity errors as
 /// `FailedDeposit`. Database and other EVM errors still propagate separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgtV2UpgradeFailed {
+    /// CGTv2 is already active before the first upgrade deposit.
+    AlreadyActive,
     /// A required upgrade deposit returned an unsuccessful OP execution result.
     StepFailed {
         /// Zero-based position of the failed deposit in the group.
@@ -56,6 +58,9 @@ impl CgtV2UpgradeFailed {
 impl core::fmt::Display for CgtV2UpgradeFailed {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::AlreadyActive => {
+                f.write_str("CGTv2 activation cannot repeat: CGT is already active")
+            }
             Self::StepFailed { step } => {
                 write!(f, "required CGTv2 upgrade deposit {step} reverted or halted")
             }
@@ -214,7 +219,9 @@ where
                     .storage(CGT_V2_L1_BLOCK, U256::from_be_bytes(CGT_V2_FLAG_SLOT.0))
                     .map_err(BlockExecutionError::other)?;
                 if !flag.is_zero() {
-                    return Err(invalid_cgt_signal("CGTv2 activation cannot repeat"));
+                    return Err(
+                        BlockValidationError::other(CgtV2UpgradeFailed::AlreadyActive).into()
+                    );
                 }
             }
         } else if self.cgt_v2_next_step > 0 {

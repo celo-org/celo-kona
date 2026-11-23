@@ -3,10 +3,7 @@
 use alloy_celo_evm::block::executor::CgtV2UpgradeFailed;
 use alloy_eips::Decodable2718;
 use alloy_evm::block::BlockExecutionError;
-use alloy_primitives::B256;
-use celo_alloy_consensus::cgt_v2_group::{
-    CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_STEPS, CgtV2GroupError, CgtV2UpgradeGroup,
-};
+use celo_alloy_consensus::cgt_v2_group::{CGT_V2_STEPS, CgtV2GroupError, CgtV2UpgradeGroup};
 use op_alloy_consensus::OpTxEnvelope;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, HeaderForPayload, MissingPayloadBehaviour, PayloadBuilder,
@@ -14,26 +11,18 @@ use reth_basic_payload_builder::{
 };
 use reth_node_api::PayloadBuilderError;
 use reth_optimism_payload_builder::OpPayloadAttrs;
-use reth_storage_api::StateProviderFactory;
 
 /// Keeps pool transactions out of CGTv2 builds and resolves optional migration attempts.
 #[derive(Debug, Clone)]
-pub struct CgtV2PayloadBuilder<B, P> {
+pub struct CgtV2PayloadBuilder<B> {
     inner: B,
-    provider: P,
     chain_id: u64,
 }
 
-impl<B, P: StateProviderFactory> CgtV2PayloadBuilder<B, P> {
-    /// Wraps the node's payload builder and provides access to the candidate parent's state.
-    pub const fn new(inner: B, provider: P, chain_id: u64) -> Self {
-        Self { inner, provider, chain_id }
-    }
-
-    fn is_active_at(&self, parent: B256) -> Result<bool, PayloadBuilderError> {
-        let state = self.provider.state_by_block_hash(parent)?;
-        let flag = state.storage(CGT_V2_L1_BLOCK, CGT_V2_FLAG_SLOT)?;
-        Ok(flag.is_some_and(|flag| !flag.is_zero()))
+impl<B> CgtV2PayloadBuilder<B> {
+    /// Wraps the node's payload builder for the selected chain.
+    pub const fn new(inner: B, chain_id: u64) -> Self {
+        Self { inner, chain_id }
     }
 }
 
@@ -88,10 +77,9 @@ fn upgrade_failed(error: &PayloadBuilderError) -> Option<&CgtV2UpgradeFailed> {
     CgtV2UpgradeFailed::from_block_error(source.downcast_ref::<BlockExecutionError>()?)
 }
 
-impl<B, P> PayloadBuilder for CgtV2PayloadBuilder<B, P>
+impl<B> PayloadBuilder for CgtV2PayloadBuilder<B>
 where
     B: PayloadBuilder<Attributes = OpPayloadAttrs>,
-    P: StateProviderFactory + Clone + 'static,
 {
     type Attributes = B::Attributes;
     type BuiltPayload = B::BuiltPayload;
@@ -105,10 +93,6 @@ where
         else {
             return self.inner.try_build(args);
         };
-        if self.is_active_at(args.config.parent_header.hash())? {
-            args.config.attributes = fallback;
-            return self.inner.try_build(args);
-        }
         let mut fallback_config = args.config.clone();
         fallback_config.attributes = fallback;
         // Do not stream the writes of a possibly discarded candidate into the engine's shared trie.
