@@ -205,10 +205,10 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   const account = privateKeyToAccount(cfg.privateKey!);
   const wallet = createWalletClient({ account, chain, transport: http(cfg.l1RpcUrl) });
   const data = encodeFunctionData({ abi: systemConfigAbi, functionName: 'setMinBaseFee', args: [floor] });
-  // Simulate first so a rejected call costs no gas. The Roles module enforces the bounds.
-  const { request } = await l1
-    .simulateContract({
-      account,
+  // The Roles module enforces the bounds. If it rejects the call, gas estimation fails and
+  // nothing is sent.
+  const txHash = await wallet
+    .writeContract({
       address: cfg.roles,
       abi: rolesAbi,
       functionName: 'execTransactionWithRole',
@@ -217,7 +217,6 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
     .catch((e: unknown) => {
       throw rolesRejection(e, floor) ?? e;
     });
-  const txHash = await wallet.writeContract(request);
   log(`sent ${txHash}`, { txHash });
   const receipt = await l1.waitForTransactionReceipt({ hash: txHash });
   if (receipt.status !== 'success') throw new KeeperError(`tx ${txHash} reverted`);
