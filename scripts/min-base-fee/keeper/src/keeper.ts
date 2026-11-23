@@ -192,15 +192,14 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
       `floor ${current} -> ${floor} wei (${changeBps} bps)`,
     prices,
   );
-  const result: Result = { status: 'skipped', ...prices };
 
   if (changeBps < cfg.minChangeBps) {
     log(`change below ${cfg.minChangeBps} bps, skipping`);
-    return result;
+    return { status: 'skipped', ...prices };
   }
   if (cfg.dryRun) {
     log('dry run, not sending');
-    return { ...result, status: 'dry-run' };
+    return { status: 'dry-run', ...prices };
   }
 
   const account = privateKeyToAccount(cfg.privateKey!);
@@ -223,7 +222,7 @@ export async function runKeeper(cfg: Config, log: Log, now = () => Date.now()): 
   const receipt = await l1.waitForTransactionReceipt({ hash: txHash });
   if (receipt.status !== 'success') throw new KeeperError(`tx ${txHash} reverted`);
   log(`floor set to ${floor} wei in block ${receipt.blockNumber}`);
-  return { ...result, status: 'sent', txHash };
+  return { status: 'sent', ...prices, txHash };
 }
 
 function rolesRejection(e: unknown, floor: bigint): KeeperError | undefined {
