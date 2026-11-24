@@ -2291,6 +2291,7 @@ dependencies = [
  "kona-protocol",
  "lru 0.18.2",
  "op-alloy-rpc-types-engine",
+ "serde_json",
  "spin 0.10.1",
  "tokio",
  "tracing",

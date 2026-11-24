@@ -42,6 +42,7 @@ tracing.workspace = true
 [dev-dependencies]
 kona-derive = { workspace = true, features = ["test-utils"] }
 alloy-rlp.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
