@@ -2,34 +2,34 @@
 
 use crate::{backend::util::store_ordered_trie, single::CeloSingleChainHost};
 use alloy_consensus::Header;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::{eip2718::Encodable2718, eip4844::FIELD_ELEMENTS_PER_BLOB};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::Provider;
 use alloy_rlp::Decodable;
 use alloy_rpc_types::Block;
 use alloy_transport::{RpcError, TransportErrorKind};
 use anyhow::{Context, Result, anyhow, ensure};
+use ark_ff::{BigInteger, PrimeField};
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
 #[cfg(feature = "eigenda")]
 use hokulea_host_bin::handler::fetch_eigenda_hint;
 #[cfg(feature = "eigenda")]
 use hokulea_proof::hint::ExtendedHintType;
-use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore};
-use kona_preimage::PreimageKey;
-use kona_proof::{Hint, HintType};
-use kona_protocol::{OutputRoot, Predeploys};
+use kona_host::{HintHandler, OnlineHostBackendCfg, SharedKeyValueStore, single::parse_blob_hint};
+use kona_preimage::{PreimageKey, PreimageKeyType};
+use kona_proof::{Hint, HintType, l1::ROOTS_OF_UNITY};
+use kona_protocol::{BlockInfo, OutputRoot, Predeploys};
+use kona_providers_alloy::BlobWithCommitmentAndProof;
 use op_alloy_rpc_types_engine::OpPayloadAttributes;
 use std::time::Duration;
 use tracing::warn;
 
 /// Backoff schedule for retrying a hint fetch when its underlying RPC call fails transiently.
 ///
-/// kona's preimage server (`OnlineHostBackend::get_preimage`) retries a failed `fetch_hint`
-/// immediately with no delay, so a flaky RPC endpoint makes it busy-spin on the endpoint and
-/// flood the logs with `Failed to prefetch hint`. Retrying here with exponential backoff turns
-/// that into a bounded, quiet retry that recovers on its own: 100 ms, doubling each attempt,
-/// capped at 2 minutes, up to 20 times (~21 min of tolerance for a sustained outage).
+/// kona-host retries failed hints itself, logging each failure. Retrying transient failures
+/// here first keeps a flaky endpoint quiet: 100 ms, doubling each attempt, capped at 2 minutes,
+/// up to 20 times (~21 min of tolerance for a sustained outage).
 fn hint_retry_policy() -> ExponentialBuilder {
     ExponentialBuilder::default()
         .with_min_delay(Duration::from_millis(100))
@@ -149,7 +149,7 @@ impl HintHandler for CeloSingleChainHintHandler {
                     .as_ref()
                     .ok_or(anyhow!("Eigen DA blob provider must be set"))?;
                 // Back off transient EigenDA proxy-request failures (see is_retryable_eigenda_err)
-                // rather than falling through to kona's immediate spin loop; deterministic errors
+                // rather than falling through to kona's unbounded retry loop; deterministic errors
                 // surface immediately.
                 (|| fetch_eigenda_hint(hint.data.clone(), eigenda_provider, kv.clone()))
                     .retry(hint_retry_policy())
@@ -279,11 +279,71 @@ impl CeloSingleChainHintHandler {
 
                 store_ordered_trie(kv.as_ref(), raw_receipts.as_slice()).await?;
             }
-            HintType::L1Blob | HintType::L1Precompile => {
-                // Celo uses EigenDA (or calldata), not EIP-4844 blobs, and celo-client runs
-                // precompiles in-VM via `CeloEvmFactory`, so neither hint is ever sent.
-                // Panic instead of returning an error: kona-host retries failed hints forever,
-                // so an error would hang the host. The panic fails the preimage server task.
+            HintType::L1Blob => {
+                let (hash, timestamp) = parse_blob_hint(&hint.data)?;
+
+                let partial_block_ref = BlockInfo { timestamp, ..Default::default() };
+
+                // Fetch the blobs from the blob provider.
+                let mut blobs = providers
+                    .blobs
+                    .fetch_blobs_with_proofs(&partial_block_ref, &[hash])
+                    .await
+                    .map_err(|e| anyhow!("Failed to fetch blobs with proofs: {e}"))?;
+                if blobs.len() != 1 {
+                    anyhow::bail!("Expected 1 blob, got {}", blobs.len());
+                }
+                let BlobWithCommitmentAndProof {
+                    blob,
+                    kzg_proof: proof,
+                    kzg_commitment: commitment,
+                } = blobs.pop().expect("Expected 1 blob");
+
+                // Acquire a lock on the key-value store and set the preimages.
+                let mut kv_lock = kv.write().await;
+
+                // Set the preimage for the blob commitment.
+                kv_lock.set(
+                    PreimageKey::new(*hash, PreimageKeyType::Sha256).into(),
+                    commitment.to_vec(),
+                )?;
+
+                // Write all the field elements to the key-value store. There should be 4096.
+                // The preimage oracle key for each field element is the keccak256 hash of
+                // `abi.encodePacked(sidecar.KZGCommitment, bytes32(ROOTS_OF_UNITY[i]))`.
+                let mut blob_key = [0u8; 80];
+                blob_key[..48].copy_from_slice(commitment.as_ref());
+                for i in 0..FIELD_ELEMENTS_PER_BLOB {
+                    blob_key[48..].copy_from_slice(
+                        ROOTS_OF_UNITY[i as usize].into_bigint().to_bytes_be().as_ref(),
+                    );
+                    let blob_key_hash = keccak256(blob_key.as_ref());
+
+                    kv_lock
+                        .set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
+                    kv_lock.set(
+                        PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
+                        blob[(i as usize) << 5..(i as usize + 1) << 5].to_vec(),
+                    )?;
+                }
+
+                // Write the KZG Proof as the 4096th element.
+                // Note: This is not associated with a root of unity, as to be backwards compatible
+                // with ZK users of kona that use this proof for the overall blob.
+                blob_key[72..].copy_from_slice(FIELD_ELEMENTS_PER_BLOB.to_be_bytes().as_ref());
+                let blob_key_hash = keccak256(blob_key.as_ref());
+
+                kv_lock.set(PreimageKey::new_keccak256(*blob_key_hash).into(), blob_key.into())?;
+                kv_lock.set(
+                    PreimageKey::new(*blob_key_hash, PreimageKeyType::Blob).into(),
+                    proof.to_vec(),
+                )?;
+            }
+            HintType::L1Precompile => {
+                // celo-client runs precompiles in-VM via `CeloEvmFactory`, so this hint is never
+                // sent. Panic instead of returning an error: kona-host retries failed hints
+                // forever, so an error would hang the host. The panic fails the preimage server
+                // task.
                 panic!("unsupported hint type: {}", hint.ty);
             }
             HintType::L2BlockHeader => {
@@ -373,9 +433,9 @@ impl CeloSingleChainHintHandler {
                     Ok(code) => code,
                     // A transient failure on the primary lookup must back off — propagate it
                     // (still downcastable) instead of masking it with the fallback, whose
-                    // deterministic miss would otherwise surface as terminal and spin in kona. A
-                    // normal "wrong hashdb scheme" miss is a non-retryable `ErrorResp`, so it still
-                    // falls through to the fallback.
+                    // deterministic miss would otherwise surface as terminal and hit kona's
+                    // unbounded retry loop. A normal "wrong hashdb scheme" miss is a non-retryable
+                    // `ErrorResp`, so it still falls through to the fallback.
                     Err(e) if is_retryable_rpc(&e) => return Err(anyhow::Error::new(e)),
                     // Preserve the fallback's transport error (via `context`, not a stringified
                     // `anyhow!`) so a transient failure there stays downcastable and is retried.
@@ -522,7 +582,24 @@ impl CeloSingleChainHintHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::single::{
+        CeloSingleChainHost, CeloSingleChainProviders, CeloVerifyingPreimageFetcher,
+    };
+    use alloy_eips::eip4844::{Blob, BlobTransactionSidecar, env_settings::EnvKzgSettings};
+    use alloy_provider::RootProvider;
     use backon::BackoffBuilder;
+    use celo_alloy_network::Celo;
+    use kona_derive::BlobProvider;
+    use kona_host::{MemoryKeyValueStore, OnlineHostBackend, PreimageServer};
+    use kona_preimage::{BidirectionalChannel, HintReader, HintWriter, OracleReader, OracleServer};
+    use kona_proof::{CachingOracle, l1::OracleBlobProvider};
+    use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider};
+    use std::sync::Arc;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::RwLock,
+    };
 
     #[test]
     fn payload_witness_limits_inner_backoff_to_one_short_retry() {
@@ -530,5 +607,149 @@ mod tests {
 
         assert_eq!(backoff.next(), Some(Duration::from_millis(100)));
         assert_eq!(backoff.next(), None);
+    }
+
+    /// Serves `body` for `GET {path}?…` and 404 for anything else.
+    async fn mock_beacon(path: &'static str, body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap();
+                let (status, body) = if buf[..n].starts_with(format!("GET {path}?").as_bytes()) {
+                    ("200 OK", body.as_str())
+                } else {
+                    ("404 Not Found", "")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Providers with only the beacon reachable: genesis at 0, 12 s slots.
+    fn blob_providers(beacon_url: String) -> CeloSingleChainProviders {
+        let unused_rpc = "http://127.0.0.1:1".parse().unwrap();
+        CeloSingleChainProviders {
+            l1: RootProvider::new_http(unused_rpc),
+            blobs: OnlineBlobProvider {
+                beacon_client: OnlineBeaconClient::new_http(beacon_url),
+                genesis_time: 0,
+                slot_interval: 12,
+            },
+            l2: RootProvider::<Celo>::new_http("http://127.0.0.1:1".parse().unwrap()),
+            #[cfg(feature = "eigenda")]
+            eigenda_preimage_provider: None,
+        }
+    }
+
+    /// A blob the beacon node doesn't serve fails the hint.
+    #[tokio::test]
+    async fn l1_blob_hint_fails_when_beacon_has_no_blob() {
+        let providers = blob_providers(mock_beacon("/eth/v1/beacon/blobs/2", String::new()).await);
+        let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
+
+        // Timestamp 36 is slot 3, which the beacon answers with 404.
+        let mut hint_data = [0u8; 40];
+        hint_data[32..].copy_from_slice(&36u64.to_be_bytes());
+        let result = CeloSingleChainHintHandler::fetch_original_hint(
+            Hint { ty: HintType::L1Blob, data: hint_data.to_vec().into() },
+            &CeloSingleChainHost::default(),
+            &providers,
+            kv,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Blob not found at slot 3"), "{err}");
+    }
+
+    /// Kona's client-side `OracleBlobProvider` gets the blob from the host's preimage server, wired
+    /// as in [`CeloSingleChainHost::start_server`].
+    #[tokio::test]
+    async fn l1_blob_hint_round_trips_through_oracle_blob_provider() {
+        // Canonical field elements: the top byte of each 32-byte element stays zero.
+        let mut blob = Blob::default();
+        for (i, byte) in blob.iter_mut().enumerate() {
+            if i % 32 != 0 {
+                *byte = (i * 7 % 251) as u8;
+            }
+        }
+        let sidecar = BlobTransactionSidecar::try_from_blobs_with_settings(
+            vec![blob],
+            EnvKzgSettings::Default.get(),
+        )
+        .unwrap();
+        let blob_hash = sidecar.versioned_hashes().next().unwrap();
+
+        // Timestamp 24 with genesis 0 and 12 s slots is slot 2.
+        let beacon_url = mock_beacon(
+            "/eth/v1/beacon/blobs/2",
+            serde_json::json!({ "data": [blob] }).to_string(),
+        )
+        .await;
+        let providers = blob_providers(beacon_url);
+        let kv: SharedKeyValueStore = Arc::new(RwLock::new(MemoryKeyValueStore::new()));
+
+        let backend = CeloVerifyingPreimageFetcher::new(OnlineHostBackend::new(
+            CeloSingleChainHost::default(),
+            kv.clone(),
+            providers,
+            CeloSingleChainHintHandler,
+        ));
+        let hint = BidirectionalChannel::new().unwrap();
+        let preimage = BidirectionalChannel::new().unwrap();
+        tokio::spawn(
+            PreimageServer::new(
+                OracleServer::new(preimage.host),
+                HintReader::new(hint.host),
+                Arc::new(backend),
+            )
+            .start(),
+        );
+        let oracle = CachingOracle::new(
+            1024,
+            OracleReader::new(preimage.client),
+            HintWriter::new(hint.client),
+        );
+
+        let block_ref = BlockInfo { timestamp: 24, ..Default::default() };
+        let mut oracle_blobs = OracleBlobProvider::new(Arc::new(oracle));
+        // kona-host retries a failing hint forever, so bound the wait.
+        let blobs = tokio::time::timeout(
+            Duration::from_secs(30),
+            oracle_blobs.get_and_validate_blobs(&block_ref, &[blob_hash]),
+        )
+        .await
+        .expect("blob fetch timed out")
+        .unwrap();
+        assert_eq!(*blobs[0], blob);
+
+        let commitment = kv
+            .read()
+            .await
+            .get(PreimageKey::new(*blob_hash, PreimageKeyType::Sha256).into())
+            .unwrap();
+        assert_eq!(commitment, sidecar.commitments[0].to_vec());
+
+        // The blob's KZG proof is stored under the last field element's key with its final 8
+        // bytes replaced by the big-endian element count, as upstream kona-host does.
+        let mut proof_key = [0u8; 80];
+        proof_key[..48].copy_from_slice(&commitment);
+        proof_key[48..].copy_from_slice(
+            &ROOTS_OF_UNITY[FIELD_ELEMENTS_PER_BLOB as usize - 1].into_bigint().to_bytes_be(),
+        );
+        proof_key[72..].copy_from_slice(&FIELD_ELEMENTS_PER_BLOB.to_be_bytes());
+        let proof = kv
+            .read()
+            .await
+            .get(PreimageKey::new(*keccak256(proof_key), PreimageKeyType::Blob).into())
+            .unwrap();
+        assert_eq!(proof, sidecar.proofs[0].to_vec());
     }
 }
