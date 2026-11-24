@@ -37,60 +37,72 @@ pub trait CgtV2RecoveryState: core::fmt::Debug + Send + Sync {
     ) -> Result<bool, String>;
 }
 
-fn escrow_amount(
+/// The event that starts a CGTv2 attempt in an L1 origin, with the migrated amount it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CgtV2Trigger {
+    /// `EscrowSeeded` from the configured portal: the initial attempt.
+    Initial(U256),
+    /// `CgtV2RetryRequested` naming the pinned bundle hash.
+    Retry(U256),
+}
+
+/// Finds the event that starts a CGTv2 attempt in an origin's receipts.
+///
+/// Scans the logs of successful receipts once, in log order. The first event that is either the
+/// portal's `EscrowSeeded` or a `CgtV2RetryRequested` naming the pinned bundle hash wins, and a
+/// malformed event of either type reached before it is an error. An unset or all-zero pin matches
+/// no retry. A pre-Byzantium receipt is an error wherever it sits. op-node applies the same rule
+/// in `cgtV2EscrowAmount`, and `testdata/cgtv2-receipt-scan.json` pins both.
+fn cgt_v2_trigger(
     receipts: &[Receipt],
     bridge: Address,
     portal: Address,
-) -> Result<Option<U256>, &'static str> {
-    for receipt in receipts {
-        let alloy_consensus::Eip658Value::Eip658(success) = receipt.status else {
-            return Err("CGTv2 origin receipt has noncanonical poststate");
-        };
-        if !success {
-            continue;
-        }
-        for log in &receipt.logs {
-            if log.address != bridge || log.topics().first() != Some(&ESCROW_SEEDED) {
-                continue;
-            }
-            if log.topics().len() != 2 || log.data.data.len() != 32 {
-                return Err("malformed CGTv2 EscrowSeeded event");
-            }
-            if log.topics()[1] == portal.into_word() {
-                return Ok(Some(U256::from_be_slice(&log.data.data)));
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn retry_amount(
-    receipts: &[Receipt],
-    bridge: Address,
     expected_bundle_hash: Option<B256>,
     l1_block_hash: B256,
-) -> Result<Option<U256>, &'static str> {
-    // The initial activation scan has already checked receipt statuses.
+) -> Result<Option<CgtV2Trigger>, &'static str> {
+    if receipts
+        .iter()
+        .any(|receipt| !matches!(receipt.status, alloy_consensus::Eip658Value::Eip658(_)))
+    {
+        return Err("CGTv2 origin receipt has noncanonical poststate");
+    }
+    let pinned_bundle_hash = expected_bundle_hash.filter(|hash| !hash.is_zero());
     for receipt in receipts.iter().filter(|r| r.status.as_eip658() == Some(true)) {
         for log in &receipt.logs {
-            if log.address != bridge || log.topics().first() != Some(&RETRY_REQUESTED) {
+            if log.address != bridge {
                 continue;
             }
-            if log.topics().len() != 2 || log.data.data.len() != 32 {
-                return Err("malformed CGTv2 retry event");
+            let topics = log.topics();
+            let well_formed = topics.len() == 2 && log.data.data.len() == 32;
+            match topics.first() {
+                Some(&ESCROW_SEEDED) => {
+                    if !well_formed {
+                        return Err("malformed CGTv2 EscrowSeeded event");
+                    }
+                    if topics[1] == portal.into_word() {
+                        let amount = U256::from_be_slice(&log.data.data);
+                        return Ok(Some(CgtV2Trigger::Initial(amount)));
+                    }
+                }
+                Some(&RETRY_REQUESTED) => {
+                    if !well_formed {
+                        return Err("malformed CGTv2 retry event");
+                    }
+                    let requested_bundle_hash = topics[1];
+                    if pinned_bundle_hash == Some(requested_bundle_hash) {
+                        let amount = U256::from_be_slice(&log.data.data);
+                        return Ok(Some(CgtV2Trigger::Retry(amount)));
+                    }
+                    tracing::warn!(
+                        target: "cgt_v2",
+                        ?l1_block_hash,
+                        ?requested_bundle_hash,
+                        ?expected_bundle_hash,
+                        "Skipping CGTv2 retry request with an unrecognized bundle hash"
+                    );
+                }
+                _ => {}
             }
-            let requested_bundle_hash = log.topics()[1];
-            if expected_bundle_hash != Some(requested_bundle_hash) {
-                tracing::warn!(
-                    target: "cgt_v2",
-                    ?l1_block_hash,
-                    ?requested_bundle_hash,
-                    ?expected_bundle_hash,
-                    "Skipping CGTv2 retry request with an unrecognized bundle hash"
-                );
-                continue;
-            }
-            return Ok(Some(U256::from_be_slice(&log.data.data)));
         }
     }
     Ok(None)
@@ -133,27 +145,26 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         // OracleL1ChainProvider walks the authenticated receipt trie before returning these
         // type-erased Receipt values. Re-encoding them would lose typed receipt envelopes.
         let receipts = self.provider.receipts_by_hash(epoch.hash).await.map_err(Into::into)?;
-        let portal = self.cfg.deposit_contract_address;
-        let amount =
-            escrow_amount(&receipts, params.celo_gas_bridge_l1, portal).map_err(invalid)?;
-        if amount.is_some() {
-            return Ok(amount);
-        }
-        let amount = retry_amount(
+        let trigger = cgt_v2_trigger(
             &receipts,
             params.celo_gas_bridge_l1,
+            self.cfg.deposit_contract_address,
             params.retry_bundle_hash,
             epoch.hash,
         )
         .map_err(invalid)?;
-        if amount.is_some() {
-            let local_bundle_hash = CgtV2UpgradeGroup::bundle_hash(self.cfg.l2_chain_id.id())
-                .map_err(|e| invalid(alloc::format!("{e}")))?;
-            if Some(local_bundle_hash) != params.retry_bundle_hash {
-                return Err(invalid("local CGTv2 retry artifact does not match protocol hash"));
+        match trigger {
+            None => Ok(None),
+            Some(CgtV2Trigger::Initial(amount)) => Ok(Some(amount)),
+            Some(CgtV2Trigger::Retry(amount)) => {
+                let local_bundle_hash = CgtV2UpgradeGroup::bundle_hash(self.cfg.l2_chain_id.id())
+                    .map_err(|e| invalid(alloc::format!("{e}")))?;
+                if Some(local_bundle_hash) != params.retry_bundle_hash {
+                    return Err(invalid("local CGTv2 retry artifact does not match protocol hash"));
+                }
+                Ok(Some(amount))
             }
         }
-        Ok(amount)
     }
 }
 
@@ -358,33 +369,155 @@ mod tests {
         }
     }
 
+    fn retry_log(bridge: Address, bundle_hash: B256, amount: U256) -> Log {
+        Log {
+            address: bridge,
+            data: LogData::new_unchecked(
+                vec![RETRY_REQUESTED, bundle_hash],
+                amount.to_be_bytes::<32>().to_vec().into(),
+            ),
+        }
+    }
+
     #[test]
     fn cgt_v2_escrow_filters_and_amount() {
         let bridge = Address::with_last_byte(0xcc);
         let portal = Address::with_last_byte(0x44);
+        let scan =
+            |receipts: &[Receipt]| cgt_v2_trigger(receipts, bridge, portal, None, B256::ZERO);
         let valid = receipt(bridge, portal, U256::from(600));
         assert_eq!(
-            escrow_amount(core::slice::from_ref(&valid), bridge, portal).unwrap(),
-            Some(U256::from(600))
+            scan(core::slice::from_ref(&valid)).unwrap(),
+            Some(CgtV2Trigger::Initial(U256::from(600)))
         );
         assert_eq!(
-            escrow_amount(&[receipt(bridge, portal, U256::ZERO)], bridge, portal).unwrap(),
-            Some(U256::ZERO)
+            scan(&[receipt(bridge, portal, U256::ZERO)]).unwrap(),
+            Some(CgtV2Trigger::Initial(U256::ZERO))
         );
         for mut wrong in [
             receipt(Address::ZERO, portal, U256::from(600)),
             receipt(bridge, Address::ZERO, U256::from(600)),
         ] {
-            assert_eq!(escrow_amount(core::slice::from_ref(&wrong), bridge, portal).unwrap(), None);
+            assert_eq!(scan(core::slice::from_ref(&wrong)).unwrap(), None);
             wrong.status = Eip658Value::Eip658(false);
-            assert_eq!(escrow_amount(&[wrong], bridge, portal).unwrap(), None);
+            assert_eq!(scan(&[wrong]).unwrap(), None);
         }
         let mut malformed = valid.clone();
         malformed.logs[0].data.data = Bytes::new();
-        assert!(escrow_amount(&[malformed], bridge, portal).is_err());
+        assert!(scan(&[malformed]).is_err());
         let mut poststate = valid;
         poststate.status = Eip658Value::PostState(B256::ZERO);
-        assert!(escrow_amount(&[poststate], bridge, portal).is_err());
+        assert!(scan(&[poststate]).is_err());
+    }
+
+    /// Runs the receipt-scan vectors op-node also runs. The same file lives at
+    /// `op-node/rollup/derive/testdata/cgtv2-receipt-scan.json` in celo-org/optimism, and its test
+    /// asserts the same keccak256. Nothing compares the two repos automatically: change both files
+    /// and both constants together.
+    #[test]
+    fn cgt_v2_receipt_scan_vectors() {
+        const VECTORS: &str = include_str!("../testdata/cgtv2-receipt-scan.json");
+        assert_eq!(
+            alloy_primitives::keccak256(VECTORS),
+            alloy_primitives::b256!(
+                "f281a29ec2c2c611320df3795a5ee879418d6d0f9fba549845c127764a99a4a4"
+            ),
+            "cgtv2-receipt-scan.json must stay byte-identical to op-node's copy"
+        );
+        let vectors: serde_json::Value = serde_json::from_str(VECTORS).unwrap();
+        let text = |value: &serde_json::Value| value.as_str().unwrap().to_owned();
+        let bridge: Address = text(&vectors["bridge"]).parse().unwrap();
+        let portal: Address = text(&vectors["portal"]).parse().unwrap();
+        let pinned_hash: B256 = text(&vectors["pinnedHash"]).parse().unwrap();
+        let cases = vectors["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        let mut failures = Vec::new();
+        for case in cases {
+            let name = text(&case["name"]);
+            let receipts: Vec<Receipt> = case["receipts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|receipt| Receipt {
+                    status: Eip658Value::Eip658(receipt["success"].as_bool().unwrap()),
+                    logs: receipt["logs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|log| Log {
+                            address: text(&log["address"]).parse().unwrap(),
+                            data: LogData::new_unchecked(
+                                log["topics"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|topic| text(topic).parse().unwrap())
+                                    .collect(),
+                                text(&log["data"]).parse().unwrap(),
+                            ),
+                        })
+                        .collect(),
+                    ..Default::default()
+                })
+                .collect();
+            let pin = case["pinned"].as_bool().unwrap().then_some(pinned_hash);
+            let got = cgt_v2_trigger(&receipts, bridge, portal, pin, B256::ZERO);
+            let expect = &case["expect"];
+            let amount = || text(&expect["amount"]).parse::<U256>().unwrap();
+            let matches = match expect["kind"].as_str().unwrap() {
+                "none" => got == Ok(None),
+                "escrow" => got == Ok(Some(CgtV2Trigger::Initial(amount()))),
+                "retry" => got == Ok(Some(CgtV2Trigger::Retry(amount()))),
+                "error" => got.is_err_and(|msg| msg.contains(&text(&expect["message"]))),
+                kind => panic!("{name}: unknown expect kind {kind}"),
+            };
+            if !matches {
+                failures.push(format!("{name}: expected {expect}, got {got:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "failing vector cases:\n{}", failures.join("\n"));
+    }
+
+    /// op-node rejects a pre-Byzantium receipt before scanning, so its position relative to the
+    /// trigger event must not matter.
+    #[test]
+    fn cgt_v2_poststate_receipt_is_rejected_anywhere() {
+        let bridge = Address::with_last_byte(0xcc);
+        let portal = Address::with_last_byte(0x44);
+        let valid = receipt(bridge, portal, U256::from(600));
+        let poststate =
+            Receipt { status: Eip658Value::PostState(B256::ZERO), ..Default::default() };
+        for (order, receipts) in [
+            ("after a match", [valid.clone(), poststate.clone()]),
+            ("before a match", [poststate, valid]),
+        ] {
+            assert_eq!(
+                cgt_v2_trigger(&receipts, bridge, portal, None, B256::ZERO),
+                Err("CGTv2 origin receipt has noncanonical poststate"),
+                "post-state receipt {order}"
+            );
+        }
+    }
+
+    /// op-node treats an all-zero retry bundle hash as "no pin", so it never matches an event.
+    #[test]
+    fn cgt_v2_zero_pin_is_unset() {
+        let bridge = Address::with_last_byte(0xcc);
+        let retry = Receipt {
+            status: Eip658Value::Eip658(true),
+            logs: vec![retry_log(bridge, B256::ZERO, U256::from(987))],
+            ..Default::default()
+        };
+        assert_eq!(
+            cgt_v2_trigger(
+                &[retry],
+                bridge,
+                Address::with_last_byte(0x44),
+                Some(B256::ZERO),
+                B256::ZERO
+            ),
+            Ok(None)
+        );
     }
 
     #[tokio::test]
@@ -447,18 +580,19 @@ mod tests {
         let bridge = cgt_v2_params(1337).unwrap().celo_gas_bridge_l1;
         let amount = U256::from(987);
         let known_hash = CgtV2UpgradeGroup::bundle_hash(1337).unwrap();
-        for (bundle_hash, expected) in [(known_hash, Some(amount)), (B256::ZERO, None)] {
-            provider.receipts[0].1 = vec![Receipt {
-                status: Eip658Value::Eip658(true),
-                logs: vec![Log {
-                    address: bridge,
-                    data: LogData::new_unchecked(
-                        vec![RETRY_REQUESTED, bundle_hash],
-                        amount.to_be_bytes::<32>().to_vec().into(),
-                    ),
-                }],
-                ..Default::default()
-            }];
+        // The portal's escrow after a recognised retry in the same receipt does not displace it.
+        let retry_then_escrow = [
+            vec![retry_log(bridge, known_hash, amount)],
+            receipt(bridge, cfg.deposit_contract_address, U256::from(600)).logs,
+        ]
+        .concat();
+        for (logs, expected) in [
+            (vec![retry_log(bridge, known_hash, amount)], Some(amount)),
+            (vec![retry_log(bridge, B256::ZERO, amount)], None),
+            (retry_then_escrow, Some(amount)),
+        ] {
+            provider.receipts[0].1 =
+                vec![Receipt { status: Eip658Value::Eip658(true), logs, ..Default::default() }];
             let mut detector = CgtV2Origin::new(cfg.clone(), provider.clone());
             assert_eq!(detector.amount(parent, epoch).await.unwrap(), expected);
         }
