@@ -407,14 +407,15 @@ echo "Phase 2: rejected requests"
 rpc_expect_error estimateGas_unregistered_fee_currency eth_estimateGas \
     "[{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"feeCurrency\": \"0x00000000000000000000000000000000000000ff\"}, \"0x0\"]" \
     'fee currency not registered'
-# A fee currency implies EIP-1559 fee fields, so these two are refused by the
-# generic gasPrice/1559 conflict check rather than by a Celo-specific message.
 rpc_expect_error call_fee_currency_with_gas_price eth_call \
     "[{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"gasPrice\": \"0x1\", \"feeCurrency\": \"$FEE_CURRENCY\"}, \"0x0\"]" \
-    'both gasPrice and'
+    'CIP-64 is not compatible with legacy gasPrice'
 rpc_expect_error traceCall_fee_currency_with_gas_price debug_traceCall \
     "[{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"gasPrice\": \"0x1\", \"feeCurrency\": \"$FEE_CURRENCY\"}, \"0x0\", {\"tracer\": \"callTracer\"}]" \
-    'both gasPrice and'
+    'CIP-64 is not compatible with legacy gasPrice'
+rpc_expect_error estimateGas_fee_currency_with_authorization_list eth_estimateGas \
+    "[{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"feeCurrency\": \"$FEE_CURRENCY\", \"authorizationList\": []}, \"0x0\"]" \
+    'feeCurrency is not compatible with EIP-7702'
 rpc_expect_error simulateV1_fee_currency_with_authorization_list eth_simulateV1 \
     "[{\"blockStateCalls\": [{\"calls\": [{\"from\": \"$ACC_ADDR\", \"to\": \"$DEAD\", \"value\": \"0x1\", \"feeCurrency\": \"$FEE_CURRENCY\", \"authorizationList\": []}]}]}, \"0x0\"]" \
     'feeCurrency is not compatible with EIP-7702'
