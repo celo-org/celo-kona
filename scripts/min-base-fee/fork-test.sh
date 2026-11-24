@@ -2,7 +2,7 @@
 # Runs the full flow on an anvil fork of L1 with the Safe impersonated:
 # deploy Roles, execute the Safe batch, run the keeper, and check the permission is tight.
 #
-# Usage: FORK_URL=<l1 rpc> NETWORK=mainnet|sepolia fork-test.sh
+# Usage: FORK_URL=<l1 rpc> NETWORK=mainnet|sepolia|chaos fork-test.sh
 set -euo pipefail
 dir=$(dirname "$0")
 : "${FORK_URL:?set FORK_URL}"

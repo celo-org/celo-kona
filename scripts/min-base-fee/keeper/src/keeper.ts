@@ -28,6 +28,10 @@ const NETWORKS = {
     chain: sepolia,
     systemConfig: '0x760a5F022C9940f4A074e0030be682F560d29818',
   },
+  chaos: {
+    chain: sepolia,
+    systemConfig: '0x6bAf5959Cc06a39793c338E6586f49473C731b4c',
+  },
 } as const satisfies Record<string, { chain: Chain; systemConfig: Address }>;
 
 export const ROLE_KEY = stringToHex('MIN_BASE_FEE_KEEPER', { size: 32 });
