@@ -84,23 +84,16 @@ impl RpcTypes for CeloRpcTypes {
 fn celo_tx_env<Spec, Block: BlockEnvironment>(
     req: CeloTransactionRequest,
     evm_env: &EvmEnv<Spec, Block>,
-) -> Result<CeloTransaction<TxEnv>, EthTxEnvError> {
+) -> Result<CeloTransaction<TxEnv>, reth_optimism_rpc::OpEthApiError> {
     use alloy_evm::rpc::TryIntoTxEnv as _;
 
     let fee_currency = req.fee_currency;
 
-    // The returned error type is constrained to `EthTxEnvError` (foreign type, orphan rule)
-    // so the RPC message will be the generic `ConflictingFeeFieldsInRequest` text rather
-    // than a Celo-specific one; the warn-log carries the precise CIP-64 reason.
-    if let Err(conflict) = check_cip64_compatibility(req.inner.as_ref(), fee_currency) {
-        tracing::warn!(
-            target: "celo::rpc",
-            ?fee_currency,
-            "{}",
-            conflict.message(),
-        );
-        return Err(CallFeesError::ConflictingFeeFieldsInRequest.into());
-    }
+    // Reth's `ConflictingFeeFieldsInRequest` has the same -32602 code but a fixed message about
+    // gasPrice + EIP-1559 fees; `InvalidParams` gives the caller the CIP-64 reason instead.
+    check_cip64_compatibility(req.inner.as_ref(), fee_currency).map_err(|conflict| {
+        reth_rpc_eth_types::EthApiError::InvalidParams(conflict.message().to_string())
+    })?;
 
     // Build a base TxEnv from the inner TransactionRequest, then wrap in
     // OpTransaction. Mirrors `OpTxEnvConverter::convert_tx_env` upstream:
@@ -113,7 +106,7 @@ fn celo_tx_env<Spec, Block: BlockEnvironment>(
     if let Some((max_fee_per_gas, max_priority_fee_per_gas)) = cip64_fees {
         // A missing cap is a zero cap: the handler and op-geth both reject a tip above it.
         if max_fee_per_gas.unwrap_or_default() < max_priority_fee_per_gas.unwrap_or_default() {
-            return Err(CallFeesError::TipAboveFeeCap.into());
+            return Err(EthTxEnvError::from(CallFeesError::TipAboveFeeCap).into());
         }
         base.gas_price = max_fee_per_gas.unwrap_or_default();
         base.gas_priority_fee = max_priority_fee_per_gas.or(max_fee_per_gas.map(|_| 0));
@@ -150,7 +143,7 @@ where
     Evm: ConfigureEvm,
     EvmFactoryFor<Evm>: alloy_evm::EvmFactory<Tx = CeloTransaction<TxEnv>>,
 {
-    type Error = EthTxEnvError;
+    type Error = reth_optimism_rpc::OpEthApiError;
 
     fn convert_tx_env(
         &self,
@@ -1344,6 +1337,9 @@ mod tests {
     use super::*;
     use alloy_primitives::Signature;
     use celo_alloy_consensus::CeloTxEnvelope;
+    use celo_alloy_rpc_types::Cip64Conflict;
+    use reth_optimism_rpc::OpEthApiError;
+    use reth_rpc_eth_types::{EthApiError, RpcInvalidTransactionError};
 
     /// Celo keeps op-reth's pre-#22053 behaviour: a transaction forwarded to the sequencer is
     /// also retained in the local pool, so `eth_getTransactionByHash` /
@@ -1791,6 +1787,22 @@ mod tests {
     // celo_tx_env: request → simulation TxEnv
     // -----------------------------------------------------------------------
 
+    /// A CIP-64 conflict reaches the caller as an invalid-params error that names the
+    /// conflict, both as the Rust error and as the JSON-RPC error object.
+    fn assert_cip64_conflict_error(
+        result: Result<CeloTransaction<TxEnv>, OpEthApiError>,
+        conflict: Cip64Conflict,
+    ) {
+        let err = result.expect_err("the CIP-64 conflict must be rejected");
+        let OpEthApiError::Eth(EthApiError::InvalidParams(msg)) = &err else {
+            panic!("expected an invalid-params error, got: {err:?}");
+        };
+        assert_eq!(msg, conflict.message());
+        let rpc_err = jsonrpsee_types::ErrorObject::<'static>::from(err);
+        assert_eq!(rpc_err.code(), jsonrpsee_types::error::INVALID_PARAMS_CODE);
+        assert_eq!(rpc_err.message(), conflict.message());
+    }
+
     #[test]
     fn try_into_tx_env_rejects_gas_price_with_fee_currency() {
         use alloy_network::TransactionBuilder;
@@ -1806,8 +1818,7 @@ mod tests {
         };
 
         let evm_env: EvmEnv<op_revm::OpSpecId, revm::context::BlockEnv> = EvmEnv::default();
-        let result = celo_tx_env(req, &evm_env);
-        assert!(result.is_err(), "gasPrice + feeCurrency must be rejected in tx_env path");
+        assert_cip64_conflict_error(celo_tx_env(req, &evm_env), Cip64Conflict::GasPrice);
     }
 
     fn fee_request(
@@ -1862,21 +1873,31 @@ mod tests {
     /// rejects a cap below the base fee.
     #[test]
     fn try_into_tx_env_native_cap_below_base_fee_is_rejected() {
-        let result: Result<CeloTransaction<TxEnv>, EthTxEnvError> = celo_tx_env(
+        let result = celo_tx_env(
             fee_request(None, Some(CUSD_CAP), Some(CUSD_TIP)),
             &evm_env_with_base_fee(NATIVE_BASE_FEE),
         );
-        assert!(matches!(result, Err(EthTxEnvError::CallFees(CallFeesError::FeeCapTooLow))));
+        assert!(matches!(
+            result,
+            Err(OpEthApiError::Eth(EthApiError::InvalidTransaction(
+                RpcInvalidTransactionError::FeeCapTooLow
+            )))
+        ));
     }
 
     #[test]
     fn try_into_tx_env_cip64_tip_above_cap_is_rejected() {
         let fc = Address::with_last_byte(0xCC);
-        let result: Result<CeloTransaction<TxEnv>, EthTxEnvError> = celo_tx_env(
+        let result = celo_tx_env(
             fee_request(Some(fc), Some(CUSD_TIP), Some(CUSD_CAP)),
             &evm_env_with_base_fee(NATIVE_BASE_FEE),
         );
-        assert!(matches!(result, Err(EthTxEnvError::CallFees(CallFeesError::TipAboveFeeCap))));
+        assert!(matches!(
+            result,
+            Err(OpEthApiError::Eth(EthApiError::InvalidTransaction(
+                RpcInvalidTransactionError::TipAboveFeeCap
+            )))
+        ));
     }
 
     /// A tip without a cap would reach the handler as a tip above a zero cap and be rejected
@@ -1884,11 +1905,16 @@ mod tests {
     #[test]
     fn try_into_tx_env_cip64_tip_without_cap_is_rejected() {
         let fc = Address::with_last_byte(0xCC);
-        let result: Result<CeloTransaction<TxEnv>, EthTxEnvError> = celo_tx_env(
+        let result = celo_tx_env(
             fee_request(Some(fc), None, Some(CUSD_TIP)),
             &evm_env_with_base_fee(NATIVE_BASE_FEE),
         );
-        assert!(matches!(result, Err(EthTxEnvError::CallFees(CallFeesError::TipAboveFeeCap))));
+        assert!(matches!(
+            result,
+            Err(OpEthApiError::Eth(EthApiError::InvalidTransaction(
+                RpcInvalidTransactionError::TipAboveFeeCap
+            )))
+        ));
     }
 
     /// revm prices a 0x7b tx without a tip at its cap, so a missing tip must become a zero tip
@@ -1940,8 +1966,10 @@ mod tests {
     #[test]
     fn try_into_tx_env_rejects_authorization_list_with_fee_currency() {
         let evm_env: EvmEnv<op_revm::OpSpecId, revm::context::BlockEnv> = EvmEnv::default();
-        let result = celo_tx_env(auth_list_request_with_fee_currency(), &evm_env);
-        assert!(result.is_err(), "authorizationList + feeCurrency must be rejected in tx_env path");
+        assert_cip64_conflict_error(
+            celo_tx_env(auth_list_request_with_fee_currency(), &evm_env),
+            Cip64Conflict::AuthorizationList,
+        );
     }
 
     // -----------------------------------------------------------------------
