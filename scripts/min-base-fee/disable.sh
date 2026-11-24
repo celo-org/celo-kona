@@ -2,7 +2,7 @@
 # Stops the keeper by disabling the Roles module on the Safe. Signed with the keeper key.
 # Re-enabling takes a Safe tx: enableModule(roles).
 #
-# Usage: ROLES=<roles-proxy> disable.sh
+# Usage: [ROLES=<roles-proxy>] disable.sh  (ROLES defaults to the network's, see common.sh)
 source "$(dirname "$0")/common.sh"
 
 : "${ROLES:?set ROLES to the roles proxy address}"

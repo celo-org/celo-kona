@@ -23,9 +23,10 @@ Import `batch.json` into the Safe Transaction Builder and execute it with the Sa
 
 ## Run
 
-The keeper reads its settings from env: `NETWORK`, `L1_RPC_URL`, `ROLES` and
-`KEEPER_PRIVATE_KEY` (not needed with `DRY_RUN=true`). Optional overrides and their
-defaults are in `loadConfig` in `keeper/src/keeper.ts`.
+The keeper reads its settings from env: `NETWORK` (`mainnet`, `sepolia` or `chaos`),
+`L1_RPC_URL`, `ROLES` and `KEEPER_PRIVATE_KEY` (not needed with `DRY_RUN=true`). `ROLES`
+defaults to the deployed proxy on Sepolia and Chaos. Optional overrides and their defaults
+are in `loadConfig` in `keeper/src/keeper.ts`.
 
 Locally:
 

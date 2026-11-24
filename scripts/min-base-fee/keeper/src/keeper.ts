@@ -19,20 +19,24 @@ import {
 import { type PrivateKeyAccount, privateKeyToAccount } from 'viem/accounts';
 import { celo, mainnet, sepolia } from 'viem/chains';
 
+// roles: the Roles proxy, once deployed. The ROLES env var overrides it.
 const NETWORKS = {
   mainnet: {
     chain: mainnet,
     systemConfig: '0x89E31965D844a309231B1f17759Ccaf1b7c09861',
+    roles: undefined,
   },
   sepolia: {
     chain: sepolia,
     systemConfig: '0x760a5F022C9940f4A074e0030be682F560d29818',
+    roles: '0xad1058cafa8FEE9E21558f9728fBF8F5da4Ed334',
   },
   chaos: {
     chain: sepolia,
     systemConfig: '0x6bAf5959Cc06a39793c338E6586f49473C731b4c',
+    roles: '0x9A25668C97B68cD19541F7fA7073B56f834dC8fF',
   },
-} as const satisfies Record<string, { chain: Chain; systemConfig: Address }>;
+} as const satisfies Record<string, { chain: Chain; systemConfig: Address; roles: Address | undefined }>;
 
 export const ROLE_KEY = stringToHex('MIN_BASE_FEE_KEEPER', { size: 32 });
 // Always Celo Mainnet, also when updating Sepolia.
@@ -124,7 +128,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     l1RpcUrl: required('L1_RPC_URL'),
     l2RpcUrl: env.L2_RPC_URL ?? 'https://forno.celo.org',
     coinbaseUrl: env.COINBASE_URL ?? 'https://api.coinbase.com/v2/prices/CELO-USD/spot',
-    roles: getAddress(required('ROLES')),
+    roles: getAddress(env.ROLES ?? NETWORKS[network as Config['network']].roles ?? required('ROLES')),
     account: privateKey ? privateKeyToAccount(privateKey) : undefined,
     dryRun,
     targetUsdPerTx: usd('TARGET_USD_PER_TX', '0.002'),
