@@ -285,18 +285,23 @@ impl<T: CommsClient + Send + Sync> L2ChainProvider for CeloOracleL2ChainProvider
         // `CeloBlock` can be safely converted to `OpBlock` here with the lossy converter since
         // `to_system_config` reads only the block header and the L1-info deposit at
         // `transactions[0]`, which is never a CIP-64 tx.
-        let activation = block.header.number != rollup_config.genesis.l2.number &&
-            block.body.transactions.iter().any(CgtV2UpgradeGroup::is_activation_transaction);
+        let upgrade_gas = if block.header.number == rollup_config.genesis.l2.number {
+            None
+        } else {
+            CgtV2UpgradeGroup::block_upgrade_gas(
+                rollup_config.l2_chain_id.id(),
+                block.body.transactions.iter(),
+            )
+            .map_err(|_| {
+                OracleProviderError::Rlp(alloy_rlp::Error::Custom(
+                    "CGTv2 upgrade bundle is invalid or unconfigured",
+                ))
+            })?
+        };
         let mut config =
             to_system_config(&convert_celo_block_to_op_block(block), rollup_config.as_ref())
                 .map_err(OracleProviderError::OpBlockConversion)?;
-        if activation {
-            let upgrade_gas = CgtV2UpgradeGroup::gas_limit(rollup_config.l2_chain_id.id())
-                .map_err(|_| {
-                    OracleProviderError::Rlp(alloy_rlp::Error::Custom(
-                        "CGTv2 upgrade bundle is invalid or unconfigured",
-                    ))
-                })?;
+        if let Some(upgrade_gas) = upgrade_gas {
             config.gas_limit = config.gas_limit.checked_sub(upgrade_gas).ok_or(
                 OracleProviderError::OpBlockConversion(
                     kona_protocol::OpBlockConversionError::GasLimitBelowUpgradeGas {

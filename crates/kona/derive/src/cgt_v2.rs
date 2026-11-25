@@ -5,7 +5,7 @@ use alloy_consensus::{Header, Receipt, TxEnvelope};
 use alloy_eips::{BlockNumHash, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use async_trait::async_trait;
-use celo_alloy_consensus::cgt_v2_group::{CgtV2UpgradeGroup, cgt_v2_params};
+use celo_alloy_consensus::cgt_v2_group::{CgtV2NetworkParams, CgtV2RetryBundle, cgt_v2_params};
 use kona_derive::{
     AttributesBuilder, AttributesProvider, BuilderError, ChainProvider, OriginAdvancer,
     OriginProvider, PipelineError, PipelineErrorKind, PipelineResult, Stage,
@@ -42,23 +42,21 @@ pub trait CgtV2RecoveryState: core::fmt::Debug + Send + Sync {
 enum CgtV2Trigger {
     /// `EscrowSeeded` from the configured portal: the initial attempt.
     Initial(U256),
-    /// `CgtV2RetryRequested` naming the pinned bundle hash.
-    Retry(U256),
+    /// `CgtV2RetryRequested` naming a bundle eligible in this origin.
+    Retry(U256, &'static CgtV2RetryBundle),
 }
 
 /// Finds the event that starts a CGTv2 attempt in an origin's receipts.
 ///
 /// Scans the logs of successful receipts once, in log order. The first event that is either the
-/// portal's `EscrowSeeded` or a `CgtV2RetryRequested` naming the pinned bundle hash wins, and a
-/// malformed event of either type reached before it is an error. An unset or all-zero pin matches
-/// no retry. A pre-Byzantium receipt is an error wherever it sits. op-node applies the same rule
-/// in `cgtV2EscrowAmount`, and `testdata/cgtv2-receipt-scan.json` pins both.
+/// portal's `EscrowSeeded` or a `CgtV2RetryRequested` naming an eligible bundle wins. A malformed
+/// event reached before the match is an error. A pre-Byzantium receipt is an error wherever it
+/// sits. op-node applies the same rule in `cgtV2EscrowAmount`.
 fn cgt_v2_trigger(
     receipts: &[Receipt],
-    bridge: Address,
+    params: CgtV2NetworkParams,
     portal: Address,
-    expected_bundle_hash: Option<B256>,
-    l1_block_hash: B256,
+    epoch: BlockNumHash,
 ) -> Result<Option<CgtV2Trigger>, &'static str> {
     if receipts
         .iter()
@@ -66,10 +64,9 @@ fn cgt_v2_trigger(
     {
         return Err("CGTv2 origin receipt has noncanonical poststate");
     }
-    let pinned_bundle_hash = expected_bundle_hash.filter(|hash| !hash.is_zero());
     for receipt in receipts.iter().filter(|r| r.status.as_eip658() == Some(true)) {
         for log in &receipt.logs {
-            if log.address != bridge {
+            if log.address != params.celo_gas_bridge_l1 {
                 continue;
             }
             let topics = log.topics();
@@ -89,17 +86,18 @@ fn cgt_v2_trigger(
                         return Err("malformed CGTv2 retry event");
                     }
                     let requested_bundle_hash = topics[1];
-                    if pinned_bundle_hash == Some(requested_bundle_hash) {
-                        let amount = U256::from_be_slice(&log.data.data);
-                        return Ok(Some(CgtV2Trigger::Retry(amount)));
-                    }
-                    tracing::warn!(
-                        target: "cgt_v2",
-                        ?l1_block_hash,
-                        ?requested_bundle_hash,
-                        ?expected_bundle_hash,
-                        "Skipping CGTv2 retry request with an unrecognized bundle hash"
-                    );
+                    let Some(retry) = params.retry_bundle(requested_bundle_hash) else {
+                        tracing::warn!(
+                            target: "cgt_v2",
+                            l1_origin = epoch.number,
+                            l1_block_hash = ?epoch.hash,
+                            ?requested_bundle_hash,
+                            "Skipping CGTv2 retry request for an unregistered bundle"
+                        );
+                        continue;
+                    };
+                    let amount = U256::from_be_slice(&log.data.data);
+                    return Ok(Some(CgtV2Trigger::Retry(amount, retry)));
                 }
                 _ => {}
             }
@@ -108,16 +106,29 @@ fn cgt_v2_trigger(
     Ok(None)
 }
 
+struct CgtV2Attempt {
+    params: CgtV2NetworkParams,
+    amount: U256,
+    retry: Option<&'static CgtV2RetryBundle>,
+}
+
 /// Fixed protocol inputs and an L1 provider. No activation-status cache or bootstrap lookup.
 #[derive(Debug, Clone)]
 pub struct CgtV2Origin<P> {
     cfg: Arc<RollupConfig>,
     provider: P,
+    #[cfg(test)]
+    test_params: Option<CgtV2NetworkParams>,
 }
 impl<P> CgtV2Origin<P> {
     /// The provider must authenticate headers and receipts, as OracleL1ChainProvider does.
     pub const fn new(cfg: Arc<RollupConfig>, provider: P) -> Self {
-        Self { cfg, provider }
+        Self {
+            cfg,
+            provider,
+            #[cfg(test)]
+            test_params: None,
+        }
     }
 }
 impl<P: ChainProvider + Send> CgtV2Origin<P> {
@@ -127,12 +138,31 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         parent: L2BlockInfo,
         epoch: BlockNumHash,
     ) -> PipelineResult<Option<U256>> {
+        let Some(attempt) = self.attempt(parent, epoch).await? else {
+            return Ok(None);
+        };
+        if attempt.retry.is_some() {
+            attempt
+                .params
+                .upgrade_transactions(self.cfg.l2_chain_id.id(), attempt.amount, attempt.retry)
+                .map_err(|e| invalid(alloc::format!("{e}")))?;
+        }
+        Ok(Some(attempt.amount))
+    }
+
+    async fn attempt(
+        &mut self,
+        parent: L2BlockInfo,
+        epoch: BlockNumHash,
+    ) -> PipelineResult<Option<CgtV2Attempt>> {
         if parent.l1_origin == epoch {
             return Ok(None);
         }
-        let Ok(params) = cgt_v2_params(self.cfg.l2_chain_id.id()) else {
-            return Ok(None);
-        };
+        let chain_id = self.cfg.l2_chain_id.id();
+        let params = cgt_v2_params(chain_id);
+        #[cfg(test)]
+        let params = self.test_params.map(Ok).unwrap_or(params);
+        let Ok(params) = params else { return Ok(None) };
         let header = self.provider.header_by_hash(epoch.hash).await.map_err(Into::into)?;
         if header.hash_slow() != epoch.hash || header.number != epoch.number {
             return Err(invalid("CGTv2 origin header hash or number mismatch"));
@@ -145,26 +175,15 @@ impl<P: ChainProvider + Send> CgtV2Origin<P> {
         // OracleL1ChainProvider walks the authenticated receipt trie before returning these
         // type-erased Receipt values. Re-encoding them would lose typed receipt envelopes.
         let receipts = self.provider.receipts_by_hash(epoch.hash).await.map_err(Into::into)?;
-        let trigger = cgt_v2_trigger(
-            &receipts,
-            params.celo_gas_bridge_l1,
-            self.cfg.deposit_contract_address,
-            params.retry_bundle_hash,
-            epoch.hash,
-        )
-        .map_err(invalid)?;
-        match trigger {
-            None => Ok(None),
-            Some(CgtV2Trigger::Initial(amount)) => Ok(Some(amount)),
-            Some(CgtV2Trigger::Retry(amount)) => {
-                let local_bundle_hash = CgtV2UpgradeGroup::bundle_hash(self.cfg.l2_chain_id.id())
-                    .map_err(|e| invalid(alloc::format!("{e}")))?;
-                if Some(local_bundle_hash) != params.retry_bundle_hash {
-                    return Err(invalid("local CGTv2 retry artifact does not match protocol hash"));
-                }
-                Ok(Some(amount))
-            }
-        }
+        let (amount, retry) =
+            match cgt_v2_trigger(&receipts, params, self.cfg.deposit_contract_address, epoch)
+                .map_err(invalid)?
+            {
+                Some(CgtV2Trigger::Initial(amount)) => (amount, None),
+                Some(CgtV2Trigger::Retry(amount, retry)) => (amount, Some(retry)),
+                None => return Ok(None),
+            };
+        Ok(Some(CgtV2Attempt { params, amount, retry }))
     }
 }
 
@@ -196,19 +215,24 @@ impl<B: AttributesBuilder, P: ChainProvider + Send + core::fmt::Debug> Attribute
         parent: L2BlockInfo,
         epoch: BlockNumHash,
     ) -> PipelineResult<OpPayloadAttributes> {
-        let amount = self.origin.amount(parent, epoch).await?;
+        let attempt = self.origin.attempt(parent, epoch).await?;
+        let group = attempt
+            .map(|attempt| {
+                attempt.params.upgrade_transactions(
+                    self.origin.cfg.l2_chain_id.id(),
+                    attempt.amount,
+                    attempt.retry,
+                )
+            })
+            .transpose()
+            .map_err(|e| invalid(alloc::format!("{e}")))?;
         let mut attrs = self.inner.prepare_payload_attributes(parent, epoch).await?;
-        if let Some(amount) = amount {
-            let chain_id = self.origin.cfg.l2_chain_id.id();
-            let group = CgtV2UpgradeGroup::deposits(chain_id, amount)
-                .map_err(|e| invalid(alloc::format!("{e}")))?;
+        if let Some((group, upgrade_gas)) = group {
             let txs = attrs.transactions.get_or_insert_default();
             let prefix_len = txs.len();
             txs.extend(group.iter().map(|tx| Bytes::from(tx.encoded_2718())));
             let gas =
                 attrs.gas_limit.ok_or_else(|| invalid("CGTv2 attributes missing gas limit"))?;
-            let upgrade_gas = CgtV2UpgradeGroup::gas_limit(chain_id)
-                .map_err(|e| invalid(alloc::format!("{e}")))?;
             attrs.gas_limit = Some(
                 gas.checked_add(upgrade_gas).ok_or_else(|| invalid("CGTv2 gas limit overflow"))?,
             );
@@ -353,6 +377,9 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use alloy_consensus::{Eip658Value, Receipt};
     use alloy_primitives::{Log, LogData};
+    use celo_alloy_consensus::cgt_v2_group::{
+        CgtV2UpgradeGroup, test_utils::fixture_without_retries,
+    };
     use kona_derive::test_utils::TestChainProvider;
 
     fn receipt(bridge: Address, portal: Address, amount: U256) -> Receipt {
@@ -383,8 +410,9 @@ mod tests {
     fn cgt_v2_escrow_filters_and_amount() {
         let bridge = Address::with_last_byte(0xcc);
         let portal = Address::with_last_byte(0x44);
-        let scan =
-            |receipts: &[Receipt]| cgt_v2_trigger(receipts, bridge, portal, None, B256::ZERO);
+        let scan = |receipts: &[Receipt]| {
+            cgt_v2_trigger(receipts, fixture_without_retries(), portal, BlockNumHash::default())
+        };
         let valid = receipt(bridge, portal, U256::from(600));
         assert_eq!(
             scan(core::slice::from_ref(&valid)).unwrap(),
@@ -429,6 +457,10 @@ mod tests {
         let bridge: Address = text(&vectors["bridge"]).parse().unwrap();
         let portal: Address = text(&vectors["portal"]).parse().unwrap();
         let pinned_hash: B256 = text(&vectors["pinnedHash"]).parse().unwrap();
+        let pinned = cgt_v2_params(1337).unwrap();
+        assert_eq!(pinned.celo_gas_bridge_l1, bridge);
+        let epoch = BlockNumHash::default();
+        let pinned_retry = pinned.retry_bundle(pinned_hash).unwrap();
         let cases = vectors["cases"].as_array().unwrap();
         assert!(!cases.is_empty());
         let mut failures = Vec::new();
@@ -460,14 +492,15 @@ mod tests {
                     ..Default::default()
                 })
                 .collect();
-            let pin = case["pinned"].as_bool().unwrap().then_some(pinned_hash);
-            let got = cgt_v2_trigger(&receipts, bridge, portal, pin, B256::ZERO);
+            let params =
+                if case["pinned"].as_bool().unwrap() { pinned } else { fixture_without_retries() };
+            let got = cgt_v2_trigger(&receipts, params, portal, epoch);
             let expect = &case["expect"];
             let amount = || text(&expect["amount"]).parse::<U256>().unwrap();
             let matches = match expect["kind"].as_str().unwrap() {
                 "none" => got == Ok(None),
                 "escrow" => got == Ok(Some(CgtV2Trigger::Initial(amount()))),
-                "retry" => got == Ok(Some(CgtV2Trigger::Retry(amount()))),
+                "retry" => got == Ok(Some(CgtV2Trigger::Retry(amount(), pinned_retry))),
                 "error" => got.is_err_and(|msg| msg.contains(&text(&expect["message"]))),
                 kind => panic!("{name}: unknown expect kind {kind}"),
             };
@@ -492,32 +525,16 @@ mod tests {
             ("before a match", [poststate, valid]),
         ] {
             assert_eq!(
-                cgt_v2_trigger(&receipts, bridge, portal, None, B256::ZERO),
+                cgt_v2_trigger(
+                    &receipts,
+                    fixture_without_retries(),
+                    portal,
+                    BlockNumHash::default()
+                ),
                 Err("CGTv2 origin receipt has noncanonical poststate"),
                 "post-state receipt {order}"
             );
         }
-    }
-
-    /// op-node treats an all-zero retry bundle hash as "no pin", so it never matches an event.
-    #[test]
-    fn cgt_v2_zero_pin_is_unset() {
-        let bridge = Address::with_last_byte(0xcc);
-        let retry = Receipt {
-            status: Eip658Value::Eip658(true),
-            logs: vec![retry_log(bridge, B256::ZERO, U256::from(987))],
-            ..Default::default()
-        };
-        assert_eq!(
-            cgt_v2_trigger(
-                &[retry],
-                bridge,
-                Address::with_last_byte(0x44),
-                Some(B256::ZERO),
-                B256::ZERO
-            ),
-            Ok(None)
-        );
     }
 
     #[tokio::test]
@@ -595,6 +612,74 @@ mod tests {
                 vec![Receipt { status: Eip658Value::Eip658(true), logs, ..Default::default() }];
             let mut detector = CgtV2Origin::new(cfg.clone(), provider.clone());
             assert_eq!(detector.amount(parent, epoch).await.unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn cgt_v2_appended_retry_selects_registered_bundle() {
+        use celo_alloy_consensus::cgt_v2_group::test_utils::{
+            APPENDED_RETRY_HASH, with_appended_retry,
+        };
+        use kona_derive::test_utils::TestAttributesBuilder;
+
+        let (cfg, provider, parent, epoch) = setup();
+        let bridge = cgt_v2_params(1337).unwrap().celo_gas_bridge_l1;
+        let initial = provider.receipts[0].1[0].clone();
+        let old_hash = CgtV2UpgradeGroup::bundle_hash(1337).unwrap();
+        let request = |hash| Receipt {
+            status: Eip658Value::Eip658(true),
+            logs: vec![retry_log(bridge, hash, U256::from(987))],
+            ..Default::default()
+        };
+        let attrs = OpPayloadAttributes {
+            transactions: Some(vec![Bytes::from_static(b"info")]),
+            gas_limit: Some(30_000_000),
+            ..Default::default()
+        };
+        let build = |receipt, test_params| {
+            let cfg = cfg.clone();
+            let mut provider = provider.clone();
+            let attrs = attrs.clone();
+            async move {
+                provider.receipts[0] = (epoch.hash, vec![receipt]);
+                let inner = TestAttributesBuilder { attributes: vec![Ok(attrs)] };
+                let mut builder = CgtV2AttributesBuilder::new(cfg, inner, provider);
+                builder.origin.test_params = test_params;
+                builder.prepare_payload_attributes(parent, epoch).await.unwrap()
+            }
+        };
+        let params = with_appended_retry();
+        let retry_then_escrow = [request(APPENDED_RETRY_HASH), initial.clone()];
+        let selected = params.retry_bundle(APPENDED_RETRY_HASH).unwrap();
+        let trigger =
+            cgt_v2_trigger(&retry_then_escrow, params, cfg.deposit_contract_address, epoch)
+                .unwrap();
+        assert!(
+            trigger == Some(CgtV2Trigger::Retry(U256::from(987), selected)),
+            "the registered retry should take precedence over EscrowSeeded"
+        );
+
+        for receipt in [initial, request(old_hash)] {
+            let prior = build(receipt.clone(), None).await;
+            let replay = build(receipt, Some(params)).await;
+            assert_eq!(prior, replay);
+        }
+        let skipped = build(request(APPENDED_RETRY_HASH), None).await;
+        assert_eq!(skipped, attrs);
+
+        let retry = build(request(APPENDED_RETRY_HASH), Some(params)).await;
+        assert_eq!(retry.gas_limit, Some(70_600_333));
+        assert_eq!(retry.no_tx_pool, Some(true));
+        let txs = retry.transactions.unwrap();
+        let original = CgtV2UpgradeGroup::deposits(1337, U256::from(987)).unwrap();
+        assert_eq!(txs.len(), original.len() + 1);
+        for (i, mut deposit) in original.into_iter().enumerate() {
+            deposit.gas_limit += match i {
+                3 => 111,
+                9 => 222,
+                _ => 0,
+            };
+            assert_eq!(txs[i + 1].as_ref(), deposit.encoded_2718());
         }
     }
 

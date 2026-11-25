@@ -40,6 +40,7 @@ lru = { workspace = true, features = ["hashbrown"] }
 tracing.workspace = true
 
 [dev-dependencies]
+celo-alloy-consensus = { workspace = true, features = ["test-utils"] }
 kona-derive = { workspace = true, features = ["test-utils"] }
 alloy-rlp.workspace = true
 serde_json = { workspace = true, features = ["std"] }

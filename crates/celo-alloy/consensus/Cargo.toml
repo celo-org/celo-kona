@@ -46,6 +46,7 @@ alloy-consensus = { workspace = true, features = ["arbitrary"] }
 op-alloy-consensus = { workspace = true, features = ["arbitrary"] }
 
 [features]
+test-utils = []
 default = ["std"]
 std = ["alloy-eips/std", "alloy-consensus/std", "reth-primitives-traits?/std"]
 reth = ["std", "dep:reth-primitives-traits", "dep:reth-codecs", "dep:modular-bitfield", "dep:bytes", "k256", "op-alloy-consensus/reth-codec"]
