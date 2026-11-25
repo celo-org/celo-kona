@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(
             alloy_primitives::keccak256(VECTORS),
             alloy_primitives::b256!(
-                "f281a29ec2c2c611320df3795a5ee879418d6d0f9fba549845c127764a99a4a4"
+                "66c3cffd4bf756b81e8c4d21b1f8ba639583baed1276dae34edaeaf3afadfca9"
             ),
             "cgtv2-receipt-scan.json must stay byte-identical to op-node's copy"
         );
@@ -624,7 +624,7 @@ mod tests {
             &txs[4..],
             group.iter().map(|tx| Bytes::from(tx.encoded_2718())).collect::<Vec<_>>()
         );
-        assert_eq!(active.gas_limit, Some(70_600_000));
+        assert_eq!(active.gas_limit, Some(77_100_000));
         assert_eq!(active.no_tx_pool, Some(true));
         let next = builder
             .prepare_payload_attributes(L2BlockInfo { l1_origin: epoch, ..parent }, epoch)

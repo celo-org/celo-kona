@@ -79,7 +79,7 @@ const NETWORKS: [CgtV2NetworkEntry; 3] = [
 const FIXTURE_PARAMS: CgtV2NetworkParams = CgtV2NetworkParams {
     celo_gas_bridge_l1: Address::with_last_byte(0xcc),
     retry_bundle_hash: Some(b256!(
-        "437fabe614e74fd20231c33accdacbad38631aaefc16abdb3c38c3bc5be10f14"
+        "df4b9e639dee5da17fd51c194fb2709f3d5f1b995ec26682cb8d68308eff49f2"
     )),
     total_supply: uint!(1000_U256),
     bundle: include_bytes!("../upgrades/cgtv2/fixture.rlp"),
@@ -110,13 +110,13 @@ pub fn cgt_v2_params(chain_id: u64) -> Result<CgtV2NetworkParams, CgtV2ConfigErr
 }
 
 /// Number of static NUT transactions, followed by one dynamic funding deposit.
-pub const CGT_V2_STATIC_STEPS: usize = 15;
+pub const CGT_V2_STATIC_STEPS: usize = 17;
 /// Number of required transactions in the complete group.
 pub const CGT_V2_STEPS: usize = CGT_V2_STATIC_STEPS + 1;
 /// Gas limit for the dynamic reserve-funding deposit.
 pub const CGT_V2_FUNDING_GAS: u64 = 100_000;
 /// Synthetic fixture allowance. Runtime gas is derived from the selected bundle.
-pub const CGT_V2_GROUP_GAS: u64 = 40_600_000;
+pub const CGT_V2_GROUP_GAS: u64 = 47_100_000;
 /// Fixed depositor authorized by the proxy admin and CGT setter.
 pub const CGT_V2_DEPOSITOR: Address = address!("deaddeaddeaddeaddeaddeaddeaddeaddead0001");
 /// L1Block proxy.
@@ -144,7 +144,9 @@ const INTENTS: [&str; CGT_V2_STEPS] = [
     "Cgtv2 11: CeloSequencerFeeVault upgrade and initialize",
     "Cgtv2 12: CeloGasBridgeL2 minter authorization",
     "Cgtv2 13: LiquidityController ownership transfer",
-    "Cgtv2 14: CGTv2 flag enable",
+    "Cgtv2 14: L2CrossDomainMessenger deployment",
+    "Cgtv2 15: L2CrossDomainMessenger upgrade",
+    "Cgtv2 16: CGTv2 flag enable",
     "Celo: CGTv2 Reserve Funding",
 ];
 
@@ -308,7 +310,7 @@ mod tests {
     fn cgt_v2_bundle_hash_matches_go() {
         assert_eq!(
             CgtV2UpgradeGroup::bundle_hash(CGT_V2_FIXTURE_CHAIN_ID).unwrap(),
-            b256!("437fabe614e74fd20231c33accdacbad38631aaefc16abdb3c38c3bc5be10f14")
+            b256!("df4b9e639dee5da17fd51c194fb2709f3d5f1b995ec26682cb8d68308eff49f2")
         );
     }
 
@@ -362,8 +364,8 @@ mod tests {
         raw[0] = tx.encoded_2718().into();
         let encoded = alloy_rlp::encode(&raw);
         let decoded = CgtV2UpgradeGroup::decode_bundle(1337, &encoded).unwrap();
-        assert_eq!(CgtV2UpgradeGroup::group_gas(&decoded).unwrap(), 40_600_111);
-        assert_eq!(CgtV2UpgradeGroup::gas_limit(1337).unwrap(), 40_600_000);
+        assert_eq!(CgtV2UpgradeGroup::group_gas(&decoded).unwrap(), 47_100_111);
+        assert_eq!(CgtV2UpgradeGroup::gas_limit(1337).unwrap(), 47_100_000);
         tx.gas_limit = u64::MAX;
         raw[0] = tx.encoded_2718().into();
         assert!(
@@ -379,7 +381,11 @@ mod tests {
         raw[0] = tx.encoded_2718().into();
         assert!(CgtV2UpgradeGroup::decode_bundle(1337, &alloy_rlp::encode(&raw)).is_err());
         assert!(
-            CgtV2UpgradeGroup::decode_bundle(1337, &alloy_rlp::encode(raw[..14].to_vec())).is_err()
+            CgtV2UpgradeGroup::decode_bundle(
+                1337,
+                &alloy_rlp::encode(raw[..CGT_V2_STATIC_STEPS - 1].to_vec())
+            )
+            .is_err()
         );
         assert!(CgtV2UpgradeGroup::decode_bundle(1337, &[0xc0, 0x00]).is_err());
     }

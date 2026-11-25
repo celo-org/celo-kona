@@ -6,7 +6,7 @@ The regular Rust CI test job executes the NUT group through the real EVM. It che
 
 These checks cover the synthetic chain 1337 fixture. Before release, supply and review the production reserved bridge address, L1 addresses, owner, legacy vault and gas-token settings, fixed total supply, deployer nonce/collision checks, populated chain state and gas limits. Regenerate the bundle in the contracts repository and rerun the same checks against the final artifacts. Production devnet parity is still required once those inputs are available.
 
-The direct-upgrade alternative contains 15 static deposits plus reserve funding. It preserves the v6 ProxyAdmin implementation and ownership and uses no Karst manager helpers. Verify pinned legacy getter settings before freezing a production bundle.
+The direct-upgrade alternative contains 17 static deposits plus reserve funding. It preserves the v6 ProxyAdmin implementation and ownership and uses no Karst manager helpers. Verify pinned legacy getter settings before freezing a production bundle.
 
 Initializer resets and StorageSetter are omitted. The controller and bridge proxy must be unused; the FeeVault OZ v5 initializer slot must be zero even though its legacy slot-zero totalProcessed is populated. Existing initializer guards reject an already-initialized target.
 
@@ -23,10 +23,10 @@ python3 scripts/cgtv2/import_bundle.py \
   --optimism /path/to/op-node-checkout
 ```
 
-Use `sepolia` or `chaos` for the other supported profiles. The command requires Foundry's `cast` for Keccak, writes the JSON bytes unchanged for Go, and encodes the 15 static deposits as an RLP list for Rust. It checks the schema, agreed intents/order, addresses, calldata and gas bounds before writing. No RPC or on-chain write occurs. Runtime Rust code decodes the compiled RLP and needs no JSON reader or new dependency.
+Use `sepolia` or `chaos` for the other supported profiles. The command requires Foundry's `cast` for Keccak, writes the JSON bytes unchanged for Go, and encodes the 17 static deposits as an RLP list for Rust. It checks the schema, agreed intents/order, addresses, calldata and gas bounds before writing. No RPC or on-chain write occurs. Runtime Rust code decodes the compiled RLP and needs no JSON reader or new dependency.
 
 The frozen RLP list contains the same ordinary EIP-2718 deposit bytes as the existing per-transaction fixture files. Reserve funding stays dynamic. Both clients compute the one-time gas allowance from the selected static deposits plus the 100,000 funding gas, and subtract that same allowance when recovering SystemConfig from the activation parent.
 
-Replacing the network artifacts requires no selector or gas-constant code change while the agreed 15-step protocol/intents stay unchanged. The fixed L1 bridge address in each network parameter table still needs its final deployed address. Review the contracts generator's captured settings/snapshot and artifact provenance before importing; importing a file does not establish production readiness.
+Replacing the network artifacts requires no selector or gas-constant code change while the agreed 17-step protocol/intents stay unchanged. The fixed L1 bridge address in each network parameter table still needs its final deployed address. Review the contracts generator's captured settings/snapshot and artifact provenance before importing; importing a file does not establish production readiness.
 
 Run importer tests with `python3 -m unittest discover -s scripts/cgtv2 -p 'test_import_bundle.py' -v`. The fixture parity check also binds the compiled fixture RLP list to the individually hashed transaction files.

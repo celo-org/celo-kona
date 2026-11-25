@@ -67,7 +67,7 @@ def encode_bundle(bundle):
         raise ValueError("invalid NUT transactions")
     expected = json.loads((FIXTURE / "cgtv2-fixture-nut-bundle.json").read_text())["transactions"]
     if len(transactions) != len(expected):
-        raise ValueError("CGTv2 requires 15 static transactions")
+        raise ValueError(f"CGTv2 requires {len(expected)} static transactions")
     total_gas = 100_000
     decoded = []
     for i, tx in enumerate(transactions):
