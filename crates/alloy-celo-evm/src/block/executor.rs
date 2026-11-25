@@ -18,7 +18,8 @@ use alloy_op_evm::{
 use alloy_op_hardforks::OpHardforks;
 use alloy_primitives::U256;
 use celo_alloy_consensus::cgt_v2_group::{
-    CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_STEPS, CgtV2UpgradeGroup,
+    CGT_V2_FLAG_SLOT, CGT_V2_L1_BLOCK, CGT_V2_STEPS, CgtV2GroupMatcher, CgtV2MatchedStep,
+    CgtV2UpgradeGroup,
 };
 use op_alloy_consensus::{OpTransaction as OpConsensusTransaction, post_exec::SDMGasEntry};
 use revm::{Database as _, DatabaseCommit};
@@ -79,7 +80,7 @@ impl core::error::Error for CgtV2UpgradeFailed {}
 pub struct CeloTxResult<H, T> {
     /// The upstream execution result.
     pub op: OpTxResult<H, T>,
-    cgt_v2_step: Option<usize>,
+    cgt_v2_step: Option<CgtV2MatchedStep>,
 }
 
 impl<H, T> core::ops::Deref for CeloTxResult<H, T> {
@@ -114,8 +115,8 @@ pub struct CeloBlockExecutor<E, R: OpReceiptBuilder, Spec> {
     inner: OpBlockExecutor<E, R, Spec>,
     /// Incremental builders may not know the signal until it is executed.
     has_committed_non_deposit_tx: bool,
-    /// Only committed required deposits advance the group.
-    cgt_v2_next_step: usize,
+    /// Initialized on the first recognized candidate. Only committed deposits advance it.
+    cgt_v2_group: Option<CgtV2GroupMatcher>,
 }
 
 impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, Spec> {
@@ -127,7 +128,13 @@ impl<E, R: OpReceiptBuilder, Spec> core::fmt::Debug for CeloBlockExecutor<E, R, 
 impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     /// Creates a new [`CeloBlockExecutor`] wrapping the given [`OpBlockExecutor`].
     pub const fn new(inner: OpBlockExecutor<E, R, Spec>) -> Self {
-        Self { inner, has_committed_non_deposit_tx: false, cgt_v2_next_step: 0 }
+        Self { inner, has_committed_non_deposit_tx: false, cgt_v2_group: None }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_cgt_v2_matcher(mut self, matcher: CgtV2GroupMatcher) -> Self {
+        self.cgt_v2_group = Some(matcher);
+        self
     }
 
     /// The wrapped [`OpBlockExecutor`].
@@ -189,15 +196,11 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, tx) = tx.into_parts();
-        let step = tx
-            .tx()
-            .as_deposit()
-            .map(|deposit| CgtV2UpgradeGroup::validate(self.inner.evm.chain_id(), deposit))
-            .transpose()
-            .map_err(|error| BlockExecutionError::Validation(BlockValidationError::other(error)))?
-            .flatten();
-        if let Some(step) = step {
-            if step != self.cgt_v2_next_step {
+        let deposit = tx.tx().as_deposit();
+        let step = deposit.and_then(|deposit| CgtV2UpgradeGroup::step(deposit));
+        let next_step = self.cgt_v2_group.as_ref().map_or(0, CgtV2GroupMatcher::next_step);
+        let cgt_v2_step = if let Some(step) = step {
+            if step != next_step {
                 return Err(invalid_cgt_signal(
                     "CGTv2 upgrade deposits are missing, repeated or reordered",
                 ));
@@ -208,6 +211,18 @@ where
                 )
                 .into());
             }
+            let invalid =
+                |error| BlockExecutionError::Validation(BlockValidationError::other(error));
+            if self.cgt_v2_group.is_none() {
+                self.cgt_v2_group =
+                    Some(CgtV2GroupMatcher::new(self.inner.evm.chain_id()).map_err(invalid)?);
+            }
+            let matched = self
+                .cgt_v2_group
+                .as_ref()
+                .expect("CGTv2 matcher initialized")
+                .check(deposit.expect("recognized deposit"))
+                .map_err(invalid)?;
             if step == 0 {
                 if self.inner.receipts.is_empty() {
                     return Err(invalid_cgt_signal("CGTv2 activation requires L1-info first"));
@@ -224,31 +239,35 @@ where
                     );
                 }
             }
-        } else if self.cgt_v2_next_step > 0 {
-            if self.cgt_v2_next_step < CGT_V2_STEPS {
-                return Err(invalid_cgt_signal("CGTv2 upgrade group cannot be interrupted"));
+            Some(matched)
+        } else {
+            if next_step > 0 {
+                if next_step < CGT_V2_STEPS {
+                    return Err(invalid_cgt_signal("CGTv2 upgrade group cannot be interrupted"));
+                }
+                if tx.tx().is_deposit() {
+                    return Err(invalid_cgt_signal("origin deposits must precede CGTv2 upgrades"));
+                }
+                return Err(BlockValidationError::other(
+                    OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
+                )
+                .into());
             }
-            if tx.tx().is_deposit() {
-                return Err(invalid_cgt_signal("origin deposits must precede CGTv2 upgrades"));
-            }
-            return Err(BlockValidationError::other(
-                OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
-            )
-            .into());
-        }
+            None
+        };
         let op = self.inner.execute_transaction_without_commit((tx_env, tx))?;
         if let Some(step) = step
             && !op.inner.result.result.is_success()
         {
             return Err(BlockValidationError::other(CgtV2UpgradeFailed::StepFailed { step }).into());
         }
-        Ok(CeloTxResult { op, cgt_v2_step: step })
+        Ok(CeloTxResult { op, cgt_v2_step })
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         self.has_committed_non_deposit_tx |= !output.op.is_deposit;
         if let Some(step) = output.cgt_v2_step {
-            self.cgt_v2_next_step = step + 1;
+            self.cgt_v2_group.as_mut().expect("CGTv2 matcher initialized").commit(step);
             self.inner.ctx.no_user_tx_activation_block = true;
         }
         self.inner.commit_transaction(output.op)
@@ -257,8 +276,9 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
-        if self.cgt_v2_next_step > 0 {
-            if self.cgt_v2_next_step != CGT_V2_STEPS {
+        let next_step = self.cgt_v2_group.as_ref().map_or(0, CgtV2GroupMatcher::next_step);
+        if next_step > 0 {
+            if next_step != CGT_V2_STEPS {
                 return Err(invalid_cgt_signal("incomplete CGTv2 upgrade group"));
             }
             let flag = self

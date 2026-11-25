@@ -174,6 +174,53 @@ fn cgt_v2_truncated_group_rejects_block() {
     }
 }
 #[test]
+fn cgt_v2_incremental_executor_rejects_mixed_retry_group() {
+    use celo_alloy_consensus::cgt_v2_group::{
+        CgtV2GroupMatcher,
+        test_utils::{APPENDED_RETRY_HASH, with_appended_retry},
+    };
+
+    let params = with_appended_retry();
+    let retry = params.retry_bundle(APPENDED_RETRY_HASH);
+    assert!(retry.is_some());
+    let amount = U256::from(600);
+    let (corrected, gas) = params.upgrade_transactions(1337, amount, retry).unwrap();
+    let original = CgtV2UpgradeGroup::deposits(1337, amount).unwrap();
+    assert_eq!(gas, 40_600_333);
+
+    for mix in [false, true] {
+        let mut db = State::builder().with_database(database()).build();
+        let f = factory();
+        let matcher = CgtV2GroupMatcher::for_network(1337, params).unwrap();
+        let mut e = f
+            .create_executor(
+                f.evm_factory().create_evm(&mut db, env()),
+                OpBlockExecutionCtx {
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+            )
+            .with_cgt_v2_matcher(matcher);
+        e.apply_pre_execution_changes().unwrap();
+        e.execute_transaction(&info()).unwrap();
+        for (step, deposit) in corrected.iter().enumerate() {
+            if mix && step == 9 {
+                let error = e.execute_transaction(&recovered(original[step].clone())).unwrap_err();
+                assert!(error.as_validation().is_some());
+                assert!(CgtV2UpgradeFailed::from_block_error(&error).is_none());
+                break;
+            }
+            e.execute_transaction(&recovered(deposit.clone())).unwrap();
+        }
+        if mix {
+            assert!(e.finish().is_err(), "a rejected step must not advance the group");
+        } else {
+            assert!(e.finish().is_ok(), "the complete corrected group must execute");
+        }
+    }
+}
+
+#[test]
 fn cgt_v2_reordered_or_modified_group_rejects_block() {
     for malformed in [false, true] {
         let f = factory();

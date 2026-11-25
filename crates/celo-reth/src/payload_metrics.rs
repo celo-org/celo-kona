@@ -892,6 +892,55 @@ mod tests {
     }
 
     #[test]
+    fn cgt_v2_retry_fallback_strips_matched_allowance_and_rejects_mixed_group() {
+        use crate::cgt_v2::CgtV2PayloadBuilder;
+        use alloy_eips::Encodable2718;
+        use celo_alloy_consensus::cgt_v2_group::{
+            CgtV2UpgradeGroup,
+            test_utils::{APPENDED_RETRY_HASH, with_appended_retry},
+        };
+
+        let params = with_appended_retry();
+        let retry = params.retry_bundle(APPENDED_RETRY_HASH);
+        assert!(retry.is_some());
+        let amount = U256::from(600);
+        let (txs, gas) = params.upgrade_transactions(1337, amount, retry).unwrap();
+        assert_eq!(gas, 40_600_333);
+        let mut earlier = txs[0].clone();
+        earlier.source_hash = B256::repeat_byte(0x22);
+        let prefix = vec![earlier.encoded_2718().into()];
+
+        for mix in [false, true] {
+            let mut transactions = prefix.clone();
+            transactions.extend(txs.iter().map(|tx| tx.encoded_2718().into()));
+            if mix {
+                let original = CgtV2UpgradeGroup::deposits(1337, amount).unwrap();
+                transactions[1 + 9] = original[9].encoded_2718().into();
+            }
+            let inner = FakePayloadBuilder::new(FakeOutcome::CgtV2Failure(
+                CgtV2UpgradeFailed::AlreadyActive,
+            ));
+            let seen = inner.saw_attributes.clone();
+            let builder = CgtV2PayloadBuilder::new(inner, 1337).with_test_params(params);
+            let mut args = test_args(false);
+            args.config.attributes.0.transactions = Some(transactions);
+            args.config.attributes.0.gas_limit = Some(70_600_333);
+            let result = builder.try_build(args);
+            let seen = seen.lock().unwrap();
+            if mix {
+                assert!(result.is_err());
+                assert!(seen.is_empty());
+            } else {
+                assert!(result.unwrap().into_payload().is_some());
+                assert_eq!(seen.len(), 2);
+                assert_eq!(seen[1].gas_limit, Some(30_000_000));
+                assert_eq!(seen[1].transactions.as_ref(), Some(&prefix));
+                assert_eq!(seen[1].no_tx_pool, Some(true));
+            }
+        }
+    }
+
+    #[test]
     fn cgt_v2_payload_rejects_incomplete_group_before_execution() {
         use crate::cgt_v2::CgtV2PayloadBuilder;
         use alloy_eips::Encodable2718;

@@ -135,6 +135,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 alloy-network.workspace = true
+celo-alloy-consensus = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 metrics-util = "0.20"

@@ -1,9 +1,13 @@
 //! Deposits-only payload building and fallback for CGTv2 migration attempts.
 
 use alloy_celo_evm::block::executor::CgtV2UpgradeFailed;
-use alloy_eips::Decodable2718;
 use alloy_evm::block::BlockExecutionError;
-use celo_alloy_consensus::cgt_v2_group::{CGT_V2_STEPS, CgtV2GroupError, CgtV2UpgradeGroup};
+#[cfg(test)]
+use celo_alloy_consensus::cgt_v2_group::CgtV2NetworkParams;
+use celo_alloy_consensus::{
+    cgt_v2_group::{CGT_V2_STEPS, CgtV2GroupError, CgtV2GroupMatcher, CgtV2UpgradeGroup},
+    decode_2718_canonical,
+};
 use op_alloy_consensus::OpTxEnvelope;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, HeaderForPayload, MissingPayloadBehaviour, PayloadBuilder,
@@ -17,59 +21,79 @@ use reth_optimism_payload_builder::OpPayloadAttrs;
 pub struct CgtV2PayloadBuilder<B> {
     inner: B,
     chain_id: u64,
+    #[cfg(test)]
+    test_params: Option<CgtV2NetworkParams>,
 }
 
 impl<B> CgtV2PayloadBuilder<B> {
     /// Wraps the node's payload builder for the selected chain.
     pub const fn new(inner: B, chain_id: u64) -> Self {
-        Self { inner, chain_id }
-    }
-}
-
-fn prepare_activation_payload(
-    attrs: &mut OpPayloadAttrs,
-    chain_id: u64,
-) -> Result<Option<OpPayloadAttrs>, PayloadBuilderError> {
-    let Some(transactions) = attrs.transactions.as_ref() else { return Ok(None) };
-    let Some(start) =
-        transactions.iter().position(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx))
-    else {
-        return Ok(None);
-    };
-
-    // noTxPool controls pool selection only. The caller's forced list must also be deposits-only.
-    if transactions.iter().any(|tx| tx.first() != Some(&op_alloy_consensus::DEPOSIT_TX_TYPE_ID)) {
-        return Err(PayloadBuilderError::other(
-            alloy_op_evm::block::OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
-        ));
-    }
-    let invalid = || PayloadBuilderError::other(CgtV2GroupError::Invalid);
-    let (prefix, group) = transactions.split_at(start);
-    if prefix.is_empty() || group.len() != CGT_V2_STEPS {
-        return Err(invalid());
-    }
-
-    // Only a well-formed group may be omitted when the parent is already active.
-    for (step, encoded) in group.iter().enumerate() {
-        let envelope = OpTxEnvelope::decode_2718_exact(encoded).map_err(|_| invalid())?;
-        let deposit = envelope.as_deposit().ok_or_else(invalid)?;
-        if CgtV2UpgradeGroup::validate(chain_id, deposit).map_err(PayloadBuilderError::other)? !=
-            Some(step)
-        {
-            return Err(invalid());
+        Self {
+            inner,
+            chain_id,
+            #[cfg(test)]
+            test_params: None,
         }
     }
-    let allowance = CgtV2UpgradeGroup::gas_limit(chain_id).map_err(PayloadBuilderError::other)?;
-    let gas_limit =
-        attrs.gas_limit.and_then(|gas| gas.checked_sub(allowance)).ok_or_else(invalid)?;
-    let fallback = OpPayloadAttrs(op_alloy_rpc_types_engine::OpPayloadAttributes {
-        transactions: Some(prefix.to_vec()),
-        gas_limit: Some(gas_limit),
-        no_tx_pool: Some(true),
-        ..attrs.0.clone()
-    });
-    attrs.0.no_tx_pool = Some(true);
-    Ok(Some(fallback))
+
+    #[cfg(test)]
+    pub(crate) const fn with_test_params(mut self, params: CgtV2NetworkParams) -> Self {
+        self.test_params = Some(params);
+        self
+    }
+
+    fn prepare_activation_payload(
+        &self,
+        attrs: &mut OpPayloadAttrs,
+    ) -> Result<Option<OpPayloadAttrs>, PayloadBuilderError> {
+        let Some(transactions) = attrs.transactions.as_ref() else { return Ok(None) };
+        let Some(start) =
+            transactions.iter().position(|tx| CgtV2UpgradeGroup::is_activation_encoded(tx))
+        else {
+            return Ok(None);
+        };
+
+        // noTxPool controls pool selection only. The caller's forced list must also be
+        // deposits-only.
+        if transactions.iter().any(|tx| tx.first() != Some(&op_alloy_consensus::DEPOSIT_TX_TYPE_ID))
+        {
+            return Err(PayloadBuilderError::other(
+                alloy_op_evm::block::OpBlockExecutionError::UnexpectedNonDepositTxInForkActivationBlock,
+            ));
+        }
+        let invalid = || PayloadBuilderError::other(CgtV2GroupError::Invalid);
+        let (prefix, group) = transactions.split_at(start);
+        if prefix.is_empty() || group.len() != CGT_V2_STEPS {
+            return Err(invalid());
+        }
+
+        // Only a well-formed group may be omitted when the parent is already active.
+        let group = group
+            .iter()
+            .map(|encoded| decode_2718_canonical::<OpTxEnvelope>(encoded))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid())?;
+        let matcher = CgtV2GroupMatcher::new(self.chain_id);
+        #[cfg(test)]
+        let matcher = self
+            .test_params
+            .map_or(matcher, |params| CgtV2GroupMatcher::for_network(self.chain_id, params));
+        let allowance = matcher
+            .and_then(|matcher| {
+                matcher.validate_group(group.iter().map(|tx| tx.as_deposit().map(|tx| tx.inner())))
+            })
+            .map_err(PayloadBuilderError::other)?;
+        let gas_limit =
+            attrs.gas_limit.and_then(|gas| gas.checked_sub(allowance)).ok_or_else(invalid)?;
+        let fallback = OpPayloadAttrs(op_alloy_rpc_types_engine::OpPayloadAttributes {
+            transactions: Some(prefix.to_vec()),
+            gas_limit: Some(gas_limit),
+            no_tx_pool: Some(true),
+            ..attrs.0.clone()
+        });
+        attrs.0.no_tx_pool = Some(true);
+        Ok(Some(fallback))
+    }
 }
 
 fn upgrade_failed(error: &PayloadBuilderError) -> Option<&CgtV2UpgradeFailed> {
@@ -88,9 +112,7 @@ where
         &self,
         mut args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        let Some(fallback) =
-            prepare_activation_payload(&mut args.config.attributes, self.chain_id)?
-        else {
+        let Some(fallback) = self.prepare_activation_payload(&mut args.config.attributes)? else {
             return self.inner.try_build(args);
         };
         let mut fallback_config = args.config.clone();

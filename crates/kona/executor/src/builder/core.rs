@@ -10,7 +10,7 @@ use alloy_celo_evm::{
 use alloy_consensus::{Header, Sealed, crypto::RecoveryError};
 use alloy_evm::{
     EvmFactory, RecoveredTx,
-    block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory},
+    block::{BlockExecutionResult, BlockExecutor, BlockExecutorFactory, BlockValidationError},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, PostExecMode};
 use alloy_op_hardforks::OpHardforks;
@@ -190,6 +190,17 @@ where
             .celo_recovered_transactions_with_encoded()
             .collect::<Result<Vec<_>, RecoveryError>>()
             .map_err(ExecutorError::Recovery)?;
+        // A recovery probe can discard the candidate after an early execution failure.
+        // Validate the entire forced list before permitting any recoverable CGTv2 error.
+        if !request_payload_witness && no_user_tx_activation_block {
+            CgtV2UpgradeGroup::block_upgrade_gas(
+                self.config.l2_chain_id.id(),
+                transactions.iter().map(RecoveredTx::tx),
+            )
+            .map_err(|err| {
+                ExecutorError::ExecutionError(BlockValidationError::other(err).into())
+            })?;
+        }
         let sdm_active = self.config.is_sdm_active(block_env.timestamp.saturating_to());
         let post_exec_mode = parse_post_exec_payload_from_transactions(
             transactions.iter().map(RecoveredTx::tx),
