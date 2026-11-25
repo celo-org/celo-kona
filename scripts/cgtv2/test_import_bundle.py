@@ -12,7 +12,7 @@ class ImportBundleTests(unittest.TestCase):
         self.bundle = json.loads((FIXTURE / "cgtv2-fixture-nut-bundle.json").read_text())
 
     def test_matches_existing_deposit_vectors(self):
-        expected = [(FIXTURE / f"cgtv2-{i:02}.rlp").read_bytes() for i in range(15)]
+        expected = [(FIXTURE / f"cgtv2-{i:02}.rlp").read_bytes() for i in range(len(self.bundle["transactions"]))]
         self.assertEqual(encode_bundle(self.bundle), rlp(expected))
         self.assertEqual(rlp([b"a", b"b"]), b"\xc2ab")
 

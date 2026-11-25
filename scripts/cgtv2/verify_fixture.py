@@ -21,13 +21,13 @@ def main():
     args = parser.parse_args()
     manifest = json.loads((FIXTURE / "cgtv2-provenance.json").read_text())
     assert manifest["fixtureOnly"] and manifest["chainId"] == 1337
-    assert manifest["staticGasLimit"] + manifest["fundingGasLimit"] == 40_600_000
+    assert manifest["staticGasLimit"] + manifest["fundingGasLimit"] == 47_100_000
     for name, digest in manifest["sha256"].items():
         assert Path(name).name == name, name
         assert hashlib.sha256((FIXTURE / name).read_bytes()).hexdigest() == digest, name
     bundle = json.loads((FIXTURE / "cgtv2-fixture-nut-bundle.json").read_text())
-    assert len(bundle["transactions"]) == 15
-    static = [(FIXTURE / f"cgtv2-{i:02}.rlp").read_bytes() for i in range(15)]
+    assert len(bundle["transactions"]) == 17
+    static = [(FIXTURE / f"cgtv2-{i:02}.rlp").read_bytes() for i in range(len(bundle["transactions"]))]
     assert (ROOT / "crates/celo-alloy/consensus/upgrades/cgtv2/fixture.rlp").read_bytes() == rlp(static)
     assert sum(tx["gasLimit"] for tx in bundle["transactions"]) == manifest["staticGasLimit"]
     assert (ROOT / "crates/alloy-celo-evm/src/block/cgt_v2_prestate.json").read_bytes() == (FIXTURE / "cgtv2-fixture-prestate.json").read_bytes()

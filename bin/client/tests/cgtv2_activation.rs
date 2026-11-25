@@ -349,7 +349,7 @@ async fn fixture(initialized_controller: bool, cgt_active: bool) -> (Preimages, 
         .prepare_payload_attributes(parent_info, BlockNumHash::new(11, origin_hash))
         .await
         .unwrap();
-    assert_eq!(attrs.transactions.as_ref().unwrap().len(), 19);
+    assert_eq!(attrs.transactions.as_ref().unwrap().len(), 21);
     if initialized_controller {
         let mut builder = CeloStatelessL2Builder::new(
             &cfg,
@@ -390,7 +390,7 @@ async fn fixture(initialized_controller: bool, cgt_active: bool) -> (Preimages, 
         parent.seal_slow(),
     );
     let result = builder.build_block(attrs).unwrap();
-    assert_eq!(result.execution_result.receipts.len(), if fallback { 3 } else { 19 });
+    assert_eq!(result.execution_result.receipts.len(), if fallback { 3 } else { 21 });
     assert!(
         !result.execution_result.receipts[2].status(),
         "post-event zero-mint call still sees the uninitialized controller"
@@ -403,7 +403,7 @@ async fn fixture(initialized_controller: bool, cgt_active: bool) -> (Preimages, 
         assert_eq!(
             claimed,
             alloy_primitives::b256!(
-                "3e251959544c45b137b613951d899c309f1177fdf363f43dc1741a98446cf7d0"
+                "d7e3eb141a21b47207a26d644ae7716c058559e1d088e45eccb8f58d696e706b"
             )
         );
     }
