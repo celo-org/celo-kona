@@ -27,9 +27,10 @@
 use clap::Parser;
 use eyre::{Result, WrapErr};
 use reth_cli_commands::download::manifest::generate_manifest;
-use reth_db::{Database, mdbx::DatabaseArguments, open_db, tables};
+use reth_db::{Database, mdbx::DatabaseArguments, open_db, static_file::iter_static_files, tables};
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_stages_types::{StageCheckpoint, StageId};
+use reth_static_file_types::StaticFileSegment;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -143,8 +144,8 @@ impl CeloSnapshotManifestCommand {
 /// all, with the block resolved from its `Finish` checkpoint. On every other chain a lagging
 /// checkpoint means real work is genuinely missing — advancing it would publish a snapshot that
 /// skips rebuilding required indexes/trie on restore — so the block is resolved from `--block` or
-/// the highest header static-file range without opening MDBX, letting the publisher run against a
-/// read-only/static source (matching upstream's header-tip fallback).
+/// the highest populated header static-file block without opening MDBX, letting the publisher run
+/// against a read-only/static source (matching upstream's header-tip fallback).
 fn reconcile_stage_checkpoints(
     source_datadir: &Path,
     block_arg: Option<u64>,
@@ -219,18 +220,24 @@ fn resolve_block_against_tip(block_arg: Option<u64>, tip: Option<u64>) -> Result
         None => tip.ok_or_else(|| {
             eyre::eyre!(
                 "Could not infer the snapshot block from the source datadir (no Finish checkpoint \
-                 or header static-file range found); pass --block manually"
+                 or populated header static file found); pass --block manually"
             )
         }),
     }
 }
 
-/// Highest header block available as a static file in the source datadir, if any.
+/// Highest populated header block in the source datadir, if any.
+///
+/// Filenames reserve a full range even when its newest file is only partly populated. Read the
+/// stored header range instead, so the advertised snapshot block never uses that padded end.
 ///
 /// Used as the snapshot-tip fallback for non-mainnet sources, which are never opened as MDBX, so a
 /// read-only/static source (or one without a `Finish` checkpoint) still resolves a block.
 fn max_header_block(source_datadir: &Path) -> Option<u64> {
-    header_ranges(source_datadir).ok()?.into_iter().map(|(_, end)| end).max()
+    let directory = source_datadir.join("static_files");
+    let directory = if directory.exists() { directory.as_path() } else { source_datadir };
+    let files = iter_static_files(directory).ok()?;
+    files.get(StaticFileSegment::Headers)?.last().map(|(range, _)| range.end())
 }
 
 /// Infers the static-file block span from header static-file ranges in the source datadir.
@@ -348,41 +355,79 @@ mod tests {
         assert_resolves(None, None, None);
     }
 
-    /// Creates `static_files/<names>` under a fresh temp dir and returns the (kept-alive) handle.
-    fn datadir_with_headers(names: &[&str]) -> tempfile::TempDir {
+    /// Write real header metadata: the newest filename range is only partially populated.
+    fn datadir_with_headers(tip: u64, blocks_per_file: u64) -> tempfile::TempDir {
+        use alloy_consensus::Header;
+        use alloy_primitives::B256;
+        use reth_provider::{StaticFileProviderBuilder, StaticFileWriter};
+
         let dir = tempfile::tempdir().unwrap();
         let static_files = dir.path().join("static_files");
         std::fs::create_dir_all(&static_files).unwrap();
-        for name in names {
-            std::fs::write(static_files.join(name), b"").unwrap();
+        let provider = StaticFileProviderBuilder::read_write(&static_files)
+            .with_blocks_per_file(blocks_per_file)
+            .build::<crate::primitives::CeloPrimitives>()
+            .unwrap();
+        let mut writer = provider.get_writer(0, StaticFileSegment::Headers).unwrap();
+        for number in 0..=tip {
+            writer.append_header(&Header { number, ..Default::default() }, &B256::ZERO).unwrap();
         }
+        writer.commit().unwrap();
         dir
     }
 
-    /// `max_header_block` returns the highest header static-file end, ignoring non-header files.
     #[test]
-    fn max_header_block_reads_highest_header_range() {
-        let dir = datadir_with_headers(&[
-            "static_file_headers_0_499999",
-            "static_file_headers_500000_999999.jar",
-            "static_file_transactions_0_499999",
-        ]);
-        assert_eq!(max_header_block(dir.path()), Some(999_999));
-
+    fn max_header_block_reads_populated_tip() {
+        for (tip, span) in [(0, 500_000), (7, 5)] {
+            let dir = datadir_with_headers(tip, span);
+            assert_eq!(max_header_block(dir.path()), Some(tip));
+            assert_eq!(max_header_block(&dir.path().join("static_files")), Some(tip));
+        }
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(max_header_block(empty.path()), None);
     }
 
-    /// A non-mainnet source with header static files but no MDBX still resolves its block from the
-    /// header tip — never opening (let alone write-opening) the source ([8]).
+    /// Non-mainnet sources read the actual header tip without opening or creating MDBX.
     #[test]
-    fn non_mainnet_infers_block_from_headers_without_mdbx() {
-        let dir = datadir_with_headers(&["static_file_headers_0_499999"]);
-        assert_eq!(reconcile_stage_checkpoints(dir.path(), None, 12_345).unwrap(), 499_999);
+    fn non_mainnet_infers_populated_tip_without_mdbx() {
+        let dir = datadir_with_headers(7, 5);
+        assert_eq!(reconcile_stage_checkpoints(dir.path(), None, 11_142_220).unwrap(), 7);
+        assert_eq!(reconcile_stage_checkpoints(dir.path(), Some(6), 11_142_220).unwrap(), 6);
+        assert!(reconcile_stage_checkpoints(dir.path(), Some(8), 11_142_220).is_err());
+        assert!(!dir.path().join("db").exists());
+    }
+
+    #[test]
+    fn mainnet_still_reconciles_against_finish_checkpoint() {
+        let dir = datadir_with_headers(7, 5);
+        let db_dir = dir.path().join("db");
+        {
+            let db = reth_db::init_db(&db_dir, DatabaseArguments::default()).unwrap();
+            let tx = db.tx_mut().unwrap();
+            tx.put::<tables::StageCheckpoints>(
+                StageId::Finish.to_string(),
+                StageCheckpoint::new(6),
+            )
+            .unwrap();
+            tx.put::<tables::StageCheckpoints>(
+                StageId::TransactionLookup.to_string(),
+                StageCheckpoint::new(0),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
         assert_eq!(
-            reconcile_stage_checkpoints(dir.path(), Some(400_000), 12_345).unwrap(),
-            400_000
+            reconcile_stage_checkpoints(dir.path(), None, CELO_MAINNET_CHAIN_ID).unwrap(),
+            6
         );
-        assert!(reconcile_stage_checkpoints(dir.path(), Some(500_000), 12_345).is_err());
+        let db = reth_db::open_db_read_only(&db_dir, DatabaseArguments::default()).unwrap();
+        let tx = db.tx().unwrap();
+        assert_eq!(
+            tx.get::<tables::StageCheckpoints>(StageId::TransactionLookup.to_string())
+                .unwrap()
+                .unwrap()
+                .block_number,
+            6
+        );
     }
 }
