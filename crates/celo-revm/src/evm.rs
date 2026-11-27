@@ -53,13 +53,12 @@ where
         // for this spec and is not rebuilt if `cfg.spec` changes later.
         let spec = *ctx.cfg().spec();
         Self {
-            inner: OpEvm(Evm {
+            inner: OpEvm(Evm::new_with_inspector(
                 ctx,
                 inspector,
-                instruction: EthInstructions::new_mainnet_with_spec(spec.into_eth_spec()),
-                precompiles: celo_precompiles_map(spec),
-                frame_stack: FrameStack::new(),
-            }),
+                EthInstructions::new_mainnet_with_spec(spec.into_eth_spec()),
+                celo_precompiles_map(spec),
+            )),
             fee_currency_context: FeeCurrencyContext::default(),
         }
     }

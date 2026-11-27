@@ -40,7 +40,7 @@ use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_consensus::OpBeaconConsensus;
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_node::{
-    OpEngineApiBuilder, OpEngineValidatorBuilder, OpNode,
+    DerivedPayloadServiceBuilder, OpEngineApiBuilder, OpEngineValidatorBuilder, OpNode,
     node::{OpAddOns, OpNetworkBuilder, OpPayloadBuilder, OpPoolBuilder},
 };
 use reth_optimism_payload_builder::{
@@ -54,7 +54,7 @@ use reth_primitives_traits::{
 };
 use std::{sync::Arc, time::Duration};
 
-pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
+pub use reth_optimism_node::args::RollupArgs;
 
 /// Gives the shared sparse trie 750ms before allowing a synchronous state-root fallback.
 const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(750);
@@ -110,6 +110,9 @@ impl CeloNode {
             .builder_config();
         config.state_root_wait =
             Some(self.payload_state_root_wait.unwrap_or(CELO_PAYLOAD_STATE_ROOT_WAIT));
+        // SDM is unscheduled on Celo: keep the disabled default that `add_ons` also passes, not
+        // the `--rollup.operator-sdm-opt-in` value `OpNode` reads.
+        config.operator_sdm_opt_in = OperatorSdmOptIn::default();
         config
     }
 
@@ -434,8 +437,10 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         CeloPoolBuilder,
-        BasicPayloadServiceBuilder<
-            PayloadMetricsBuilderBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+        DerivedPayloadServiceBuilder<
+            BasicPayloadServiceBuilder<
+                PayloadMetricsBuilderBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+            >,
         >,
         OpNetworkBuilder,
         CeloExecutorBuilder,
@@ -463,14 +468,19 @@ where
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
-            .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
-                OpPayloadBuilder::new(compute_pending_block)
-                    .with_builder_config(self.builder_config())
-                    // SDM is unscheduled on Celo: keep the disabled default that `add_ons`
-                    // also passes, not the `--rollup.operator-sdm-opt-in` value `OpNode` reads.
-                    .with_operator_sdm_opt_in(OperatorSdmOptIn::default())
-                    .with_transactions(celo_txs),
-            )))
+            // Derived payloads with a non-deposit tx are built at forkchoiceUpdated, so invalid
+            // ones are rejected with -38003 and replaced by deposits-only blocks, as in the proof.
+            // They take the same builder config, including Celo's state root wait.
+            .payload(
+                DerivedPayloadServiceBuilder::new(BasicPayloadServiceBuilder::new(
+                    PayloadMetricsBuilderBuilder::new(
+                        OpPayloadBuilder::new(compute_pending_block)
+                            .with_builder_config(self.builder_config())
+                            .with_transactions(celo_txs),
+                    ),
+                ))
+                .with_builder_config(self.builder_config()),
+            )
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)
     }
@@ -821,6 +831,14 @@ mod tests {
         assert_eq!(config.da_config.max_da_tx_size(), Some(111));
         assert_eq!(config.da_config.max_da_block_size(), Some(222));
         assert_eq!(config.gas_limit_config.gas_limit(), Some(333));
+    }
+
+    /// SDM is unscheduled on Celo, so the CLI opt-in never reaches a payload builder.
+    #[test]
+    fn builder_config_ignores_operator_sdm_opt_in() {
+        let args = RollupArgs { operator_sdm_opt_in: true, ..Default::default() };
+
+        assert!(!CeloNode::new(args).builder_config().operator_sdm_opt_in.enabled());
     }
 
     #[test]

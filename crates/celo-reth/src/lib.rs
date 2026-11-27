@@ -476,12 +476,6 @@ where
         FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
-    // `CeloEvm`'s `PostExecEvm` impl carries no refund inspector, so its snapshot type is `()`,
-    // matching upstream's bare `OpEvmConfig` impl. (Upstream's second impl, for
-    // `OpEvmConfig<.., PostExecEvmFactoryAdapter<F>>`, threads `F::Snapshot`; Celo has no
-    // counterpart to that factory adapter.)
-    type Snapshot = ();
-
     fn post_exec_executor_for_block<'a, DB: Database>(
         &'a self,
         db: &'a mut revm::database::State<DB>,
@@ -491,7 +485,7 @@ where
         impl BlockExecutor<
             Transaction = <Self::Primitives as NodePrimitives>::SignedTx,
             Receipt = <Self::Primitives as NodePrimitives>::Receipt,
-        > + PostExecExecutorExt<Snapshot = Self::Snapshot>
+        > + PostExecExecutorExt
         + 'a,
         Self::Error,
     > {
@@ -512,7 +506,7 @@ where
     ) -> Result<
         impl BlockBuilder<
             Primitives = Self::Primitives,
-            Executor: PostExecExecutorExt<Snapshot = Self::Snapshot>
+            Executor: PostExecExecutorExt
                           + BlockExecutor<
                 Evm: alloy_evm::Evm<DB: core::ops::DerefMut<Target = revm::database::State<DB>>>,
                 Result: PreRefundGasUsed,

@@ -24,8 +24,9 @@ use reth_storage_api::{
 use reth_storage_errors::provider::ProviderResult;
 use reth_transaction_pool::TransactionPool;
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, DecodedMultiProofV2, ExecutionWitnessMode, HashedPostState, HashedStorage,
+    MultiProof, MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use std::{
     cell::RefCell,
@@ -526,6 +527,14 @@ impl<P: StateProofProvider> StateProofProvider for PayloadMetricsStateProvider<P
         self.inner.multiproof(input, targets)
     }
 
+    fn multiproof_v2(
+        &self,
+        input: TrieInput,
+        targets: MultiProofTargetsV2,
+    ) -> ProviderResult<DecodedMultiProofV2> {
+        self.inner.multiproof_v2(input, targets)
+    }
+
     fn witness(
         &self,
         input: TrieInput,
@@ -555,7 +564,7 @@ impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsState
                     "celo_payload_hashed_post_state_size",
                     "has_best_payload" => has_best_label,
                 )
-                // Count changed accounts and slots, with wiped storage as one entry.
+                // Count changed accounts and slots.
                 .record(state.chunking_length() as f64);
             }
         }
@@ -617,8 +626,7 @@ impl<P: StateProvider> StateProvider for PayloadMetricsStateProvider<P> {
 
 /// Total trie nodes a successful blocking root computation reported as changed.
 ///
-/// `TrieUpdates` has no `len()`; `StorageTrieUpdates::len()` already folds in the wiped-trie
-/// marker, so summing the three collections counts each node exactly once.
+/// `TrieUpdates` has no `len()`, so this sums its three collections, counting each node once.
 fn trie_updates_size(updates: &TrieUpdates) -> usize {
     updates.account_nodes_ref().len() +
         updates.removed_nodes_ref().len() +

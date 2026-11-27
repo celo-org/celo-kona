@@ -24,8 +24,8 @@ permissions:
   contents: read
 
 env:
-  OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.5-celo-patches-v1
-  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v2.5-celo-patches-v3
+  OPTIMISM_FORK_REACHABILITY_TAG: celo-kona/op-reth-v2.6-celo-patches-v3
+  RETH_FORK_REACHABILITY_TAG: celo-kona/reth-v2.6-celo-patches-v3
 
 jobs:
   scoped-tests:
@@ -143,4 +143,5 @@ jobs:
             -p reth-trie-common \
             -p reth-trie-parallel \
             -p reth-execution-cache \
-            -p reth-transaction-pool
+            -p reth-transaction-pool \
+            -p reth-stages

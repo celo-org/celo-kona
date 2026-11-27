@@ -8,7 +8,7 @@ extern crate alloc;
 use alloy_evm::{Database, Evm, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
 use alloy_op_evm::{
     OpTxError, map_op_err,
-    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext},
+    post_exec::{PostExecEvm, PostExecExecutedTx, PostExecTxContext, RevertToCheckpointError},
 };
 use alloy_primitives::{Address, Bytes, U256};
 use celo_revm::{
@@ -727,24 +727,24 @@ impl EvmFactory for CeloEvmFactory {
     }
 }
 
-// SDM/post-exec is unscheduled on Celo: `RollupConfig::is_sdm_active` is hard-wired to `false`
-// upstream, and Celo has no plans to activate it. This impl exists only so `CeloEvm` satisfies
+// SDM/post-exec is unscheduled on Celo: `RollupConfig::is_sdm_active` follows Lagoon, which Celo
+// does not schedule. This impl exists only so `CeloEvm` satisfies
 // the `PostExecEvm` bound that `OpBlockExecutor: BlockExecutor` requires (mirroring the direct
 // `PostExecEvm for OpEvm` impl in alloy-op-evm).
 //
 // All four methods panic: if SDM is ever activated on Celo (e.g. via an upstream rebase), the
 // panic surfaces the gap immediately rather than silently returning a default value.
-// `refund_snapshot`/`seed_refund_snapshot` only carry SDM refund state across flashblock
-// executors (op-rbuilder), a path Celo never takes. Upstream parameterises `OpEvm` over a
-// `PostExecRefundInspector` and sets `Snapshot = R::Snapshot`; `CeloEvm` carries no such
-// parameter, so the snapshot type is `()`. Deliberately NOT a null refund policy: that would
-// silently return a default instead of tripping.
+// `refund_checkpoint`/`revert_refund_checkpoint` only roll back SDM producer refund state for a
+// declined or failed candidate, which only happens in `PostExecMode::Produce`. Upstream
+// parameterises `OpEvm` over a `PostExecRefundInspector` and sets `Checkpoint = R::Checkpoint`;
+// `CeloEvm` carries no such parameter, so the checkpoint type is `()`. Deliberately NOT a null
+// refund policy: that would silently return a default instead of tripping.
 impl<DB, I, P> PostExecEvm for CeloEvm<DB, I, P>
 where
     DB: Database,
     Self: Evm,
 {
-    type Snapshot = ();
+    type Checkpoint = ();
 
     fn begin_post_exec_tx(&mut self, _ctx: PostExecTxContext) {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
@@ -754,11 +754,14 @@ where
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 
-    fn refund_snapshot(&self) -> Self::Snapshot {
+    fn refund_checkpoint(&mut self) -> Self::Checkpoint {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 
-    fn seed_refund_snapshot(&mut self, _state: Self::Snapshot) {
+    fn revert_refund_checkpoint(
+        &mut self,
+        _checkpoint: Self::Checkpoint,
+    ) -> Result<(), RevertToCheckpointError> {
         panic!("SDM unscheduled on Celo — `RollupConfig::is_sdm_active` must remain false");
     }
 }
