@@ -136,6 +136,25 @@ impl<E, R: OpReceiptBuilder, Spec> CeloBlockExecutor<E, R, Spec> {
     }
 }
 
+impl<E, R, Spec> CeloBlockExecutor<E, R, Spec>
+where
+    E: PostExecEvm,
+    R: OpReceiptBuilder,
+{
+    /// Rolls the refund policy back to the checkpoint taken before a candidate, if one was taken.
+    ///
+    /// A failed revert outranks whatever made the candidate fail: the policy's block-scoped state
+    /// is unspecified from then on, so a caller must not skip the candidate and carry on.
+    fn revert_refund_checkpoint(
+        &mut self,
+        refund_checkpoint: Option<E::Checkpoint>,
+    ) -> Result<(), BlockExecutionError> {
+        refund_checkpoint.map_or(Ok(()), |checkpoint| {
+            self.inner.evm.revert_refund_checkpoint(checkpoint).map_err(BlockExecutionError::other)
+        })
+    }
+}
+
 impl<E, R, Spec> BlockExecutor for CeloBlockExecutor<E, R, Spec>
 where
     E: PostExecEvm<
@@ -163,22 +182,18 @@ where
         tx: impl ExecutableTx<Self>,
         f: impl FnOnce(&Self::Result) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
-        let refund_snapshot =
+        let refund_checkpoint =
             matches!(self.inner.ctx.post_exec_mode, alloy_op_evm::PostExecMode::Produce)
-                .then(|| self.inner.evm.refund_snapshot());
+                .then(|| self.inner.evm.refund_checkpoint());
         let output = match self.execute_transaction_without_commit(tx) {
             Ok(output) => output,
             Err(error) => {
-                if let Some(snapshot) = refund_snapshot {
-                    self.inner.evm.seed_refund_snapshot(snapshot);
-                }
+                self.revert_refund_checkpoint(refund_checkpoint)?;
                 return Err(error);
             }
         };
         if !f(&output).should_commit() {
-            if let Some(snapshot) = refund_snapshot {
-                self.inner.evm.seed_refund_snapshot(snapshot);
-            }
+            self.revert_refund_checkpoint(refund_checkpoint)?;
             return Ok(None);
         }
         Ok(Some(self.commit_transaction(output)))
@@ -298,8 +313,6 @@ where
     R: OpReceiptBuilder,
     Spec: OpHardforks + Clone,
 {
-    type Snapshot = E::Snapshot;
-
     fn post_exec_entries(&self) -> &[SDMGasEntry] {
         self.inner.post_exec_entries()
     }
@@ -314,12 +327,13 @@ where
         self.inner.take_refund_events_by_tx()
     }
 
-    fn refund_snapshot(&self) -> Self::Snapshot {
-        PostExecExecutorExt::refund_snapshot(&self.inner)
-    }
-
-    fn seed_refund_snapshot(&mut self, state: Self::Snapshot) {
-        PostExecExecutorExt::seed_refund_snapshot(&mut self.inner, state)
+    /// Refuses: the prefix's CGTv2 group progress, L1-info receipt and non-deposit marker live in
+    /// this executor, so a resumed executor would validate the rest of the block against a blank
+    /// state. Only op-reth's flashblocks worker resumes executors, and Celo does not run it.
+    fn resume_at_tx_index(&mut self, _first_tx_index: u64) -> Result<(), BlockExecutionError> {
+        Err(BlockExecutionError::msg(
+            "cannot resume a Celo executor mid-block: its CGTv2 group state is lost",
+        ))
     }
 }
 

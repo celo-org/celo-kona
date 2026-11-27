@@ -10,7 +10,7 @@ use celo_reth::{
         PostDownloadAction, post_download_action, reconcile_migrated_index_checkpoints,
         url_download_requested,
     },
-    node::{CeloConsensus, CeloNode, ProofsStorageVersion, RollupArgs},
+    node::{CeloConsensus, CeloNode, RollupArgs},
     payload::{
         DEFAULT_FEE_CURRENCY_LIMIT_FRACTION, FeeCurrencyLimits, parse_fee_currency_fraction,
     },
@@ -47,10 +47,7 @@ use reth_optimism_rpc::{
     debug::{DebugApiExt, DebugApiOverrideServer},
     eth::proofs::{EthApiExt, EthApiOverrideServer},
 };
-use reth_optimism_trie::{
-    OpProofsStorage, OpProofsStore,
-    db::{MdbxProofsStorage, MdbxProofsStorageV2},
-};
+use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
 use reth_rpc_server_types::RethRpcModule;
 use reth_tasks::TaskExecutor;
 use reth_tracing::{Layers, TracingGuards};
@@ -443,42 +440,24 @@ fn main() {
             };
 
             // Historical-proofs ExEx (Bounded History Sidecar). When --proofs-history is
-            // set, dispatch on the on-disk schema version (--proofs-history.storage-version) and
-            // hand the matching MDBX store to `launch_celo_node`. When it is unset we still go
+            // set, hand the MDBX store to `launch_celo_node`. When it is unset we still go
             // through `launch_celo_node` (with `None`), so the Celo RPC modules are wired
-            // identically on every path. The `::<MdbxProofsStorage>` turbofish there only pins the
-            // otherwise-unused store type parameter.
+            // identically on every path.
             if proofs_history {
                 let path = history.resolve_storage_path(builder.config().datadir().as_ref());
-                match history.storage_version {
-                    ProofsStorageVersion::V1 => {
-                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v1)");
-                        let mdbx =
-                            Arc::new(MdbxProofsStorage::new(&path).map_err(|e| {
-                                eyre::eyre!("Failed to create MdbxProofsStorage: {e}")
-                            })?);
-                        let proofs = ProofsHistoryConfig {
-                            mdbx,
-                            window: proofs_history_window,
-                            verification_interval: proofs_history_verification_interval,
-                        };
-                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
-                    }
-                    ProofsStorageVersion::V2 => {
-                        info!(target: "reth::cli", "Using on-disk storage for proofs history (v2)");
-                        let mdbx = Arc::new(MdbxProofsStorageV2::new(&path).map_err(|e| {
-                            eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}")
-                        })?);
-                        let proofs = ProofsHistoryConfig {
-                            mdbx,
-                            window: proofs_history_window,
-                            verification_interval: proofs_history_verification_interval,
-                        };
-                        launch_celo_node(builder, node, blocklist, Some(proofs)).await
-                    }
-                }
+                info!(target: "reth::cli", "Using on-disk storage for proofs history");
+                let mdbx = Arc::new(
+                    MdbxProofsStorage::new(&path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                );
+                let proofs = ProofsHistoryConfig {
+                    mdbx,
+                    window: proofs_history_window,
+                    verification_interval: proofs_history_verification_interval,
+                };
+                launch_celo_node(builder, node, blocklist, Some(proofs)).await
             } else {
-                launch_celo_node::<MdbxProofsStorage>(builder, node, blocklist, None).await
+                launch_celo_node(builder, node, blocklist, None).await
             }
         },
     ) {
@@ -638,11 +617,10 @@ fn init_tracing(
     Ok(guard)
 }
 
-/// Configuration for the historical-proofs ExEx, generic over the on-disk store schema
-/// (`MdbxProofsStorage` for v1, `MdbxProofsStorageV2` for v2).
-struct ProofsHistoryConfig<S> {
+/// Configuration for the historical-proofs ExEx.
+struct ProofsHistoryConfig {
     /// The MDBX-backed proofs store.
-    mdbx: Arc<S>,
+    mdbx: Arc<MdbxProofsStorage>,
     /// Number of blocks of proof history to retain.
     window: u64,
     /// Trie re-verification cadence in blocks (`0` disables verification).
@@ -654,7 +632,7 @@ struct ProofsHistoryConfig<S> {
 /// This is the single launch path for the binary. It always wires the Celo RPC modules
 /// (gas price / fee history / tx / admin), and — when `proofs` is `Some` — additionally
 /// installs the proofs-history ExEx, its metrics task, and the `eth_getProof` RPC
-/// override, all bound to the given MDBX store `S` (v1 or v2).
+/// override, all bound to the given MDBX store.
 ///
 /// reth's builder treats `extend_rpc_modules` as a single-slot set/replace, so calling it
 /// twice silently discards the first hook — the bug that shipped in PR #175 (the
@@ -662,26 +640,19 @@ struct ProofsHistoryConfig<S> {
 /// always fell back to the slow historical-state path). The proofs override and the Celo
 /// modules therefore share one closure. Routing the no-proofs case through here too keeps
 /// that closure — and the Celo module wiring — defined exactly once.
-///
-/// `on_node_started` and `install_exex` return `Self`, so installing the sidecar leaves the
-/// builder type unchanged and the store type `S` stays erased behind the boxed hooks — that
-/// is what lets the v1/v2 dispatch in `main` funnel into this one generic function.
-async fn launch_celo_node<S>(
+async fn launch_celo_node(
     builder: WithLaunchContext<NodeBuilder<DatabaseEnv, OpChainSpec>>,
     node: CeloNode,
     blocklist: FeeCurrencyBlocklist,
-    proofs: Option<ProofsHistoryConfig<S>>,
-) -> eyre::Result<()>
-where
-    S: OpProofsStore + DatabaseMetrics + Send + Sync + 'static,
-{
+    proofs: Option<ProofsHistoryConfig>,
+) -> eyre::Result<()> {
     let mut node_builder = builder.node(node);
 
     // When enabled, install the ExEx + metrics task and keep the storage handle for the
     // RPC override below.
-    let proofs_storage_rpc: Option<OpProofsStorage<Arc<S>>> =
+    let proofs_storage_rpc: Option<OpProofsStorage<Arc<MdbxProofsStorage>>> =
         if let Some(ProofsHistoryConfig { mdbx, window, verification_interval }) = proofs {
-            let storage: OpProofsStorage<Arc<S>> = mdbx.clone().into();
+            let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
             let storage_exec = storage.clone();
 
             node_builder = node_builder

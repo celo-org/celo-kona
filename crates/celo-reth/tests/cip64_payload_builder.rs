@@ -707,7 +707,7 @@ fn payload_metrics_cover_the_whole_sequencing_path() {
 }
 
 #[test]
-fn cgt_v2_witness_rejects_user_transactions_on_either_side_of_signal() {
+fn cgt_v2_witness_stops_at_user_transactions_on_either_side_of_signal() {
     use alloy_consensus::{Sealable, SignableTransaction, TxLegacy};
     use alloy_eips::Encodable2718;
     use celo_alloy_consensus::cgt_v2_group::{
@@ -804,8 +804,16 @@ fn cgt_v2_witness_rejects_user_transactions_on_either_side_of_signal() {
     user_before.insert(1, user.clone());
     let mut user_after = complete;
     user_after.push(user);
-    for transactions in [user_before, user_after] {
-        let error = witness(transactions).expect_err("activation witness must reject user txs");
-        assert!(error.to_string().contains("unexpected non-deposit transactions"), "{error}");
-    }
+    // A user tx makes the derived payload invalid, so, like the fault proof program, the witness
+    // stops at it instead of failing.
+    let before = witness(user_before).expect("witness up to the rejected user tx");
+    assert!(
+        before.keys.iter().any(|key| key.as_ref() == sender.as_slice()),
+        "the user tx ahead of the group executes"
+    );
+    let after = witness(user_after).expect("witness up to the rejected user tx");
+    assert!(
+        !after.keys.iter().any(|key| key.as_ref() == sender.as_slice()),
+        "the user tx after the group is rejected before it executes"
+    );
 }

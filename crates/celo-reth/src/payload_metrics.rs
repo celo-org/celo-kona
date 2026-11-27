@@ -24,8 +24,9 @@ use reth_storage_api::{
 use reth_storage_errors::provider::ProviderResult;
 use reth_transaction_pool::TransactionPool;
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, DecodedMultiProofV2, ExecutionWitnessMode, HashedPostState, HashedStorage,
+    MultiProof, MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use std::{
     cell::RefCell,
@@ -524,6 +525,14 @@ impl<P: StateProofProvider> StateProofProvider for PayloadMetricsStateProvider<P
         targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {
         self.inner.multiproof(input, targets)
+    }
+
+    fn multiproof_v2(
+        &self,
+        input: TrieInput,
+        targets: MultiProofTargetsV2,
+    ) -> ProviderResult<DecodedMultiProofV2> {
+        self.inner.multiproof_v2(input, targets)
     }
 
     fn witness(

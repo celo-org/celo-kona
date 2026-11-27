@@ -4,7 +4,9 @@ use alloy_evm::block::CommitChanges;
 use alloy_op_evm::{
     OpEvm, OpTx, PostExecMode,
     block::{OpAlloyReceiptBuilder, OpBlockExecutionCtx},
-    post_exec::{PostExecExecutedTx, PostExecRefundInspector, PostExecTxContext},
+    post_exec::{
+        PostExecExecutedTx, PostExecRefundInspector, PostExecTxContext, RevertToCheckpointError,
+    },
 };
 use alloy_op_hardforks::OpChainHardforks;
 use alloy_primitives::{Address, Signature, TxKind, U256};
@@ -20,14 +22,15 @@ use revm::{
 };
 
 // Match the pinned upstream regression's policy: each attempted execution changes the
-// snapshot, so a missing rollback is observable even when EVM state is not committed.
+// checkpoint, so a missing rollback is observable even when EVM state is not committed. With
+// `REVERTS = false` it refuses every revert, like a policy handed a checkpoint it did not issue.
 #[derive(Debug, Clone, Default)]
-struct ScriptedRefundPolicy {
+struct ScriptedRefundPolicy<const REVERTS: bool = true> {
     executed_candidates: u64,
 }
 
-impl PostExecRefundInspector for ScriptedRefundPolicy {
-    type Snapshot = u64;
+impl<const REVERTS: bool> PostExecRefundInspector for ScriptedRefundPolicy<REVERTS> {
+    type Checkpoint = u64;
 
     fn begin_tx(&mut self, _ctx: PostExecTxContext) {}
 
@@ -78,17 +81,56 @@ impl PostExecRefundInspector for ScriptedRefundPolicy {
 
     fn inspect_selfdestruct(&mut self, _contract: Address, _target: Address, _value: U256) {}
 
-    fn snapshot(&self) -> Self::Snapshot {
+    fn checkpoint(&mut self) -> Self::Checkpoint {
         self.executed_candidates
     }
 
-    fn restore(&mut self, snapshot: Self::Snapshot) {
-        self.executed_candidates = snapshot;
+    fn revert_to_checkpoint(
+        &mut self,
+        checkpoint: Self::Checkpoint,
+    ) -> Result<(), RevertToCheckpointError> {
+        if !REVERTS {
+            return Err(RevertToCheckpointError::new("scripted to refuse every revert"));
+        }
+        self.executed_candidates = checkpoint;
+        Ok(())
     }
 }
 
-#[test]
-fn discarded_candidate_restores_inner_refund_policy() {
+fn legacy_tx(nonce: u64) -> Recovered<OpTxEnvelope> {
+    Recovered::new_unchecked(
+        OpTxEnvelope::Legacy(
+            TxLegacy {
+                nonce,
+                to: TxKind::Call(Address::with_last_byte(0x42)),
+                gas_limit: 200_000,
+                ..Default::default()
+            }
+            .into_signed(Signature::new(U256::ZERO, U256::ZERO, false)),
+        ),
+        Address::ZERO,
+    )
+}
+
+/// Runs `f` against a producing [`CeloBlockExecutor`] whose EVM carries refund policy `P`.
+fn with_policy_executor<P, T>(
+    f: impl FnOnce(
+        &mut CeloBlockExecutor<
+            OpEvm<
+                &mut State<CacheDB<EmptyDB>>,
+                NoOpInspector,
+                op_revm::precompiles::OpPrecompiles,
+                OpTx,
+                P,
+            >,
+            OpAlloyReceiptBuilder,
+            OpChainHardforks,
+        >,
+    ) -> T,
+) -> T
+where
+    P: PostExecRefundInspector + Default,
+{
     let mut db = State::builder().with_database(CacheDB::<EmptyDB>::default()).build();
     let context = Context::mainnet()
         .with_tx(OpTx(OpTransaction::builder().build_fill()))
@@ -96,7 +138,7 @@ fn discarded_candidate_restores_inner_refund_policy() {
         .with_chain(L1BlockInfo::default())
         .with_db(&mut db)
         .with_block(BlockEnv { gas_limit: 500_000, ..Default::default() });
-    let evm: OpEvm<_, _, _, OpTx, ScriptedRefundPolicy> =
+    let evm: OpEvm<_, _, _, OpTx, P> =
         OpEvm::new(context.build_op_with_inspector(NoOpInspector {}), true);
     let mut executor = CeloBlockExecutor::new(OpBlockExecutor::new(
         evm,
@@ -104,34 +146,69 @@ fn discarded_candidate_restores_inner_refund_policy() {
         OpChainHardforks::op_mainnet(),
         OpAlloyReceiptBuilder::default(),
     ));
-    let tx = |nonce| {
-        Recovered::new_unchecked(
-            OpTxEnvelope::Legacy(
-                TxLegacy {
-                    nonce,
-                    to: TxKind::Call(Address::with_last_byte(0x42)),
-                    gas_limit: 200_000,
-                    ..Default::default()
-                }
-                .into_signed(Signature::new(U256::ZERO, U256::ZERO, false)),
-            ),
-            Address::ZERO,
-        )
-    };
+    f(&mut executor)
+}
 
-    assert!(
-        executor
-            .execute_transaction_with_commit_condition(&tx(0), |_| CommitChanges::No)
-            .expect("declined candidate executes")
-            .is_none()
-    );
-    assert_eq!(executor.refund_snapshot(), 0, "decline must restore the policy");
+#[test]
+fn discarded_candidate_reverts_inner_refund_policy() {
+    with_policy_executor::<ScriptedRefundPolicy, _>(|executor| {
+        assert!(
+            executor
+                .execute_transaction_with_commit_condition(&legacy_tx(0), |_| CommitChanges::No)
+                .expect("declined candidate executes")
+                .is_none()
+        );
+        assert_eq!(executor.inner.evm.refund_checkpoint(), 0, "decline must revert the policy");
 
-    assert!(
-        executor.execute_transaction_with_commit_condition(&tx(1), |_| CommitChanges::Yes).is_err()
-    );
-    assert_eq!(executor.refund_snapshot(), 0, "execution error must restore the policy");
+        assert!(
+            executor
+                .execute_transaction_with_commit_condition(&legacy_tx(1), |_| CommitChanges::Yes)
+                .is_err()
+        );
+        assert_eq!(
+            executor.inner.evm.refund_checkpoint(),
+            0,
+            "execution error must revert the policy"
+        );
 
-    executor.execute_transaction(&tx(0)).expect("committed candidate executes");
-    assert_eq!(executor.refund_snapshot(), 1);
+        executor.execute_transaction(&legacy_tx(0)).expect("committed candidate executes");
+        assert_eq!(executor.inner.evm.refund_checkpoint(), 1);
+    });
+}
+
+#[test]
+fn resume_at_tx_index_is_refused() {
+    with_policy_executor::<ScriptedRefundPolicy, _>(|executor| {
+        let err = PostExecExecutorExt::resume_at_tx_index(executor, 1)
+            .expect_err("a Celo executor cannot resume mid-block");
+        assert!(err.to_string().contains("CGTv2 group state is lost"), "{err}");
+    });
+}
+
+fn assert_refund_policy_revert_error(err: &BlockExecutionError) {
+    let revert_error = RevertToCheckpointError::from_block_execution_error(err)
+        .unwrap_or_else(|| panic!("expected the policy's revert error, got {err}"));
+    assert_eq!(revert_error.reason(), "scripted to refuse every revert");
+}
+
+#[test]
+fn declined_candidate_fails_when_refund_policy_cannot_revert() {
+    with_policy_executor::<ScriptedRefundPolicy<false>, _>(|executor| {
+        let err = executor
+            .execute_transaction_with_commit_condition(&legacy_tx(0), |_| CommitChanges::No)
+            .expect_err("a policy that cannot undo the declined candidate fails the call");
+        assert_refund_policy_revert_error(&err);
+    });
+}
+
+// The policy's revert error outranks the candidate's own execution error: a caller that saw only
+// the invalid transaction would skip it and keep building on unspecified policy state.
+#[test]
+fn failed_candidate_reports_refund_policy_revert_error_over_its_own() {
+    with_policy_executor::<ScriptedRefundPolicy<false>, _>(|executor| {
+        let err = executor
+            .execute_transaction(&legacy_tx(7))
+            .expect_err("an invalid transaction whose rollback also fails errors");
+        assert_refund_policy_revert_error(&err);
+    });
 }

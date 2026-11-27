@@ -54,7 +54,7 @@ use reth_primitives_traits::{
 };
 use std::{sync::Arc, time::Duration};
 
-pub use reth_optimism_node::args::{ProofsStorageVersion, RollupArgs};
+pub use reth_optimism_node::args::RollupArgs;
 
 /// Gives the shared sparse trie 750ms before allowing a synchronous state-root fallback.
 const CELO_PAYLOAD_STATE_ROOT_WAIT: Duration = Duration::from_millis(750);
