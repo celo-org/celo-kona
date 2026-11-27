@@ -472,6 +472,7 @@ reth-storage-api = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4
 reth-storage-errors = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
 reth-storage-overlay = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
 reth-tasks = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
+reth-testing-utils = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
 reth-tokio-util = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
 reth-tracing = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }
 reth-tracing-otlp = { git = "https://github.com/celo-org/reth", rev = "ec228c2dc4e8fa18900216bcf8ecd64318413538" }

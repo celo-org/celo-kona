@@ -40,7 +40,7 @@ use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_consensus::OpBeaconConsensus;
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_node::{
-    OpEngineApiBuilder, OpEngineValidatorBuilder, OpNode,
+    DerivedPayloadServiceBuilder, OpEngineApiBuilder, OpEngineValidatorBuilder, OpNode,
     node::{OpAddOns, OpNetworkBuilder, OpPayloadBuilder, OpPoolBuilder},
 };
 use reth_optimism_payload_builder::{
@@ -434,8 +434,10 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         CeloPoolBuilder,
-        BasicPayloadServiceBuilder<
-            PayloadMetricsBuilderBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+        DerivedPayloadServiceBuilder<
+            BasicPayloadServiceBuilder<
+                PayloadMetricsBuilderBuilder<OpPayloadBuilder<CeloPayloadTransactions>>,
+            >,
         >,
         OpNetworkBuilder,
         CeloExecutorBuilder,
@@ -463,13 +465,18 @@ where
             .node_types::<N>()
             .pool(CeloPoolBuilder::default())
             .executor(CeloExecutorBuilder { blocklist })
-            .payload(BasicPayloadServiceBuilder::new(PayloadMetricsBuilderBuilder::new(
-                OpPayloadBuilder::new(compute_pending_block)
-                    .with_builder_config(self.builder_config())
-                    // SDM is unscheduled on Celo: keep the disabled default that `add_ons`
-                    // also passes, not the `--rollup.operator-sdm-opt-in` value `OpNode` reads.
-                    .with_operator_sdm_opt_in(OperatorSdmOptIn::default())
-                    .with_transactions(celo_txs),
+            // Derived payloads with a non-deposit tx are built at forkchoiceUpdated, so invalid
+            // ones are rejected with -38003 and replaced by deposits-only blocks, as in the proof.
+            .payload(DerivedPayloadServiceBuilder::new(BasicPayloadServiceBuilder::new(
+                PayloadMetricsBuilderBuilder::new(
+                    OpPayloadBuilder::new(compute_pending_block)
+                        .with_builder_config(self.builder_config())
+                        // SDM is unscheduled on Celo: keep the disabled default that `add_ons`
+                        // also passes, not the `--rollup.operator-sdm-opt-in` value `OpNode`
+                        // reads.
+                        .with_operator_sdm_opt_in(OperatorSdmOptIn::default())
+                        .with_transactions(celo_txs),
+                ),
             )))
             .network(OpNetworkBuilder::new(disable_txpool_gossip, !discovery_v4))
             .consensus(CeloConsensusBuilder)

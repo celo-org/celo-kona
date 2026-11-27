@@ -138,6 +138,7 @@ alloy-network.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest = "1.11"
 metrics-util = "0.20"
+reth-node-builder = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 
