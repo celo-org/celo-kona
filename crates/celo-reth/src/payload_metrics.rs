@@ -564,7 +564,7 @@ impl<P: HashedPostStateProvider> HashedPostStateProvider for PayloadMetricsState
                     "celo_payload_hashed_post_state_size",
                     "has_best_payload" => has_best_label,
                 )
-                // Count changed accounts and slots, with wiped storage as one entry.
+                // Count changed accounts and slots.
                 .record(state.chunking_length() as f64);
             }
         }
@@ -626,8 +626,7 @@ impl<P: StateProvider> StateProvider for PayloadMetricsStateProvider<P> {
 
 /// Total trie nodes a successful blocking root computation reported as changed.
 ///
-/// `TrieUpdates` has no `len()`; `StorageTrieUpdates::len()` already folds in the wiped-trie
-/// marker, so summing the three collections counts each node exactly once.
+/// `TrieUpdates` has no `len()`, so this sums its three collections, counting each node once.
 fn trie_updates_size(updates: &TrieUpdates) -> usize {
     updates.account_nodes_ref().len() +
         updates.removed_nodes_ref().len() +
