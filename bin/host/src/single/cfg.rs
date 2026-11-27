@@ -250,7 +250,11 @@ async fn init_blob_provider_with_backoff(
             SingleChainHostError::Other("failed to load beacon slot interval")
         })?
         .data
-        .seconds_per_slot;
+        .slot_duration_secs()
+        .map_err(|e| {
+            warn!(target: "single_host_cfg", error = %e, "invalid beacon slot duration");
+            SingleChainHostError::Other("invalid beacon slot duration")
+        })?;
 
     Ok(OnlineBlobProvider { beacon_client: beacon, genesis_time, slot_interval })
 }
