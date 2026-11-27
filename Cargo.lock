@@ -8416,7 +8416,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "reth-basic-payload-builder"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8443,7 +8443,7 @@ dependencies = [
 [[package]]
 name = "reth-chain-state"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8474,7 +8474,7 @@ dependencies = [
 [[package]]
 name = "reth-chainspec"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -8494,7 +8494,7 @@ dependencies = [
 [[package]]
 name = "reth-cli"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-genesis",
  "clap",
@@ -8507,7 +8507,7 @@ dependencies = [
 [[package]]
 name = "reth-cli-commands"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -8592,7 +8592,7 @@ dependencies = [
 [[package]]
 name = "reth-cli-runner"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "reth-tasks",
  "tokio",
@@ -8602,7 +8602,7 @@ dependencies = [
 [[package]]
 name = "reth-cli-util"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -8651,7 +8651,7 @@ dependencies = [
 [[package]]
 name = "reth-config"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "eyre",
  "humantime-serde",
@@ -8668,7 +8668,7 @@ dependencies = [
 [[package]]
 name = "reth-consensus"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -8682,7 +8682,7 @@ dependencies = [
 [[package]]
 name = "reth-consensus-common"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8695,7 +8695,7 @@ dependencies = [
 [[package]]
 name = "reth-consensus-debug-client"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8720,7 +8720,7 @@ dependencies = [
 [[package]]
 name = "reth-db"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "derive_more",
@@ -8749,7 +8749,7 @@ dependencies = [
 [[package]]
 name = "reth-db-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8776,7 +8776,7 @@ dependencies = [
 [[package]]
 name = "reth-db-common"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-genesis",
@@ -8806,7 +8806,7 @@ dependencies = [
 [[package]]
 name = "reth-db-models"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -8821,7 +8821,7 @@ dependencies = [
 [[package]]
 name = "reth-discv4"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -8846,7 +8846,7 @@ dependencies = [
 [[package]]
 name = "reth-discv5"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -8870,7 +8870,7 @@ dependencies = [
 [[package]]
 name = "reth-dns-discovery"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "dashmap",
@@ -8894,7 +8894,7 @@ dependencies = [
 [[package]]
 name = "reth-downloaders"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8931,7 +8931,7 @@ dependencies = [
 [[package]]
 name = "reth-ecies"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "aes",
  "alloy-primitives",
@@ -8958,7 +8958,7 @@ dependencies = [
 [[package]]
 name = "reth-engine-local"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -8981,7 +8981,7 @@ dependencies = [
 [[package]]
 name = "reth-engine-primitives"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9008,7 +9008,7 @@ dependencies = [
 [[package]]
 name = "reth-engine-tree"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -9064,7 +9064,7 @@ dependencies = [
 [[package]]
 name = "reth-engine-util"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -9094,7 +9094,7 @@ dependencies = [
 [[package]]
 name = "reth-era"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9112,7 +9112,7 @@ dependencies = [
 [[package]]
 name = "reth-era-downloader"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -9128,7 +9128,7 @@ dependencies = [
 [[package]]
 name = "reth-era-utils"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -9152,7 +9152,7 @@ dependencies = [
 [[package]]
 name = "reth-errors"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "reth-consensus",
  "reth-execution-errors",
@@ -9163,7 +9163,7 @@ dependencies = [
 [[package]]
 name = "reth-eth-wire"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -9191,7 +9191,7 @@ dependencies = [
 [[package]]
 name = "reth-eth-wire-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -9214,7 +9214,7 @@ dependencies = [
 [[package]]
 name = "reth-ethereum-consensus"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9230,7 +9230,7 @@ dependencies = [
 [[package]]
 name = "reth-ethereum-engine-primitives"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -9246,7 +9246,7 @@ dependencies = [
 [[package]]
 name = "reth-ethereum-forks"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eip2124",
  "alloy-hardforks",
@@ -9259,7 +9259,7 @@ dependencies = [
 [[package]]
 name = "reth-ethereum-primitives"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9272,7 +9272,7 @@ dependencies = [
 [[package]]
 name = "reth-etl"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "rayon",
  "reth-db-api",
@@ -9282,7 +9282,7 @@ dependencies = [
 [[package]]
 name = "reth-evm"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -9308,7 +9308,7 @@ dependencies = [
 [[package]]
 name = "reth-evm-ethereum"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9328,7 +9328,7 @@ dependencies = [
 [[package]]
 name = "reth-execution-cache"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "fixed-cache",
@@ -9346,7 +9346,7 @@ dependencies = [
 [[package]]
 name = "reth-execution-errors"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
@@ -9359,7 +9359,7 @@ dependencies = [
 [[package]]
 name = "reth-execution-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9378,7 +9378,7 @@ dependencies = [
 [[package]]
 name = "reth-exex"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9416,7 +9416,7 @@ dependencies = [
 [[package]]
 name = "reth-exex-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -9430,7 +9430,7 @@ dependencies = [
 [[package]]
 name = "reth-fs-util"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "serde",
  "serde_json",
@@ -9440,7 +9440,7 @@ dependencies = [
 [[package]]
 name = "reth-invalid-block-hooks"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -9466,7 +9466,7 @@ dependencies = [
 [[package]]
 name = "reth-ipc"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "bytes",
  "futures",
@@ -9486,7 +9486,7 @@ dependencies = [
 [[package]]
 name = "reth-libmdbx"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "bitflags 2.13.1",
  "byteorder",
@@ -9503,7 +9503,7 @@ dependencies = [
 [[package]]
 name = "reth-mdbx-sys"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "bindgen",
  "cc",
@@ -9512,7 +9512,7 @@ dependencies = [
 [[package]]
 name = "reth-metrics"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "futures",
  "libc",
@@ -9526,7 +9526,7 @@ dependencies = [
 [[package]]
 name = "reth-net-banlist"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "ipnet",
@@ -9535,7 +9535,7 @@ dependencies = [
 [[package]]
 name = "reth-net-nat"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "futures-util",
  "if-addrs",
@@ -9549,7 +9549,7 @@ dependencies = [
 [[package]]
 name = "reth-network"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9608,7 +9608,7 @@ dependencies = [
 [[package]]
 name = "reth-network-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -9633,7 +9633,7 @@ dependencies = [
 [[package]]
 name = "reth-network-p2p"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -9657,7 +9657,7 @@ dependencies = [
 [[package]]
 name = "reth-network-peers"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -9672,7 +9672,7 @@ dependencies = [
 [[package]]
 name = "reth-network-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eip2124",
  "humantime-serde",
@@ -9686,7 +9686,7 @@ dependencies = [
 [[package]]
 name = "reth-nippy-jar"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "anyhow",
  "bincode",
@@ -9704,7 +9704,7 @@ dependencies = [
 [[package]]
 name = "reth-node-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-rpc-types-engine",
  "eyre",
@@ -9728,7 +9728,7 @@ dependencies = [
 [[package]]
 name = "reth-node-builder"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9796,7 +9796,7 @@ dependencies = [
 [[package]]
 name = "reth-node-core"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9851,7 +9851,7 @@ dependencies = [
 [[package]]
 name = "reth-node-ethstats"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -9875,7 +9875,7 @@ dependencies = [
 [[package]]
 name = "reth-node-events"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9899,7 +9899,7 @@ dependencies = [
 [[package]]
 name = "reth-node-metrics"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "bytes",
  "eyre",
@@ -9923,7 +9923,7 @@ dependencies = [
 [[package]]
 name = "reth-node-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "reth-chainspec",
  "reth-db-api",
@@ -10430,7 +10430,7 @@ dependencies = [
 [[package]]
 name = "reth-payload-builder"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -10454,7 +10454,7 @@ dependencies = [
 [[package]]
 name = "reth-payload-builder-primitives"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "pin-project",
  "reth-payload-primitives",
@@ -10466,7 +10466,7 @@ dependencies = [
 [[package]]
 name = "reth-payload-primitives"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10489,7 +10489,7 @@ dependencies = [
 [[package]]
 name = "reth-payload-util"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -10499,7 +10499,7 @@ dependencies = [
 [[package]]
 name = "reth-payload-validator"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-rpc-types-engine",
@@ -10543,7 +10543,7 @@ dependencies = [
 [[package]]
 name = "reth-provider"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -10593,7 +10593,7 @@ dependencies = [
 [[package]]
 name = "reth-prune"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -10620,7 +10620,7 @@ dependencies = [
 [[package]]
 name = "reth-prune-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
@@ -10636,7 +10636,7 @@ dependencies = [
 [[package]]
 name = "reth-revm"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -10651,7 +10651,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -10727,7 +10727,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -10757,7 +10757,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-builder"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-network",
  "alloy-provider",
@@ -10800,7 +10800,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-convert"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -10820,7 +10820,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-engine-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -10851,7 +10851,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-eth-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -10898,7 +10898,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-eth-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -10948,7 +10948,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-layer"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-rpc-types-engine",
  "http",
@@ -10964,7 +10964,7 @@ dependencies = [
 [[package]]
 name = "reth-rpc-server-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
@@ -10994,7 +10994,7 @@ dependencies = [
 [[package]]
 name = "reth-stages"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -11046,7 +11046,7 @@ dependencies = [
 [[package]]
 name = "reth-stages-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -11074,7 +11074,7 @@ dependencies = [
 [[package]]
 name = "reth-stages-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "arbitrary",
@@ -11088,7 +11088,7 @@ dependencies = [
 [[package]]
 name = "reth-static-file"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "parking_lot",
@@ -11108,7 +11108,7 @@ dependencies = [
 [[package]]
 name = "reth-static-file-types"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "clap",
@@ -11123,7 +11123,7 @@ dependencies = [
 [[package]]
 name = "reth-storage-api"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -11149,7 +11149,7 @@ dependencies = [
 [[package]]
 name = "reth-storage-errors"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -11166,7 +11166,7 @@ dependencies = [
 [[package]]
 name = "reth-storage-overlay"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -11194,7 +11194,7 @@ dependencies = [
 [[package]]
 name = "reth-tasks"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "crossbeam-utils",
  "dashmap",
@@ -11215,7 +11215,7 @@ dependencies = [
 [[package]]
 name = "reth-testing-utils"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11231,7 +11231,7 @@ dependencies = [
 [[package]]
 name = "reth-tokio-util"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "tokio",
  "tokio-stream",
@@ -11241,7 +11241,7 @@ dependencies = [
 [[package]]
 name = "reth-tracing"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "clap",
  "eyre",
@@ -11259,7 +11259,7 @@ dependencies = [
 [[package]]
 name = "reth-tracing-otlp"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -11277,7 +11277,7 @@ dependencies = [
 [[package]]
 name = "reth-transaction-pool"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11320,7 +11320,7 @@ dependencies = [
 [[package]]
 name = "reth-trie"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11346,7 +11346,7 @@ dependencies = [
 [[package]]
 name = "reth-trie-common"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11374,7 +11374,7 @@ dependencies = [
 [[package]]
 name = "reth-trie-db"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "reth-db-api",
@@ -11390,7 +11390,7 @@ dependencies = [
 [[package]]
 name = "reth-trie-parallel"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
@@ -11413,7 +11413,7 @@ dependencies = [
 [[package]]
 name = "reth-trie-sparse"
 version = "2.6.0"
-source = "git+https://github.com/celo-org/reth?rev=ec228c2dc4e8fa18900216bcf8ecd64318413538#ec228c2dc4e8fa18900216bcf8ecd64318413538"
+source = "git+https://github.com/celo-org/reth?rev=c4536e222febd781525ec14b5f41f6ddd7fd1e0f#c4536e222febd781525ec14b5f41f6ddd7fd1e0f"
 dependencies = [
  "alloy-primitives",
  "alloy-trie",
